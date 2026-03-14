@@ -1,0 +1,944 @@
+{
+  "header_chirho": "For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life. - John 3:16",
+  "project_name_chirho": "Lineluya",
+  "version_chirho": "0.1.0",
+  "codename_chirho": "Genesis",
+  "tagline_chirho": "A drop-in Linux-compatible kernel rewritten in Rust, for safety, for performance, for glory.",
+  "last_updated_chirho": "2026-03-14",
+
+  "vision_chirho": {
+    "summary_chirho": "Lineluya is a ground-up rewrite of the Linux kernel in Rust, designed to be binary-compatible and drop-in swappable with the real Linux kernel. It implements the Linux syscall ABI, boot protocols, filesystem interfaces (/proc, /sys, /dev), and module system so that existing Linux userspace (init, coreutils, systemd, containers, etc.) runs unmodified.",
+    "goals_chirho": [
+      "Full Linux x86_64 syscall ABI compatibility — existing ELF binaries run unmodified",
+      "Linux boot protocol support (bzImage format, loadable by GRUB2/systemd-boot/Limine)",
+      "Memory safety via Rust's ownership model — eliminate classes of CVEs (buffer overflows, use-after-free, data races)",
+      "Performance parity with Linux (within 5% on macro benchmarks)",
+      "Compatible /proc, /sys, /dev virtual filesystems",
+      "ELF binary loading with dynamic linker support",
+      "Loadable kernel module system (Rust modules, with C ABI shim layer for legacy .ko)",
+      "Full networking stack (TCP/IP, UDP, socket API)",
+      "Modern filesystem support (ext4, tmpfs, procfs, sysfs, devtmpfs)",
+      "Container runtime compatibility (namespaces, cgroups v2)",
+      "Eventually: full Linux ecosystem rewrite (coreutils, systemd, drivers) in Rust"
+    ],
+    "non_goals_chirho": [
+      "Supporting architectures other than x86_64 in Phase 1 (ARM64, RISC-V come later)",
+      "100% driver coverage from day one (focus on virtio, essential hardware first)",
+      "Backwards compatibility with Linux < 5.0 ABIs",
+      "Supporting 32-bit userspace (x86 compat mode) in early phases"
+    ]
+  },
+
+  "linux_reference_chirho": {
+    "version_chirho": "6.19.8",
+    "release_date_chirho": "2026-03-13",
+    "location_chirho": "spec-chirho/linux-reference-chirho/linux-6.19.8/",
+    "stats_chirho": {
+      "c_files_chirho": 36327,
+      "h_files_chirho": 26369,
+      "total_files_chirho": 62696,
+      "total_lines_chirho": 36153644,
+      "architectures_chirho": 22,
+      "driver_subdirs_chirho": 147,
+      "include_linux_headers_chirho": 1602
+    },
+    "code_distribution_chirho": {
+      "drivers_chirho": "~60%",
+      "arch_specific_chirho": "~15%",
+      "filesystems_chirho": "~8%",
+      "networking_chirho": "~7%",
+      "core_kernel_chirho": "~5%",
+      "other_chirho": "~5%"
+    }
+  },
+
+  "key_reference_projects_chirho": [
+    {
+      "name_chirho": "Asterinas",
+      "relevance_chirho": "MOST RELEVANT — Rust framekernel with 230+ Linux syscalls, only ~14% unsafe code via OSTD framework. Linux ABI compatible. On par with Linux in benchmarks. Published at USENIX ATC 2025. Has experimental NixOS distribution. Accepted to USENIX ATC'25.",
+      "url_chirho": "https://github.com/asterinas/asterinas",
+      "architecture_chirho": "Framekernel: single address space (monolithic performance) with logical separation between privileged OS framework (OSTD, only unsafe Rust allowed) and de-privileged OS services (safe Rust only). Combines monolithic kernel performance with microkernel security properties.",
+      "key_lesson_chirho": "Demonstrates that minimizing unsafe to a well-defined framework layer (~14%) is achievable while supporting 230+ syscalls at Linux-competitive performance."
+    },
+    {
+      "name_chirho": "Maestro OS",
+      "relevance_chirho": "Rust kernel explicitly targeting Linux compatibility. 135/437 syscalls implemented (~31%). Can run Bash + musl libc. Started as C (2018), rewritten in Rust after 1.5 years -- validates Rust rewrite approach. 48,800 lines of Rust across 615 files. Boots via Multiboot2.",
+      "url_chirho": "https://github.com/maestro-os/maestro",
+      "key_lesson_chirho": "Shows the difficulty curve: 135 syscalls is enough for a basic shell but not for a full distribution. The C-to-Rust rewrite history demonstrates that Rust improves kernel code maintainability significantly."
+    },
+    {
+      "name_chirho": "Redox OS",
+      "relevance_chirho": "Mature Rust microkernel OS. NOT Linux-compatible but has excellent Rust kernel engineering patterns. Uses scheme-based resource model (URLs instead of file paths). Syscall performance optimized to near-CPU-microcode overhead. Self-hosting. Custom relibc.",
+      "url_chirho": "https://www.redox-os.org",
+      "key_lesson_chirho": "Demonstrates that Rust kernel syscall dispatch can be made extremely fast. The scheme system is elegant but incompatible with Linux's VFS model. Their dedicated syscall crate with inline ASM wrappers is a good pattern."
+    },
+    {
+      "name_chirho": "Theseus OS",
+      "relevance_chirho": "Research OS exploring intralingual design: encoding OS invariants as Rust types checked at compile time. Single address space (ring 0 only), isolation via type system not hardware. 38,000 lines Rust + 900 lines ASM. Published at USENIX OSDI'20.",
+      "url_chirho": "https://github.com/theseus-os/Theseus",
+      "key_lesson_chirho": "Innovative idea of encoding invariants as types (e.g., MappedPageChirho can only exist when page is actually mapped). However, SASOS is incompatible with Linux's kernel/user separation. Applicable insight: use Rust types to prevent page table bugs at compile time."
+    },
+    {
+      "name_chirho": "Rust for Linux (in-tree)",
+      "relevance_chirho": "Rust is now permanent in the Linux kernel (2025 Kernel Maintainer Summit). kernel crate provides safe abstractions; bindings crate has auto-generated C FFI. Millions of Android 16 devices use Rust kernel code in production. DRM subsystem adoption advancing.",
+      "url_chirho": "https://rust-for-linux.com",
+      "key_lesson_chirho": "The kernel crate's abstraction patterns (error types, lock guards, device model traits) are excellent design references even though they wrap C code. Shows which abstractions work well for kernel Rust."
+    },
+    {
+      "name_chirho": "Kerla",
+      "relevance_chirho": "Monolithic Rust kernel with Linux binary compatibility. Can run unmodified Linux binaries. Good syscall implementation reference.",
+      "url_chirho": "https://github.com/nuta/kerla"
+    },
+    {
+      "name_chirho": "rust-vmm/linux-loader",
+      "relevance_chirho": "Rust library that parses and loads Linux kernels from bzImage format. Contains Rust implementation of boot_params parsing. Directly useful for understanding how to produce a compatible bzImage.",
+      "url_chirho": "https://github.com/rust-vmm/linux-loader"
+    },
+    {
+      "name_chirho": "KRaBs",
+      "relevance_chirho": "4-stage x86/x86_64 chain loader written in Rust. Demonstrates real mode -> protected mode -> long mode transition in Rust/asm. Reference for Lineluya's boot stub.",
+      "url_chirho": "https://vmm.dev/en/rust/krabs.md"
+    }
+  ],
+
+  "compatibility_target_chirho": {
+    "kernel_version_reference_chirho": "Linux 6.19+ (6.19.8 downloaded as reference)",
+    "total_syscalls_x86_64_chirho": {
+      "total_entries_chirho": 420,
+      "common_abi_chirho": 337,
+      "sixty_four_bit_only_chirho": 47,
+      "x32_compat_chirho": 36,
+      "highest_common_number_chirho": 470,
+      "source_file_chirho": "arch/x86/entry/syscalls/syscall_64.tbl"
+    },
+    "scheduler_chirho": "EEVDF (replaced CFS in kernel 6.6)",
+    "slab_allocator_chirho": "SLUB (only allocator since 6.8, SLAB/SLOB removed)",
+    "abi_compatibility_chirho": "x86_64 Linux syscall ABI (SYSCALL instruction, same register conventions)",
+    "boot_protocols_chirho": [
+      "Linux Boot Protocol v2.15 (bzImage format, struct boot_params/zero page) -- PRIMARY",
+      "UEFI stub (direct UEFI boot without bootloader, via EFI handover protocol)",
+      "Note: Multiboot2 is a GRUB protocol, NOT the Linux protocol. We use Linux boot protocol which GRUB2 also supports natively."
+    ],
+    "syscall_entry_mechanism_chirho": {
+      "instruction_chirho": "SYSCALL (x86_64)",
+      "msr_lstar_chirho": "MSR 0xC0000082 -- holds kernel entry point address (entry_SYSCALL_64)",
+      "msr_star_chirho": "MSR 0xC0000081 -- holds CS/SS selectors: bits 47:32=kernel CS, bits 63:48=user CS",
+      "msr_syscall_mask_chirho": "MSR 0xC0000084 -- RFLAGS mask (clears IF, DF, TF, AC)",
+      "register_abi_chirho": {
+        "rax_chirho": "syscall number (input) / return value (output, negative = -errno)",
+        "rdi_chirho": "arg0",
+        "rsi_chirho": "arg1",
+        "rdx_chirho": "arg2",
+        "r10_chirho": "arg3 (NOT rcx -- SYSCALL clobbers rcx with return RIP)",
+        "r8_chirho": "arg4",
+        "r9_chirho": "arg5",
+        "rcx_chirho": "clobbered by SYSCALL (saved return RIP)",
+        "r11_chirho": "clobbered by SYSCALL (saved RFLAGS)"
+      },
+      "entry_sequence_chirho": [
+        "1. SYSCALL transitions CPU to ring 0, loads RIP from MSR_LSTAR",
+        "2. SWAPGS -- switch GS base to kernel per-CPU data",
+        "3. Save user RSP to per-CPU scratch (tss.sp2)",
+        "4. SWITCH_TO_KERNEL_CR3 (for KPTI: switch to kernel page tables)",
+        "5. Load kernel stack from per-CPU current_top_of_stack",
+        "6. Push pt_regs: SS, RSP, RFLAGS, CS, RIP, orig_rax, then all GPRs",
+        "7. Call do_syscall_64(regs, nr) -- the Rust dispatch function",
+        "8. Return via SYSRET (fast, if pt_regs unmodified) or IRET (slow, if signals/ptrace)"
+      ]
+    },
+    "userspace_compatibility_chirho": [
+      "Static ELF binaries (no dynamic linking)",
+      "Dynamically linked ELF binaries (via /lib64/ld-linux-x86-64.so.2)",
+      "Shell scripts (via /bin/sh)",
+      "BusyBox (minimal userspace)",
+      "musl libc programs",
+      "glibc programs",
+      "systemd (PID 1)",
+      "Container runtimes (runc, containerd)",
+      "Docker/Podman"
+    ]
+  },
+
+  "boot_protocol_deep_dive_chirho": {
+    "description_chirho": "Detailed Linux x86 boot protocol specification derived from linux-6.19.8 source analysis",
+    "source_files_analyzed_chirho": [
+      "arch/x86/include/uapi/asm/bootparam.h",
+      "arch/x86/include/uapi/asm/e820.h",
+      "arch/x86/include/uapi/asm/setup.h",
+      "arch/x86/entry/entry_64.S",
+      "Documentation/arch/x86/boot.rst"
+    ],
+    "struct_boot_params_chirho": {
+      "total_size_chirho": "4096 bytes (one page, the 'zero page')",
+      "key_offsets_chirho": {
+        "0x000_chirho": "screen_info (64 bytes) -- VGA/framebuffer info",
+        "0x040_chirho": "apm_bios_info (20 bytes)",
+        "0x058_chirho": "tboot_addr (u64) -- TXT/tboot address",
+        "0x060_chirho": "ist_info -- Intel SpeedStep",
+        "0x070_chirho": "acpi_rsdp_addr (u64) -- ACPI RSDP physical address",
+        "0x0c0_chirho": "ext_ramdisk_image (u32) -- high 32 bits of ramdisk addr",
+        "0x0c4_chirho": "ext_ramdisk_size (u32) -- high 32 bits of ramdisk size",
+        "0x0c8_chirho": "ext_cmd_line_ptr (u32) -- high 32 bits of cmdline addr",
+        "0x13c_chirho": "cc_blob_address (u32) -- confidential computing blob",
+        "0x140_chirho": "edid_info (128 bytes) -- EDID display data",
+        "0x1c0_chirho": "efi_info (32 bytes) -- EFI system table and memory map",
+        "0x1e0_chirho": "alt_mem_k (u32) -- alternative memory size in KB",
+        "0x1e8_chirho": "e820_entries (u8) -- number of E820 entries",
+        "0x1ec_chirho": "secure_boot (u8) -- secure boot state",
+        "0x1ef_chirho": "sentinel (u8) -- 0xff if bootloader copied setup_header",
+        "0x1f1_chirho": "setup_header (struct setup_header) -- THE CORE HEADER",
+        "0x290_chirho": "edd_mbr_sig_buffer -- EDD MBR signatures",
+        "0x2d0_chirho": "e820_table[128] -- E820 memory map entries (20 bytes each)"
+      }
+    },
+    "setup_header_fields_chirho": [
+      {"offset_chirho": "0x1F1", "field_chirho": "setup_sects (u8)", "note_chirho": "Number of 512-byte setup sectors"},
+      {"offset_chirho": "0x1FE", "field_chirho": "boot_flag (u16)", "note_chirho": "Must be 0xAA55"},
+      {"offset_chirho": "0x200", "field_chirho": "jump (u16)", "note_chirho": "Jump instruction to setup code"},
+      {"offset_chirho": "0x202", "field_chirho": "header (u32)", "note_chirho": "Must be 'HdrS' (0x53726448) -- GRUB2 checks this!"},
+      {"offset_chirho": "0x206", "field_chirho": "version (u16)", "note_chirho": "0x020f for protocol 2.15"},
+      {"offset_chirho": "0x20B", "field_chirho": "type_of_loader (u8)", "note_chirho": "Bootloader ID (0xFF=undefined)"},
+      {"offset_chirho": "0x211", "field_chirho": "loadflags (u8)", "note_chirho": "LOADED_HIGH(0x01), CAN_USE_HEAP(0x80), KASLR(0x02)"},
+      {"offset_chirho": "0x214", "field_chirho": "code32_start (u32)", "note_chirho": "32-bit entry point (default 0x100000)"},
+      {"offset_chirho": "0x218", "field_chirho": "ramdisk_image (u32)", "note_chirho": "initrd physical address (low 32)"},
+      {"offset_chirho": "0x21C", "field_chirho": "ramdisk_size (u32)", "note_chirho": "initrd size in bytes"},
+      {"offset_chirho": "0x228", "field_chirho": "cmd_line_ptr (u32)", "note_chirho": "Physical addr of kernel command line string"},
+      {"offset_chirho": "0x22C", "field_chirho": "initrd_addr_max (u32)", "note_chirho": "Maximum initrd address"},
+      {"offset_chirho": "0x230", "field_chirho": "kernel_alignment (u32)", "note_chirho": "Required alignment (typically 0x1000000)"},
+      {"offset_chirho": "0x234", "field_chirho": "relocatable_kernel (u8)", "note_chirho": "1 if kernel is relocatable"},
+      {"offset_chirho": "0x236", "field_chirho": "xloadflags (u16)", "note_chirho": "XLF_KERNEL_64(0x01), XLF_CAN_BE_LOADED_ABOVE_4G(0x02), XLF_EFI_HANDOVER_64(0x08)"},
+      {"offset_chirho": "0x238", "field_chirho": "cmdline_size (u32)", "note_chirho": "Max command line length"},
+      {"offset_chirho": "0x248", "field_chirho": "payload_offset (u32)", "note_chirho": "Offset to compressed kernel payload"},
+      {"offset_chirho": "0x258", "field_chirho": "pref_address (u64)", "note_chirho": "Preferred load address"},
+      {"offset_chirho": "0x25C", "field_chirho": "init_size (u32)", "note_chirho": "Memory needed for kernel initialization"},
+      {"offset_chirho": "0x260", "field_chirho": "handover_offset (u32)", "note_chirho": "EFI handover entry point offset"},
+      {"offset_chirho": "0x264", "field_chirho": "kernel_info_offset (u32)", "note_chirho": "Offset to kernel_info (proto 2.15+)"}
+    ],
+    "grub2_integration_chirho": {
+      "how_grub2_loads_linux_chirho": [
+        "1. GRUB reads the first 8KB of the kernel file (boot sector + setup sectors)",
+        "2. GRUB checks for 'HdrS' magic at offset 0x202",
+        "3. GRUB reads protocol version from offset 0x206",
+        "4. GRUB fills in boot_params fields: type_of_loader, cmd_line_ptr, ramdisk_image/size",
+        "5. GRUB loads protected-mode kernel to address specified (>= 0x100000)",
+        "6. GRUB loads initrd to address within ramdisk range",
+        "7. GRUB copies E820 memory map into boot_params.e820_table",
+        "8. GRUB transitions to protected mode (or long mode for 64-bit) and jumps to code32_start",
+        "9. The kernel's startup stub receives pointer to boot_params in ESI register"
+      ],
+      "grub_config_example_chirho": "menuentry 'Lineluya' { linux /boot/lineluya-chirho root=/dev/sda1 console=ttyS0; initrd /boot/initramfs-chirho.img; }"
+    },
+    "e820_memory_types_chirho": {
+      "1_chirho": "E820_RAM -- usable RAM",
+      "2_chirho": "E820_RESERVED -- reserved/unusable",
+      "3_chirho": "E820_ACPI -- ACPI reclaimable",
+      "4_chirho": "E820_NVS -- ACPI NVS (non-volatile storage)",
+      "5_chirho": "E820_UNUSABLE -- unusable",
+      "7_chirho": "E820_PMEM -- persistent memory",
+      "12_chirho": "E820_PRAM -- persistent RAM (non-standard)"
+    }
+  },
+
+  "elf_loading_deep_dive_chirho": {
+    "description_chirho": "ELF binary loading process from Linux 6.19.8 fs/binfmt_elf.c",
+    "load_steps_chirho": [
+      "1. Validate ELF header: magic 0x7f454c46, class ELFCLASS64, data ELFDATA2LSB, type ET_EXEC or ET_DYN",
+      "2. Read program headers from e_phoff, validate e_phnum and e_phentsize",
+      "3. If PT_INTERP exists, read interpreter path (typically /lib64/ld-linux-x86-64.so.2)",
+      "4. flush_old_exec: destroy old address space, reset signals",
+      "5. For each PT_LOAD: mmap the segment at p_vaddr (with load_bias for PIE/ET_DYN), permissions from p_flags",
+      "6. Zero BSS (memory between p_filesz and p_memsz within each PT_LOAD)",
+      "7. Set mm->start_code, end_code, start_data, end_data, start_brk, brk from loaded segments",
+      "8. If dynamic: load ld-linux.so via load_elf_interp() at a separate address",
+      "9. Set up user stack: push random bytes, platform strings, env strings, arg strings",
+      "10. create_elf_tables(): push auxv, envp array, argv array, argc onto stack (see layout below)",
+      "11. Entry point = interpreter entry (dynamic) or e_entry (static), stored in regs->ip"
+    ],
+    "auxiliary_vector_entries_chirho": [
+      {"key_chirho": "AT_HWCAP (16)", "value_chirho": "CPU capabilities from CPUID (ELF_HWCAP)"},
+      {"key_chirho": "AT_PAGESZ (6)", "value_chirho": "System page size (4096)"},
+      {"key_chirho": "AT_CLKTCK (17)", "value_chirho": "Clock ticks per second (100 = HZ)"},
+      {"key_chirho": "AT_PHDR (3)", "value_chirho": "Address of program headers in memory"},
+      {"key_chirho": "AT_PHENT (4)", "value_chirho": "Size of one program header (56 bytes for ELF64)"},
+      {"key_chirho": "AT_PHNUM (5)", "value_chirho": "Number of program headers"},
+      {"key_chirho": "AT_BASE (7)", "value_chirho": "Base address of interpreter (0 if static)"},
+      {"key_chirho": "AT_FLAGS (8)", "value_chirho": "Flags (AT_FLAGS_PRESERVE_ARGV0 if set)"},
+      {"key_chirho": "AT_ENTRY (9)", "value_chirho": "Program entry point (e_entry + load_bias)"},
+      {"key_chirho": "AT_UID (11)", "value_chirho": "Real UID"},
+      {"key_chirho": "AT_EUID (12)", "value_chirho": "Effective UID"},
+      {"key_chirho": "AT_GID (13)", "value_chirho": "Real GID"},
+      {"key_chirho": "AT_EGID (14)", "value_chirho": "Effective GID"},
+      {"key_chirho": "AT_SECURE (23)", "value_chirho": "1 if setuid/setgid binary"},
+      {"key_chirho": "AT_RANDOM (25)", "value_chirho": "Address of 16 random bytes on user stack"},
+      {"key_chirho": "AT_HWCAP2 (26)", "value_chirho": "Extended CPU capabilities"},
+      {"key_chirho": "AT_EXECFN (31)", "value_chirho": "Address of executable filename string on stack"},
+      {"key_chirho": "AT_PLATFORM (15)", "value_chirho": "Address of CPU platform string (e.g., 'x86_64')"},
+      {"key_chirho": "AT_SYSINFO_EHDR (33)", "value_chirho": "Address of vDSO ELF header (x86_64 specific)"},
+      {"key_chirho": "AT_MINSIGSTKSZ (51)", "value_chirho": "Minimum signal stack size"},
+      {"key_chirho": "AT_RSEQ_FEATURE_SIZE (27)", "value_chirho": "rseq feature size"},
+      {"key_chirho": "AT_RSEQ_ALIGN (28)", "value_chirho": "rseq alignment"},
+      {"key_chirho": "AT_NULL (0)", "value_chirho": "Terminator (must be last)"}
+    ],
+    "user_stack_layout_chirho": [
+      "HIGH ADDR: [padding, file-backed strings, random bytes, AT_PLATFORM string, AT_EXECFN string]",
+      "           [environment variable strings (NUL-terminated)]",
+      "           [argument strings (NUL-terminated)]",
+      "           [padding to 16-byte alignment]",
+      "           auxv[N] = {AT_NULL, 0}",
+      "           auxv[N-1..0] = {key, value} pairs",
+      "           NULL (envp terminator)",
+      "           envp[M-1] ... envp[0] (pointers to env strings)",
+      "           NULL (argv terminator)",
+      "           argv[argc-1] ... argv[0] (pointers to arg strings)",
+      "           argc (integer)",
+      "LOW ADDR:  <-- RSP points here on entry to _start"
+    ],
+    "vdso_chirho": {
+      "description_chirho": "The kernel maps a Virtual DSO (vDSO) into every process at AT_SYSINFO_EHDR. It contains user-accessible implementations of clock_gettime, gettimeofday, time, getcpu that read kernel-maintained data pages without a full syscall.",
+      "implementation_note_chirho": "Lineluya must provide a vDSO. Without it, every clock_gettime() call becomes a full syscall which severely impacts performance. The vDSO is a small ELF shared object compiled into the kernel image."
+    }
+  },
+
+  "syscall_implementation_priority_chirho": {
+    "description_chirho": "Syscalls grouped by implementation phase based on actual Linux 6.19.8 syscall_64.tbl analysis",
+    "phase_2_static_elf_chirho": {
+      "count_chirho": 8,
+      "syscalls_chirho": [
+        {"nr_chirho": 1, "name_chirho": "write"},
+        {"nr_chirho": 9, "name_chirho": "mmap"},
+        {"nr_chirho": 10, "name_chirho": "mprotect"},
+        {"nr_chirho": 11, "name_chirho": "munmap"},
+        {"nr_chirho": 12, "name_chirho": "brk"},
+        {"nr_chirho": 158, "name_chirho": "arch_prctl"},
+        {"nr_chirho": 218, "name_chirho": "set_tid_address"},
+        {"nr_chirho": 231, "name_chirho": "exit_group"}
+      ]
+    },
+    "phase_3_busybox_chirho": {
+      "count_chirho": "~80",
+      "adds_chirho": "read, open, openat, close, stat, fstat, lstat, lseek, ioctl, access, pipe2, dup2, fork/clone, execve, wait4, kill, uname, getcwd, chdir, getdents64, getpid, getuid, getgid, rt_sigaction, rt_sigprocmask, nanosleep, clock_gettime, mount, umount2, sysinfo, getrlimit, umask, fcntl, poll, futex, set_robust_list, mkdir, rmdir, link, unlink, symlink, readlink, chmod, chown, rename, truncate, ftruncate, mknod, pivot_root, chroot, personality, setsid, setpgid, getpgrp, getppid, geteuid, getegid, setuid, setgid, prctl, time, gettimeofday, prlimit64, getrandom"
+    },
+    "phase_4_systemd_chirho": {
+      "count_chirho": "~200",
+      "adds_chirho": "epoll_create1, epoll_ctl, epoll_wait, socket, connect, bind, listen, accept4, sendto, recvfrom, sendmsg, recvmsg, setsockopt, getsockopt, shutdown, socketpair, eventfd2, signalfd4, timerfd_create, timerfd_settime, timerfd_gettime, inotify_init1, inotify_add_watch, inotify_rm_watch, clone3, close_range, pidfd_open, openat2, memfd_create, seccomp, unshare, setns, mount_setattr, fsopen, fsconfig, fsmount, statx, newfstatat, faccessat2, fchmodat2, renameat2, linkat, unlinkat, symlinkat, readlinkat, mkdirat, mknodat, fchownat, utimensat, sched_setattr, sched_getattr, sched_setaffinity, sched_getaffinity, rt_sigreturn, sigaltstack, rt_sigqueueinfo, rt_sigtimedwait, capget, capset, setreuid, setregid, setresuid, getresuid, setresgid, getresgid, setfsuid, setfsgid, getgroups, setgroups, setxattr, getxattr, listxattr, removexattr, fsetxattr, fgetxattr, flistxattr, fremovexattr, splice, tee, sendfile, copy_file_range, fallocate, fadvise64, readahead, sync, syncfs, fsync, fdatasync, pread64, pwrite64, readv, writev, preadv, pwritev, llistxattr, lsetxattr, lgetxattr, lremovexattr, getdents, sched_yield, sched_setscheduler, sched_getscheduler, sched_setparam, sched_getparam"
+    },
+    "phase_5_full_chirho": {
+      "count_chirho": "~384 (all common+64)",
+      "adds_chirho": "io_uring_setup/enter/register, bpf, perf_event_open, kexec_file_load, rseq, process_vm_readv/writev, kcmp, membarrier, pkey_mprotect/alloc/free, statmount, listmount, lsm_get_self_attr/set_self_attr/list_modules, mseal, quotactl_fd, landlock_*, futex_wake/wait/requeue, cachestat, map_shadow_stack, pidfd_send_signal, pidfd_getfd, process_mrelease, process_madvise, all remaining syscalls"
+    }
+  },
+
+  "architecture_chirho": {
+    "language_chirho": "Rust (nightly, with #![no_std], alloc, inline asm)",
+    "target_chirho": "x86_64-unknown-none (bare metal)",
+    "build_system_chirho": "Cargo workspace with xtask pattern, nightly toolchain",
+    "testing_chirho": "QEMU x86_64 for integration tests, unit tests via custom test framework",
+    "ci_chirho": "GitHub Actions with QEMU for boot tests",
+
+    "crate_structure_chirho": {
+      "kernel-chirho": "Main kernel binary — boot, core subsystems",
+      "hal-chirho": "Hardware Abstraction Layer — CPU, APIC, IOAPIC, PCI, ACPI",
+      "mm-chirho": "Memory management — physical frame allocator, page tables, slab, VMAs",
+      "sched-chirho": "Scheduler — CFS-like fair scheduler, RT scheduler, idle",
+      "vfs-chirho": "Virtual Filesystem Switch — inode, dentry, superblock, mount",
+      "fs-chirho": "Filesystem implementations — ext4, tmpfs, procfs, sysfs, devtmpfs",
+      "net-chirho": "Networking stack — socket layer, TCP/IP, UDP, netfilter",
+      "drivers-chirho": "Device driver framework — char, block, net devices, virtio",
+      "syscall-chirho": "System call dispatch — syscall table, entry/exit, signal handling",
+      "ipc-chirho": "Inter-process communication — pipes, signals, shared memory, futex",
+      "security-chirho": "Security — capabilities, namespaces, cgroups, LSM hooks",
+      "xtask-chirho": "Build tool — kernel compilation, disk images, QEMU runner"
+    }
+  },
+
+  "phases_chirho": [
+    {
+      "phase_id_chirho": 1,
+      "name_chirho": "Bare Metal Boot",
+      "codename_chirho": "Let There Be Light",
+      "status_chirho": "in_progress",
+      "description_chirho": "Boot on x86_64, print to serial/VGA, handle interrupts, manage memory, allocate heap.",
+      "deliverables_chirho": [
+        "Kernel boots in QEMU",
+        "Serial console output (UART 16550)",
+        "VGA text mode output",
+        "GDT and TSS setup",
+        "IDT with exception handlers (page fault, double fault, GPF)",
+        "PIC interrupt handling (timer, keyboard)",
+        "Physical frame allocator (boot info based)",
+        "Virtual memory / page table management",
+        "Kernel heap allocator (linked list)",
+        "Panic handler with stack trace"
+      ],
+      "key_files_chirho": [
+        "kernel-chirho/src/main_chirho.rs",
+        "kernel-chirho/src/serial_chirho.rs",
+        "kernel-chirho/src/vga_buffer_chirho.rs",
+        "kernel-chirho/src/gdt_chirho.rs",
+        "kernel-chirho/src/interrupts_chirho.rs",
+        "kernel-chirho/src/memory_chirho.rs",
+        "kernel-chirho/src/allocator_chirho.rs"
+      ]
+    },
+    {
+      "phase_id_chirho": 2,
+      "name_chirho": "Process Management & Syscalls",
+      "codename_chirho": "Breath of Life",
+      "status_chirho": "planned",
+      "description_chirho": "Task/process abstraction, context switching, basic scheduler, syscall entry, ELF loading. Goal: run a static 'hello world' ELF binary.",
+      "deliverables_chirho": [
+        "TaskChirho struct (equivalent to Linux task_struct) — PID, state, registers, memory descriptor",
+        "Kernel stack per task",
+        "Context switching (save/restore CPU state via assembly)",
+        "Round-robin scheduler (preemptive via timer interrupt)",
+        "Syscall entry/exit via SYSCALL/SYSRET instructions (MSR setup, swapgs)",
+        "Initial syscall table with essential syscalls",
+        "ELF binary loader (static ELF executables)",
+        "User-mode execution (ring 3) with proper GDT/TSS",
+        "Basic signal infrastructure (SIGKILL, SIGSEGV)",
+        "Minimum syscalls: write(1), exit(60), exit_group(231), brk(12), mmap(9), arch_prctl(158)",
+        "Auxiliary vector (AT_ENTRY, AT_PHDR, AT_RANDOM, etc.) for ELF startup"
+      ],
+      "syscalls_minimum_chirho": [
+        {"number_chirho": 0, "name_chirho": "read"},
+        {"number_chirho": 1, "name_chirho": "write"},
+        {"number_chirho": 2, "name_chirho": "open"},
+        {"number_chirho": 3, "name_chirho": "close"},
+        {"number_chirho": 9, "name_chirho": "mmap"},
+        {"number_chirho": 10, "name_chirho": "mprotect"},
+        {"number_chirho": 11, "name_chirho": "munmap"},
+        {"number_chirho": 12, "name_chirho": "brk"},
+        {"number_chirho": 21, "name_chirho": "access"},
+        {"number_chirho": 39, "name_chirho": "getpid"},
+        {"number_chirho": 56, "name_chirho": "clone"},
+        {"number_chirho": 57, "name_chirho": "fork"},
+        {"number_chirho": 59, "name_chirho": "execve"},
+        {"number_chirho": 60, "name_chirho": "exit"},
+        {"number_chirho": 61, "name_chirho": "wait4"},
+        {"number_chirho": 63, "name_chirho": "uname"},
+        {"number_chirho": 158, "name_chirho": "arch_prctl"},
+        {"number_chirho": 218, "name_chirho": "set_tid_address"},
+        {"number_chirho": 231, "name_chirho": "exit_group"},
+        {"number_chirho": 302, "name_chirho": "prlimit64"}
+      ]
+    },
+    {
+      "phase_id_chirho": 3,
+      "name_chirho": "Virtual Filesystem & Basic I/O",
+      "codename_chirho": "Firmament",
+      "status_chirho": "planned",
+      "description_chirho": "VFS layer, tmpfs, procfs, sysfs, devtmpfs, pipe, basic file descriptors. Goal: run BusyBox init with a shell.",
+      "deliverables_chirho": [
+        "VFS layer — inode, dentry, superblock, file, file_operations abstractions",
+        "File descriptor table per process",
+        "tmpfs (in-memory filesystem)",
+        "procfs (/proc) — /proc/self, /proc/cpuinfo, /proc/meminfo, /proc/mounts, /proc/[pid]/*",
+        "sysfs (/sys) — basic device tree",
+        "devtmpfs (/dev) — null, zero, urandom, random, console, tty, ptmx",
+        "Pipe implementation (pipe/pipe2 syscalls)",
+        "dup/dup2/dup3",
+        "ioctl framework",
+        "Mount/umount syscalls",
+        "Initial ramdisk (initramfs/initrd) loading and extraction",
+        "Root filesystem mounting",
+        "Additional syscalls: stat, fstat, lstat, lseek, poll, select, fcntl, getcwd, chdir, mkdir, rmdir, unlink, readlink, chmod, chown, getdents64, openat, and AT_* family"
+      ]
+    },
+    {
+      "phase_id_chirho": 4,
+      "name_chirho": "Full Process Model & Signals",
+      "codename_chirho": "Dry Land",
+      "status_chirho": "planned",
+      "description_chirho": "Complete process lifecycle, signal handling, session/process groups, TTY subsystem. Goal: run a real shell (bash/dash) with job control.",
+      "deliverables_chirho": [
+        "Complete fork/clone/exec lifecycle",
+        "Copy-on-write (COW) memory for fork",
+        "Full signal handling (delivery, signal masks, sigaction, sigaltstack)",
+        "Process groups and sessions (setpgid, setsid, tcsetpgrp)",
+        "TTY/PTY subsystem (terminal line discipline, pseudo-terminals)",
+        "Wait/waitpid with proper zombie reaping",
+        "CFS-like fair scheduler (nice values, vruntime)",
+        "Process resource limits (rlimit)",
+        "Futex for userspace synchronization",
+        "/proc/[pid]/maps, /proc/[pid]/status, /proc/[pid]/fd/",
+        "Additional syscalls: rt_sigaction, rt_sigprocmask, rt_sigreturn, kill, tgkill, nanosleep, clock_gettime, getuid/geteuid/getgid/getegid, setuid/setgid"
+      ]
+    },
+    {
+      "phase_id_chirho": 5,
+      "name_chirho": "Persistent Filesystem & Block I/O",
+      "codename_chirho": "Vegetation",
+      "status_chirho": "planned",
+      "description_chirho": "Block device layer, disk I/O, ext4 filesystem (read-write), partition support. Goal: boot from a real disk image with persistent storage.",
+      "deliverables_chirho": [
+        "Block I/O layer (bio/request queue abstraction)",
+        "VirtIO block device driver (for QEMU testing)",
+        "Partition table parsing (GPT, MBR)",
+        "ext4 filesystem (read-only first, then read-write)",
+        "Page cache / buffer cache for disk I/O",
+        "Async I/O infrastructure (io_uring or equivalent)",
+        "fsync/fdatasync",
+        "ATA/AHCI driver (for real hardware)",
+        "NVMe driver framework"
+      ]
+    },
+    {
+      "phase_id_chirho": 6,
+      "name_chirho": "Networking Stack",
+      "codename_chirho": "Stars",
+      "status_chirho": "planned",
+      "description_chirho": "Full TCP/IP networking stack, socket API, DNS resolution capability. Goal: wget/curl works, SSH server runs.",
+      "deliverables_chirho": [
+        "Socket abstraction layer (AF_INET, AF_INET6, AF_UNIX, AF_NETLINK)",
+        "VirtIO-net driver (for QEMU)",
+        "Ethernet frame handling",
+        "ARP protocol",
+        "IPv4 layer (IP fragmentation/reassembly, routing table)",
+        "ICMP (ping)",
+        "UDP",
+        "TCP (3-way handshake, sliding window, congestion control, retransmission)",
+        "DNS resolver helper",
+        "Socket syscalls: socket, bind, listen, accept, connect, send/recv/sendto/recvfrom, sendmsg/recvmsg, setsockopt, getsockopt, getpeername, getsockname, shutdown",
+        "epoll (epoll_create, epoll_ctl, epoll_wait)",
+        "IPv6 basic support",
+        "Loopback interface",
+        "Network namespaces (foundation for containers)"
+      ]
+    },
+    {
+      "phase_id_chirho": 7,
+      "name_chirho": "Security & Isolation",
+      "codename_chirho": "Creatures",
+      "status_chirho": "planned",
+      "description_chirho": "Linux security model: capabilities, namespaces, cgroups v2, seccomp. Goal: Docker/containerd runs.",
+      "deliverables_chirho": [
+        "Linux capabilities system (CAP_SYS_ADMIN, CAP_NET_ADMIN, etc.)",
+        "Namespaces: PID, mount, network, UTS, IPC, user, cgroup",
+        "cgroups v2 (cpu, memory, io controllers)",
+        "seccomp-bpf (syscall filtering)",
+        "LSM hooks framework",
+        "Unix permissions model (uid/gid, file modes, ACLs)",
+        "chroot and pivot_root",
+        "/proc and /sys namespace awareness",
+        "prctl and unshare syscalls"
+      ]
+    },
+    {
+      "phase_id_chirho": 8,
+      "name_chirho": "Linux Boot Protocol & Production Boot",
+      "codename_chirho": "Image of God",
+      "status_chirho": "planned",
+      "description_chirho": "Linux-compatible boot: bzImage format, GRUB loading, initramfs, real hardware boot. Goal: boot on real x86_64 hardware.",
+      "deliverables_chirho": [
+        "Linux Boot Protocol v2.15 implementation",
+        "bzImage format kernel binary",
+        "Struct boot_params / zero page compatibility",
+        "GRUB2 chainloading support",
+        "systemd-boot support",
+        "ACPI table parsing",
+        "APIC/IOAPIC interrupt controller (replace legacy PIC)",
+        "Multi-processor (SMP) support",
+        "CPU hotplug",
+        "UEFI runtime services",
+        "Real hardware drivers: AHCI/NVMe storage, Intel/Realtek NIC, USB (XHCI)",
+        "Kernel command line parsing",
+        "Early console (earlycon) for boot debugging",
+        "Initramfs extraction and init handoff"
+      ]
+    },
+    {
+      "phase_id_chirho": 9,
+      "name_chirho": "Full Linux Compatibility",
+      "codename_chirho": "Sabbath",
+      "status_chirho": "planned",
+      "description_chirho": "Complete syscall coverage, loadable modules, dynamic features. Goal: run full Linux distributions (Alpine, Debian).",
+      "deliverables_chirho": [
+        "Complete x86_64 syscall table (~450 syscalls)",
+        "Loadable kernel module system (.ko equivalent in Rust, C ABI bridge)",
+        "Full ext4 with journaling",
+        "btrfs read support",
+        "XFS support",
+        "Full epoll/io_uring implementation",
+        "Memory-mapped I/O (full mmap semantics)",
+        "Shared memory (shmem, hugetlbfs)",
+        "System V IPC (semaphores, message queues, shared memory)",
+        "POSIX message queues",
+        "Timer subsystem (HPET, TSC, PIT, APIC timer)",
+        "Power management (ACPI S-states, cpufreq)",
+        "DRM/KMS framework (basic display)",
+        "Input subsystem (evdev)",
+        "USB subsystem",
+        "Sound subsystem (ALSA compatible)",
+        "Netfilter/nftables",
+        "eBPF virtual machine",
+        "Full /proc and /sys compatibility",
+        "Kernel tracing (ftrace equivalent)",
+        "Performance monitoring (perf_events)"
+      ]
+    }
+  ],
+
+  "linux_subsystem_mapping_chirho": {
+    "description_chirho": "Mapping of Linux kernel subsystems to Lineluya Rust crate/module equivalents",
+    "subsystems_chirho": [
+      {
+        "linux_dir_chirho": "kernel/",
+        "linux_description_chirho": "Core kernel: process management, scheduling, signals, timekeeping",
+        "lineluya_module_chirho": "sched-chirho, ipc-chirho",
+        "approx_loc_chirho": "~150K lines in Linux"
+      },
+      {
+        "linux_dir_chirho": "mm/",
+        "linux_description_chirho": "Memory management: buddy allocator, slab/slub, page tables, VMAs, OOM, swap, page cache",
+        "lineluya_module_chirho": "mm-chirho",
+        "approx_loc_chirho": "~100K lines in Linux"
+      },
+      {
+        "linux_dir_chirho": "fs/",
+        "linux_description_chirho": "Filesystems: VFS, ext4, btrfs, xfs, tmpfs, procfs, sysfs, devtmpfs, NFS, overlayfs",
+        "lineluya_module_chirho": "vfs-chirho, fs-chirho",
+        "approx_loc_chirho": "~500K lines in Linux"
+      },
+      {
+        "linux_dir_chirho": "net/",
+        "linux_description_chirho": "Networking: socket layer, TCP/IP, UDP, netfilter, eBPF, wireless",
+        "lineluya_module_chirho": "net-chirho",
+        "approx_loc_chirho": "~400K lines in Linux"
+      },
+      {
+        "linux_dir_chirho": "drivers/",
+        "linux_description_chirho": "Device drivers: ~70% of total kernel code. Block, char, net, USB, PCI, GPU, input, sound",
+        "lineluya_module_chirho": "drivers-chirho",
+        "approx_loc_chirho": "~15M lines in Linux (largest subsystem by far)"
+      },
+      {
+        "linux_dir_chirho": "arch/x86/",
+        "linux_description_chirho": "x86-specific: boot, CPU init, APIC, interrupts, paging, SMP, ACPI",
+        "lineluya_module_chirho": "hal-chirho",
+        "approx_loc_chirho": "~200K lines in Linux"
+      },
+      {
+        "linux_dir_chirho": "security/",
+        "linux_description_chirho": "Security: SELinux, AppArmor, capabilities, LSM framework",
+        "lineluya_module_chirho": "security-chirho",
+        "approx_loc_chirho": "~100K lines in Linux"
+      },
+      {
+        "linux_dir_chirho": "crypto/",
+        "linux_description_chirho": "Cryptographic subsystem: AES, SHA, random number generator",
+        "lineluya_module_chirho": "crypto-chirho (future crate)",
+        "approx_loc_chirho": "~50K lines in Linux"
+      },
+      {
+        "linux_dir_chirho": "ipc/",
+        "linux_description_chirho": "IPC: System V semaphores, message queues, shared memory",
+        "lineluya_module_chirho": "ipc-chirho",
+        "approx_loc_chirho": "~15K lines in Linux"
+      },
+      {
+        "linux_dir_chirho": "block/",
+        "linux_description_chirho": "Block I/O layer: request queues, I/O schedulers, bio",
+        "lineluya_module_chirho": "drivers-chirho/block-chirho",
+        "approx_loc_chirho": "~30K lines in Linux"
+      }
+    ]
+  },
+
+  "critical_data_structures_chirho": [
+    {
+      "name_chirho": "TaskChirho",
+      "linux_equivalent_chirho": "task_struct",
+      "description_chirho": "The central process/thread descriptor. Contains PID, state, register context, memory descriptor, file descriptor table, signal handlers, scheduling info, credentials, namespaces.",
+      "key_fields_chirho": ["pid_chirho", "tgid_chirho", "state_chirho", "flags_chirho", "mm_chirho", "fs_chirho", "files_chirho", "signal_chirho", "cred_chirho", "sched_entity_chirho", "stack_chirho", "thread_info_chirho", "parent_chirho", "children_chirho"]
+    },
+    {
+      "name_chirho": "MmChirho",
+      "linux_equivalent_chirho": "mm_struct",
+      "description_chirho": "Memory descriptor for a process. Contains page tables, VMAs, memory limits, mm_count/mm_users.",
+      "key_fields_chirho": ["pgd_chirho", "mmap_chirho (VMA list)", "brk_chirho", "start_code_chirho", "end_code_chirho", "start_stack_chirho", "total_vm_chirho", "locked_vm_chirho"]
+    },
+    {
+      "name_chirho": "VmaChirho",
+      "linux_equivalent_chirho": "vm_area_struct",
+      "description_chirho": "Virtual memory area — describes a contiguous region of virtual address space with uniform permissions and backing.",
+      "key_fields_chirho": ["start_chirho", "end_chirho", "flags_chirho", "prot_chirho", "file_chirho", "offset_chirho", "ops_chirho"]
+    },
+    {
+      "name_chirho": "FileChirho",
+      "linux_equivalent_chirho": "struct file",
+      "description_chirho": "Open file instance. Contains position, flags, reference to inode, file operations vtable.",
+      "key_fields_chirho": ["f_pos_chirho", "f_flags_chirho", "f_mode_chirho", "f_inode_chirho", "f_ops_chirho", "f_count_chirho", "private_data_chirho"]
+    },
+    {
+      "name_chirho": "InodeChirho",
+      "linux_equivalent_chirho": "struct inode",
+      "description_chirho": "In-memory representation of a filesystem object (file, directory, symlink, device).",
+      "key_fields_chirho": ["i_ino_chirho", "i_mode_chirho", "i_uid_chirho", "i_gid_chirho", "i_size_chirho", "i_nlink_chirho", "i_blocks_chirho", "i_ops_chirho", "i_fops_chirho", "i_sb_chirho"]
+    },
+    {
+      "name_chirho": "DentryChirho",
+      "linux_equivalent_chirho": "struct dentry",
+      "description_chirho": "Directory entry — caches the mapping from path component to inode.",
+      "key_fields_chirho": ["d_name_chirho", "d_inode_chirho", "d_parent_chirho", "d_children_chirho", "d_sb_chirho", "d_ops_chirho"]
+    },
+    {
+      "name_chirho": "SuperblockChirho",
+      "linux_equivalent_chirho": "struct super_block",
+      "description_chirho": "Represents a mounted filesystem instance.",
+      "key_fields_chirho": ["s_type_chirho", "s_root_chirho", "s_flags_chirho", "s_blocksize_chirho", "s_ops_chirho", "s_dev_chirho"]
+    },
+    {
+      "name_chirho": "SkBuffChirho",
+      "linux_equivalent_chirho": "struct sk_buff",
+      "description_chirho": "Socket buffer — the central network packet structure. Contains packet data, headers, metadata.",
+      "key_fields_chirho": ["head_chirho", "data_chirho", "tail_chirho", "end_chirho", "len_chirho", "protocol_chirho", "dev_chirho", "sk_chirho"]
+    },
+    {
+      "name_chirho": "SocketChirho",
+      "linux_equivalent_chirho": "struct socket / struct sock",
+      "description_chirho": "Network socket abstraction. Dual structure: socket (VFS-facing) and sock (protocol-facing).",
+      "key_fields_chirho": ["type_chirho", "state_chirho", "flags_chirho", "ops_chirho", "sk_chirho", "file_chirho"]
+    }
+  ],
+
+  "syscall_families_chirho": {
+    "total_x86_64_syscalls_chirho": "~450 (as of Linux 6.12)",
+    "families_chirho": [
+      {
+        "family_chirho": "Process Management",
+        "syscalls_chirho": ["fork", "vfork", "clone", "clone3", "execve", "execveat", "exit", "exit_group", "wait4", "waitid", "getpid", "getppid", "gettid", "set_tid_address", "prctl", "arch_prctl"],
+        "priority_chirho": "critical"
+      },
+      {
+        "family_chirho": "File Operations",
+        "syscalls_chirho": ["open", "openat", "openat2", "close", "read", "write", "pread64", "pwrite64", "readv", "writev", "lseek", "dup", "dup2", "dup3", "fcntl", "flock", "fsync", "fdatasync", "truncate", "ftruncate"],
+        "priority_chirho": "critical"
+      },
+      {
+        "family_chirho": "File Metadata",
+        "syscalls_chirho": ["stat", "fstat", "lstat", "fstatat", "access", "faccessat", "chmod", "fchmod", "chown", "fchown", "utime", "utimensat"],
+        "priority_chirho": "critical"
+      },
+      {
+        "family_chirho": "Directory Operations",
+        "syscalls_chirho": ["mkdir", "mkdirat", "rmdir", "rename", "renameat2", "link", "linkat", "unlink", "unlinkat", "symlink", "symlinkat", "readlink", "readlinkat", "getdents64", "getcwd", "chdir", "fchdir", "chroot", "pivot_root"],
+        "priority_chirho": "high"
+      },
+      {
+        "family_chirho": "Memory Management",
+        "syscalls_chirho": ["brk", "mmap", "munmap", "mprotect", "madvise", "mremap", "msync", "mlock", "munlock", "mincore"],
+        "priority_chirho": "critical"
+      },
+      {
+        "family_chirho": "Signals",
+        "syscalls_chirho": ["rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "rt_sigpending", "rt_sigsuspend", "rt_sigtimedwait", "rt_sigqueueinfo", "kill", "tgkill", "tkill", "sigaltstack"],
+        "priority_chirho": "critical"
+      },
+      {
+        "family_chirho": "Networking",
+        "syscalls_chirho": ["socket", "bind", "listen", "accept", "accept4", "connect", "send", "sendto", "sendmsg", "recv", "recvfrom", "recvmsg", "shutdown", "setsockopt", "getsockopt", "getpeername", "getsockname", "socketpair"],
+        "priority_chirho": "high"
+      },
+      {
+        "family_chirho": "I/O Multiplexing",
+        "syscalls_chirho": ["select", "pselect6", "poll", "ppoll", "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait", "io_uring_setup", "io_uring_enter", "io_uring_register"],
+        "priority_chirho": "high"
+      },
+      {
+        "family_chirho": "Time & Timers",
+        "syscalls_chirho": ["clock_gettime", "clock_getres", "clock_nanosleep", "gettimeofday", "nanosleep", "timer_create", "timer_settime", "timer_gettime", "timer_delete", "timerfd_create", "timerfd_settime"],
+        "priority_chirho": "high"
+      },
+      {
+        "family_chirho": "Mount & Filesystem",
+        "syscalls_chirho": ["mount", "umount2", "statfs", "fstatfs", "sysfs", "pivot_root", "mount_setattr", "open_tree", "move_mount", "fsopen", "fsmount", "fspick", "fsconfig"],
+        "priority_chirho": "medium"
+      },
+      {
+        "family_chirho": "IPC",
+        "syscalls_chirho": ["pipe", "pipe2", "eventfd", "eventfd2", "signalfd", "signalfd4", "timerfd_create", "memfd_create", "shmget", "shmat", "shmdt", "shmctl", "semget", "semop", "semctl", "msgget", "msgsnd", "msgrcv", "msgctl"],
+        "priority_chirho": "medium"
+      },
+      {
+        "family_chirho": "Synchronization",
+        "syscalls_chirho": ["futex", "futex_waitv", "set_robust_list", "get_robust_list"],
+        "priority_chirho": "high"
+      },
+      {
+        "family_chirho": "Security & Namespaces",
+        "syscalls_chirho": ["capget", "capset", "setuid", "setgid", "setreuid", "setregid", "setresuid", "setresgid", "getuid", "getgid", "geteuid", "getegid", "setgroups", "getgroups", "unshare", "setns", "seccomp", "bpf", "landlock_create_ruleset", "landlock_add_rule", "landlock_restrict_self"],
+        "priority_chirho": "medium"
+      },
+      {
+        "family_chirho": "System Info",
+        "syscalls_chirho": ["uname", "sysinfo", "syslog", "getrlimit", "setrlimit", "prlimit64", "getrusage", "times"],
+        "priority_chirho": "high"
+      }
+    ]
+  },
+
+  "virtual_filesystems_chirho": {
+    "procfs_chirho": {
+      "mount_point_chirho": "/proc",
+      "critical_entries_chirho": [
+        "/proc/self -> /proc/[current_pid]",
+        "/proc/[pid]/cmdline",
+        "/proc/[pid]/comm",
+        "/proc/[pid]/cwd -> (symlink)",
+        "/proc/[pid]/environ",
+        "/proc/[pid]/exe -> (symlink)",
+        "/proc/[pid]/fd/ (directory of symlinks)",
+        "/proc/[pid]/fdinfo/",
+        "/proc/[pid]/maps",
+        "/proc/[pid]/mem",
+        "/proc/[pid]/mounts",
+        "/proc/[pid]/mountinfo",
+        "/proc/[pid]/net/",
+        "/proc/[pid]/ns/ (namespace symlinks)",
+        "/proc/[pid]/oom_score",
+        "/proc/[pid]/root -> (symlink)",
+        "/proc/[pid]/stat",
+        "/proc/[pid]/statm",
+        "/proc/[pid]/status",
+        "/proc/[pid]/task/ (threads)",
+        "/proc/[pid]/wchan",
+        "/proc/cpuinfo",
+        "/proc/meminfo",
+        "/proc/version",
+        "/proc/uptime",
+        "/proc/loadavg",
+        "/proc/stat",
+        "/proc/mounts -> self/mounts",
+        "/proc/filesystems",
+        "/proc/cmdline",
+        "/proc/sys/ (sysctl)",
+        "/proc/net/ (network info)"
+      ]
+    },
+    "sysfs_chirho": {
+      "mount_point_chirho": "/sys",
+      "critical_entries_chirho": [
+        "/sys/class/ (device classes)",
+        "/sys/devices/ (device tree)",
+        "/sys/bus/ (bus types)",
+        "/sys/block/ (block devices)",
+        "/sys/fs/ (filesystem info)",
+        "/sys/kernel/ (kernel parameters)",
+        "/sys/power/ (power management)"
+      ]
+    },
+    "devtmpfs_chirho": {
+      "mount_point_chirho": "/dev",
+      "critical_entries_chirho": [
+        "/dev/null (1,3)",
+        "/dev/zero (1,5)",
+        "/dev/full (1,7)",
+        "/dev/random (1,8)",
+        "/dev/urandom (1,9)",
+        "/dev/tty (5,0)",
+        "/dev/console (5,1)",
+        "/dev/ptmx (5,2)",
+        "/dev/pts/ (pseudo-terminal slaves)",
+        "/dev/stdin -> /proc/self/fd/0",
+        "/dev/stdout -> /proc/self/fd/1",
+        "/dev/stderr -> /proc/self/fd/2",
+        "/dev/fd -> /proc/self/fd",
+        "/dev/shm/ (shared memory tmpfs)",
+        "/dev/loop* (loop devices)",
+        "/dev/sda, /dev/nvme* (block devices)"
+      ]
+    }
+  },
+
+  "reference_projects_chirho": [
+    {
+      "name_chirho": "Rust for Linux",
+      "url_chirho": "https://rust-for-linux.com",
+      "relevance_chirho": "In-tree Rust support in the Linux kernel. Shows how to write Rust kernel modules with safe abstractions over unsafe C. Useful for understanding which abstractions work well in Rust for kernel programming."
+    },
+    {
+      "name_chirho": "Redox OS",
+      "url_chirho": "https://redox-os.org",
+      "relevance_chirho": "Full Rust-based OS with microkernel design. Different architecture (microkernel vs monolithic) but shows Rust patterns for OS development. Has its own syscall interface (not Linux-compatible)."
+    },
+    {
+      "name_chirho": "Maestro OS",
+      "url_chirho": "https://github.com/maestro-os/maestro",
+      "relevance_chirho": "Rust kernel explicitly targeting Linux compatibility. Implements many Linux syscalls. Most directly relevant reference project."
+    },
+    {
+      "name_chirho": "Theseus OS",
+      "url_chirho": "https://github.com/theseus-os/Theseus",
+      "relevance_chirho": "Research OS in Rust exploring safe intralingual design. Shows how to use Rust's type system for OS safety beyond what Linux's C code can express."
+    },
+    {
+      "name_chirho": "Kerla",
+      "url_chirho": "https://github.com/nuta/kerla",
+      "relevance_chirho": "Monolithic kernel in Rust with Linux ABI compatibility. Can run unmodified Linux binaries. Excellent reference for syscall implementation."
+    },
+    {
+      "name_chirho": "Writing an OS in Rust (blog_os)",
+      "url_chirho": "https://os.phil-opp.com",
+      "relevance_chirho": "Educational series by Philipp Oppermann. Our Phase 1 follows similar patterns. Good for understanding bare-metal Rust kernel foundations."
+    }
+  ],
+
+  "technical_challenges_chirho": [
+    {
+      "challenge_chirho": "Unsafe code in kernel",
+      "description_chirho": "Low-level hardware access, raw pointer manipulation, inline assembly, and memory-mapped I/O inherently require unsafe Rust. The goal is to minimize unsafe surface area by wrapping unsafe operations in safe abstractions.",
+      "strategy_chirho": "Follow the 'unsafe sandwich' pattern: unsafe primitives at the bottom, safe API on top. Every unsafe block gets a SAFETY comment. Use Rust's type system (PhantomData, lifetimes, pin) to encode invariants."
+    },
+    {
+      "challenge_chirho": "Performance parity with C Linux",
+      "description_chirho": "Linux's C code is heavily optimized over 30+ years. Rust adds bounds checking, may have different memory layout, and the borrow checker can prevent some optimizations.",
+      "strategy_chirho": "Use #[inline], avoid unnecessary allocations, use zero-cost abstractions. Profile early and often. For hot paths, use unsafe optimizations where Rust's safety guarantees add measurable overhead."
+    },
+    {
+      "challenge_chirho": "Driver ecosystem",
+      "description_chirho": "Linux has ~15 million lines of driver code. Rewriting all drivers is impractical.",
+      "strategy_chirho": "Phase 1: VirtIO drivers (block, net, console) for QEMU testing. Phase 2: Essential bare-metal drivers (AHCI, NVMe, Intel NIC). Phase 3: C ABI shim layer to load existing Linux .ko modules. Phase 4: Gradually rewrite popular drivers in Rust."
+    },
+    {
+      "challenge_chirho": "ABI stability",
+      "description_chirho": "Linux guarantees userspace ABI stability ('we don't break userspace'). Our kernel must match this exactly.",
+      "strategy_chirho": "Use Linux's own uapi headers as the source of truth. Auto-generate Rust struct definitions from Linux header files. Comprehensive test suite comparing our syscall behavior to Linux."
+    },
+    {
+      "challenge_chirho": "Concurrency model",
+      "description_chirho": "Linux uses spinlocks, RCU, per-CPU variables, seqlocks, and other concurrency primitives. Rust's ownership model is different.",
+      "strategy_chirho": "Implement spinlock, mutex, rwlock, RCU in Rust with proper Send/Sync bounds. Use Rust's type system to prevent deadlocks at compile time where possible. Per-CPU variables via custom allocator."
+    }
+  ],
+
+  "success_criteria_chirho": {
+    "phase_1_chirho": "Kernel boots in QEMU, prints to serial, handles keyboard interrupts, allocates heap memory",
+    "phase_2_chirho": "Runs a static 'hello world' ELF binary that calls write(1, 'hello', 5) and exit(0)",
+    "phase_3_chirho": "BusyBox init boots to a shell prompt, basic commands work (ls, cat, echo, mkdir)",
+    "phase_4_chirho": "Bash/dash runs with job control, signal handling works, TTY supports line editing",
+    "phase_5_chirho": "Persistent filesystem: boot from ext4 disk image, files survive reboot",
+    "phase_6_chirho": "Networking: wget can download a file, sshd accepts connections",
+    "phase_7_chirho": "Docker hello-world container runs successfully",
+    "phase_8_chirho": "Kernel boots on real x86_64 hardware via GRUB2",
+    "phase_9_chirho": "Alpine Linux userspace runs unmodified on Lineluya kernel"
+  },
+
+  "metrics_chirho": {
+    "code_quality_chirho": {
+      "unsafe_ratio_chirho": "Target < 5% of total code in unsafe blocks",
+      "test_coverage_chirho": "Target > 80% for core subsystems",
+      "clippy_clean_chirho": "Zero clippy warnings"
+    },
+    "performance_chirho": {
+      "boot_time_chirho": "Target: < 1 second to userspace (QEMU)",
+      "syscall_latency_chirho": "Target: within 10% of Linux for getpid, write, read",
+      "context_switch_chirho": "Target: within 20% of Linux",
+      "memory_overhead_chirho": "Target: kernel RSS < 16MB for minimal boot"
+    },
+    "compatibility_chirho": {
+      "syscall_coverage_chirho": "Track % of Linux syscalls implemented",
+      "ltp_pass_rate_chirho": "Linux Test Project pass rate (target: >90% for implemented syscalls)",
+      "busybox_test_chirho": "BusyBox test suite pass rate"
+    }
+  }
+}

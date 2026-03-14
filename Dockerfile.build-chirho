@@ -1,0 +1,57 @@
+# For God so loved the world that he gave his only begotten Son,
+# that whoever believes in him should not perish but have eternal life. - John 3:16
+
+# Build bootable disk images using native ARM64 Linux with cross-compilation.
+# Uses Rust's built-in LLVM cross-compilation — no emulation needed.
+
+FROM rust:latest
+
+# Install nightly and cross-compilation components
+RUN rustup default nightly \
+    && rustup component add rust-src llvm-tools-preview \
+    && rustup target add x86_64-unknown-none
+
+WORKDIR /lineluya-chirho
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY kernel-chirho/ kernel-chirho/
+COPY xtask-chirho/ xtask-chirho/
+COPY rust-toolchain.toml ./
+
+# Build the kernel (cross-compiles from ARM64 to x86_64 via LLVM)
+RUN cd kernel-chirho && cargo +nightly build 2>&1
+
+# Create a minimal disk image builder
+RUN cat > /build-image-chirho.rs <<'RUST'
+use std::path::PathBuf;
+fn main() {
+    let kernel_chirho = PathBuf::from("/lineluya-chirho/target/x86_64-unknown-none/debug/kernel-chirho");
+    let out_chirho = PathBuf::from("/lineluya-chirho/output-chirho");
+    std::fs::create_dir_all(&out_chirho).unwrap();
+
+    let bios_chirho = out_chirho.join("lineluya-bios-chirho.img");
+    let uefi_chirho = out_chirho.join("lineluya-uefi-chirho.img");
+
+    println!("Creating BIOS disk image...");
+    match bootloader::BiosBoot::new(&kernel_chirho).create_disk_image(&bios_chirho) {
+        Ok(()) => println!("BIOS image created: {}", bios_chirho.display()),
+        Err(e) => eprintln!("BIOS image failed (non-fatal): {:?}", e),
+    }
+
+    println!("Creating UEFI disk image...");
+    match bootloader::UefiBoot::new(&kernel_chirho).create_disk_image(&uefi_chirho) {
+        Ok(()) => println!("UEFI image created: {}", uefi_chirho.display()),
+        Err(e) => eprintln!("UEFI image failed: {:?}", e),
+    }
+}
+RUST
+
+# Create a temp Cargo project for the image builder
+RUN mkdir -p /image-builder-chirho/src \
+    && echo '[package]\nname = "image-builder-chirho"\nversion = "0.1.0"\nedition = "2021"\n\n[[bin]]\nname = "image-builder-chirho"\npath = "src/main.rs"\n\n[dependencies]\nbootloader = "0.11"' > /image-builder-chirho/Cargo.toml \
+    && cp /build-image-chirho.rs /image-builder-chirho/src/main.rs \
+    && cd /image-builder-chirho && cargo build --release 2>&1 && cargo run --release 2>&1
+
+# Copy output images
+CMD ["ls", "-la", "/lineluya-chirho/output-chirho/"]
