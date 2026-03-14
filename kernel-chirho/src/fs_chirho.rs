@@ -1,0 +1,583 @@
+// For God so loved the world that he gave his only begotten Son,
+// that whoever believes in him should not perish but have eternal life. - John 3:16
+
+//! Filesystem syscall implementation layer for Lineluya.
+//!
+//! Connects the syscall dispatch to the VFS layer.  Manages the root
+//! filesystem, mount points, path resolution, and the per-process (currently
+//! global) file descriptor table.
+
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use spin::Mutex;
+
+use crate::vfs_chirho::{
+    FdTableChirho, FileChirho, FileOpsChirho, InodeChirho,
+    O_DIRECTORY_CHIRHO, O_RDONLY_CHIRHO, O_WRONLY_CHIRHO,
+    S_IFCHR_CHIRHO, S_IFDIR_CHIRHO, SuperblockChirho,
+};
+use crate::syscall_chirho::{
+    EBADF_CHIRHO, EFAULT_CHIRHO, ENOENT_CHIRHO, ENOTDIR_CHIRHO,
+};
+use crate::tmpfs_chirho::TMPFS_FILE_OPS_CHIRHO;
+use crate::devtmpfs_chirho::{
+    DevNodeDataChirho, DEV_CONSOLE_OPS_CHIRHO, DEV_NULL_OPS_CHIRHO,
+    DEV_URANDOM_OPS_CHIRHO, DEV_ZERO_OPS_CHIRHO,
+};
+use crate::uaccess_chirho::{copy_from_user_chirho, copy_to_user_chirho, read_user_string_chirho};
+
+// ============================================================================
+// Mount point structure
+// ============================================================================
+
+/// A mount point binding a path to a superblock.
+pub struct MountPointChirho {
+    /// Absolute path where this filesystem is mounted (e.g. "/dev", "/proc").
+    pub path_chirho: String,
+    /// The superblock for the mounted filesystem.
+    pub superblock_chirho: Arc<Mutex<SuperblockChirho>>,
+}
+
+// ============================================================================
+// Global state
+// ============================================================================
+
+/// The root tmpfs superblock.
+static ROOT_FS_CHIRHO: Mutex<Option<Arc<Mutex<SuperblockChirho>>>> = Mutex::new(None);
+
+/// Table of mount points (checked during path resolution).
+static MOUNT_TABLE_CHIRHO: Mutex<Vec<MountPointChirho>> = Mutex::new(Vec::new());
+
+/// Global file descriptor table (single-process for now).
+static GLOBAL_FD_TABLE_CHIRHO: Mutex<Option<FdTableChirho>> = Mutex::new(None);
+
+/// Maximum number of file descriptors.
+const MAX_FDS_CHIRHO: usize = 256;
+
+/// AT_FDCWD sentinel value (Linux).
+const AT_FDCWD_CHIRHO: i64 = -100;
+
+// ============================================================================
+// Initialisation
+// ============================================================================
+
+/// Initialise the filesystem layer.
+///
+/// - Creates the root tmpfs.
+/// - Creates /dev, /proc, /tmp directories.
+/// - Mounts devtmpfs on /dev and procfs on /proc.
+/// - Sets up stdin/stdout/stderr (fd 0, 1, 2) pointing to /dev/console.
+pub fn init_fs_chirho() {
+    // 1. Create root tmpfs
+    let root_sb_chirho = crate::tmpfs_chirho::mount_tmpfs_chirho();
+
+    // 2. Create /dev, /proc, /tmp directories in the root
+    {
+        let sb_guard_chirho = root_sb_chirho.lock();
+        let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
+        if let Some(ref root_inode_arc_chirho) = root_dentry_chirho.inode_chirho {
+            let root_inode_chirho = root_inode_arc_chirho.lock();
+            // Create /dev, /proc, /tmp
+            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "dev", 0o755);
+            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "proc", 0o555);
+            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "tmp", 0o1777);
+        }
+    }
+
+    // 3. Store root fs
+    {
+        let mut root_guard_chirho = ROOT_FS_CHIRHO.lock();
+        *root_guard_chirho = Some(root_sb_chirho.clone());
+    }
+
+    // 4. Mount devtmpfs on /dev
+    let dev_sb_chirho = crate::devtmpfs_chirho::mount_devtmpfs_chirho();
+    {
+        let mut mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+        mounts_chirho.push(MountPointChirho {
+            path_chirho: String::from("/dev"),
+            superblock_chirho: dev_sb_chirho,
+        });
+    }
+
+    // 5. Mount procfs on /proc
+    let proc_sb_chirho = crate::procfs_chirho::mount_procfs_chirho();
+    {
+        let mut mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+        mounts_chirho.push(MountPointChirho {
+            path_chirho: String::from("/proc"),
+            superblock_chirho: proc_sb_chirho,
+        });
+    }
+
+    // 6. Initialise the FD table with stdin/stdout/stderr -> /dev/console
+    {
+        let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        let mut fd_table_chirho = FdTableChirho::new_chirho(MAX_FDS_CHIRHO);
+
+        // Create a dummy console inode for stdin/stdout/stderr
+        let console_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: 9999,
+            mode_chirho: S_IFCHR_CHIRHO | 0o666,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: 0,
+            nlink_chirho: 1,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: &crate::tmpfs_chirho::TMPFS_INODE_OPS_CHIRHO,
+            fs_data_chirho: None,
+        }));
+
+        // fd 0 = stdin  (console, read)
+        let stdin_file_chirho = Arc::new(Mutex::new(FileChirho {
+            inode_chirho: console_inode_chirho.clone(),
+            pos_chirho: 0,
+            flags_chirho: O_RDONLY_CHIRHO,
+            ops_chirho: &DEV_CONSOLE_OPS_CHIRHO,
+        }));
+        fd_table_chirho.fds_chirho[0] = Some(stdin_file_chirho);
+
+        // fd 1 = stdout (console, write)
+        let stdout_file_chirho = Arc::new(Mutex::new(FileChirho {
+            inode_chirho: console_inode_chirho.clone(),
+            pos_chirho: 0,
+            flags_chirho: O_WRONLY_CHIRHO,
+            ops_chirho: &DEV_CONSOLE_OPS_CHIRHO,
+        }));
+        fd_table_chirho.fds_chirho[1] = Some(stdout_file_chirho);
+
+        // fd 2 = stderr (console, write)
+        let stderr_file_chirho = Arc::new(Mutex::new(FileChirho {
+            inode_chirho: console_inode_chirho,
+            pos_chirho: 0,
+            flags_chirho: O_WRONLY_CHIRHO,
+            ops_chirho: &DEV_CONSOLE_OPS_CHIRHO,
+        }));
+        fd_table_chirho.fds_chirho[2] = Some(stderr_file_chirho);
+
+        *fd_table_guard_chirho = Some(fd_table_chirho);
+    }
+
+    crate::serial_println_chirho!("[OK] Filesystem layer initialized (root tmpfs + /dev + /proc)");
+}
+
+// ============================================================================
+// Path resolution
+// ============================================================================
+
+/// Look up the file-operations vtable for a character device based on
+/// major/minor numbers.
+fn dev_file_ops_chirho(major_chirho: u32, minor_chirho: u32) -> &'static dyn FileOpsChirho {
+    match (major_chirho, minor_chirho) {
+        (1, 3) => &DEV_NULL_OPS_CHIRHO,
+        (1, 5) => &DEV_ZERO_OPS_CHIRHO,
+        (1, 9) => &DEV_URANDOM_OPS_CHIRHO,
+        (5, 0) | (5, 1) => &DEV_CONSOLE_OPS_CHIRHO,
+        _ => &TMPFS_FILE_OPS_CHIRHO, // fallback
+    }
+}
+
+/// Resolve an absolute path to a `(inode, file_ops)` pair.
+///
+/// Walks the path component-by-component using `InodeOps::lookup`.
+/// Checks mount points: if the accumulated path matches a mount point,
+/// resolution continues from that filesystem's root inode.
+fn resolve_path_chirho(
+    path_chirho: &str,
+) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
+    // Only absolute paths for now
+    if !path_chirho.starts_with('/') {
+        return Err(-ENOENT_CHIRHO);
+    }
+
+    // Split path into components, filtering empty strings
+    let components_chirho: Vec<&str> = path_chirho
+        .split('/')
+        .filter(|s_chirho| !s_chirho.is_empty())
+        .collect();
+
+    // Check mount points -- find the longest matching mount
+    let mut mount_prefix_len_chirho: usize = 0;
+    let mut current_sb_chirho: Option<Arc<Mutex<SuperblockChirho>>> = None;
+
+    {
+        let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+        for mount_chirho in mounts_chirho.iter() {
+            let mount_path_chirho = &mount_chirho.path_chirho;
+            if path_chirho.starts_with(mount_path_chirho.as_str())
+                && mount_path_chirho.len() > mount_prefix_len_chirho
+                && (path_chirho.len() == mount_path_chirho.len()
+                    || path_chirho.as_bytes().get(mount_path_chirho.len()) == Some(&b'/'))
+            {
+                mount_prefix_len_chirho = mount_path_chirho.len();
+                current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
+            }
+        }
+    }
+
+    // Determine starting inode and which components to walk
+    let (start_inode_chirho, remaining_components_chirho) = if let Some(sb_chirho) = current_sb_chirho
+    {
+        // Start from the mount's root inode
+        let sb_guard_chirho = sb_chirho.lock();
+        let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
+        let inode_arc_chirho = root_dentry_chirho
+            .inode_chirho
+            .clone()
+            .ok_or(-ENOENT_CHIRHO)?;
+
+        // Compute remaining path after mount prefix
+        let remaining_path_chirho = &path_chirho[mount_prefix_len_chirho..];
+        let remaining_chirho: Vec<&str> = remaining_path_chirho
+            .split('/')
+            .filter(|s_chirho| !s_chirho.is_empty())
+            .collect();
+        (inode_arc_chirho, remaining_chirho)
+    } else {
+        // Start from root fs
+        let root_guard_chirho = ROOT_FS_CHIRHO.lock();
+        let root_sb_chirho = root_guard_chirho.as_ref().ok_or(-ENOENT_CHIRHO)?;
+        let sb_guard_chirho = root_sb_chirho.lock();
+        let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
+        let inode_arc_chirho = root_dentry_chirho
+            .inode_chirho
+            .clone()
+            .ok_or(-ENOENT_CHIRHO)?;
+        (inode_arc_chirho, components_chirho)
+    };
+
+    // If no more components, return the root/mount-root inode
+    if remaining_components_chirho.is_empty() {
+        return Ok((start_inode_chirho, &TMPFS_FILE_OPS_CHIRHO));
+    }
+
+    // Walk each component
+    let mut current_inode_chirho = start_inode_chirho;
+
+    for (idx_chirho, component_chirho) in remaining_components_chirho.iter().enumerate() {
+        let inode_guard_chirho = current_inode_chirho.lock();
+        let lookup_result_chirho =
+            inode_guard_chirho.ops_chirho.lookup_chirho(&inode_guard_chirho, component_chirho);
+        drop(inode_guard_chirho);
+
+        match lookup_result_chirho {
+            Ok(child_inode_chirho) => {
+                // Determine the correct FileOps for the resolved inode
+                let is_last_chirho = idx_chirho == remaining_components_chirho.len() - 1;
+
+                if is_last_chirho {
+                    // Check if this is a character device
+                    let mode_chirho = child_inode_chirho.mode_chirho;
+                    let file_ops_chirho: &'static dyn FileOpsChirho =
+                        if mode_chirho & S_IFCHR_CHIRHO == S_IFCHR_CHIRHO {
+                            // Look up the device ops from fs_data
+                            if let Some(ref data_chirho) = child_inode_chirho.fs_data_chirho {
+                                if let Some(dev_data_chirho) =
+                                    data_chirho.downcast_ref::<DevNodeDataChirho>()
+                                {
+                                    dev_file_ops_chirho(
+                                        dev_data_chirho.major_chirho,
+                                        dev_data_chirho.minor_chirho,
+                                    )
+                                } else {
+                                    &TMPFS_FILE_OPS_CHIRHO
+                                }
+                            } else {
+                                &TMPFS_FILE_OPS_CHIRHO
+                            }
+                        } else {
+                            &TMPFS_FILE_OPS_CHIRHO
+                        };
+
+                    // Wrap in Arc<Mutex<>> for return
+                    let wrapped_chirho = Arc::new(Mutex::new(InodeChirho {
+                        ino_chirho: child_inode_chirho.ino_chirho,
+                        mode_chirho: child_inode_chirho.mode_chirho,
+                        uid_chirho: child_inode_chirho.uid_chirho,
+                        gid_chirho: child_inode_chirho.gid_chirho,
+                        size_chirho: child_inode_chirho.size_chirho,
+                        nlink_chirho: child_inode_chirho.nlink_chirho,
+                        atime_chirho: child_inode_chirho.atime_chirho,
+                        mtime_chirho: child_inode_chirho.mtime_chirho,
+                        ctime_chirho: child_inode_chirho.ctime_chirho,
+                        ops_chirho: child_inode_chirho.ops_chirho,
+                        fs_data_chirho: None,
+                    }));
+                    return Ok((wrapped_chirho, file_ops_chirho));
+                }
+
+                // Intermediate component: wrap and continue
+                current_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+                    ino_chirho: child_inode_chirho.ino_chirho,
+                    mode_chirho: child_inode_chirho.mode_chirho,
+                    uid_chirho: child_inode_chirho.uid_chirho,
+                    gid_chirho: child_inode_chirho.gid_chirho,
+                    size_chirho: child_inode_chirho.size_chirho,
+                    nlink_chirho: child_inode_chirho.nlink_chirho,
+                    atime_chirho: child_inode_chirho.atime_chirho,
+                    mtime_chirho: child_inode_chirho.mtime_chirho,
+                    ctime_chirho: child_inode_chirho.ctime_chirho,
+                    ops_chirho: child_inode_chirho.ops_chirho,
+                    fs_data_chirho: None,
+                }));
+
+                // Check if the accumulated path so far matches a mount point
+                // Build the path up to this component
+                let mut accumulated_chirho = String::from("/");
+                for c_chirho in &remaining_components_chirho[..=idx_chirho] {
+                    accumulated_chirho.push_str(c_chirho);
+                    if idx_chirho < remaining_components_chirho.len() - 1 {
+                        accumulated_chirho.push('/');
+                    }
+                }
+                // (Mount check already handled at the top-level; sub-mount checking
+                //  could be added here for nested mounts in the future.)
+            }
+            Err(errno_chirho) => return Err(errno_chirho),
+        }
+    }
+
+    // Should not reach here, but just in case
+    Ok((current_inode_chirho, &TMPFS_FILE_OPS_CHIRHO))
+}
+
+// ============================================================================
+// Syscall implementations
+// ============================================================================
+
+/// `openat(2)` -- open a file relative to a directory fd.
+///
+/// Currently ignores `dirfd_chirho` for absolute paths.
+pub fn sys_openat_chirho(
+    dirfd_chirho: i64,
+    pathname_addr_chirho: u64,
+    flags_chirho: u32,
+    mode_chirho: u32,
+) -> i64 {
+    let _ = dirfd_chirho; // TODO: support relative paths with dirfd
+
+    // Read the pathname from user space
+    let pathname_chirho = match read_user_string_chirho(pathname_addr_chirho, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Resolve the path
+    let (inode_chirho, file_ops_chirho) = match resolve_path_chirho(&pathname_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    // Check O_DIRECTORY: if set, the inode must be a directory
+    if flags_chirho & O_DIRECTORY_CHIRHO != 0 {
+        let inode_guard_chirho = inode_chirho.lock();
+        if inode_guard_chirho.mode_chirho & S_IFDIR_CHIRHO != S_IFDIR_CHIRHO {
+            return -ENOTDIR_CHIRHO;
+        }
+    }
+
+    // Create the FileChirho
+    let file_chirho = Arc::new(Mutex::new(FileChirho {
+        inode_chirho: inode_chirho,
+        pos_chirho: 0,
+        flags_chirho,
+        ops_chirho: file_ops_chirho,
+    }));
+
+    // Allocate an fd
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+        Some(t_chirho) => t_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+
+    let fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
+        Ok(fd_chirho) => fd_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+    fd_chirho as i64
+}
+
+/// `open(2)` -- wrapper around openat with AT_FDCWD.
+pub fn sys_open_chirho(
+    pathname_addr_chirho: u64,
+    flags_chirho: u32,
+    mode_chirho: u32,
+) -> i64 {
+    sys_openat_chirho(AT_FDCWD_CHIRHO, pathname_addr_chirho, flags_chirho, mode_chirho)
+}
+
+/// `read(2)` -- read from a file descriptor using the VFS.
+pub fn sys_read_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: usize) -> i64 {
+    if count_chirho == 0 {
+        return 0;
+    }
+
+    // Get the file from the fd table
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.get_chirho(fd_chirho as usize) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
+        }
+    };
+
+    // Read into a kernel buffer
+    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    let bytes_read_chirho = {
+        let mut file_guard_chirho = file_arc_chirho.lock();
+        match file_guard_chirho.ops_chirho.read_chirho(&mut file_guard_chirho, &mut kernel_buf_chirho) {
+            Ok(n_chirho) => n_chirho,
+            Err(errno_chirho) => return errno_chirho,
+        }
+    };
+
+    // Copy to user space
+    if bytes_read_chirho > 0 {
+        if let Err(_) =
+            copy_to_user_chirho(buf_addr_chirho, &kernel_buf_chirho[..bytes_read_chirho], bytes_read_chirho)
+        {
+            return -EFAULT_CHIRHO;
+        }
+    }
+
+    bytes_read_chirho as i64
+}
+
+/// `write(2)` -- write to a file descriptor using the VFS.
+pub fn sys_write_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: usize) -> i64 {
+    if count_chirho == 0 {
+        return 0;
+    }
+
+    // Get the file from the fd table
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.get_chirho(fd_chirho as usize) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
+        }
+    };
+
+    // Copy from user space into kernel buffer
+    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    if let Err(_) =
+        copy_from_user_chirho(&mut kernel_buf_chirho, buf_addr_chirho, count_chirho)
+    {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Write through the file ops
+    let bytes_written_chirho = {
+        let mut file_guard_chirho = file_arc_chirho.lock();
+        match file_guard_chirho.ops_chirho.write_chirho(&mut file_guard_chirho, &kernel_buf_chirho) {
+            Ok(n_chirho) => n_chirho,
+            Err(errno_chirho) => return errno_chirho,
+        }
+    };
+
+    bytes_written_chirho as i64
+}
+
+/// `close(2)` -- close a file descriptor.
+pub fn sys_close_real_chirho(fd_chirho: u64) -> i64 {
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+        Some(t_chirho) => t_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+
+    match fd_table_chirho.close_chirho(fd_chirho as usize) {
+        Ok(()) => 0,
+        Err(errno_chirho) => errno_chirho,
+    }
+}
+
+/// `dup(2)` -- duplicate a file descriptor.
+pub fn sys_dup_chirho(oldfd_chirho: u64) -> i64 {
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+        Some(t_chirho) => t_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+
+    match fd_table_chirho.dup_chirho(oldfd_chirho as usize) {
+        Ok(new_fd_chirho) => new_fd_chirho as i64,
+        Err(errno_chirho) => errno_chirho,
+    }
+}
+
+/// `dup2(2)` -- duplicate a file descriptor to a specific number.
+pub fn sys_dup2_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 {
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+        Some(t_chirho) => t_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+
+    let old_chirho = oldfd_chirho as usize;
+    let new_chirho = newfd_chirho as usize;
+
+    // If oldfd == newfd, just check validity
+    if old_chirho == new_chirho {
+        return if fd_table_chirho.get_chirho(old_chirho).is_some() {
+            new_chirho as i64
+        } else {
+            -EBADF_CHIRHO
+        };
+    }
+
+    // Get the file for the old fd
+    let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+
+    // Ensure the new fd slot exists
+    if new_chirho >= fd_table_chirho.fds_chirho.len() {
+        return -EBADF_CHIRHO;
+    }
+
+    // Close whatever was at newfd (if anything), then place the dup there
+    fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
+
+    new_chirho as i64
+}
+
+/// `lseek(2)` -- reposition read/write file offset.
+pub fn sys_lseek_chirho(fd_chirho: u64, offset_chirho: i64, whence_chirho: u32) -> i64 {
+    // Get the file from the fd table
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.get_chirho(fd_chirho as usize) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
+        }
+    };
+
+    let mut file_guard_chirho = file_arc_chirho.lock();
+    match file_guard_chirho
+        .ops_chirho
+        .seek_chirho(&mut file_guard_chirho, offset_chirho, whence_chirho)
+    {
+        Ok(new_pos_chirho) => new_pos_chirho as i64,
+        Err(errno_chirho) => errno_chirho,
+    }
+}

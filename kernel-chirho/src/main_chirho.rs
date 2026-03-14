@@ -21,6 +21,7 @@ mod vfs_chirho;
 mod tmpfs_chirho;
 mod devtmpfs_chirho;
 mod procfs_chirho;
+mod fs_chirho;
 
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
@@ -126,6 +127,9 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     // SAFETY: Called once after heap init; before userspace code runs.
     unsafe { syscall_entry_chirho::init_syscall_entry_chirho() };
     serial_println_chirho!("[OK] Syscall entry trampoline initialized");
+
+    // Initialize the filesystem layer (root tmpfs, /dev, /proc, fd table)
+    fs_chirho::init_fs_chirho();
 
     // Enable interrupts
     x86_64::instructions::interrupts::enable();

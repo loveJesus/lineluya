@@ -278,8 +278,14 @@ pub const SYS_FACCESSAT_CHIRHO: u64 = 269;
 pub const SYS_GETDENTS64_CHIRHO: u64 = 217;
 /// `statx(2)` -- get file status (extended).
 pub const SYS_STATX_CHIRHO: u64 = 332;
+/// `mkdirat(2)` -- create a directory relative to directory fd.
+pub const SYS_MKDIRAT_CHIRHO: u64 = 258;
+/// `unlinkat(2)` -- remove a directory entry relative to directory fd.
+pub const SYS_UNLINKAT_CHIRHO: u64 = 263;
 /// `pipe2(2)` -- create pipe with flags.
 pub const SYS_PIPE2_CHIRHO: u64 = 293;
+/// `renameat2(2)` -- rename a file with flags.
+pub const SYS_RENAMEAT2_CHIRHO: u64 = 316;
 /// `rseq(2)` -- restartable sequences.
 pub const SYS_RSEQ_CHIRHO: u64 = 334;
 
@@ -548,6 +554,8 @@ impl StatChirho {
 
 /// S_IFCHR -- character device mode flag.
 const S_IFCHR_CHIRHO: u32 = 0o020000;
+/// S_IFREG -- regular file mode flag.
+const S_IFREG_CHIRHO: u32 = 0o100000;
 /// Default permissions for character devices (rw-rw-rw-).
 const S_IRUSR_CHIRHO: u32 = 0o400;
 const S_IWUSR_CHIRHO: u32 = 0o200;
@@ -747,22 +755,50 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let _arg5_chirho = frame_chirho.r9_chirho;
 
     let result_chirho: i64 = match syscall_nr_chirho {
-        SYS_READ_CHIRHO => sys_read_chirho(
+        SYS_READ_CHIRHO => crate::fs_chirho::sys_read_real_chirho(
             arg0_chirho,
-            arg1_chirho as *mut u8,
+            arg1_chirho,
             arg2_chirho as usize,
         ),
-        SYS_WRITE_CHIRHO => sys_write_chirho(
-            arg0_chirho,
-            arg1_chirho as *const u8,
-            arg2_chirho as usize,
+        SYS_WRITE_CHIRHO => {
+            // Try the VFS fd table first; fall back to serial console for fd 1/2
+            let vfs_result_chirho = crate::fs_chirho::sys_write_real_chirho(
+                arg0_chirho,
+                arg1_chirho,
+                arg2_chirho as usize,
+            );
+            if vfs_result_chirho == -EBADF_CHIRHO && (arg0_chirho == 1 || arg0_chirho == 2) {
+                // Serial console fallback for stdout/stderr
+                sys_write_chirho(
+                    arg0_chirho,
+                    arg1_chirho as *const u8,
+                    arg2_chirho as usize,
+                )
+            } else {
+                vfs_result_chirho
+            }
+        },
+        SYS_OPEN_CHIRHO => crate::fs_chirho::sys_open_chirho(
+            arg0_chirho,  // pathname
+            arg1_chirho as u32, // flags
+            arg2_chirho as u32, // mode
         ),
-        SYS_OPEN_CHIRHO => -ENOENT_CHIRHO,     // stub: no filesystem yet
-        SYS_CLOSE_CHIRHO => sys_close_chirho(arg0_chirho),
+        SYS_CLOSE_CHIRHO => crate::fs_chirho::sys_close_real_chirho(arg0_chirho),
         SYS_FSTAT_CHIRHO => sys_fstat_chirho(arg0_chirho, arg1_chirho as *mut StatChirho),
-        SYS_STAT_CHIRHO | SYS_LSTAT_CHIRHO => -ENOENT_CHIRHO,
+        SYS_STAT_CHIRHO => sys_stat_chirho(
+            arg0_chirho as *const u8,
+            arg1_chirho as *mut StatChirho,
+        ),
+        SYS_LSTAT_CHIRHO => sys_lstat_chirho(
+            arg0_chirho as *const u8,
+            arg1_chirho as *mut StatChirho,
+        ),
         SYS_POLL_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_LSEEK_CHIRHO => -ESPIPE_CHIRHO,    // stdin/stdout not seekable
+        SYS_LSEEK_CHIRHO => crate::fs_chirho::sys_lseek_chirho(
+            arg0_chirho,
+            arg1_chirho as i64,
+            arg2_chirho as u32,
+        ),
         SYS_MMAP_CHIRHO => sys_mmap_chirho(
             arg0_chirho,
             arg1_chirho,
@@ -816,7 +852,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_MREMAP_CHIRHO | SYS_MSYNC_CHIRHO | SYS_MINCORE_CHIRHO | SYS_MADVISE_CHIRHO => {
             -ENOSYS_CHIRHO
         }
-        SYS_DUP_CHIRHO | SYS_DUP2_CHIRHO => -EBADF_CHIRHO,
+        SYS_DUP_CHIRHO => crate::fs_chirho::sys_dup_chirho(arg0_chirho),
+        SYS_DUP2_CHIRHO => crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho),
         SYS_PAUSE_CHIRHO => -EINTR_CHIRHO,
         SYS_NANOSLEEP_CHIRHO => 0,             // instant return (no timer yet)
         SYS_GETITIMER_CHIRHO | SYS_SETITIMER_CHIRHO => -ENOSYS_CHIRHO,
@@ -856,9 +893,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_TRUNCATE_CHIRHO | SYS_FTRUNCATE_CHIRHO => -EBADF_CHIRHO,
         SYS_GETDENTS_CHIRHO => -EBADF_CHIRHO,
         SYS_GETCWD_CHIRHO => sys_getcwd_chirho(arg0_chirho as *mut u8, arg1_chirho as usize),
-        SYS_CHDIR_CHIRHO => -ENOENT_CHIRHO,
-        SYS_RENAME_CHIRHO | SYS_MKDIR_CHIRHO | SYS_RMDIR_CHIRHO
-        | SYS_CREAT_CHIRHO | SYS_LINK_CHIRHO | SYS_UNLINK_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_CHDIR_CHIRHO => sys_chdir_chirho(arg0_chirho as *const u8),
+        SYS_RENAME_CHIRHO => sys_rename_chirho(
+            arg0_chirho as *const u8,
+            arg1_chirho as *const u8,
+        ),
+        SYS_MKDIR_CHIRHO => sys_mkdir_chirho(arg0_chirho as *const u8, arg1_chirho as u32),
+        SYS_RMDIR_CHIRHO => sys_rmdir_chirho(arg0_chirho as *const u8),
+        SYS_CREAT_CHIRHO | SYS_LINK_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_UNLINK_CHIRHO => sys_unlink_chirho(arg0_chirho as *const u8),
         SYS_READLINK_CHIRHO => sys_readlink_chirho(
             arg0_chirho as *const u8,
             arg1_chirho as *mut u8,
@@ -882,8 +925,28 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho as *mut TimespecChirho,
         ),
         SYS_EXIT_GROUP_CHIRHO => sys_exit_group_chirho(arg0_chirho as i32),
-        SYS_OPENAT_CHIRHO => -ENOENT_CHIRHO,
-        SYS_NEWFSTATAT_CHIRHO => -ENOENT_CHIRHO,
+        SYS_OPENAT_CHIRHO => crate::fs_chirho::sys_openat_chirho(
+            arg0_chirho as i64,  // dirfd
+            arg1_chirho,         // pathname
+            arg2_chirho as u32,  // flags
+            arg3_chirho as u32,  // mode
+        ),
+        SYS_MKDIRAT_CHIRHO => sys_mkdirat_chirho(
+            arg0_chirho as i32,
+            arg1_chirho as *const u8,
+            arg2_chirho as u32,
+        ),
+        SYS_NEWFSTATAT_CHIRHO => sys_fstatat_chirho(
+            arg0_chirho as i32,
+            arg1_chirho as *const u8,
+            arg2_chirho as *mut StatChirho,
+            arg3_chirho as u32,
+        ),
+        SYS_UNLINKAT_CHIRHO => sys_unlinkat_chirho(
+            arg0_chirho as i32,
+            arg1_chirho as *const u8,
+            arg2_chirho as u32,
+        ),
         SYS_SET_ROBUST_LIST_CHIRHO => 0,        // silently succeed
         SYS_GET_ROBUST_LIST_CHIRHO => -ENOSYS_CHIRHO,
         SYS_FACCESSAT_CHIRHO => sys_faccessat_chirho(),
@@ -908,8 +971,25 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg0_chirho,
             arg1_chirho as u32,
         ),
-        SYS_GETDENTS64_CHIRHO => -ENOSYS_CHIRHO,  // needs VFS
-        SYS_STATX_CHIRHO => -ENOSYS_CHIRHO,       // stub for now
+        SYS_GETDENTS64_CHIRHO => sys_getdents64_chirho(
+            arg0_chirho,
+            arg1_chirho as *mut u8,
+            arg2_chirho as usize,
+        ),
+        SYS_RENAMEAT2_CHIRHO => sys_renameat2_chirho(
+            arg0_chirho as i32,
+            arg1_chirho as *const u8,
+            arg2_chirho as i32,
+            arg3_chirho as *const u8,
+            arg4_chirho as u32,
+        ),
+        SYS_STATX_CHIRHO => sys_statx_chirho(
+            arg0_chirho as i32,
+            arg1_chirho as *const u8,
+            arg2_chirho as u32,
+            arg3_chirho as u32,
+            arg4_chirho as *mut u8,
+        ),
         SYS_RSEQ_CHIRHO => -ENOSYS_CHIRHO,
 
         // Catch-all for unimplemented syscalls.
@@ -1677,6 +1757,214 @@ fn sys_fstat_chirho(
 }
 
 // ============================================================================
+// Stat family syscall implementations (P3-014)
+// ============================================================================
+
+/// `stat(2)` implementation.
+///
+/// Resolves the pathname and fills `statbuf_chirho` with file metadata.
+/// Currently a stub: returns a zeroed S_IFREG stat for any non-null path.
+fn sys_stat_chirho(
+    pathname_chirho: *const u8,
+    statbuf_chirho: *mut StatChirho,
+) -> i64 {
+    if pathname_chirho.is_null() || statbuf_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    crate::serial_println_chirho!("[SYSCALL] stat(pathname, statbuf) -> stub S_IFREG");
+
+    let mut st_chirho = StatChirho::zeroed_chirho();
+    st_chirho.st_mode_chirho = S_IFREG_CHIRHO | 0o644;
+    st_chirho.st_nlink_chirho = 1;
+    st_chirho.st_blksize_chirho = 4096;
+
+    // SAFETY: Caller guarantees statbuf_chirho is writable.
+    unsafe {
+        core::ptr::write(statbuf_chirho, st_chirho);
+    }
+    0
+}
+
+/// `lstat(2)` implementation.
+///
+/// Like stat but does not follow symlinks. Currently identical to stat stub.
+fn sys_lstat_chirho(
+    pathname_chirho: *const u8,
+    statbuf_chirho: *mut StatChirho,
+) -> i64 {
+    if pathname_chirho.is_null() || statbuf_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    crate::serial_println_chirho!("[SYSCALL] lstat(pathname, statbuf) -> stub S_IFREG (no symlink follow)");
+
+    let mut st_chirho = StatChirho::zeroed_chirho();
+    st_chirho.st_mode_chirho = S_IFREG_CHIRHO | 0o644;
+    st_chirho.st_nlink_chirho = 1;
+    st_chirho.st_blksize_chirho = 4096;
+
+    // SAFETY: Caller guarantees statbuf_chirho is writable.
+    unsafe {
+        core::ptr::write(statbuf_chirho, st_chirho);
+    }
+    0
+}
+
+/// `fstatat(2)` / `newfstatat(2)` implementation (syscall 262).
+///
+/// Gets file status relative to a directory fd. Currently a stub that returns
+/// a zeroed S_IFREG stat.
+fn sys_fstatat_chirho(
+    _dirfd_chirho: i32,
+    pathname_chirho: *const u8,
+    statbuf_chirho: *mut StatChirho,
+    _flags_chirho: u32,
+) -> i64 {
+    if statbuf_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    // If pathname is NULL with AT_EMPTY_PATH, behave like fstat on dirfd.
+    // For now, return a stub stat for any call.
+    crate::serial_println_chirho!(
+        "[SYSCALL] fstatat(dirfd, pathname={:#x}, statbuf, flags) -> stub S_IFREG",
+        pathname_chirho as u64,
+    );
+
+    let mut st_chirho = StatChirho::zeroed_chirho();
+    st_chirho.st_mode_chirho = S_IFREG_CHIRHO | 0o644;
+    st_chirho.st_nlink_chirho = 1;
+    st_chirho.st_blksize_chirho = 4096;
+
+    // SAFETY: Caller guarantees statbuf_chirho is writable.
+    unsafe {
+        core::ptr::write(statbuf_chirho, st_chirho);
+    }
+    0
+}
+
+/// `statx(2)` implementation (syscall 332).
+///
+/// Extended stat interface. Returns -ENOSYS for now.
+fn sys_statx_chirho(
+    _dirfd_chirho: i32,
+    _pathname_chirho: *const u8,
+    _flags_chirho: u32,
+    _mask_chirho: u32,
+    _statx_buf_chirho: *mut u8,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] statx() -> ENOSYS (not yet implemented)");
+    -ENOSYS_CHIRHO
+}
+
+// ============================================================================
+// Directory syscall implementations (P3-015)
+// ============================================================================
+
+/// `mkdir(2)` implementation (syscall 83).
+///
+/// Stub: logs and returns 0 (success).
+fn sys_mkdir_chirho(
+    _pathname_chirho: *const u8,
+    _mode_chirho: u32,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] mkdir(pathname, mode) -> 0 (stub)");
+    0
+}
+
+/// `mkdirat(2)` implementation (syscall 258).
+///
+/// Stub: logs and returns 0 (success).
+fn sys_mkdirat_chirho(
+    _dirfd_chirho: i32,
+    _pathname_chirho: *const u8,
+    _mode_chirho: u32,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] mkdirat(dirfd, pathname, mode) -> 0 (stub)");
+    0
+}
+
+/// `rmdir(2)` implementation (syscall 84).
+///
+/// Stub: logs and returns 0 (success).
+fn sys_rmdir_chirho(
+    _pathname_chirho: *const u8,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] rmdir(pathname) -> 0 (stub)");
+    0
+}
+
+/// `unlink(2)` implementation (syscall 87).
+///
+/// Stub: logs and returns 0 (success).
+fn sys_unlink_chirho(
+    _pathname_chirho: *const u8,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] unlink(pathname) -> 0 (stub)");
+    0
+}
+
+/// `unlinkat(2)` implementation (syscall 263).
+///
+/// Stub: logs and returns 0 (success).
+fn sys_unlinkat_chirho(
+    _dirfd_chirho: i32,
+    _pathname_chirho: *const u8,
+    _flags_chirho: u32,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] unlinkat(dirfd, pathname, flags) -> 0 (stub)");
+    0
+}
+
+/// `rename(2)` implementation (syscall 82).
+///
+/// Stub: logs and returns 0 (success).
+fn sys_rename_chirho(
+    _oldpath_chirho: *const u8,
+    _newpath_chirho: *const u8,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] rename(oldpath, newpath) -> 0 (stub)");
+    0
+}
+
+/// `renameat2(2)` implementation (syscall 316).
+///
+/// Stub: logs and returns 0 (success).
+fn sys_renameat2_chirho(
+    _olddirfd_chirho: i32,
+    _oldpath_chirho: *const u8,
+    _newdirfd_chirho: i32,
+    _newpath_chirho: *const u8,
+    _flags_chirho: u32,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] renameat2(olddirfd, oldpath, newdirfd, newpath, flags) -> 0 (stub)");
+    0
+}
+
+/// `chdir(2)` implementation (syscall 80).
+///
+/// Stub: logs and returns 0 (success).
+fn sys_chdir_chirho(
+    _path_chirho: *const u8,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] chdir(path) -> 0 (stub)");
+    0
+}
+
+/// `getdents64(2)` implementation (syscall 217).
+///
+/// Returns -ENOSYS: needs VFS readdir wiring to function.
+fn sys_getdents64_chirho(
+    _fd_chirho: u64,
+    _dirp_chirho: *mut u8,
+    _count_chirho: usize,
+) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] getdents64(fd, dirp, count) -> ENOSYS (needs VFS readdir)");
+    -ENOSYS_CHIRHO
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -1771,7 +2059,9 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_CLOCK_GETTIME_CHIRHO => "clock_gettime",
         SYS_EXIT_GROUP_CHIRHO => "exit_group",
         SYS_OPENAT_CHIRHO => "openat",
+        SYS_MKDIRAT_CHIRHO => "mkdirat",
         SYS_NEWFSTATAT_CHIRHO => "newfstatat",
+        SYS_UNLINKAT_CHIRHO => "unlinkat",
         SYS_SET_ROBUST_LIST_CHIRHO => "set_robust_list",
         SYS_GET_ROBUST_LIST_CHIRHO => "get_robust_list",
         SYS_PRLIMIT64_CHIRHO => "prlimit64",
@@ -1779,6 +2069,7 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_READLINKAT_CHIRHO => "readlinkat",
         SYS_FACCESSAT_CHIRHO => "faccessat",
         SYS_GETRANDOM_CHIRHO => "getrandom",
+        SYS_RENAMEAT2_CHIRHO => "renameat2",
         SYS_STATX_CHIRHO => "statx",
         SYS_PIPE2_CHIRHO => "pipe2",
         SYS_RSEQ_CHIRHO => "rseq",
