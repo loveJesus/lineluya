@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<!-- For God so loved the world that he gave his only begotten Son,
+     that whoever believes in him should not perish but have eternal life. - John 3:16 -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lineluya — Linux Kernel in Your Browser</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0a;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 1.5rem 2rem;
+      background: linear-gradient(135deg, #1a0a2e 0%, #0a1628 100%);
+      border-bottom: 1px solid #2a2a4a;
+    }
+    header h1 {
+      font-size: 1.8rem;
+      font-weight: 300;
+      letter-spacing: 0.05em;
+    }
+    header h1 span { color: #7c9bff; }
+    header p {
+      margin-top: 0.3rem;
+      font-size: 0.85rem;
+      color: #888;
+      font-style: italic;
+    }
+    .container-chirho {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      padding: 1rem 2rem;
+      flex: 1;
+    }
+    .panel-chirho {
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .panel-chirho h2 {
+      padding: 0.6rem 1rem;
+      background: #1a1a2e;
+      font-size: 0.85rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #7c9bff;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    #framebuffer-chirho {
+      width: 100%;
+      aspect-ratio: 16/10;
+      background: #000;
+      display: block;
+      image-rendering: pixelated;
+    }
+    #terminal-chirho {
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 13px;
+      line-height: 1.4;
+      padding: 0.8rem;
+      height: 400px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      color: #0f0;
+      background: #000;
+    }
+    .controls-chirho {
+      padding: 1rem 2rem;
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+    button {
+      padding: 0.6rem 1.5rem;
+      border: 1px solid #7c9bff;
+      background: transparent;
+      color: #7c9bff;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+    }
+    button:hover {
+      background: #7c9bff;
+      color: #000;
+    }
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .status-chirho {
+      font-size: 0.85rem;
+      color: #666;
+    }
+    .status-chirho.booted-chirho { color: #0f0; }
+    footer {
+      padding: 1rem 2rem;
+      text-align: center;
+      font-size: 0.75rem;
+      color: #444;
+      border-top: 1px solid #1a1a1a;
+    }
+    footer a { color: #7c9bff; text-decoration: none; }
+    @media (max-width: 800px) {
+      .container-chirho { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><span>Lineluya</span> — Linux Kernel in Your Browser</h1>
+    <p>"For God so loved the world that he gave his only begotten Son,
+       that whoever believes in him should not perish but have eternal life." — John 3:16</p>
+  </header>
+
+  <div class="controls-chirho">
+    <button id="boot-btn-chirho" onclick="bootKernelChirho()">Boot Kernel</button>
+    <button id="halt-btn-chirho" onclick="haltKernelChirho()" disabled>Halt</button>
+    <span id="status-chirho" class="status-chirho">Ready to boot</span>
+  </div>
+
+  <div class="container-chirho">
+    <div class="panel-chirho">
+      <h2>Framebuffer (Canvas)</h2>
+      <canvas id="framebuffer-chirho" width="640" height="400"></canvas>
+    </div>
+    <div class="panel-chirho">
+      <h2>Serial Console</h2>
+      <div id="terminal-chirho"></div>
+    </div>
+  </div>
+
+  <footer>
+    <p>
+      Lineluya Kernel — 16,246 lines of Rust compiled to WebAssembly.
+      No emulation. Browser APIs are the hardware.
+      <a href="https://github.com/loveJesus/lineluya">GitHub</a>
+      — Soli Deo Gloria
+    </p>
+  </footer>
+
+  <script src="runtime-chirho.js"></script>
+  <script>
+    let runtimeChirho = null;
+
+    async function bootKernelChirho() {
+      const btnChirho = document.getElementById('boot-btn-chirho');
+      const haltBtnChirho = document.getElementById('halt-btn-chirho');
+      const statusChirho = document.getElementById('status-chirho');
+
+      btnChirho.disabled = true;
+      statusChirho.textContent = 'Booting...';
+      statusChirho.className = 'status-chirho';
+
+      runtimeChirho = new LineluyaRuntimeChirho('framebuffer-chirho', 'terminal-chirho');
+
+      try {
+        await runtimeChirho.bootChirho('lineluya-kernel-chirho.wasm');
+        statusChirho.textContent = 'Kernel running';
+        statusChirho.className = 'status-chirho booted-chirho';
+        haltBtnChirho.disabled = false;
+      } catch (eChirho) {
+        statusChirho.textContent = 'Boot failed: ' + eChirho.message;
+        btnChirho.disabled = false;
+      }
+    }
+
+    function haltKernelChirho() {
+      if (runtimeChirho) {
+        runtimeChirho.shutdownChirho();
+        document.getElementById('status-chirho').textContent = 'Kernel halted';
+        document.getElementById('halt-btn-chirho').disabled = true;
+        document.getElementById('boot-btn-chirho').disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>

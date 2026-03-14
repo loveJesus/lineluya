@@ -1,0 +1,723 @@
+{
+  "header_chirho": "For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life. - John 3:16",
+  "document_chirho": "Lineluya arch/wasm32 Architecture Specification",
+  "version_chirho": "0.1.0",
+  "created_chirho": "2026-03-14",
+  "codename_chirho": "Tabernacle",
+
+  "executive_summary_chirho": {
+    "thesis_chirho": "Lineluya compiles natively to wasm32-unknown-unknown as a first-class architecture target, treating Browser APIs as hardware. No emulation layer. The browser IS the machine.",
+    "key_insight_chirho": "Just as Linux has arch/x86_64, arch/arm64, arch/riscv — Lineluya adds arch/wasm32. The kernel's platform-abstraction traits (#[cfg(target_arch)]) let the same scheduler, VFS, syscall dispatch, and process model run on both bare-metal x86_64 and browser-hosted wasm32.",
+    "differentiation_chirho": {
+      "vs_v86_chirho": "v86 emulates an x86 CPU instruction-by-instruction in WASM (~44x slower than native). We compile the kernel itself to WASM — no instruction translation, ~2-5x overhead only from WASM sandbox.",
+      "vs_webvm_cheerpx_chirho": "CheerpX/WebVM uses a proprietary x86-to-WASM JIT (CheerpX engine) to run unmodified x86 Linux binaries (~10x faster than v86, ~20x slower than native). Our approach eliminates the x86 layer entirely — the kernel IS WASM.",
+      "vs_browsix_chirho": "Browsix implements Unix primitives in JavaScript (processes via Web Workers, syscalls via postMessage). It is a userspace compatibility layer, not a kernel. We run a real kernel with real scheduling, real VFS, real memory management — all compiled to WASM.",
+      "vs_nebulet_chirho": "Nebulet runs WASM in Ring 0 on bare metal (opposite direction). We run our kernel IN WASM. Complementary ideas — Lineluya could even run Nebulet-style WASM-in-WASM for userspace isolation."
+    }
+  },
+
+  "architecture_mapping_chirho": {
+    "overview_chirho": "Every x86_64 hardware concept maps to a browser API. The kernel code uses platform-abstraction traits so the same logic compiles for both targets.",
+
+    "memory_chirho": {
+      "x86_concept_chirho": "Physical RAM, page tables, MMU, CR3 register",
+      "wasm32_equivalent_chirho": "WASM linear memory (WebAssembly.Memory)",
+      "details_chirho": {
+        "physical_memory_chirho": "WASM linear memory is a single contiguous byte array. memory.grow(n) adds n * 64KB pages. This IS our physical memory pool.",
+        "page_tables_chirho": "WASM has built-in bounds checking on every memory access — the sandbox IS the MMU. No page tables needed for protection. For virtual address translation (process isolation), we use software-based offset translation within linear memory regions.",
+        "frame_allocator_chirho": "The existing BootInfoFrameAllocatorChirho becomes WasmFrameAllocatorChirho — a bump allocator over WASM linear memory pages. Each 'frame' is a 4KB slice of linear memory.",
+        "heap_chirho": "The linked_list_allocator works unchanged — it operates on a byte slice, which we carve from WASM linear memory.",
+        "mmap_chirho": "mmap/mprotect map to reserving regions of linear memory. mprotect is a no-op for permissions (WASM is always safe) but we track permissions in software for API compatibility.",
+        "shared_memory_chirho": "SharedArrayBuffer-backed WebAssembly.Memory enables shared memory between Web Workers (multi-core emulation)."
+      },
+      "abstraction_trait_chirho": "PlatformMemoryChirho { fn allocate_frame_chirho() -> PhysFrame; fn grow_memory_chirho(pages: usize); fn memory_size_chirho() -> usize; }"
+    },
+
+    "cpu_protection_chirho": {
+      "x86_concept_chirho": "Ring 0 (kernel) / Ring 3 (user), GDT, TSS, privilege levels",
+      "wasm32_equivalent_chirho": "WASM sandbox provides protection inherently — no rings needed",
+      "details_chirho": {
+        "ring_elimination_chirho": "In x86, Ring 0/3 separation prevents userspace from corrupting kernel memory. In WASM, the sandbox prevents ALL out-of-bounds access. The kernel itself runs in a WASM sandbox, so there is no privilege escalation possible.",
+        "gdt_tss_chirho": "Not needed. WASM has no segmentation model. GDT/TSS initialization becomes a no-op on wasm32.",
+        "process_isolation_chirho": "Option A: All processes share one WASM instance with software-enforced memory regions (offset-based isolation). Option B: Each process gets its own WASM instance in a Web Worker (hardware-enforced isolation via separate linear memories). Option C (recommended): Kernel in main WASM instance, each user process in its own Web Worker WASM instance."
+      }
+    },
+
+    "interrupts_and_timers_chirho": {
+      "x86_concept_chirho": "IDT, PIC/APIC, timer IRQ (PIT/HPET/LAPIC timer), keyboard IRQ",
+      "wasm32_equivalent_chirho": "requestAnimationFrame, setTimeout, setInterval, DOM events",
+      "details_chirho": {
+        "timer_interrupt_chirho": "The PIT timer interrupt (IRQ 0, vector 32) that drives schedule_tick_chirho becomes a setInterval/setTimeout callback. At ~1000Hz (1ms intervals via setTimeout(fn, 1)), this drives preemptive scheduling. For rendering-tied work, requestAnimationFrame provides vsync-aligned ticks.",
+        "keyboard_interrupt_chirho": "PS/2 keyboard IRQ becomes document.addEventListener('keydown'/'keyup'). The JS event handler pushes scancodes into a ring buffer in WASM linear memory, then calls the kernel's interrupt handler export.",
+        "idt_chirho": "Not needed. 'Interrupts' are JS callbacks that invoke exported WASM functions. The IDT initialization becomes a no-op; instead, the JS bootloader registers DOM event listeners.",
+        "interrupt_disable_chirho": "x86_64::instructions::interrupts::disable()/enable() maps to a boolean flag. When 'interrupts disabled', incoming JS events are queued and delivered when re-enabled.",
+        "async_model_chirho": "WASM is single-threaded per instance. Timer callbacks and event handlers fire between WASM calls (JS event loop). This naturally provides non-reentrant interrupt handling."
+      },
+      "abstraction_trait_chirho": "PlatformInterruptsChirho { fn init_timer_chirho(freq_hz: u32); fn disable_interrupts_chirho(); fn enable_interrupts_chirho(); fn register_handler_chirho(vector: u8, handler: fn()); }"
+    },
+
+    "io_ports_and_mmio_chirho": {
+      "x86_concept_chirho": "I/O port instructions (in/out), memory-mapped I/O (MMIO)",
+      "wasm32_equivalent_chirho": "WASM imports calling JavaScript functions",
+      "details_chirho": {
+        "port_io_chirho": "x86_64::instructions::port::Port becomes a WASM import. Each 'port write' calls a JS function that routes to the appropriate browser API driver. The serial port (0x3F8) routes to console.log.",
+        "mmio_chirho": "MMIO regions (like VGA at 0xB8000) map to shared buffers that JS reads and renders. Writes to the 'VGA buffer region' in WASM linear memory trigger a Canvas redraw via requestAnimationFrame.",
+        "extern_c_imports_chirho": "All hardware access goes through extern 'C' { fn platform_port_write_chirho(port: u16, value: u8); fn platform_port_read_chirho(port: u16) -> u8; } — provided by the JS bootloader."
+      }
+    },
+
+    "syscalls_chirho": {
+      "x86_concept_chirho": "SYSCALL instruction, MSR setup (LSTAR/STAR/SFMASK), ring transition",
+      "wasm32_equivalent_chirho": "Direct function calls (no mode switch needed)",
+      "details_chirho": {
+        "elimination_of_mode_switch_chirho": "On x86, SYSCALL triggers a ring transition (user->kernel). In WASM, there are no rings. User 'processes' (Web Workers) send syscall requests via postMessage to the kernel Worker. The kernel calls syscall_dispatch_chirho directly.",
+        "syscall_frame_chirho": "SyscallFrameChirho still exists but instead of saving x86 registers, it carries the syscall number and arguments as a plain struct passed by value.",
+        "init_syscalls_chirho": "init_syscalls_chirho() becomes a no-op on wasm32 (no MSRs to configure). The syscall entry point is simply an exported WASM function.",
+        "abi_compatibility_chirho": "We maintain the same Linux syscall numbers and argument conventions. A WASM userspace program calls the same syscall numbers; the dispatch table is identical."
+      }
+    },
+
+    "boot_process_chirho": {
+      "x86_concept_chirho": "BIOS/UEFI -> bootloader (bootloader crate) -> kernel_main, BootInfo struct",
+      "wasm32_equivalent_chirho": "Browser loads HTML/JS -> JS instantiates WASM -> calls kernel_main export",
+      "details_chirho": {
+        "bootloader_is_javascript_chirho": "The JS runtime replaces the bootloader. It: (1) fetches the .wasm binary, (2) creates WebAssembly.Memory, (3) sets up import functions (hardware drivers), (4) calls WebAssembly.instantiate(), (5) calls the exported kernel_main_wasm_chirho().",
+        "boot_info_chirho": "Instead of BootInfo from the bootloader crate, we pass a WasmBootInfoChirho struct containing: initial memory size, canvas dimensions, available Web APIs, browser user-agent.",
+        "entry_point_chirho": "On x86, entry_point!(kernel_main_chirho). On wasm32, #[no_mangle] pub extern 'C' fn kernel_main_wasm_chirho(boot_info_ptr: u32) -> called from JS."
+      }
+    }
+  },
+
+  "browser_api_driver_mapping_chirho": {
+    "overview_chirho": "Each browser API maps to a traditional hardware device driver. The kernel's driver model is the same — only the backend changes.",
+
+    "display_driver_chirho": {
+      "replaces_chirho": "VGA text buffer (0xB8000), framebuffer, GPU driver",
+      "browser_api_chirho": ["Canvas 2D API", "WebGL", "WebGPU"],
+      "implementation_chirho": {
+        "text_mode_chirho": "VgaBufferWriterChirho writes character+color pairs to a region of WASM linear memory. A JS rendering loop reads this buffer and draws to a <canvas> using fillText() or pre-rendered glyph sprites. 80x25 character grid, 16 VGA colors.",
+        "framebuffer_mode_chirho": "For graphical output, a region of WASM linear memory serves as a raw RGBA framebuffer. JS uses ctx.putImageData() to blit it to canvas each frame.",
+        "webgpu_acceleration_chirho": "Future: WebGPU compute shaders for GPU-accelerated rendering, replacing the DRM/KMS subsystem.",
+        "rendering_loop_chirho": "requestAnimationFrame drives the display refresh. The kernel writes to its buffer; JS reads and renders at 60fps."
+      },
+      "abstraction_trait_chirho": "PlatformDisplayChirho { fn write_char_chirho(row: usize, col: usize, ch: u8, color: u8); fn set_pixel_chirho(x: u32, y: u32, rgba: u32); fn flush_chirho(); }"
+    },
+
+    "audio_driver_chirho": {
+      "replaces_chirho": "ALSA / Sound card driver / HDA",
+      "browser_api_chirho": ["Web Audio API", "AudioWorklet"],
+      "implementation_chirho": {
+        "pcm_output_chirho": "The kernel writes PCM samples to a ring buffer in WASM linear memory. An AudioWorklet processor (runs in audio thread) reads samples and feeds them to AudioContext.destination.",
+        "mixing_chirho": "Web Audio API handles mixing natively via AudioNode graph — GainNode for volume, multiple sources for concurrent sounds.",
+        "latency_chirho": "AudioWorklet provides ~128-sample latency (~2.7ms at 48kHz). Much better than main-thread ScriptProcessorNode."
+      }
+    },
+
+    "network_driver_chirho": {
+      "replaces_chirho": "NIC driver, TCP/IP stack (netfilter, socket layer)",
+      "browser_api_chirho": ["WebSocket", "WebRTC", "Fetch API", "WebTransport"],
+      "implementation_chirho": {
+        "tcp_via_websocket_chirho": "WebSocket provides reliable, ordered, message-based communication. The browser handles the TCP/IP stack entirely. The kernel's socket layer wraps WebSocket connections.",
+        "udp_via_webrtc_chirho": "WebRTC DataChannel (unreliable mode) provides UDP-like semantics for real-time communication.",
+        "http_via_fetch_chirho": "HTTP requests go through the Fetch API. The kernel's network stack maps connect()/send()/recv() to WebSocket; HTTP-specific paths use Fetch.",
+        "webtransport_chirho": "WebTransport (HTTP/3 + QUIC) provides multiplexed, low-latency streams — ideal for a modern network driver.",
+        "dns_chirho": "DNS resolution is handled by the browser (no need for a resolver in the kernel)."
+      },
+      "key_limitation_chirho": "Cannot open raw TCP/UDP sockets or listen on arbitrary ports from a browser. Server-side networking requires a WebSocket relay or WebRTC signaling server."
+    },
+
+    "block_device_driver_chirho": {
+      "replaces_chirho": "Disk driver (SATA/NVMe/virtio-blk), block layer",
+      "browser_api_chirho": ["Origin Private File System (OPFS)", "IndexedDB", "Cache API"],
+      "implementation_chirho": {
+        "opfs_primary_chirho": "OPFS provides synchronous read/write access to a private filesystem — perfect for a block device. FileSystemSyncAccessHandle (in Web Workers only) gives synchronous byte-level read()/write() — 3-4x faster than IndexedDB.",
+        "block_semantics_chirho": "The kernel's block_chirho layer issues 4KB read/write requests. The WASM block driver translates these to OPFS SyncAccessHandle.read()/write() calls at the corresponding offset.",
+        "indexeddb_fallback_chirho": "IndexedDB serves as a fallback for browsers without full OPFS support, or for metadata storage. Each 4KB block stored as a Blob in an IndexedDB object store.",
+        "persistence_chirho": "Data persists across browser restarts (both OPFS and IndexedDB). This gives the kernel a real persistent disk.",
+        "cache_api_chirho": "Cache API can store immutable assets (kernel images, initramfs) for offline boot."
+      },
+      "performance_note_chirho": "OPFS SyncAccessHandle: ~100-200 MB/s throughput in modern browsers. Reads are 4x faster than IndexedDB. Adequate for an OS."
+    },
+
+    "input_driver_chirho": {
+      "replaces_chirho": "PS/2 keyboard/mouse driver, input subsystem, evdev",
+      "browser_api_chirho": ["KeyboardEvent", "MouseEvent", "PointerEvent", "GamepadAPI", "TouchEvent"],
+      "implementation_chirho": {
+        "keyboard_chirho": "document.addEventListener('keydown'/'keyup') captures key events. JS translates KeyboardEvent.code to PS/2-compatible scancodes and pushes them into a ring buffer in WASM linear memory. The kernel reads from this buffer just like it would read from the PS/2 data port.",
+        "mouse_chirho": "PointerEvent provides x/y position, button state, pressure. Translated to Linux input_event structs (EV_REL/EV_ABS) in WASM memory.",
+        "gamepad_chirho": "Gamepad API maps to Linux joystick input events.",
+        "pointer_lock_chirho": "Element.requestPointerLock() provides relative mouse movement (essential for FPS-style input)."
+      }
+    },
+
+    "serial_console_chirho": {
+      "replaces_chirho": "UART 16550 serial port (COM1 at 0x3F8)",
+      "browser_api_chirho": ["console.log", "Custom DOM terminal"],
+      "implementation_chirho": {
+        "serial_output_chirho": "serial_println_chirho! routes to console.log() via a WASM import. Each byte written to the 'serial port' is buffered; on newline, the buffer is flushed to console.log().",
+        "serial_input_chirho": "A DOM-based terminal (xterm.js or custom) captures user input and feeds it to the kernel as serial input bytes.",
+        "dom_terminal_chirho": "For a richer experience, the serial console renders to a <div> with monospace font, ANSI color parsing, and scrollback."
+      }
+    },
+
+    "timer_driver_chirho": {
+      "replaces_chirho": "PIT (8254), HPET, LAPIC timer",
+      "browser_api_chirho": ["setTimeout", "setInterval", "requestAnimationFrame", "performance.now()"],
+      "implementation_chirho": {
+        "scheduler_tick_chirho": "setInterval(tick_chirho, 1) fires every ~1ms (browsers may throttle to 4ms for background tabs). This calls the kernel's schedule_tick_chirho() export.",
+        "high_resolution_time_chirho": "performance.now() provides microsecond-resolution timestamps for the kernel's timekeeping (replaces rdtsc/HPET reads).",
+        "raf_display_chirho": "requestAnimationFrame is used for display refresh, not scheduling — decouples display from scheduler tick rate.",
+        "background_throttling_chirho": "IMPORTANT: Browsers throttle setTimeout/setInterval in background tabs to ~1Hz. Mitigation: use a dedicated Web Worker for the scheduler tick (Workers are not throttled), or use a Service Worker."
+      }
+    },
+
+    "nvram_cmos_chirho": {
+      "replaces_chirho": "CMOS/NVRAM, RTC (real-time clock)",
+      "browser_api_chirho": ["localStorage", "Date API"],
+      "implementation_chirho": {
+        "persistent_settings_chirho": "localStorage stores small kernel configuration values (boot flags, timezone, hostname). Limited to ~5-10MB per origin.",
+        "rtc_chirho": "Date.now() / new Date() replaces the RTC. The kernel's gettimeofday() syscall calls performance.now() for monotonic time and Date.now() for wall-clock time."
+      }
+    },
+
+    "multiprocessor_smp_chirho": {
+      "replaces_chirho": "APIC, SMP boot (AP startup via INIT/SIPI), per-CPU data",
+      "browser_api_chirho": ["Web Workers", "SharedArrayBuffer", "Atomics"],
+      "implementation_chirho": {
+        "cores_as_workers_chirho": "Each Web Worker acts as a CPU core. The kernel can spawn N workers = N virtual CPUs. navigator.hardwareConcurrency tells us how many physical cores are available.",
+        "shared_memory_chirho": "SharedArrayBuffer-backed WebAssembly.Memory is shared between all Worker 'cores'. Atomics.wait()/Atomics.notify() replace x86 LOCK prefix instructions and MWAIT/MONITOR.",
+        "ipi_chirho": "Inter-Processor Interrupts (IPIs) map to postMessage between Workers, or more efficiently, to Atomics.notify() on a shared memory location.",
+        "per_cpu_data_chirho": "Each Worker maintains its own per-CPU data in thread-local storage. The APIC ID maps to the Worker index.",
+        "spinlocks_chirho": "Rust's core::sync::atomic works on SharedArrayBuffer. Spinlocks compile correctly. Atomics.wait() provides proper blocking (no busy-spin needed).",
+        "boot_sequence_chirho": "SMP boot: main Worker (BSP) creates additional Workers (APs), passes SharedArrayBuffer to each, each Worker instantiates the kernel WASM module with shared memory, then enters its per-CPU idle loop."
+      }
+    },
+
+    "service_worker_chirho": {
+      "replaces_chirho": "Persistent background daemon / init system",
+      "browser_api_chirho": ["Service Worker API"],
+      "implementation_chirho": {
+        "persistent_kernel_chirho": "A Service Worker can run the kernel in the background, surviving tab closes. It intercepts network requests (acting as a proxy/firewall) and manages offline boot.",
+        "offline_boot_chirho": "Service Worker caches the kernel .wasm binary, bootloader JS, and initramfs. The OS boots offline.",
+        "push_notifications_chirho": "Push API enables wake-on-notification — like wake-on-LAN but for the browser kernel."
+      }
+    }
+  },
+
+  "compilation_approach_chirho": {
+    "target_triple_chirho": "wasm32-unknown-unknown",
+    "rust_flags_chirho": ["no_std", "no_main"],
+    "conditional_compilation_chirho": {
+      "strategy_chirho": "Use #[cfg(target_arch = \"wasm32\")] vs #[cfg(target_arch = \"x86_64\")] to select platform-specific implementations. Shared kernel logic (scheduler, VFS, syscall dispatch, process model) compiles for both.",
+      "example_chirho": {
+        "serial_output_chirho": "#[cfg(target_arch = \"x86_64\")] { Port::new(0x3F8).write(byte); } #[cfg(target_arch = \"wasm32\")] { extern \"C\" { fn platform_console_write_chirho(byte: u8); } unsafe { platform_console_write_chirho(byte); } }"
+      }
+    },
+
+    "wasm_imports_chirho": {
+      "description_chirho": "Functions the kernel expects the JS bootloader to provide (the 'hardware')",
+      "imports_chirho": [
+        { "module_chirho": "platform_chirho", "name_chirho": "console_write_chirho", "signature_chirho": "(byte: u8)", "purpose_chirho": "Serial output to console.log" },
+        { "module_chirho": "platform_chirho", "name_chirho": "console_read_chirho", "signature_chirho": "() -> i32", "purpose_chirho": "Serial input (-1 if no data)" },
+        { "module_chirho": "platform_chirho", "name_chirho": "timer_now_us_chirho", "signature_chirho": "() -> u64", "purpose_chirho": "Microsecond timestamp (performance.now() * 1000)" },
+        { "module_chirho": "platform_chirho", "name_chirho": "timer_set_alarm_chirho", "signature_chirho": "(us: u64)", "purpose_chirho": "Schedule a timer callback in N microseconds" },
+        { "module_chirho": "platform_chirho", "name_chirho": "display_flush_chirho", "signature_chirho": "(buffer_ptr: u32, width: u32, height: u32)", "purpose_chirho": "Blit framebuffer to canvas" },
+        { "module_chirho": "platform_chirho", "name_chirho": "display_write_char_chirho", "signature_chirho": "(row: u32, col: u32, ch: u8, color: u8)", "purpose_chirho": "Write char to text-mode display" },
+        { "module_chirho": "platform_chirho", "name_chirho": "input_poll_chirho", "signature_chirho": "(buffer_ptr: u32, max_events: u32) -> u32", "purpose_chirho": "Read pending input events" },
+        { "module_chirho": "platform_chirho", "name_chirho": "net_ws_open_chirho", "signature_chirho": "(url_ptr: u32, url_len: u32) -> i32", "purpose_chirho": "Open WebSocket connection, returns handle" },
+        { "module_chirho": "platform_chirho", "name_chirho": "net_ws_send_chirho", "signature_chirho": "(handle: i32, data_ptr: u32, data_len: u32) -> i32", "purpose_chirho": "Send data over WebSocket" },
+        { "module_chirho": "platform_chirho", "name_chirho": "net_ws_recv_chirho", "signature_chirho": "(handle: i32, buf_ptr: u32, buf_len: u32) -> i32", "purpose_chirho": "Receive data from WebSocket" },
+        { "module_chirho": "platform_chirho", "name_chirho": "net_ws_close_chirho", "signature_chirho": "(handle: i32)", "purpose_chirho": "Close WebSocket" },
+        { "module_chirho": "platform_chirho", "name_chirho": "block_read_chirho", "signature_chirho": "(block_num: u64, buf_ptr: u32, count: u32) -> i32", "purpose_chirho": "Read blocks from OPFS" },
+        { "module_chirho": "platform_chirho", "name_chirho": "block_write_chirho", "signature_chirho": "(block_num: u64, buf_ptr: u32, count: u32) -> i32", "purpose_chirho": "Write blocks to OPFS" },
+        { "module_chirho": "platform_chirho", "name_chirho": "block_sync_chirho", "signature_chirho": "()", "purpose_chirho": "Flush OPFS writes to disk" },
+        { "module_chirho": "platform_chirho", "name_chirho": "worker_spawn_chirho", "signature_chirho": "(entry_ptr: u32, stack_ptr: u32, arg: u32) -> i32", "purpose_chirho": "Spawn Web Worker (new CPU core or process)" },
+        { "module_chirho": "platform_chirho", "name_chirho": "worker_post_message_chirho", "signature_chirho": "(worker_id: i32, msg_ptr: u32, msg_len: u32)", "purpose_chirho": "Send IPI / message to another Worker" },
+        { "module_chirho": "platform_chirho", "name_chirho": "random_bytes_chirho", "signature_chirho": "(buf_ptr: u32, len: u32)", "purpose_chirho": "Fill buffer with crypto-random bytes (crypto.getRandomValues)" },
+        { "module_chirho": "platform_chirho", "name_chirho": "memory_grow_chirho", "signature_chirho": "(pages: u32) -> i32", "purpose_chirho": "Grow WASM memory (wraps memory.grow)" }
+      ]
+    },
+
+    "wasm_exports_chirho": {
+      "description_chirho": "Functions the kernel exposes to JS (the 'kernel API')",
+      "exports_chirho": [
+        { "name_chirho": "kernel_main_wasm_chirho", "signature_chirho": "(boot_info_ptr: u32)", "purpose_chirho": "Kernel entry point called by JS bootloader" },
+        { "name_chirho": "kernel_timer_tick_chirho", "signature_chirho": "()", "purpose_chirho": "Called by JS on timer interrupt (setInterval)" },
+        { "name_chirho": "kernel_key_event_chirho", "signature_chirho": "(scancode: u32, pressed: u32)", "purpose_chirho": "Called by JS on keyboard events" },
+        { "name_chirho": "kernel_mouse_event_chirho", "signature_chirho": "(dx: i32, dy: i32, buttons: u32)", "purpose_chirho": "Called by JS on mouse events" },
+        { "name_chirho": "kernel_net_recv_chirho", "signature_chirho": "(handle: i32, data_ptr: u32, data_len: u32)", "purpose_chirho": "Called by JS when WebSocket data arrives" },
+        { "name_chirho": "kernel_syscall_chirho", "signature_chirho": "(nr: u32, a0: u32, a1: u32, a2: u32, a3: u32, a4: u32, a5: u32) -> i32", "purpose_chirho": "Syscall entry from user processes (Web Workers)" },
+        { "name_chirho": "kernel_alloc_chirho", "signature_chirho": "(size: u32, align: u32) -> u32", "purpose_chirho": "Allocate kernel memory (for JS to place data)" },
+        { "name_chirho": "kernel_free_chirho", "signature_chirho": "(ptr: u32, size: u32, align: u32)", "purpose_chirho": "Free kernel memory" }
+      ]
+    },
+
+    "cargo_configuration_chirho": {
+      "workspace_member_chirho": "kernel-wasm-chirho",
+      "target_chirho": "wasm32-unknown-unknown",
+      "dependencies_chirho": {
+        "shared_with_x86_chirho": ["spin", "linked_list_allocator", "log"],
+        "x86_only_chirho": ["bootloader_api", "x86_64", "pic8259", "pc-keyboard"],
+        "wasm_only_chirho": []
+      },
+      "features_chirho": {
+        "wasm_chirho": "Enables wasm32 platform backends",
+        "x86_64_chirho": "Enables x86_64 platform backends (default)"
+      },
+      "build_command_chirho": "cargo build --target wasm32-unknown-unknown --release --no-default-features --features wasm_chirho"
+    }
+  },
+
+  "process_model_chirho": {
+    "recommended_approach_chirho": "Option C: Hybrid",
+    "description_chirho": "Kernel runs in the main Worker thread. Each user process runs in its own Web Worker with its own WASM instance. Syscalls are sent via postMessage (or SharedArrayBuffer + Atomics for synchronous syscalls).",
+
+    "option_a_chirho": {
+      "name_chirho": "Single-instance cooperative",
+      "description_chirho": "All processes in one WASM instance. Cooperative multitasking via async/generators or setjmp/longjmp-style context switching within linear memory.",
+      "pros_chirho": ["Simplest implementation", "No message-passing overhead for syscalls", "Shared memory trivially available"],
+      "cons_chirho": ["No true parallelism", "One infinite loop blocks everything", "No process isolation (any process can corrupt kernel memory)", "Cannot leverage multiple CPU cores"]
+    },
+
+    "option_b_chirho": {
+      "name_chirho": "Full Web Worker isolation",
+      "description_chirho": "Every process AND the kernel each run in separate Web Workers with separate WASM instances.",
+      "pros_chirho": ["True parallelism", "Strong isolation (separate linear memories)", "Most similar to real OS process model"],
+      "cons_chirho": ["High overhead for syscalls (postMessage serialization)", "Cannot share memory without SharedArrayBuffer", "Complex coordination for scheduler"]
+    },
+
+    "option_c_chirho": {
+      "name_chirho": "Hybrid (RECOMMENDED)",
+      "description_chirho": "Kernel in a dedicated Worker. User processes in their own Workers. SharedArrayBuffer for shared memory regions. Synchronous syscalls via Atomics.wait/notify on a shared syscall buffer.",
+      "pros_chirho": ["True parallelism for user processes", "Fast syscalls via shared memory + atomics (no postMessage serialization)", "Strong process isolation", "Kernel cannot be blocked by user process", "Scales to navigator.hardwareConcurrency cores"],
+      "cons_chirho": ["Requires SharedArrayBuffer (needs COOP/COEP headers)", "More complex than Option A"],
+      "syscall_flow_chirho": [
+        "1. User process writes syscall args to its designated slot in SharedArrayBuffer",
+        "2. User process calls Atomics.notify() to wake the kernel",
+        "3. User process calls Atomics.wait() to block until result is ready",
+        "4. Kernel Worker wakes, reads syscall args, dispatches via syscall_dispatch_chirho()",
+        "5. Kernel writes result to the shared slot",
+        "6. Kernel calls Atomics.notify() to wake the user process",
+        "7. User process reads result and continues"
+      ],
+      "latency_estimate_chirho": "Atomics-based syscall round-trip: ~1-5 microseconds (vs ~100-500ns for native SYSCALL instruction). Acceptable."
+    }
+  },
+
+  "js_bootloader_chirho": {
+    "description_chirho": "The JavaScript runtime that initializes the WASM kernel — equivalent to BIOS/UEFI + bootloader",
+    "file_chirho": "web-chirho/bootloader-chirho.js",
+    "boot_sequence_chirho": [
+      "1. HTML page loads, JS bootloader script runs",
+      "2. Check browser capabilities (SharedArrayBuffer, OPFS, WebGL, etc.)",
+      "3. Fetch kernel WASM binary (kernel-chirho.wasm) — like reading kernel from disk",
+      "4. Create WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true }) — 16MB initial, 1GB max",
+      "5. Build import object with all platform_chirho.* functions (the hardware drivers)",
+      "6. WebAssembly.instantiate(wasmBytes, importObject) — like loading kernel into memory",
+      "7. Set up DOM: create <canvas> for display, register keyboard/mouse listeners",
+      "8. Call exports.kernel_main_wasm_chirho(bootInfoPtr) — jump to kernel entry point",
+      "9. Start timer: setInterval(() => exports.kernel_timer_tick_chirho(), 1) — start timer IRQ",
+      "10. Start render loop: requestAnimationFrame(renderFrame) — start display refresh"
+    ],
+    "required_http_headers_chirho": {
+      "cross_origin_opener_policy_chirho": "same-origin",
+      "cross_origin_embedder_policy_chirho": "require-corp",
+      "reason_chirho": "Required for SharedArrayBuffer to be available (security requirement since Spectre mitigations)"
+    }
+  },
+
+  "file_structure_chirho": {
+    "new_files_and_directories_chirho": [
+      {
+        "path_chirho": "kernel-chirho/src/platform_chirho/mod.rs",
+        "purpose_chirho": "Platform abstraction layer — traits that x86_64 and wasm32 backends implement"
+      },
+      {
+        "path_chirho": "kernel-chirho/src/platform_chirho/x86_64_chirho.rs",
+        "purpose_chirho": "x86_64 platform backend (wraps existing code: serial, VGA, interrupts, memory)"
+      },
+      {
+        "path_chirho": "kernel-chirho/src/platform_chirho/wasm32_chirho.rs",
+        "purpose_chirho": "wasm32 platform backend (WASM imports calling JS)"
+      },
+      {
+        "path_chirho": "web-chirho/index-chirho.html",
+        "purpose_chirho": "Boot page — loads bootloader JS"
+      },
+      {
+        "path_chirho": "web-chirho/bootloader-chirho.ts",
+        "purpose_chirho": "JS/TS bootloader — fetches WASM, provides hardware imports, boots kernel"
+      },
+      {
+        "path_chirho": "web-chirho/drivers-chirho/display-chirho.ts",
+        "purpose_chirho": "Canvas-based display driver (VGA text + framebuffer)"
+      },
+      {
+        "path_chirho": "web-chirho/drivers-chirho/input-chirho.ts",
+        "purpose_chirho": "Keyboard/mouse event capture and scancode translation"
+      },
+      {
+        "path_chirho": "web-chirho/drivers-chirho/audio-chirho.ts",
+        "purpose_chirho": "Web Audio API sound driver"
+      },
+      {
+        "path_chirho": "web-chirho/drivers-chirho/network-chirho.ts",
+        "purpose_chirho": "WebSocket/WebRTC network driver"
+      },
+      {
+        "path_chirho": "web-chirho/drivers-chirho/block-chirho.ts",
+        "purpose_chirho": "OPFS/IndexedDB block device driver"
+      },
+      {
+        "path_chirho": "web-chirho/drivers-chirho/timer-chirho.ts",
+        "purpose_chirho": "Timer interrupt driver (setInterval + performance.now)"
+      },
+      {
+        "path_chirho": "web-chirho/drivers-chirho/worker-chirho.ts",
+        "purpose_chirho": "Web Worker management for SMP and process isolation"
+      },
+      {
+        "path_chirho": "web-chirho/terminal-chirho.ts",
+        "purpose_chirho": "DOM-based terminal emulator for serial console"
+      },
+      {
+        "path_chirho": "web-chirho/wrangler-chirho.toml",
+        "purpose_chirho": "Cloudflare Workers config for hosting the WASM kernel"
+      }
+    ],
+
+    "files_to_refactor_chirho": [
+      {
+        "file_chirho": "kernel-chirho/src/main_chirho.rs",
+        "change_chirho": "Add #[cfg(target_arch)] conditional compilation. Create wasm32 entry point alongside x86_64 entry point. Move x86-specific init into platform_chirho::x86_64_chirho."
+      },
+      {
+        "file_chirho": "kernel-chirho/src/serial_chirho.rs",
+        "change_chirho": "Replace x86_64::instructions::port::Port usage with PlatformConsoleChirho trait. On wasm32, calls extern 'C' console_write_chirho import."
+      },
+      {
+        "file_chirho": "kernel-chirho/src/vga_buffer_chirho.rs",
+        "change_chirho": "Replace volatile write to 0xB8000 with PlatformDisplayChirho trait. On wasm32, writes to a WASM linear memory region that JS reads."
+      },
+      {
+        "file_chirho": "kernel-chirho/src/interrupts_chirho.rs",
+        "change_chirho": "On wasm32, IDT/PIC initialization becomes no-ops. Timer and keyboard handlers become exported functions called from JS."
+      },
+      {
+        "file_chirho": "kernel-chirho/src/memory_chirho.rs",
+        "change_chirho": "Replace CR3 reads and OffsetPageTable with WasmLinearMemory. Frame allocator operates on WASM memory pages."
+      },
+      {
+        "file_chirho": "kernel-chirho/src/gdt_chirho.rs",
+        "change_chirho": "Entire module becomes no-op on wasm32 (no segmentation in WASM)."
+      },
+      {
+        "file_chirho": "kernel-chirho/src/syscall_chirho.rs",
+        "change_chirho": "Remove MSR setup on wasm32. Syscall entry is a plain exported function. SyscallFrameChirho simplified (no x86 registers to save)."
+      },
+      {
+        "file_chirho": "kernel-chirho/src/context_switch_chirho.rs",
+        "change_chirho": "On wasm32, context switch between cooperative tasks uses setjmp/longjmp-style stack switching or async/await. No assembly needed."
+      },
+      {
+        "file_chirho": "kernel-chirho/src/smp_chirho.rs",
+        "change_chirho": "SMP boot via Web Workers instead of INIT/SIPI sequences."
+      },
+      {
+        "file_chirho": "kernel-chirho/Cargo.toml",
+        "change_chirho": "Add [target.'cfg(target_arch = \"wasm32\")'.dependencies] section. Make x86_64/bootloader_api/pic8259 conditional on x86_64."
+      }
+    ]
+  },
+
+  "implementation_phases_chirho": {
+    "phase_w1_chirho": {
+      "name_chirho": "Platform Abstraction Layer",
+      "priority_chirho": "P0 — Foundation",
+      "tasks_chirho": [
+        "Create platform_chirho module with traits: PlatformConsoleChirho, PlatformDisplayChirho, PlatformTimerChirho, PlatformMemoryChirho, PlatformInterruptsChirho",
+        "Refactor serial_chirho.rs to use PlatformConsoleChirho trait behind #[cfg]",
+        "Refactor vga_buffer_chirho.rs to use PlatformDisplayChirho trait behind #[cfg]",
+        "Create wasm32 stubs that call extern 'C' imports",
+        "Make Cargo.toml dependencies conditional on target_arch",
+        "Create #[no_mangle] kernel_main_wasm_chirho entry point with #[cfg(target_arch = \"wasm32\")]",
+        "Verify: cargo build --target wasm32-unknown-unknown compiles (even if it does nothing yet)"
+      ],
+      "estimated_effort_chirho": "2-3 days"
+    },
+
+    "phase_w2_chirho": {
+      "name_chirho": "JS Bootloader & Serial Console",
+      "priority_chirho": "P0 — First visible output",
+      "tasks_chirho": [
+        "Create web-chirho/bootloader-chirho.ts — WASM loading, import provision, kernel boot",
+        "Create web-chirho/index-chirho.html — minimal boot page with canvas and terminal div",
+        "Implement console_write_chirho import (console.log + DOM terminal)",
+        "Implement timer_now_us_chirho import (performance.now)",
+        "Boot kernel in browser, see serial_println_chirho output in browser console",
+        "Create web-chirho/terminal-chirho.ts for in-page terminal rendering"
+      ],
+      "estimated_effort_chirho": "1-2 days",
+      "milestone_chirho": "Lineluya boots in a browser tab and prints 'John 3:16' to console"
+    },
+
+    "phase_w3_chirho": {
+      "name_chirho": "Memory Management & Heap",
+      "priority_chirho": "P0",
+      "tasks_chirho": [
+        "Implement WasmFrameAllocatorChirho using memory.grow",
+        "Port allocator_chirho.rs heap init to work on WASM linear memory",
+        "Verify Box, Vec, String allocations work in WASM",
+        "Implement memory_grow_chirho import"
+      ],
+      "estimated_effort_chirho": "1-2 days"
+    },
+
+    "phase_w4_chirho": {
+      "name_chirho": "Timer & Scheduler",
+      "priority_chirho": "P1",
+      "tasks_chirho": [
+        "Implement timer_set_alarm_chirho import (setTimeout)",
+        "Export kernel_timer_tick_chirho, wire to setInterval in bootloader",
+        "Verify scheduler_chirho round-robin works with timer ticks from JS",
+        "Implement cooperative context switch for wasm32 (stack-switching or coroutine-based)"
+      ],
+      "estimated_effort_chirho": "2-3 days"
+    },
+
+    "phase_w5_chirho": {
+      "name_chirho": "Display (VGA Text Mode in Canvas)",
+      "priority_chirho": "P1",
+      "tasks_chirho": [
+        "Create web-chirho/drivers-chirho/display-chirho.ts — Canvas text renderer",
+        "Implement display_write_char_chirho import",
+        "Implement display_flush_chirho import with requestAnimationFrame",
+        "Port VGA color palette to CSS colors",
+        "Render 80x25 text grid on <canvas>"
+      ],
+      "estimated_effort_chirho": "1-2 days",
+      "milestone_chirho": "VGA text output visible in browser canvas"
+    },
+
+    "phase_w6_chirho": {
+      "name_chirho": "Input (Keyboard & Mouse)",
+      "priority_chirho": "P1",
+      "tasks_chirho": [
+        "Create web-chirho/drivers-chirho/input-chirho.ts — DOM event capture",
+        "Build KeyboardEvent.code to PS/2 scancode translation table",
+        "Export kernel_key_event_chirho, wire to DOM keydown/keyup",
+        "Implement input_poll_chirho import",
+        "Test: type on keyboard, see characters on VGA canvas"
+      ],
+      "estimated_effort_chirho": "1-2 days"
+    },
+
+    "phase_w7_chirho": {
+      "name_chirho": "Block Device (OPFS Disk)",
+      "priority_chirho": "P2",
+      "tasks_chirho": [
+        "Create web-chirho/drivers-chirho/block-chirho.ts — OPFS SyncAccessHandle wrapper",
+        "Implement block_read_chirho / block_write_chirho / block_sync_chirho imports",
+        "Wire to kernel block_chirho layer",
+        "Test: write data, close tab, reopen, read data back"
+      ],
+      "estimated_effort_chirho": "2-3 days",
+      "milestone_chirho": "Persistent filesystem across browser restarts"
+    },
+
+    "phase_w8_chirho": {
+      "name_chirho": "Process Isolation (Web Worker Processes)",
+      "priority_chirho": "P2",
+      "tasks_chirho": [
+        "Create web-chirho/drivers-chirho/worker-chirho.ts — Worker lifecycle management",
+        "Implement worker_spawn_chirho import",
+        "Implement SharedArrayBuffer-based syscall channel",
+        "Implement Atomics.wait/notify for synchronous syscalls",
+        "Port exec_chirho to spawn user process as Web Worker",
+        "Run hello-chirho userspace program in a Web Worker"
+      ],
+      "estimated_effort_chirho": "3-5 days",
+      "milestone_chirho": "Userspace ELF (compiled to WASM) runs in a separate Web Worker"
+    },
+
+    "phase_w9_chirho": {
+      "name_chirho": "Networking (WebSocket)",
+      "priority_chirho": "P3",
+      "tasks_chirho": [
+        "Create web-chirho/drivers-chirho/network-chirho.ts",
+        "Implement net_ws_open/send/recv/close imports",
+        "Wire to kernel net_chirho socket layer",
+        "Build a simple echo server relay for testing"
+      ],
+      "estimated_effort_chirho": "2-3 days"
+    },
+
+    "phase_w10_chirho": {
+      "name_chirho": "SMP (Multi-Worker Kernel)",
+      "priority_chirho": "P3",
+      "tasks_chirho": [
+        "Spawn multiple kernel Workers sharing the same WebAssembly.Memory",
+        "Implement per-CPU scheduler queues",
+        "Implement IPI via Atomics.notify",
+        "Test: run multiple processes across multiple Worker cores"
+      ],
+      "estimated_effort_chirho": "3-5 days"
+    },
+
+    "phase_w11_chirho": {
+      "name_chirho": "Audio, Clipboard, Notifications",
+      "priority_chirho": "P4",
+      "tasks_chirho": [
+        "Web Audio API driver",
+        "Clipboard API integration",
+        "Notification API integration",
+        "Fullscreen API for immersive mode"
+      ],
+      "estimated_effort_chirho": "2-3 days"
+    }
+  },
+
+  "prior_art_research_chirho": {
+    "webvm_cheerpx_chirho": {
+      "url_chirho": "https://webvm.io/",
+      "github_chirho": "https://github.com/leaningtech/webvm",
+      "approach_chirho": "x86-to-WASM JIT (CheerpX engine). Runs unmodified x86 Linux binaries in the browser. CheerpOS is their WebAssembly kernel layer.",
+      "performance_chirho": "~20x slower than native, ~10x faster than v86",
+      "strengths_chirho": ["Runs unmodified Linux binaries", "Full Linux ABI compatibility", "Desktop environment (Xorg) support in v2.0", "Commercial backing (Leaning Technologies)"],
+      "weaknesses_chirho": ["Proprietary CheerpX engine (not open source)", "Still emulating x86 (inherent overhead)", "Large download size for CheerpX runtime"],
+      "lessons_for_lineluya_chirho": "Their CheerpOS concept validates that a WASM kernel is viable. Their OPFS usage for disk and WebSocket for networking are proven patterns we should follow."
+    },
+
+    "v86_chirho": {
+      "url_chirho": "https://github.com/copy/v86",
+      "approach_chirho": "Full x86 PC emulator written in JS/WASM. Emulates CPU, PIC, PIT, VGA, IDE, NE2000 etc. JIT-compiles x86 to WASM on the fly.",
+      "performance_chirho": "~44x slower than native",
+      "strengths_chirho": ["Fully open source", "Runs real OS images (Linux, Windows, FreeDOS)", "15k+ GitHub stars", "Complete hardware emulation"],
+      "weaknesses_chirho": ["Slow — full instruction-level emulation", "No 64-bit support", "High memory overhead"],
+      "lessons_for_lineluya_chirho": "v86 proves full OS-in-browser works but emulation is the wrong path. Native WASM compilation avoids the 44x overhead entirely."
+    },
+
+    "browsix_chirho": {
+      "url_chirho": "https://browsix.org/",
+      "paper_chirho": "ASPLOS 2017",
+      "approach_chirho": "Unix system calls reimplemented in JavaScript. Processes = Web Workers. Syscalls via postMessage. Shared filesystem in JS.",
+      "strengths_chirho": ["Academic rigor (published at ASPLOS)", "Clean process model (1 Worker = 1 process)", "Supports C/C++/Go/Node.js programs"],
+      "weaknesses_chirho": ["Async-only syscalls (slow for asm.js/WASM)", "No real kernel — just a JS compatibility layer", "Limited syscall coverage", "Not actively maintained"],
+      "lessons_for_lineluya_chirho": "Browsix's Worker-per-process model and postMessage-based syscall architecture informed our Option C hybrid design. Their synchronous syscall work (using SharedArrayBuffer + Atomics) is exactly the pattern we should use."
+    },
+
+    "nebulet_chirho": {
+      "url_chirho": "https://github.com/nebulet/nebulet",
+      "approach_chirho": "Rust microkernel that runs WASM in Ring 0. Opposite direction — WASM as userspace on bare metal, not kernel on WASM.",
+      "strengths_chirho": ["WASM sandbox eliminates need for Ring 0/3 separation", "Syscalls as function calls (no mode switch)", "Single address space for performance"],
+      "weaknesses_chirho": ["Project inactive", "Bare-metal only (no browser)", "Limited hardware support"],
+      "lessons_for_lineluya_chirho": "Nebulet validates that WASM's built-in safety eliminates the need for hardware protection rings. We apply the same insight in reverse — in the browser, WASM's sandbox IS the protection mechanism."
+    },
+
+    "kwast_chirho": {
+      "url_chirho": "https://github.com/kwast-os/kwast",
+      "approach_chirho": "Rust OS running WASM in Ring 0 (similar to Nebulet concept)",
+      "lessons_for_lineluya_chirho": "Confirms the pattern of WASM-as-userspace-in-single-address-space is a viable OS architecture."
+    },
+
+    "linux_wasm_port_chirho": {
+      "source_chirho": "Joel Severin's port of the Linux kernel to WASM",
+      "approach_chirho": "Compiling the actual Linux kernel source to WASM target",
+      "status_chirho": "Experimental, stability issues",
+      "lessons_for_lineluya_chirho": "Porting an existing C kernel to WASM is extremely difficult due to inline assembly, platform assumptions, and ABI differences. Writing a kernel in Rust with target_arch abstraction from the start is far more tractable."
+    },
+
+    "hyperlight_wasm_chirho": {
+      "url_chirho": "https://opensource.microsoft.com/blog/2025/03/26/hyperlight-wasm-fast-secure-and-os-free/",
+      "approach_chirho": "Microsoft's OS-free WASM VM using Hyperlight micro-VMs",
+      "lessons_for_lineluya_chirho": "Validates the trend of WASM as a universal execution environment. Their 'OS-free' approach (running WASM directly on a micro-VM) is the server-side equivalent of what we do in the browser."
+    }
+  },
+
+  "technical_challenges_chirho": {
+    "context_switching_in_wasm_chirho": {
+      "problem_chirho": "WASM does not support setjmp/longjmp or direct stack manipulation. The call stack is not accessible. Cannot save/restore execution context like on x86.",
+      "solutions_chirho": [
+        {
+          "name_chirho": "Asyncify / Stack Switching Proposal",
+          "description_chirho": "The WASM Stack Switching proposal (Phase 3 as of 2025) adds suspendable stacks. Asyncify (Binaryen pass) transforms WASM to support unwinding/rewinding the stack. This enables cooperative multitasking.",
+          "maturity_chirho": "Asyncify is production-ready (used by Emscripten). Stack Switching proposal is in Phase 3."
+        },
+        {
+          "name_chirho": "Separate Workers per task",
+          "description_chirho": "Each task runs in its own Web Worker. No context switching needed — the browser's thread scheduler handles it. Syscalls via SharedArrayBuffer+Atomics.",
+          "maturity_chirho": "Production-ready. This is the recommended approach for Option C."
+        },
+        {
+          "name_chirho": "Event-loop cooperative scheduling",
+          "description_chirho": "Each task runs until it yields (syscall or explicit yield). The scheduler is just a loop that calls task entry points. No preemption within a single WASM instance.",
+          "maturity_chirho": "Simple but limits to cooperative multitasking within a single Worker."
+        }
+      ]
+    },
+
+    "synchronous_syscalls_chirho": {
+      "problem_chirho": "Browser APIs are mostly asynchronous (Fetch, IndexedDB, etc). WASM code expects synchronous syscall semantics (call read(), get data back).",
+      "solutions_chirho": [
+        {
+          "name_chirho": "Atomics.wait() blocking",
+          "description_chirho": "User process (in Worker) calls Atomics.wait() to block synchronously until the kernel completes the async operation. The kernel Worker performs the async operation, writes the result, and calls Atomics.notify(). This provides synchronous semantics to the caller.",
+          "limitation_chirho": "Atomics.wait() cannot be called on the main thread (only in Workers). This is fine — we run everything in Workers."
+        },
+        {
+          "name_chirho": "OPFS SyncAccessHandle",
+          "description_chirho": "OPFS provides synchronous file I/O in Workers. read()/write() are synchronous. No async wrapper needed for file syscalls.",
+          "limitation_chirho": "Only available in Workers. Only for file I/O."
+        }
+      ]
+    },
+
+    "background_tab_throttling_chirho": {
+      "problem_chirho": "Browsers throttle setTimeout/setInterval to ~1Hz in background tabs. The scheduler would effectively stop.",
+      "solutions_chirho": [
+        "Run kernel scheduler tick in a Web Worker (Workers are NOT throttled in background)",
+        "Use a Service Worker for persistence",
+        "Use Web Locks API to prevent throttling",
+        "AudioWorklet maintains high-frequency callbacks even in background (hack)"
+      ]
+    },
+
+    "shared_array_buffer_availability_chirho": {
+      "problem_chirho": "SharedArrayBuffer requires COOP/COEP HTTP headers due to Spectre mitigations. Not all hosting environments support these headers.",
+      "solution_chirho": "Require proper headers. Cloudflare Workers can set these headers. Provide a fallback mode without SMP (single-Worker mode) for environments without SharedArrayBuffer."
+    },
+
+    "wasm_memory_limit_chirho": {
+      "problem_chirho": "WASM linear memory maximum is typically 4GB (32-bit address space). wasm64 (memory64 proposal) is not yet widely available.",
+      "solution_chirho": "4GB is sufficient for initial use. Each process in its own Worker gets its own 4GB address space. Kernel + all kernel data structures must fit in one 4GB space. For larger needs, memory64 proposal or multi-memory proposal."
+    },
+
+    "elf_loading_chirho": {
+      "problem_chirho": "User programs currently compiled as x86_64 ELF. Cannot run x86 ELF on WASM.",
+      "solution_chirho": "User programs must be compiled to wasm32 (just like the kernel). The exec_chirho module loads WASM modules instead of ELF binaries. The userspace ABI is WASM function calls instead of SYSCALL instruction. For Linux binary compatibility, could integrate a WASM-based x86 emulator (v86-style) as a compatibility layer — but native WASM userspace is preferred."
+    }
+  },
+
+  "deployment_chirho": {
+    "hosting_chirho": "Cloudflare Workers + Cloudflare Pages",
+    "url_chirho": "lineluya.com or similar",
+    "build_pipeline_chirho": [
+      "1. cargo build --target wasm32-unknown-unknown --release (produces kernel-chirho.wasm)",
+      "2. wasm-opt -O3 kernel-chirho.wasm -o kernel-chirho.opt.wasm (optimize with Binaryen)",
+      "3. bun build web-chirho/bootloader-chirho.ts --outdir dist-chirho/ (bundle JS bootloader)",
+      "4. Copy kernel-chirho.opt.wasm, index-chirho.html, bundled JS to dist-chirho/",
+      "5. wrangler deploy (deploy to Cloudflare Workers with correct COOP/COEP headers)"
+    ],
+    "cloudflare_worker_headers_chirho": {
+      "cross_origin_opener_policy_chirho": "same-origin",
+      "cross_origin_embedder_policy_chirho": "require-corp"
+    }
+  },
+
+  "performance_expectations_chirho": {
+    "overhead_vs_native_chirho": "WASM execution: ~1.2-2x slower than native for compute-bound code. Syscall overhead: ~5-10x (Atomics round-trip vs native SYSCALL). I/O: limited by browser API latency (OPFS ~100-200 MB/s, WebSocket depends on network).",
+    "vs_v86_chirho": "Expected ~20-40x faster than v86 (no instruction emulation)",
+    "vs_cheerpx_chirho": "Expected ~5-10x faster than CheerpX (no x86-to-WASM JIT translation)",
+    "memory_footprint_chirho": "Kernel WASM binary: ~200KB-1MB after wasm-opt. Runtime memory: 16MB initial, grows as needed. JS bootloader + drivers: ~50-100KB bundled."
+  }
+}
