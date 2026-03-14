@@ -24,6 +24,7 @@ mod elf_chirho;
 mod scheduler_chirho;
 mod context_switch_chirho;
 mod uaccess_chirho;
+mod mm_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use bootloader_api::config::Mapping;

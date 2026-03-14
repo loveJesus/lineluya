@@ -624,8 +624,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg4_chirho as i32,
             _arg5_chirho,
         ),
-        SYS_MPROTECT_CHIRHO => 0,              // silently succeed for now
-        SYS_MUNMAP_CHIRHO => 0,                 // silently succeed for now
+        SYS_MPROTECT_CHIRHO => sys_mprotect_chirho(
+            arg0_chirho,
+            arg1_chirho,
+            arg2_chirho as u32,
+        ),
+        SYS_MUNMAP_CHIRHO => sys_munmap_chirho(
+            arg0_chirho,
+            arg1_chirho,
+        ),
         SYS_BRK_CHIRHO => sys_brk_chirho(arg0_chirho),
         SYS_RT_SIGACTION_CHIRHO => 0,           // silently succeed (no signals yet)
         SYS_RT_SIGPROCMASK_CHIRHO => 0,         // silently succeed
@@ -1015,26 +1022,72 @@ fn sys_getpid_chirho() -> i64 {
     1
 }
 
-/// `mmap(2)` stub.
+/// `mmap(2)` implementation.
 ///
-/// Currently returns -ENOMEM for all requests.  A real implementation requires
-/// a virtual memory area (VMA) subsystem, page-fault-driven lazy allocation,
-/// and file-backed mapping support.
+/// Delegates to [`crate::mm_chirho::MmChirho::mmap_chirho`] for anonymous
+/// `MAP_PRIVATE` mappings.  Lazily initialises the global memory descriptor
+/// on first call.
 fn sys_mmap_chirho(
-    _addr_chirho: u64,
-    _length_chirho: u64,
-    _prot_chirho: u32,
-    _flags_chirho: u32,
-    _fd_chirho: i32,
-    _offset_chirho: u64,
+    addr_chirho: u64,
+    length_chirho: u64,
+    prot_chirho: u32,
+    flags_chirho: u32,
+    fd_chirho: i32,
+    offset_chirho: u64,
 ) -> i64 {
-    // TODO: Implement anonymous mmap (MAP_ANONYMOUS | MAP_PRIVATE) as the
-    // first step, since that is what the C library uses for large allocations.
-    crate::serial_println_chirho!(
-        "[SYSCALL] mmap(addr={:#x}, len={:#x}, prot={:#x}, flags={:#x}, fd={}, off={:#x}) -> ENOMEM (stub)",
-        _addr_chirho, _length_chirho, _prot_chirho, _flags_chirho, _fd_chirho, _offset_chirho,
-    );
-    -ENOMEM_CHIRHO
+    let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
+    let mut guard_chirho = mm_lock_chirho.lock();
+    match guard_chirho.as_mut() {
+        Some(mm_chirho) => match mm_chirho.mmap_chirho(
+            addr_chirho,
+            length_chirho,
+            prot_chirho,
+            flags_chirho,
+            fd_chirho,
+            offset_chirho,
+        ) {
+            Ok(mapped_addr_chirho) => mapped_addr_chirho as i64,
+            Err(errno_chirho) => errno_chirho,
+        },
+        None => -ENOMEM_CHIRHO,
+    }
+}
+
+/// `mprotect(2)` implementation.
+///
+/// Delegates to [`crate::mm_chirho::MmChirho::mprotect_chirho`].
+fn sys_mprotect_chirho(
+    addr_chirho: u64,
+    len_chirho: u64,
+    prot_chirho: u32,
+) -> i64 {
+    let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
+    let mut guard_chirho = mm_lock_chirho.lock();
+    match guard_chirho.as_mut() {
+        Some(mm_chirho) => match mm_chirho.mprotect_chirho(addr_chirho, len_chirho, prot_chirho) {
+            Ok(()) => 0,
+            Err(errno_chirho) => errno_chirho,
+        },
+        None => -ENOMEM_CHIRHO,
+    }
+}
+
+/// `munmap(2)` implementation.
+///
+/// Delegates to [`crate::mm_chirho::MmChirho::munmap_chirho`].
+fn sys_munmap_chirho(
+    addr_chirho: u64,
+    len_chirho: u64,
+) -> i64 {
+    let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
+    let mut guard_chirho = mm_lock_chirho.lock();
+    match guard_chirho.as_mut() {
+        Some(mm_chirho) => match mm_chirho.munmap_chirho(addr_chirho, len_chirho) {
+            Ok(()) => 0,
+            Err(errno_chirho) => errno_chirho,
+        },
+        None => -ENOMEM_CHIRHO,
+    }
 }
 
 /// `set_tid_address(2)` implementation.
