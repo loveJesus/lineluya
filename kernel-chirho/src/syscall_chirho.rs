@@ -465,6 +465,65 @@ pub const SYS_IO_URING_REGISTER_CHIRHO: u64 = 427;
 /// `clone3(2)` -- create a child process (extended).
 pub const SYS_CLONE3_CHIRHO: u64 = 435;
 
+// --- Phase 10: Massive syscall coverage additions ---
+
+/// `fchmod(2)` -- change file mode by fd.
+pub const SYS_FCHMOD_CHIRHO: u64 = 91;
+/// `fchown(2)` -- change file owner by fd.
+pub const SYS_FCHOWN_CHIRHO: u64 = 93;
+/// `lchown(2)` -- change file owner (no dereference).
+pub const SYS_LCHOWN_CHIRHO: u64 = 94;
+/// `umask(2)` -- set file mode creation mask.
+pub const SYS_UMASK_CHIRHO: u64 = 95;
+/// `getrlimit(2)` -- get resource limits.
+pub const SYS_GETRLIMIT_CHIRHO: u64 = 97;
+/// `lsetxattr(2)` -- set extended attribute (no dereference).
+pub const SYS_LSETXATTR_CHIRHO: u64 = 189;
+/// `fsetxattr(2)` -- set extended attribute by fd.
+pub const SYS_FSETXATTR_CHIRHO: u64 = 190;
+/// `lgetxattr(2)` -- get extended attribute (no dereference).
+pub const SYS_LGETXATTR_CHIRHO: u64 = 192;
+/// `fgetxattr(2)` -- get extended attribute by fd.
+pub const SYS_FGETXATTR_CHIRHO: u64 = 193;
+/// `llistxattr(2)` -- list extended attributes (no dereference).
+pub const SYS_LLISTXATTR_CHIRHO: u64 = 195;
+/// `flistxattr(2)` -- list extended attributes by fd.
+pub const SYS_FLISTXATTR_CHIRHO: u64 = 196;
+/// `lremovexattr(2)` -- remove extended attribute (no dereference).
+pub const SYS_LREMOVEXATTR_CHIRHO: u64 = 198;
+/// `fremovexattr(2)` -- remove extended attribute by fd.
+pub const SYS_FREMOVEXATTR_CHIRHO: u64 = 199;
+/// `ioprio_set(2)` -- set I/O scheduling class and priority.
+pub const SYS_IOPRIO_SET_CHIRHO: u64 = 251;
+/// `ioprio_get(2)` -- get I/O scheduling class and priority.
+pub const SYS_IOPRIO_GET_CHIRHO: u64 = 252;
+/// `inotify_add_watch(2)` -- add a watch to an inotify instance.
+pub const SYS_INOTIFY_ADD_WATCH_CHIRHO: u64 = 254;
+/// `inotify_rm_watch(2)` -- remove a watch from an inotify instance.
+pub const SYS_INOTIFY_RM_WATCH_CHIRHO: u64 = 255;
+/// `fchownat(2)` -- change file owner relative to directory fd.
+pub const SYS_FCHOWNAT_CHIRHO: u64 = 260;
+/// `linkat(2)` -- create a hard link relative to directory fds.
+pub const SYS_LINKAT_CHIRHO: u64 = 265;
+/// `symlinkat(2)` -- create a symbolic link relative to directory fd.
+pub const SYS_SYMLINKAT_CHIRHO: u64 = 266;
+/// `fchmodat(2)` -- change file mode relative to directory fd.
+pub const SYS_FCHMODAT_CHIRHO: u64 = 268;
+/// `sync_file_range(2)` -- sync a file segment with disk.
+pub const SYS_SYNC_FILE_RANGE_CHIRHO: u64 = 277;
+/// `utimensat(2)` -- change file timestamps with nanosecond precision.
+pub const SYS_UTIMENSAT_CHIRHO: u64 = 280;
+/// `inotify_init1(2)` -- initialize an inotify instance.
+pub const SYS_INOTIFY_INIT1_CHIRHO: u64 = 294;
+/// `fanotify_init(2)` -- create and initialize a fanotify group.
+pub const SYS_FANOTIFY_INIT_CHIRHO: u64 = 300;
+/// `fanotify_mark(2)` -- add, remove, or modify a fanotify mark.
+pub const SYS_FANOTIFY_MARK_CHIRHO: u64 = 301;
+/// `name_to_handle_at(2)` -- obtain handle for a pathname.
+pub const SYS_NAME_TO_HANDLE_AT_CHIRHO: u64 = 303;
+/// `open_by_handle_at(2)` -- open file via a handle.
+pub const SYS_OPEN_BY_HANDLE_AT_CHIRHO: u64 = 304;
+
 // --- Phase 5+6+7 syscall number additions ---
 
 /// `sendmsg(2)` -- send a message on a socket.
@@ -1588,6 +1647,62 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // --- Phase 8+9: io_uring ---
         SYS_IO_URING_SETUP_CHIRHO | SYS_IO_URING_ENTER_CHIRHO
         | SYS_IO_URING_REGISTER_CHIRHO => -ENOSYS_CHIRHO,
+
+        // --- Phase 10: Massive syscall coverage ---
+
+        // Permission-related: we're root, silently succeed
+        SYS_FCHMOD_CHIRHO | SYS_FCHMODAT_CHIRHO => 0,
+        SYS_FCHOWN_CHIRHO | SYS_FCHOWNAT_CHIRHO | SYS_LCHOWN_CHIRHO => 0,
+        SYS_UMASK_CHIRHO => {
+            // umask returns the previous mask; stub always returns 0o022
+            0o022
+        },
+
+        // Resource limits
+        SYS_GETRLIMIT_CHIRHO => {
+            // Write a permissive rlimit struct
+            if arg1_chirho != 0 {
+                let rlim_chirho = Rlimit64Chirho {
+                    rlim_cur_chirho: RLIM_INFINITY_CHIRHO,
+                    rlim_max_chirho: RLIM_INFINITY_CHIRHO,
+                };
+                unsafe { core::ptr::write(arg1_chirho as *mut Rlimit64Chirho, rlim_chirho); }
+            }
+            0
+        },
+
+        // Extended attributes (l*/f* variants): not supported
+        SYS_LSETXATTR_CHIRHO | SYS_FSETXATTR_CHIRHO => -ENOTSUP_CHIRHO,
+        SYS_LGETXATTR_CHIRHO | SYS_FGETXATTR_CHIRHO => -ENOTSUP_CHIRHO,
+        SYS_LLISTXATTR_CHIRHO | SYS_FLISTXATTR_CHIRHO => -ENOTSUP_CHIRHO,
+        SYS_LREMOVEXATTR_CHIRHO | SYS_FREMOVEXATTR_CHIRHO => -ENOTSUP_CHIRHO,
+
+        // I/O priority: stub (return default class)
+        SYS_IOPRIO_SET_CHIRHO => 0,
+        SYS_IOPRIO_GET_CHIRHO => 0, // IOPRIO_CLASS_NONE
+
+        // inotify: return -ENOSYS (not implemented)
+        SYS_INOTIFY_INIT1_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_INOTIFY_ADD_WATCH_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_INOTIFY_RM_WATCH_CHIRHO => -ENOSYS_CHIRHO,
+
+        // fanotify: return -ENOSYS (not implemented)
+        SYS_FANOTIFY_INIT_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_FANOTIFY_MARK_CHIRHO => -ENOSYS_CHIRHO,
+
+        // Handle-based open: return -ENOSYS
+        SYS_NAME_TO_HANDLE_AT_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_OPEN_BY_HANDLE_AT_CHIRHO => -ENOSYS_CHIRHO,
+
+        // sync_file_range: advisory, silently succeed
+        SYS_SYNC_FILE_RANGE_CHIRHO => 0,
+
+        // utimensat: stub, silently succeed
+        SYS_UTIMENSAT_CHIRHO => 0,
+
+        // linkat / symlinkat: not implemented yet
+        SYS_LINKAT_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_SYMLINKAT_CHIRHO => -ENOSYS_CHIRHO,
 
         // Catch-all for unimplemented syscalls.
         unknown_chirho => {
@@ -3377,6 +3492,35 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_IO_URING_ENTER_CHIRHO => "io_uring_enter",
         SYS_IO_URING_REGISTER_CHIRHO => "io_uring_register",
         SYS_CLONE3_CHIRHO => "clone3",
+        // Phase 10: Massive syscall coverage
+        SYS_FCHMOD_CHIRHO => "fchmod",
+        SYS_FCHOWN_CHIRHO => "fchown",
+        SYS_LCHOWN_CHIRHO => "lchown",
+        SYS_UMASK_CHIRHO => "umask",
+        SYS_GETRLIMIT_CHIRHO => "getrlimit",
+        SYS_LSETXATTR_CHIRHO => "lsetxattr",
+        SYS_FSETXATTR_CHIRHO => "fsetxattr",
+        SYS_LGETXATTR_CHIRHO => "lgetxattr",
+        SYS_FGETXATTR_CHIRHO => "fgetxattr",
+        SYS_LLISTXATTR_CHIRHO => "llistxattr",
+        SYS_FLISTXATTR_CHIRHO => "flistxattr",
+        SYS_LREMOVEXATTR_CHIRHO => "lremovexattr",
+        SYS_FREMOVEXATTR_CHIRHO => "fremovexattr",
+        SYS_IOPRIO_SET_CHIRHO => "ioprio_set",
+        SYS_IOPRIO_GET_CHIRHO => "ioprio_get",
+        SYS_INOTIFY_INIT1_CHIRHO => "inotify_init1",
+        SYS_INOTIFY_ADD_WATCH_CHIRHO => "inotify_add_watch",
+        SYS_INOTIFY_RM_WATCH_CHIRHO => "inotify_rm_watch",
+        SYS_FCHOWNAT_CHIRHO => "fchownat",
+        SYS_FCHMODAT_CHIRHO => "fchmodat",
+        SYS_LINKAT_CHIRHO => "linkat",
+        SYS_SYMLINKAT_CHIRHO => "symlinkat",
+        SYS_SYNC_FILE_RANGE_CHIRHO => "sync_file_range",
+        SYS_UTIMENSAT_CHIRHO => "utimensat",
+        SYS_FANOTIFY_INIT_CHIRHO => "fanotify_init",
+        SYS_FANOTIFY_MARK_CHIRHO => "fanotify_mark",
+        SYS_NAME_TO_HANDLE_AT_CHIRHO => "name_to_handle_at",
+        SYS_OPEN_BY_HANDLE_AT_CHIRHO => "open_by_handle_at",
         _ => "unknown",
     }
 }
