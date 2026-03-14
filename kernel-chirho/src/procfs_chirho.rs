@@ -1,0 +1,732 @@
+// For God so loved the world that he gave his only begotten Son,
+// that whoever believes in him should not perish but have eternal life. - John 3:16
+
+//! procfs — virtual filesystem exposing kernel and process information.
+//!
+//! Equivalent to Linux's `fs/proc/`.  Files are generated dynamically on each
+//! read; there is no backing storage.
+
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use alloc::format;
+use spin::Mutex;
+
+use crate::vfs_chirho::{
+    DentryChirho, FileChirho, FileOpsChirho, InodeChirho, InodeOpsChirho,
+    SuperOpsChirho, SuperblockChirho, StatfsChirho,
+    S_IFDIR_CHIRHO, S_IFREG_CHIRHO, S_IFLNK_CHIRHO,
+    SEEK_SET_CHIRHO, SEEK_CUR_CHIRHO, SEEK_END_CHIRHO,
+};
+
+// ---------------------------------------------------------------------------
+// Errno constants (matching Linux values)
+// ---------------------------------------------------------------------------
+
+const ENOENT_CHIRHO: i64 = 2;
+const EIO_CHIRHO: i64 = 5;
+const ENOTDIR_CHIRHO: i64 = 20;
+const EISDIR_CHIRHO: i64 = 21;
+const EINVAL_CHIRHO: i64 = 22;
+const EROFS_CHIRHO: i64 = 30;
+
+// ---------------------------------------------------------------------------
+// Proc magic number (matches Linux PROC_SUPER_MAGIC)
+// ---------------------------------------------------------------------------
+
+const PROC_SUPER_MAGIC_CHIRHO: u64 = 0x9fa0;
+
+// ---------------------------------------------------------------------------
+// Dynamic content generator stored in fs_data_chirho
+// ---------------------------------------------------------------------------
+
+/// Wrapper so we can store a `fn() -> String` inside `Box<dyn Any + Send>`.
+struct ProcGeneratorChirho {
+    generate_chirho: fn() -> String,
+}
+
+/// Wrapper for symlink targets stored in `fs_data_chirho`.
+struct ProcSymlinkTargetChirho {
+    target_chirho: String,
+}
+
+// ---------------------------------------------------------------------------
+// Content generators for each /proc file
+// ---------------------------------------------------------------------------
+
+fn gen_version_chirho() -> String {
+    String::from("Lineluya version 0.2.0 (Rust) John 3:16\n")
+}
+
+fn gen_cpuinfo_chirho() -> String {
+    String::from("processor\t: 0\nvendor_id\t: Lineluya\nmodel name\t: Lineluya Virtual CPU\n")
+}
+
+fn gen_meminfo_chirho() -> String {
+    String::from("MemTotal:       524288 kB\nMemFree:        262144 kB\nMemAvailable:   262144 kB\n")
+}
+
+fn gen_uptime_chirho() -> String {
+    let ticks_chirho = crate::scheduler_chirho::tick_count_chirho();
+    let seconds_chirho = ticks_chirho / 100;
+    let hundredths_chirho = ticks_chirho % 100;
+    format!("{}.{:02} 0.00\n", seconds_chirho, hundredths_chirho)
+}
+
+fn gen_stat_chirho() -> String {
+    String::from("cpu  0 0 0 0 0 0 0 0 0 0\n")
+}
+
+fn gen_filesystems_chirho() -> String {
+    String::from("nodev\ttmpfs\nnodev\tproc\nnodev\tdevtmpfs\n")
+}
+
+fn gen_mounts_chirho() -> String {
+    String::from("none / tmpfs rw 0 0\nproc /proc proc rw 0 0\n")
+}
+
+fn gen_cmdline_chirho() -> String {
+    String::from("lineluya_chirho\n")
+}
+
+fn gen_loadavg_chirho() -> String {
+    String::from("0.00 0.00 0.00 1/1 1\n")
+}
+
+// ---------------------------------------------------------------------------
+// Inode number allocation
+// ---------------------------------------------------------------------------
+
+static NEXT_INO_CHIRHO: spin::Mutex<u64> = spin::Mutex::new(1);
+
+fn alloc_ino_chirho() -> u64 {
+    let mut ino_chirho = NEXT_INO_CHIRHO.lock();
+    let val_chirho = *ino_chirho;
+    *ino_chirho += 1;
+    val_chirho
+}
+
+// ---------------------------------------------------------------------------
+// ProcFileOpsChirho — file operations for /proc regular files
+// ---------------------------------------------------------------------------
+
+/// File operations for proc entries that generate content dynamically.
+struct ProcFileOpsChirho;
+
+static PROC_FILE_OPS_CHIRHO: ProcFileOpsChirho = ProcFileOpsChirho;
+
+impl FileOpsChirho for ProcFileOpsChirho {
+    fn read_chirho(
+        &self,
+        file_chirho: &mut FileChirho,
+        buf_chirho: &mut [u8],
+    ) -> Result<usize, i64> {
+        // Generate the content dynamically from the inode's fs_data_chirho.
+        let content_chirho = {
+            let inode_chirho = file_chirho.inode_chirho.lock();
+            if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
+                if let Some(gen_chirho) = data_chirho.downcast_ref::<ProcGeneratorChirho>() {
+                    (gen_chirho.generate_chirho)()
+                } else {
+                    return Err(-EIO_CHIRHO);
+                }
+            } else {
+                return Err(-EIO_CHIRHO);
+            }
+        };
+
+        let bytes_chirho = content_chirho.as_bytes();
+        let pos_chirho = file_chirho.pos_chirho as usize;
+
+        if pos_chirho >= bytes_chirho.len() {
+            return Ok(0); // EOF
+        }
+
+        let remaining_chirho = &bytes_chirho[pos_chirho..];
+        let to_copy_chirho = remaining_chirho.len().min(buf_chirho.len());
+        buf_chirho[..to_copy_chirho].copy_from_slice(&remaining_chirho[..to_copy_chirho]);
+        file_chirho.pos_chirho += to_copy_chirho as u64;
+
+        Ok(to_copy_chirho)
+    }
+
+    fn write_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _buf_chirho: &[u8],
+    ) -> Result<usize, i64> {
+        Err(-EROFS_CHIRHO) // procfs is read-only
+    }
+
+    fn seek_chirho(
+        &self,
+        file_chirho: &mut FileChirho,
+        offset_chirho: i64,
+        whence_chirho: u32,
+    ) -> Result<u64, i64> {
+        // Generate content to know the size.
+        let size_chirho = {
+            let inode_chirho = file_chirho.inode_chirho.lock();
+            if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
+                if let Some(gen_chirho) = data_chirho.downcast_ref::<ProcGeneratorChirho>() {
+                    (gen_chirho.generate_chirho)().len() as i64
+                } else {
+                    0i64
+                }
+            } else {
+                0i64
+            }
+        };
+
+        let new_pos_chirho = match whence_chirho {
+            SEEK_SET_CHIRHO => offset_chirho,
+            SEEK_CUR_CHIRHO => file_chirho.pos_chirho as i64 + offset_chirho,
+            SEEK_END_CHIRHO => size_chirho + offset_chirho,
+            _ => return Err(-EINVAL_CHIRHO),
+        };
+
+        if new_pos_chirho < 0 {
+            return Err(-EINVAL_CHIRHO);
+        }
+
+        file_chirho.pos_chirho = new_pos_chirho as u64;
+        Ok(file_chirho.pos_chirho)
+    }
+
+    fn ioctl_chirho(
+        &self,
+        _file_chirho: &FileChirho,
+        _cmd_chirho: u64,
+        _arg_chirho: u64,
+    ) -> Result<i64, i64> {
+        Err(-EINVAL_CHIRHO)
+    }
+
+    fn readdir_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _callback_chirho: &mut dyn FnMut(&str, u64, u8) -> bool,
+    ) -> Result<usize, i64> {
+        Err(-ENOTDIR_CHIRHO)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProcDirOpsChirho — file operations for /proc directory
+// ---------------------------------------------------------------------------
+
+/// File operations for the /proc directory itself.
+struct ProcDirOpsChirho;
+
+static PROC_DIR_OPS_CHIRHO: ProcDirOpsChirho = ProcDirOpsChirho;
+
+impl FileOpsChirho for ProcDirOpsChirho {
+    fn read_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _buf_chirho: &mut [u8],
+    ) -> Result<usize, i64> {
+        Err(-EISDIR_CHIRHO)
+    }
+
+    fn write_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _buf_chirho: &[u8],
+    ) -> Result<usize, i64> {
+        Err(-EISDIR_CHIRHO)
+    }
+
+    fn seek_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _offset_chirho: i64,
+        _whence_chirho: u32,
+    ) -> Result<u64, i64> {
+        Err(-EISDIR_CHIRHO)
+    }
+
+    fn ioctl_chirho(
+        &self,
+        _file_chirho: &FileChirho,
+        _cmd_chirho: u64,
+        _arg_chirho: u64,
+    ) -> Result<i64, i64> {
+        Err(-EINVAL_CHIRHO)
+    }
+
+    fn readdir_chirho(
+        &self,
+        file_chirho: &mut FileChirho,
+        callback_chirho: &mut dyn FnMut(&str, u64, u8) -> bool,
+    ) -> Result<usize, i64> {
+        // Enumerate children of the /proc dentry stored in fs_data_chirho.
+        let inode_chirho = file_chirho.inode_chirho.lock();
+        if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
+            if let Some(entries_chirho) = data_chirho.downcast_ref::<ProcDirEntriesChirho>() {
+                let mut count_chirho: usize = 0;
+                // DT_DIR = 4, DT_REG = 8, DT_LNK = 10
+                for entry_chirho in &entries_chirho.entries_chirho {
+                    let dt_type_chirho = match entry_chirho.mode_chirho & 0o170000 {
+                        0o040000 => 4u8,  // DT_DIR
+                        0o120000 => 10u8, // DT_LNK
+                        _ => 8u8,         // DT_REG
+                    };
+                    if !callback_chirho(
+                        &entry_chirho.name_chirho,
+                        entry_chirho.ino_chirho,
+                        dt_type_chirho,
+                    ) {
+                        break;
+                    }
+                    count_chirho += 1;
+                }
+                return Ok(count_chirho);
+            }
+        }
+        Ok(0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProcDirInodeOpsChirho — inode operations for /proc directory
+// ---------------------------------------------------------------------------
+
+/// Inode operations for the /proc directory (lookup, etc.).
+struct ProcDirInodeOpsChirho;
+
+static PROC_DIR_INODE_OPS_CHIRHO: ProcDirInodeOpsChirho = ProcDirInodeOpsChirho;
+
+impl InodeOpsChirho for ProcDirInodeOpsChirho {
+    fn lookup_chirho(
+        &self,
+        parent_chirho: &InodeChirho,
+        name_chirho: &str,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        if let Some(ref data_chirho) = parent_chirho.fs_data_chirho {
+            if let Some(entries_chirho) = data_chirho.downcast_ref::<ProcDirEntriesChirho>() {
+                for entry_chirho in &entries_chirho.entries_chirho {
+                    if entry_chirho.name_chirho == name_chirho {
+                        return Ok(entry_chirho.inode_chirho.clone());
+                    }
+                }
+            }
+        }
+        Err(-ENOENT_CHIRHO)
+    }
+
+    fn create_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+        _mode_chirho: u32,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        Err(-EROFS_CHIRHO)
+    }
+
+    fn mkdir_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+        _mode_chirho: u32,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        Err(-EROFS_CHIRHO)
+    }
+
+    fn unlink_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<(), i64> {
+        Err(-EROFS_CHIRHO)
+    }
+
+    fn rmdir_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<(), i64> {
+        Err(-EROFS_CHIRHO)
+    }
+
+    fn readlink_chirho(
+        &self,
+        _inode_chirho: &InodeChirho,
+    ) -> Result<String, i64> {
+        Err(-EINVAL_CHIRHO)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProcSymlinkInodeOpsChirho — inode operations for /proc symlinks
+// ---------------------------------------------------------------------------
+
+struct ProcSymlinkInodeOpsChirho;
+
+static PROC_SYMLINK_INODE_OPS_CHIRHO: ProcSymlinkInodeOpsChirho = ProcSymlinkInodeOpsChirho;
+
+impl InodeOpsChirho for ProcSymlinkInodeOpsChirho {
+    fn lookup_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        Err(-ENOTDIR_CHIRHO)
+    }
+
+    fn create_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+        _mode_chirho: u32,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        Err(-ENOTDIR_CHIRHO)
+    }
+
+    fn mkdir_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+        _mode_chirho: u32,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        Err(-ENOTDIR_CHIRHO)
+    }
+
+    fn unlink_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<(), i64> {
+        Err(-ENOTDIR_CHIRHO)
+    }
+
+    fn rmdir_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<(), i64> {
+        Err(-ENOTDIR_CHIRHO)
+    }
+
+    fn readlink_chirho(
+        &self,
+        inode_chirho: &InodeChirho,
+    ) -> Result<String, i64> {
+        if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
+            if let Some(target_chirho) = data_chirho.downcast_ref::<ProcSymlinkTargetChirho>() {
+                return Ok(target_chirho.target_chirho.clone());
+            }
+        }
+        Err(-EINVAL_CHIRHO)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NullInodeOpsChirho — no-op inode ops for regular proc files
+// ---------------------------------------------------------------------------
+
+struct NullInodeOpsChirho;
+
+static NULL_INODE_OPS_CHIRHO: NullInodeOpsChirho = NullInodeOpsChirho;
+
+impl InodeOpsChirho for NullInodeOpsChirho {
+    fn lookup_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        Err(-ENOTDIR_CHIRHO)
+    }
+
+    fn create_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+        _mode_chirho: u32,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        Err(-EROFS_CHIRHO)
+    }
+
+    fn mkdir_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+        _mode_chirho: u32,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        Err(-EROFS_CHIRHO)
+    }
+
+    fn unlink_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<(), i64> {
+        Err(-EROFS_CHIRHO)
+    }
+
+    fn rmdir_chirho(
+        &self,
+        _parent_chirho: &InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<(), i64> {
+        Err(-EROFS_CHIRHO)
+    }
+
+    fn readlink_chirho(
+        &self,
+        _inode_chirho: &InodeChirho,
+    ) -> Result<String, i64> {
+        Err(-EINVAL_CHIRHO)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProcDirEntriesChirho — stored in the directory inode's fs_data_chirho
+// ---------------------------------------------------------------------------
+
+/// Holds the list of child entries for a proc directory inode.
+struct ProcDirEntriesChirho {
+    entries_chirho: Vec<ProcEntryChirho>,
+}
+
+/// One entry in a proc directory.
+struct ProcEntryChirho {
+    name_chirho: String,
+    ino_chirho: u64,
+    mode_chirho: u32,
+    inode_chirho: Arc<InodeChirho>,
+}
+
+// ---------------------------------------------------------------------------
+// ProcSuperOpsChirho — superblock operations for procfs
+// ---------------------------------------------------------------------------
+
+struct ProcSuperOpsChirho;
+
+static PROC_SUPER_OPS_CHIRHO: ProcSuperOpsChirho = ProcSuperOpsChirho;
+
+impl SuperOpsChirho for ProcSuperOpsChirho {
+    fn alloc_inode_chirho(&self) -> Arc<InodeChirho> {
+        Arc::new(InodeChirho {
+            ino_chirho: alloc_ino_chirho(),
+            mode_chirho: S_IFREG_CHIRHO | 0o444,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: 0,
+            nlink_chirho: 1,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: &NULL_INODE_OPS_CHIRHO,
+            fs_data_chirho: None,
+        })
+    }
+
+    fn statfs_chirho(&self) -> Result<StatfsChirho, i64> {
+        Ok(StatfsChirho {
+            f_type_chirho: PROC_SUPER_MAGIC_CHIRHO,
+            f_bsize_chirho: 4096,
+            f_blocks_chirho: 0,
+            f_bfree_chirho: 0,
+            f_bavail_chirho: 0,
+            f_files_chirho: 0,
+            f_ffree_chirho: 0,
+            f_namelen_chirho: 255,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: create a regular proc file inode
+// ---------------------------------------------------------------------------
+
+fn make_proc_file_chirho(generator_chirho: fn() -> String) -> Arc<InodeChirho> {
+    Arc::new(InodeChirho {
+        ino_chirho: alloc_ino_chirho(),
+        mode_chirho: S_IFREG_CHIRHO | 0o444,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: 0,
+        nlink_chirho: 1,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &NULL_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(ProcGeneratorChirho {
+            generate_chirho: generator_chirho,
+        })),
+    })
+}
+
+/// Create a symlink inode pointing to `target_chirho`.
+fn make_proc_symlink_chirho(target_chirho: &str) -> Arc<InodeChirho> {
+    Arc::new(InodeChirho {
+        ino_chirho: alloc_ino_chirho(),
+        mode_chirho: S_IFLNK_CHIRHO | 0o777,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: target_chirho.len() as u64,
+        nlink_chirho: 1,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &PROC_SYMLINK_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(ProcSymlinkTargetChirho {
+            target_chirho: String::from(target_chirho),
+        })),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// mount_procfs_chirho — creates and returns the /proc superblock
+// ---------------------------------------------------------------------------
+
+/// Mount the procfs virtual filesystem, returning a `SuperblockChirho`
+/// with all pre-populated entries.
+pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
+    // Build the individual proc file inodes.
+    let version_inode_chirho = make_proc_file_chirho(gen_version_chirho);
+    let cpuinfo_inode_chirho = make_proc_file_chirho(gen_cpuinfo_chirho);
+    let meminfo_inode_chirho = make_proc_file_chirho(gen_meminfo_chirho);
+    let uptime_inode_chirho = make_proc_file_chirho(gen_uptime_chirho);
+    let stat_inode_chirho = make_proc_file_chirho(gen_stat_chirho);
+    let filesystems_inode_chirho = make_proc_file_chirho(gen_filesystems_chirho);
+    let mounts_inode_chirho = make_proc_file_chirho(gen_mounts_chirho);
+    let cmdline_inode_chirho = make_proc_file_chirho(gen_cmdline_chirho);
+    let loadavg_inode_chirho = make_proc_file_chirho(gen_loadavg_chirho);
+    let self_inode_chirho = make_proc_symlink_chirho("/proc/1");
+
+    // Build the directory entries list for readdir / lookup.
+    let entries_chirho = alloc::vec![
+        ProcEntryChirho {
+            name_chirho: String::from("version"),
+            ino_chirho: version_inode_chirho.ino_chirho,
+            mode_chirho: version_inode_chirho.mode_chirho,
+            inode_chirho: version_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("cpuinfo"),
+            ino_chirho: cpuinfo_inode_chirho.ino_chirho,
+            mode_chirho: cpuinfo_inode_chirho.mode_chirho,
+            inode_chirho: cpuinfo_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("meminfo"),
+            ino_chirho: meminfo_inode_chirho.ino_chirho,
+            mode_chirho: meminfo_inode_chirho.mode_chirho,
+            inode_chirho: meminfo_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("uptime"),
+            ino_chirho: uptime_inode_chirho.ino_chirho,
+            mode_chirho: uptime_inode_chirho.mode_chirho,
+            inode_chirho: uptime_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("stat"),
+            ino_chirho: stat_inode_chirho.ino_chirho,
+            mode_chirho: stat_inode_chirho.mode_chirho,
+            inode_chirho: stat_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("filesystems"),
+            ino_chirho: filesystems_inode_chirho.ino_chirho,
+            mode_chirho: filesystems_inode_chirho.mode_chirho,
+            inode_chirho: filesystems_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("mounts"),
+            ino_chirho: mounts_inode_chirho.ino_chirho,
+            mode_chirho: mounts_inode_chirho.mode_chirho,
+            inode_chirho: mounts_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("cmdline"),
+            ino_chirho: cmdline_inode_chirho.ino_chirho,
+            mode_chirho: cmdline_inode_chirho.mode_chirho,
+            inode_chirho: cmdline_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("loadavg"),
+            ino_chirho: loadavg_inode_chirho.ino_chirho,
+            mode_chirho: loadavg_inode_chirho.mode_chirho,
+            inode_chirho: loadavg_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("self"),
+            ino_chirho: self_inode_chirho.ino_chirho,
+            mode_chirho: self_inode_chirho.mode_chirho,
+            inode_chirho: self_inode_chirho.clone(),
+        },
+    ];
+
+    // Build the root directory inode for /proc.
+    let root_ino_chirho = alloc_ino_chirho();
+    let root_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+        ino_chirho: root_ino_chirho,
+        mode_chirho: S_IFDIR_CHIRHO | 0o555,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: 0,
+        nlink_chirho: 2,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(ProcDirEntriesChirho { entries_chirho })),
+    }));
+
+    // Build child dentries for the dcache tree.
+    let mut children_chirho: Vec<Arc<Mutex<DentryChirho>>> = Vec::new();
+
+    let file_inodes_chirho: Vec<(&str, Arc<InodeChirho>)> = alloc::vec![
+        ("version", version_inode_chirho),
+        ("cpuinfo", cpuinfo_inode_chirho),
+        ("meminfo", meminfo_inode_chirho),
+        ("uptime", uptime_inode_chirho),
+        ("stat", stat_inode_chirho),
+        ("filesystems", filesystems_inode_chirho),
+        ("mounts", mounts_inode_chirho),
+        ("cmdline", cmdline_inode_chirho),
+        ("loadavg", loadavg_inode_chirho),
+        ("self", self_inode_chirho),
+    ];
+
+    for (name_chirho, inode_chirho) in &file_inodes_chirho {
+        children_chirho.push(Arc::new(Mutex::new(DentryChirho {
+            name_chirho: String::from(*name_chirho),
+            inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+                ino_chirho: inode_chirho.ino_chirho,
+                mode_chirho: inode_chirho.mode_chirho,
+                uid_chirho: 0,
+                gid_chirho: 0,
+                size_chirho: inode_chirho.size_chirho,
+                nlink_chirho: 1,
+                atime_chirho: 0,
+                mtime_chirho: 0,
+                ctime_chirho: 0,
+                ops_chirho: inode_chirho.ops_chirho,
+                fs_data_chirho: None, // Dentry inodes don't need fs_data
+            }))),
+            parent_chirho: None, // Will not be set here to avoid circular Arc
+            children_chirho: Vec::new(),
+        })));
+    }
+
+    // Build the root dentry.
+    let root_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("/"),
+        inode_chirho: Some(root_inode_chirho),
+        parent_chirho: None,
+        children_chirho,
+    }));
+
+    // Build and return the superblock.
+    Arc::new(Mutex::new(SuperblockChirho {
+        fs_type_chirho: "proc",
+        root_chirho: root_dentry_chirho,
+        flags_chirho: 0,
+        ops_chirho: &PROC_SUPER_OPS_CHIRHO,
+    }))
+}

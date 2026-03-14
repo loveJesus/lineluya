@@ -278,6 +278,8 @@ pub const SYS_FACCESSAT_CHIRHO: u64 = 269;
 pub const SYS_GETDENTS64_CHIRHO: u64 = 217;
 /// `statx(2)` -- get file status (extended).
 pub const SYS_STATX_CHIRHO: u64 = 332;
+/// `pipe2(2)` -- create pipe with flags.
+pub const SYS_PIPE2_CHIRHO: u64 = 293;
 /// `rseq(2)` -- restartable sequences.
 pub const SYS_RSEQ_CHIRHO: u64 = 334;
 
@@ -581,7 +583,7 @@ const CLOCK_MONOTONIC_CHIRHO: u64 = 1;
 // ============================================================================
 
 /// Global xorshift64 PRNG state, seeded from TSC on first use.
-static PRNG_STATE_CHIRHO: AtomicU64 = AtomicU64::new(0);
+pub static PRNG_STATE_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
 /// Global tick counter for clock_gettime monotonic approximation.
 static TICK_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
@@ -805,7 +807,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho as i32,
         ),
         SYS_ACCESS_CHIRHO => sys_access_chirho(),
-        SYS_PIPE_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
         SYS_SELECT_CHIRHO => -ENOSYS_CHIRHO,
         SYS_SCHED_YIELD_CHIRHO => {
             // Yield: just return success (no scheduler yet).
@@ -823,10 +825,26 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_SOCKET_CHIRHO | SYS_CONNECT_CHIRHO | SYS_ACCEPT_CHIRHO
         | SYS_SENDTO_CHIRHO | SYS_RECVFROM_CHIRHO | SYS_SHUTDOWN_CHIRHO
         | SYS_BIND_CHIRHO | SYS_LISTEN_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_CLONE_CHIRHO | SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_EXECVE_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_CLONE_CHIRHO => crate::process_chirho::sys_clone_chirho(
+            arg0_chirho,
+            arg1_chirho,
+            arg2_chirho,
+            arg3_chirho,
+            arg4_chirho,
+        ),
+        SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO => crate::process_chirho::sys_fork_chirho(),
+        SYS_EXECVE_CHIRHO => crate::process_chirho::sys_execve_chirho(
+            arg0_chirho,
+            arg1_chirho,
+            arg2_chirho,
+        ),
         SYS_EXIT_CHIRHO => sys_exit_chirho(arg0_chirho as i32),
-        SYS_WAIT4_CHIRHO => -ECHILD_CHIRHO,
+        SYS_WAIT4_CHIRHO => crate::process_chirho::sys_wait4_chirho(
+            arg0_chirho as i64,
+            arg1_chirho,
+            arg2_chirho as u32,
+            arg3_chirho,
+        ),
         SYS_KILL_CHIRHO => crate::signal_chirho::sys_kill_chirho(
             arg0_chirho,
             arg1_chirho as u32,
@@ -885,6 +903,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg0_chirho as *mut u8,
             arg1_chirho as usize,
             arg2_chirho as u32,
+        ),
+        SYS_PIPE2_CHIRHO => crate::pipe_chirho::sys_pipe2_chirho(
+            arg0_chirho,
+            arg1_chirho as u32,
         ),
         SYS_GETDENTS64_CHIRHO => -ENOSYS_CHIRHO,  // needs VFS
         SYS_STATX_CHIRHO => -ENOSYS_CHIRHO,       // stub for now
@@ -1418,7 +1440,7 @@ fn rdtsc_chirho() -> u64 {
 }
 
 /// Xorshift64 PRNG step.
-fn xorshift64_chirho(state_chirho: u64) -> u64 {
+pub fn xorshift64_chirho(state_chirho: u64) -> u64 {
     let mut x_chirho = state_chirho;
     x_chirho ^= x_chirho << 13;
     x_chirho ^= x_chirho >> 7;
@@ -1758,6 +1780,7 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_FACCESSAT_CHIRHO => "faccessat",
         SYS_GETRANDOM_CHIRHO => "getrandom",
         SYS_STATX_CHIRHO => "statx",
+        SYS_PIPE2_CHIRHO => "pipe2",
         SYS_RSEQ_CHIRHO => "rseq",
         _ => "unknown",
     }

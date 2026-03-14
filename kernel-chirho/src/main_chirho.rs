@@ -18,6 +18,9 @@ mod allocator_chirho;
 
 // Phase 3: Virtual Filesystem Switch (VFS)
 mod vfs_chirho;
+mod tmpfs_chirho;
+mod devtmpfs_chirho;
+mod procfs_chirho;
 
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
@@ -30,6 +33,8 @@ mod uaccess_chirho;
 mod mm_chirho;
 mod exec_chirho;
 mod signal_chirho;
+mod pipe_chirho;
+mod process_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use bootloader_api::config::Mapping;
