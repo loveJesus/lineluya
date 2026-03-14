@@ -1350,7 +1350,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // --- Phase 7 partial: Security stubs ---
         SYS_CAPGET_CHIRHO | SYS_CAPSET_CHIRHO => 0,
         SYS_SECCOMP_CHIRHO => 0,
-        SYS_BPF_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_BPF_CHIRHO => crate::bpf_chirho::sys_bpf_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
         SYS_UNSHARE_CHIRHO => 0,
         SYS_SETNS_CHIRHO => -ENOSYS_CHIRHO,
         SYS_LANDLOCK_CREATE_RULESET_CHIRHO => -ENOSYS_CHIRHO,
@@ -1637,8 +1639,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // --- Phase 8+9: system ---
         SYS_SYSLOG_CHIRHO => -EPERM_CHIRHO,
         SYS_REBOOT_CHIRHO => {
-            crate::serial_println_chirho!("[SYSCALL] reboot() -- halting");
-            loop { x86_64::instructions::hlt(); }
+            crate::power_chirho::sys_reboot_real_chirho(
+                arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho,
+            );
+            // sys_reboot_real_chirho is diverging (-> !), unreachable
         },
         SYS_GETRUSAGE_CHIRHO => {
             // Write a zeroed rusage struct
@@ -1653,9 +1657,16 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_SETXATTR_CHIRHO | SYS_GETXATTR_CHIRHO
         | SYS_LISTXATTR_CHIRHO | SYS_REMOVEXATTR_CHIRHO => -ENOTSUP_CHIRHO,
 
-        // --- Phase 8+9: io_uring ---
-        SYS_IO_URING_SETUP_CHIRHO | SYS_IO_URING_ENTER_CHIRHO
-        | SYS_IO_URING_REGISTER_CHIRHO => -ENOSYS_CHIRHO,
+        // --- Phase 9: io_uring ---
+        SYS_IO_URING_SETUP_CHIRHO => crate::io_uring_chirho::sys_io_uring_setup_chirho(
+            arg0_chirho, arg1_chirho,
+        ),
+        SYS_IO_URING_ENTER_CHIRHO => crate::io_uring_chirho::sys_io_uring_enter_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho,
+        ),
+        SYS_IO_URING_REGISTER_CHIRHO => crate::io_uring_chirho::sys_io_uring_register_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho,
+        ),
 
         // --- Phase 10: Massive syscall coverage ---
 
@@ -1712,6 +1723,22 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // linkat / symlinkat: not implemented yet
         SYS_LINKAT_CHIRHO => -ENOSYS_CHIRHO,
         SYS_SYMLINKAT_CHIRHO => -ENOSYS_CHIRHO,
+
+        // --- Phase 9: Kernel module loading ---
+        SYS_INIT_MODULE_CHIRHO => crate::module_chirho::sys_init_module_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_DELETE_MODULE_CHIRHO => crate::module_chirho::sys_delete_module_chirho(
+            arg0_chirho, arg1_chirho,
+        ),
+        SYS_FINIT_MODULE_CHIRHO => crate::module_chirho::sys_finit_module_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+
+        // --- Phase 9: Tracing / perf ---
+        SYS_PERF_EVENT_OPEN_CHIRHO => crate::trace_chirho::sys_perf_event_open_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho,
+        ),
 
         // Catch-all for unimplemented syscalls.
         unknown_chirho => {

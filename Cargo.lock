@@ -40,6 +40,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-core-chirho"
+version = "0.1.0"
+dependencies = [
+ "linked_list_allocator",
+ "log",
+ "spin",
+]
+
+[[package]]
 name = "linked_list_allocator"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

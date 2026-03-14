@@ -10,6 +10,7 @@ members = [
 ]
 exclude = [
     "userspace-chirho/hello-chirho",
+    "userspace-chirho/shell-test-chirho",
     "kernel-wasm-chirho",
 ]
 

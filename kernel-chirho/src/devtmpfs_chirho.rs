@@ -245,18 +245,35 @@ pub static DEV_URANDOM_OPS_CHIRHO: DevUrandomOpsChirho = DevUrandomOpsChirho;
 // ---------------------------------------------------------------------------
 
 /// File operations for `/dev/console` and `/dev/tty`.
-/// - read returns 0 bytes (no input buffer implemented yet).
-/// - write sends bytes to the serial port.
+///
+/// Delegates read to the global TTY0 line discipline (keyboard input buffer)
+/// and write to the TTY0 output path (serial port with OPOST/ONLCR processing).
 pub struct DevConsoleOpsChirho;
 
 impl FileOpsChirho for DevConsoleOpsChirho {
     fn read_chirho(
         &self,
         _file_chirho: &mut FileChirho,
-        _buf_chirho: &mut [u8],
+        buf_chirho: &mut [u8],
     ) -> Result<usize, i64> {
-        // No serial input buffering yet; return 0 (no data available).
-        Ok(0)
+        if buf_chirho.is_empty() {
+            return Ok(0);
+        }
+
+        // Read from the global TTY0 line discipline, which holds
+        // characters pushed by the keyboard interrupt handler.
+        let tty_chirho = crate::tty_chirho::tty0_chirho();
+        let mut ldisc_chirho = tty_chirho.ldisc_chirho.lock();
+        if !ldisc_chirho.has_data_chirho() {
+            // No data available — return 0 (non-blocking).
+            // Once wait queues are wired to userspace, this will block.
+            return Ok(0);
+        }
+
+        let data_chirho = ldisc_chirho.read_chirho(buf_chirho.len());
+        let n_chirho = data_chirho.len();
+        buf_chirho[..n_chirho].copy_from_slice(&data_chirho);
+        Ok(n_chirho)
     }
 
     fn write_chirho(
@@ -264,10 +281,9 @@ impl FileOpsChirho for DevConsoleOpsChirho {
         _file_chirho: &mut FileChirho,
         buf_chirho: &[u8],
     ) -> Result<usize, i64> {
-        // Write each byte to the serial port via the serial_print macro.
-        for &byte_chirho in buf_chirho {
-            crate::serial_print_chirho!("{}", byte_chirho as char);
-        }
+        // Write through the TTY output path (applies OPOST/ONLCR).
+        let tty_chirho = crate::tty_chirho::tty0_chirho();
+        tty_chirho.write_output_chirho(buf_chirho);
         Ok(buf_chirho.len())
     }
 
@@ -277,16 +293,19 @@ impl FileOpsChirho for DevConsoleOpsChirho {
         _offset_chirho: i64,
         _whence_chirho: u32,
     ) -> Result<u64, i64> {
-        Ok(0) // not seekable
+        Err(-29) // ESPIPE — TTYs are not seekable
     }
 
     fn ioctl_chirho(
         &self,
-        _file_chirho: &FileChirho,
-        _cmd_chirho: u64,
-        _arg_chirho: u64,
+        file_chirho: &FileChirho,
+        cmd_chirho: u64,
+        arg_chirho: u64,
     ) -> Result<i64, i64> {
-        Err(-ENOSYS_CHIRHO)
+        // Delegate ioctl to the TTY file ops (TCGETS, TCSETS, TIOCGWINSZ).
+        let tty_chirho = crate::tty_chirho::tty0_chirho();
+        let tty_ops_chirho = crate::tty_chirho::TtyFileOpsChirho::new_chirho(tty_chirho);
+        tty_ops_chirho.ioctl_chirho(file_chirho, cmd_chirho, arg_chirho)
     }
 
     fn readdir_chirho(
@@ -294,7 +313,7 @@ impl FileOpsChirho for DevConsoleOpsChirho {
         _file_chirho: &mut FileChirho,
         _callback_chirho: &mut dyn FnMut(&str, u64, u8) -> bool,
     ) -> Result<usize, i64> {
-        Err(-EINVAL_CHIRHO)
+        Err(-20) // ENOTDIR
     }
 }
 

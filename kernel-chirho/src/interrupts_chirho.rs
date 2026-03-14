@@ -263,9 +263,15 @@ extern "x86-interrupt" fn keyboard_interrupt_handler_chirho(
         if let Some(key_chirho) = keyboard_chirho.process_keyevent(key_event_chirho) {
             match key_chirho {
                 pc_keyboard::DecodedKey::Unicode(character_chirho) => {
-                    crate::serial_println_chirho!("[KBD] {}", character_chirho);
+                    // Feed the character into the TTY line discipline.
+                    // The TTY handles echo, canonical-mode buffering, and
+                    // waking any tasks blocked on read().
+                    let tty_chirho = crate::tty_chirho::tty0_chirho();
+                    tty_chirho.input_char_chirho(character_chirho as u8);
                 }
                 pc_keyboard::DecodedKey::RawKey(key_raw_chirho) => {
+                    // Non-Unicode keys (arrows, function keys, etc.) are
+                    // logged but not forwarded to the TTY input buffer.
                     crate::serial_println_chirho!("[KBD] {:?}", key_raw_chirho);
                 }
             }
