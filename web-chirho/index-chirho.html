@@ -6,6 +6,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lineluya — Linux Kernel in Your Browser</title>
+  <!-- xterm.js from CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5/css/xterm.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -63,16 +65,9 @@
       display: block;
       image-rendering: pixelated;
     }
-    #terminal-chirho {
-      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-      font-size: 13px;
-      line-height: 1.4;
-      padding: 0.8rem;
-      height: 400px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      color: #0f0;
-      background: #000;
+    #xterm-container-chirho {
+      padding: 4px;
+      background: #0a0a0a;
     }
     .controls-chirho {
       padding: 1rem 2rem;
@@ -135,22 +130,27 @@
       <canvas id="framebuffer-chirho" width="640" height="400"></canvas>
     </div>
     <div class="panel-chirho">
-      <h2>Serial Console</h2>
-      <div id="terminal-chirho"></div>
+      <h2>Serial Console (xterm.js)</h2>
+      <div id="xterm-container-chirho"></div>
     </div>
   </div>
 
   <footer>
     <p>
-      Lineluya Kernel — 16,246 lines of Rust compiled to WebAssembly.
+      Lineluya Kernel — Rust compiled to WebAssembly.
       No emulation. Browser APIs are the hardware.
       <a href="https://github.com/loveJesus/lineluya">GitHub</a>
       — Soli Deo Gloria
     </p>
   </footer>
 
+  <!-- xterm.js from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5/lib/xterm.min.js"></script>
   <script src="runtime-chirho.js"></script>
   <script>
+    // For God so loved the world that he gave his only begotten Son,
+    // that whoever believes in him should not perish but have eternal life. - John 3:16
+
     let runtimeChirho = null;
 
     async function bootKernelChirho() {
@@ -162,7 +162,7 @@
       statusChirho.textContent = 'Booting...';
       statusChirho.className = 'status-chirho';
 
-      runtimeChirho = new LineluyaRuntimeChirho('framebuffer-chirho', 'terminal-chirho');
+      runtimeChirho = new LineluyaRuntimeChirho('framebuffer-chirho', 'xterm-container-chirho');
 
       try {
         await runtimeChirho.bootChirho('lineluya-kernel-chirho.wasm');

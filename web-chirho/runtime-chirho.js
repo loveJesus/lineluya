@@ -7,8 +7,8 @@
  * This JavaScript module provides the "hardware" that the WASM kernel
  * imports. It maps browser APIs to kernel driver interfaces:
  *
+ *   xterm.js  → Serial console (terminal emulation)
  *   Canvas    → Framebuffer
- *   console   → Serial port
  *   OPFS      → Block device
  *   WebSocket → Network interface
  *   DOM events → Input devices
@@ -16,51 +16,106 @@
  */
 
 class LineluyaRuntimeChirho {
-  constructor(canvasIdChirho, terminalIdChirho) {
+  constructor(canvasIdChirho, xtermContainerIdChirho) {
     this.canvasChirho = document.getElementById(canvasIdChirho);
     this.ctxChirho = this.canvasChirho?.getContext('2d');
-    this.terminalChirho = document.getElementById(terminalIdChirho);
+    this.xtermContainerChirho = document.getElementById(xtermContainerIdChirho);
+    this.terminalChirho = null; // xterm.js Terminal instance
     this.instanceChirho = null;
     this.memoryChirho = null;
     this.framebufferPtrChirho = 0;
     this.fbWidthChirho = 0;
     this.fbHeightChirho = 0;
-    this.keyQueueChirho = [];
+    this.inputBufferChirho = []; // Bytes queued from xterm.js onData
     this.runningChirho = false;
+  }
 
-    // Keyboard input
-    document.addEventListener('keydown', (eChirho) => {
-      this.keyQueueChirho.push({
-        keycodeChirho: eChirho.keyCode,
-        flagsChirho: (eChirho.shiftKey ? 1 : 0) | (eChirho.ctrlKey ? 2 : 0) | (eChirho.altKey ? 4 : 0),
-      });
-      if (this.instanceChirho) {
-        this.instanceChirho.exports.kernel_keydown_wasm_chirho(eChirho.keyCode,
-          (eChirho.shiftKey ? 1 : 0) | (eChirho.ctrlKey ? 2 : 0) | (eChirho.altKey ? 4 : 0));
+  /** Initialize xterm.js terminal */
+  initTerminalChirho() {
+    if (!this.xtermContainerChirho) return;
+
+    // Clear any existing content safely
+    while (this.xtermContainerChirho.firstChild) {
+      this.xtermContainerChirho.removeChild(this.xtermContainerChirho.firstChild);
+    }
+
+    this.terminalChirho = new window.Terminal({
+      cursorBlink: true,
+      cursorStyle: 'block',
+      fontSize: 14,
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace",
+      theme: {
+        background: '#0a0a0a',
+        foreground: '#e0e0e0',
+        cursor: '#7c9bff',
+        selectionBackground: '#7c9bff44',
+        black: '#0a0a0a',
+        red: '#ff5555',
+        green: '#50fa7b',
+        yellow: '#f1fa8c',
+        blue: '#7c9bff',
+        magenta: '#ff79c6',
+        cyan: '#8be9fd',
+        white: '#e0e0e0',
+        brightBlack: '#6272a4',
+        brightRed: '#ff6e6e',
+        brightGreen: '#69ff94',
+        brightYellow: '#ffffa5',
+        brightBlue: '#d6acff',
+        brightMagenta: '#ff92df',
+        brightCyan: '#a4ffff',
+        brightWhite: '#ffffff',
+      },
+      rows: 24,
+      cols: 80,
+      scrollback: 1000,
+      convertEol: false,
+    });
+
+    this.terminalChirho.open(this.xtermContainerChirho);
+
+    // When user types in xterm, queue bytes for kernel to read
+    this.terminalChirho.onData((dataChirho) => {
+      for (let iChirho = 0; iChirho < dataChirho.length; iChirho++) {
+        this.inputBufferChirho.push(dataChirho.charCodeAt(iChirho));
       }
     });
+
+    // Focus the terminal
+    this.terminalChirho.focus();
   }
 
   /** Build the WASM import object — these are the "hardware drivers" */
   getImportsChirho() {
     const selfChirho = this;
     return {
-      env: {
-        // --- Serial Console ---
+      lineluya_chirho: {
+        // --- Serial Console (xterm.js) ---
         js_console_write_chirho(ptrChirho, lenChirho) {
           const bytesChirho = new Uint8Array(selfChirho.memoryChirho.buffer, ptrChirho, lenChirho);
           const textChirho = new TextDecoder().decode(bytesChirho);
           if (selfChirho.terminalChirho) {
-            selfChirho.terminalChirho.textContent += textChirho;
-            selfChirho.terminalChirho.scrollTop = selfChirho.terminalChirho.scrollHeight;
+            selfChirho.terminalChirho.write(textChirho);
           }
-          // Also log to browser console
-          if (textChirho.trim()) console.log('[KERNEL]', textChirho.trimEnd());
+          // Also log to browser console (strip ANSI for readability)
+          const cleanChirho = textChirho.replace(/\x1b\[[0-9;]*m/g, '').trimEnd();
+          if (cleanChirho) console.log('[KERNEL]', cleanChirho);
+        },
+
+        // --- Console read from xterm.js input buffer ---
+        js_console_read_chirho(bufPtrChirho, maxLenChirho) {
+          const countChirho = Math.min(selfChirho.inputBufferChirho.length, maxLenChirho);
+          if (countChirho === 0) return 0;
+          const viewChirho = new Uint8Array(selfChirho.memoryChirho.buffer, bufPtrChirho, countChirho);
+          for (let iChirho = 0; iChirho < countChirho; iChirho++) {
+            viewChirho[iChirho] = selfChirho.inputBufferChirho.shift();
+          }
+          return countChirho;
         },
 
         // --- Timer ---
         js_timestamp_us_chirho() {
-          return BigInt(Math.floor(performance.now() * 1000));
+          return performance.now() * 1000;
         },
 
         js_yield_chirho() {
@@ -69,21 +124,19 @@ class LineluyaRuntimeChirho {
         },
 
         // --- Framebuffer (Canvas) ---
-        js_framebuffer_init_chirho(widthChirho, heightChirho) {
+        js_fb_init_chirho(widthChirho, heightChirho) {
           selfChirho.fbWidthChirho = widthChirho;
           selfChirho.fbHeightChirho = heightChirho;
           if (selfChirho.canvasChirho) {
             selfChirho.canvasChirho.width = widthChirho;
             selfChirho.canvasChirho.height = heightChirho;
           }
-          // Allocate framebuffer in WASM memory
-          // For now, return a fixed offset (kernel manages memory)
-          const bytesNeededChirho = widthChirho * heightChirho * 4; // RGBA
-          selfChirho.framebufferPtrChirho = 0x100000; // 1MB offset
+          const bytesNeededChirho = widthChirho * heightChirho * 4;
+          selfChirho.framebufferPtrChirho = 0x100000;
           return selfChirho.framebufferPtrChirho;
         },
 
-        js_framebuffer_flush_chirho() {
+        js_fb_flush_chirho() {
           if (!selfChirho.ctxChirho || !selfChirho.fbWidthChirho) return;
           const pixelsChirho = new Uint8ClampedArray(
             selfChirho.memoryChirho.buffer,
@@ -95,18 +148,17 @@ class LineluyaRuntimeChirho {
         },
 
         // --- Block Storage (OPFS/IndexedDB) ---
-        js_storage_read_chirho(offsetChirho, bufPtrChirho, lenChirho) {
-          // Stub — real impl uses OPFS SyncAccessHandle
+        js_storage_read_chirho(offsetChirho, offsetHighChirho, bufPtrChirho, lenChirho) {
           return 0;
         },
 
-        js_storage_write_chirho(offsetChirho, bufPtrChirho, lenChirho) {
+        js_storage_write_chirho(offsetChirho, offsetHighChirho, bufPtrChirho, lenChirho) {
           return lenChirho;
         },
 
         // --- Networking (WebSocket) ---
         js_net_connect_chirho(hostPtrChirho, hostLenChirho, portChirho) {
-          return -1; // Stub
+          return -1;
         },
 
         js_net_send_chirho(handleChirho, bufPtrChirho, lenChirho) {
@@ -117,14 +169,8 @@ class LineluyaRuntimeChirho {
           return 0;
         },
 
-        // --- Input ---
-        js_input_poll_chirho(keycodePtrChirho, flagsPtrChirho) {
-          if (selfChirho.keyQueueChirho.length === 0) return 0;
-          const evtChirho = selfChirho.keyQueueChirho.shift();
-          const viewChirho = new DataView(selfChirho.memoryChirho.buffer);
-          viewChirho.setUint32(keycodePtrChirho, evtChirho.keycodeChirho, true);
-          viewChirho.setUint32(flagsPtrChirho, evtChirho.flagsChirho, true);
-          return 1;
+        js_net_close_chirho(handleChirho) {
+          // no-op stub
         },
       },
     };
@@ -132,12 +178,14 @@ class LineluyaRuntimeChirho {
 
   /** Boot the kernel — load WASM and call kernel_main */
   async bootChirho(wasmUrlChirho) {
-    if (this.terminalChirho) {
-      this.terminalChirho.textContent = '';
-    }
+    // Initialize xterm.js
+    this.initTerminalChirho();
 
     try {
       const responseChirho = await fetch(wasmUrlChirho);
+      if (!responseChirho.ok) {
+        throw new Error(`Failed to fetch ${wasmUrlChirho}: ${responseChirho.status}`);
+      }
       const wasmBytesChirho = await responseChirho.arrayBuffer();
 
       const moduleChirho = await WebAssembly.compile(wasmBytesChirho);
@@ -149,7 +197,7 @@ class LineluyaRuntimeChirho {
         maximum: 16384,
         shared: false,
       });
-      importsChirho.env.memory = this.memoryChirho;
+      importsChirho.lineluya_chirho.memory = this.memoryChirho;
 
       this.instanceChirho = await WebAssembly.instantiate(moduleChirho, importsChirho);
 
@@ -160,26 +208,26 @@ class LineluyaRuntimeChirho {
 
       // Boot the kernel!
       console.log('[RUNTIME] Booting Lineluya kernel (wasm32)...');
-      this.instanceChirho.exports.kernel_main_wasm_chirho();
+      this.instanceChirho.exports.kernel_main_chirho();
 
-      // Start the tick loop (scheduler + framebuffer)
+      // Start the tick loop (scheduler + shell input processing)
       this.runningChirho = true;
       this.tickLoopChirho();
 
     } catch (errChirho) {
       console.error('[RUNTIME] Boot failed:', errChirho);
       if (this.terminalChirho) {
-        this.terminalChirho.textContent += `\n!!! BOOT FAILED: ${errChirho.message}\n`;
+        this.terminalChirho.write('\r\n\x1b[1;31m!!! BOOT FAILED: ' + errChirho.message + '\x1b[0m\r\n');
       }
     }
   }
 
-  /** Animation frame loop — drives scheduler ticks and framebuffer flush */
+  /** Animation frame loop — drives scheduler ticks and shell input */
   tickLoopChirho() {
     if (!this.runningChirho) return;
 
-    if (this.instanceChirho?.exports?.kernel_tick_wasm_chirho) {
-      this.instanceChirho.exports.kernel_tick_wasm_chirho();
+    if (this.instanceChirho?.exports?.kernel_tick_chirho) {
+      this.instanceChirho.exports.kernel_tick_chirho();
     }
 
     requestAnimationFrame(() => this.tickLoopChirho());
@@ -188,6 +236,9 @@ class LineluyaRuntimeChirho {
   /** Shut down the kernel */
   shutdownChirho() {
     this.runningChirho = false;
+    if (this.terminalChirho) {
+      this.terminalChirho.write('\r\n\x1b[1;31mKernel halted.\x1b[0m\r\n');
+    }
     console.log('[RUNTIME] Kernel halted.');
   }
 }

@@ -171,8 +171,8 @@ extern "x86-interrupt" fn double_fault_handler_chirho(
     }
 }
 
-/// Page-fault handler. Prints the faulting address (from CR2) and error code,
-/// then halts.
+/// Page-fault handler. Checks for COW faults first; if the fault is not
+/// COW-resolvable, prints the faulting address and error code, then halts.
 extern "x86-interrupt" fn page_fault_handler_chirho(
     stack_frame_chirho: InterruptStackFrame,
     error_code_chirho: PageFaultErrorCode,
@@ -180,6 +180,22 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
     use x86_64::registers::control::Cr2;
 
     let faulting_address_chirho = Cr2::read();
+
+    // Check if this is a write fault (bit 1 of error code = CAUSED_BY_WRITE).
+    // If so, attempt to resolve it as a COW (copy-on-write) fault.
+    let is_write_fault_chirho = error_code_chirho.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+    let is_present_chirho = error_code_chirho.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+
+    if is_write_fault_chirho && is_present_chirho {
+        // The page is present but not writable — could be COW.
+        if let Ok(faulting_virt_chirho) = faulting_address_chirho {
+            if crate::pagetable_chirho::handle_cow_fault_chirho(faulting_virt_chirho) {
+                // COW fault resolved — return to the faulting instruction
+                // which will now succeed with the writable page.
+                return;
+            }
+        }
+    }
 
     crate::serial_println_chirho!(
         "[EXCEPTION] PAGE FAULT"

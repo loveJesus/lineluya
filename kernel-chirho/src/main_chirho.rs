@@ -45,6 +45,7 @@ mod scheduler_chirho;
 mod context_switch_chirho;
 mod uaccess_chirho;
 mod mm_chirho;
+mod pagetable_chirho;
 mod exec_chirho;
 mod signal_chirho;
 mod pipe_chirho;
@@ -101,6 +102,9 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         .expect("Physical memory offset not provided by bootloader");
 
     let memory_regions_chirho = &boot_info_chirho.memory_regions;
+
+    // Store the physical memory offset globally for the page table module.
+    pagetable_chirho::set_phys_mem_offset_chirho(physical_memory_offset_chirho);
 
     // Initialize the frame allocator with the memory map from the bootloader
     let mut frame_allocator_chirho =

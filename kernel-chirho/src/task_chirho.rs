@@ -22,6 +22,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
+use x86_64::PhysAddr;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -223,6 +224,13 @@ pub struct TaskChirho {
     /// syscall or interrupt) and restored on return.
     pub user_rsp_chirho: u64,
 
+    // -- Per-process page table ----------------------------------------------
+
+    /// Physical address of this process's PML4 (top-level page table).
+    /// `None` for kernel tasks that share the kernel page tables.
+    /// User tasks get their own PML4 allocated at creation/exec time.
+    pub page_table_root_chirho: Option<PhysAddr>,
+
     // -- File descriptors ----------------------------------------------------
 
     /// The next file descriptor number to hand out.  A proper fd table will
@@ -336,6 +344,7 @@ impl TaskChirho {
             kernel_stack_chirho: stack_top_chirho,
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: 0,
+            page_table_root_chirho: None, // kernel tasks share the kernel page tables
             next_fd_chirho: 0,
             fd_table_chirho: None,
             priority_chirho: DEFAULT_PRIORITY_CHIRHO,
@@ -384,6 +393,9 @@ impl TaskChirho {
         context_chirho.rsp_chirho = stack_top_chirho;
         context_chirho.rflags_chirho = 0x200; // IF
 
+        // Allocate a per-process page table for user tasks.
+        let pt_root_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
+
         Self {
             pid_chirho,
             tgid_chirho: pid_chirho,
@@ -394,6 +406,7 @@ impl TaskChirho {
             kernel_stack_chirho: stack_top_chirho,
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: user_stack_chirho,
+            page_table_root_chirho: pt_root_chirho,
             next_fd_chirho: 3, // 0=stdin, 1=stdout, 2=stderr pre-allocated
             fd_table_chirho: Some(crate::vfs_chirho::FdTableChirho::new_chirho(256)),
             priority_chirho: DEFAULT_PRIORITY_CHIRHO,

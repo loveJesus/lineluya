@@ -216,10 +216,23 @@ impl TtyChirho {
 
     /// Feed a character into the TTY (called from the keyboard/serial
     /// interrupt handler).
+    ///
+    /// In canonical mode, waiters are only woken when a complete line becomes
+    /// available (i.e. when Enter / newline is received or the line buffer is
+    /// full).  In raw mode every character wakes waiters immediately.
     pub fn input_char_chirho(&self, ch_chirho: u8) {
-        self.ldisc_chirho.lock().receive_char_chirho(ch_chirho);
-        // Wake any tasks blocked on read.
-        crate::waitqueue_chirho::wake_up_chirho(&self.read_wait_chirho);
+        let mut ldisc_chirho = self.ldisc_chirho.lock();
+        ldisc_chirho.receive_char_chirho(ch_chirho);
+        // Only wake blocked readers when the line discipline actually has
+        // data ready for consumption.  In canonical mode this is only true
+        // after a newline (or buffer overflow); in raw mode every char
+        // produces ready data.
+        let has_data_chirho = ldisc_chirho.has_data_chirho();
+        drop(ldisc_chirho);
+
+        if has_data_chirho {
+            crate::waitqueue_chirho::wake_up_chirho(&self.read_wait_chirho);
+        }
     }
 
     /// Write output bytes, applying output post-processing (OPOST/ONLCR).
@@ -271,21 +284,37 @@ impl TtyFileOpsChirho {
 impl FileOpsChirho for TtyFileOpsChirho {
     fn read_chirho(
         &self,
-        _file_chirho: &mut FileChirho,
+        file_chirho: &mut FileChirho,
         buf_chirho: &mut [u8],
     ) -> Result<usize, i64> {
         if buf_chirho.is_empty() {
             return Ok(0);
         }
 
-        // In a real implementation we would call wait_event_chirho here to
-        // block until data is available.  For now, return what we have.
-        let mut ldisc_chirho = self.tty_chirho.ldisc_chirho.lock();
-        if !ldisc_chirho.has_data_chirho() {
-            // No data available -- return EAGAIN (non-blocking stub).
-            return Err(-11); // EAGAIN
+        // If O_NONBLOCK is set, return -EAGAIN when no data is available.
+        let nonblock_chirho = (file_chirho.flags_chirho
+            & crate::vfs_chirho::O_NONBLOCK_CHIRHO) != 0;
+
+        if nonblock_chirho {
+            let mut ldisc_chirho = self.tty_chirho.ldisc_chirho.lock();
+            if !ldisc_chirho.has_data_chirho() {
+                return Err(-crate::syscall_chirho::EAGAIN_CHIRHO);
+            }
+            let data_chirho = ldisc_chirho.read_chirho(buf_chirho.len());
+            let n_chirho = data_chirho.len();
+            buf_chirho[..n_chirho].copy_from_slice(&data_chirho);
+            return Ok(n_chirho);
         }
 
+        // Blocking read: sleep on the TTY wait queue until data is available.
+        let tty_ref_chirho = self.tty_chirho.clone();
+        crate::waitqueue_chirho::wait_event_chirho(
+            &self.tty_chirho.read_wait_chirho,
+            || tty_ref_chirho.ldisc_chirho.lock().has_data_chirho(),
+        );
+
+        // Data is now available — read it.
+        let mut ldisc_chirho = self.tty_chirho.ldisc_chirho.lock();
         let data_chirho = ldisc_chirho.read_chirho(buf_chirho.len());
         let n_chirho = data_chirho.len();
         buf_chirho[..n_chirho].copy_from_slice(&data_chirho);

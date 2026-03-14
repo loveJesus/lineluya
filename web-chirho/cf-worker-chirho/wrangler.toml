@@ -1,0 +1,10 @@
+# For God so loved the world that he gave his only begotten Son,
+# that whoever believes in him should not perish but have eternal life. - John 3:16
+
+name = "lineluya-chirho"
+main = "src/index-chirho.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+PROXY_ALLOWED_PORTS_CHIRHO = "22,80,443,8080,8443,3000,5000"

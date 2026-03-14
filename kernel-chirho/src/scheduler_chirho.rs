@@ -281,9 +281,28 @@ pub fn schedule_chirho() {
                 let new_ctx_ptr_chirho =
                     crate::task_chirho::context_ptr_chirho(next_chirho);
 
+                // Switch page tables if the new task has its own address space.
+                // Look up the new task's page_table_root_chirho and switch CR3
+                // before the context switch so the new task resumes in the
+                // correct address space.
+                let new_pt_root_chirho = {
+                    let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+                    list_chirho
+                        .iter()
+                        .find(|t_chirho| t_chirho.lock().pid_chirho == next_chirho)
+                        .and_then(|t_chirho| t_chirho.lock().page_table_root_chirho)
+                };
+
                 // Drop the scheduler lock before performing the actual context
                 // switch so that the new task can acquire it if needed.
                 drop(scheduler_guard_chirho);
+
+                // Switch to the new task's page table if it has one.
+                if let Some(pt_root_chirho) = new_pt_root_chirho {
+                    unsafe {
+                        crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
+                    }
+                }
 
                 // SAFETY: Both pointers are obtained from the task table which
                 // guarantees their validity for the lifetime of the respective

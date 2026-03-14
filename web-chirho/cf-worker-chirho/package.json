@@ -1,0 +1,13 @@
+{
+  "name": "lineluya-chirho",
+  "version": "0.1.0",
+  "description": "Lineluya Cloudflare Worker — WebSocket-to-TCP proxy & edge kernel foundation. John 3:16",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3",
+    "@cloudflare/workers-types": "^4"
+  }
+}

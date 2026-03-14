@@ -253,23 +253,41 @@ pub struct DevConsoleOpsChirho;
 impl FileOpsChirho for DevConsoleOpsChirho {
     fn read_chirho(
         &self,
-        _file_chirho: &mut FileChirho,
+        file_chirho: &mut FileChirho,
         buf_chirho: &mut [u8],
     ) -> Result<usize, i64> {
         if buf_chirho.is_empty() {
             return Ok(0);
         }
 
-        // Read from the global TTY0 line discipline, which holds
-        // characters pushed by the keyboard interrupt handler.
         let tty_chirho = crate::tty_chirho::tty0_chirho();
-        let mut ldisc_chirho = tty_chirho.ldisc_chirho.lock();
-        if !ldisc_chirho.has_data_chirho() {
-            // No data available — return 0 (non-blocking).
-            // Once wait queues are wired to userspace, this will block.
-            return Ok(0);
+
+        // If O_NONBLOCK is set, return -EAGAIN when no data is available.
+        let nonblock_chirho = (file_chirho.flags_chirho
+            & crate::vfs_chirho::O_NONBLOCK_CHIRHO) != 0;
+
+        if nonblock_chirho {
+            let mut ldisc_chirho = tty_chirho.ldisc_chirho.lock();
+            if !ldisc_chirho.has_data_chirho() {
+                return Err(-crate::syscall_chirho::EAGAIN_CHIRHO);
+            }
+            let data_chirho = ldisc_chirho.read_chirho(buf_chirho.len());
+            let n_chirho = data_chirho.len();
+            buf_chirho[..n_chirho].copy_from_slice(&data_chirho);
+            return Ok(n_chirho);
         }
 
+        // Blocking read: sleep on the TTY wait queue until data is available.
+        // wait_event_chirho re-checks the condition after each wake-up to
+        // guard against spurious wakes.
+        let tty_ref_chirho = tty_chirho.clone();
+        crate::waitqueue_chirho::wait_event_chirho(
+            &tty_chirho.read_wait_chirho,
+            || tty_ref_chirho.ldisc_chirho.lock().has_data_chirho(),
+        );
+
+        // Data is now available — read it.
+        let mut ldisc_chirho = tty_chirho.ldisc_chirho.lock();
         let data_chirho = ldisc_chirho.read_chirho(buf_chirho.len());
         let n_chirho = data_chirho.len();
         buf_chirho[..n_chirho].copy_from_slice(&data_chirho);

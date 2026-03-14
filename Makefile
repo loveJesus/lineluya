@@ -55,3 +55,36 @@ fmt-chirho:
 info-chirho: kernel-chirho
 	rust-objdump -h $(KERNEL_BINARY_CHIRHO)
 	rust-size $(KERNEL_BINARY_CHIRHO)
+
+# ---------------------------------------------------------------------------
+# WASM browser kernel targets
+# ---------------------------------------------------------------------------
+
+WASM_TARGET_CHIRHO = wasm32-unknown-unknown
+WASM_BINARY_CHIRHO = kernel-wasm-chirho/target/$(WASM_TARGET_CHIRHO)/release/kernel_wasm_chirho.wasm
+WASM_DEST_CHIRHO = web-chirho/lineluya-kernel-chirho.wasm
+
+.PHONY: build-wasm-chirho copy-wasm-chirho serve-chirho clean-wasm-chirho wasm-chirho
+
+# Build and copy WASM to web directory
+wasm-chirho: build-wasm-chirho copy-wasm-chirho
+
+# Build the WASM kernel
+build-wasm-chirho:
+	cd kernel-wasm-chirho && cargo build --release --target $(WASM_TARGET_CHIRHO)
+
+# Copy the built WASM to web-chirho/
+copy-wasm-chirho:
+	cp $(WASM_BINARY_CHIRHO) $(WASM_DEST_CHIRHO)
+	@echo "WASM copied to $(WASM_DEST_CHIRHO)"
+	@ls -lh $(WASM_DEST_CHIRHO)
+
+# Serve the web directory locally (requires python3)
+serve-chirho: wasm-chirho
+	@echo "Serving at http://localhost:8080"
+	cd web-chirho && python3 -m http.server 8080
+
+# Clean WASM build artifacts
+clean-wasm-chirho:
+	cd kernel-wasm-chirho && cargo clean
+	rm -f $(WASM_DEST_CHIRHO)

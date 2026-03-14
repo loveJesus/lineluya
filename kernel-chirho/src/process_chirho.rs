@@ -152,6 +152,14 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             .as_ref()
             .map(|t_chirho| t_chirho.clone_table_chirho());
 
+        // Clone the parent's page table with COW semantics (if it has one).
+        let child_pt_root_chirho = match parent_chirho.page_table_root_chirho {
+            Some(parent_pml4_chirho) => {
+                crate::pagetable_chirho::clone_page_table_chirho(parent_pml4_chirho)
+            }
+            None => None,
+        };
+
         TaskChirho {
             pid_chirho: child_pid_chirho,
             tgid_chirho: child_pid_chirho,
@@ -162,6 +170,7 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             kernel_stack_chirho: child_kstack_top_chirho,
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: frame_chirho.rsp_chirho,
+            page_table_root_chirho: child_pt_root_chirho,
             next_fd_chirho: parent_chirho.next_fd_chirho,
             fd_table_chirho: child_fd_table_chirho,
             priority_chirho: parent_chirho.priority_chirho,
@@ -283,6 +292,21 @@ pub fn sys_clone_chirho(
             child_pid_chirho
         };
 
+        // Clone page table: CLONE_VM shares the address space (thread),
+        // otherwise clone with COW.
+        let child_pt_root_chirho = if (flags_chirho & CLONE_VM_CHIRHO) != 0 {
+            // Threads share the parent's page table.
+            parent_chirho.page_table_root_chirho
+        } else {
+            // Fork: clone with COW.
+            match parent_chirho.page_table_root_chirho {
+                Some(parent_pml4_chirho) => {
+                    crate::pagetable_chirho::clone_page_table_chirho(parent_pml4_chirho)
+                }
+                None => None,
+            }
+        };
+
         TaskChirho {
             pid_chirho: child_pid_chirho,
             tgid_chirho: child_tgid_chirho,
@@ -293,6 +317,7 @@ pub fn sys_clone_chirho(
             kernel_stack_chirho: child_kstack_top_chirho,
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: child_user_rsp_chirho,
+            page_table_root_chirho: child_pt_root_chirho,
             next_fd_chirho: parent_chirho.next_fd_chirho,
             fd_table_chirho: child_fd_table_chirho,
             priority_chirho: parent_chirho.priority_chirho,
@@ -636,6 +661,26 @@ pub fn sys_execve_chirho(
             HELLO_ELF_CHIRHO
         }
     };
+
+    // -----------------------------------------------------------------------
+    // Step 4b: Create a fresh page table for this process (execve replaces
+    //          the entire address space).
+    // -----------------------------------------------------------------------
+    let new_pt_root_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
+    if let Some(pt_root_chirho) = new_pt_root_chirho {
+        // Switch to the new page table so that ELF loading maps into it.
+        unsafe {
+            crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
+        }
+        // Update the current task's page table root.
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            task_arc_chirho.lock().page_table_root_chirho = Some(pt_root_chirho);
+        }
+        crate::serial_println_chirho!(
+            "[PROCESS] execve: created fresh page table PML4={:#x}",
+            pt_root_chirho.as_u64()
+        );
+    }
 
     // -----------------------------------------------------------------------
     // Step 5: Parse and load the ELF into memory
