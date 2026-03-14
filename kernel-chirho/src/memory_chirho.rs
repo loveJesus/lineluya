@@ -109,6 +109,21 @@ impl BootInfoFrameAllocatorChirho {
         }
     }
 
+    /// Return the current frame index (number of frames allocated so far).
+    ///
+    /// This is useful when transferring ownership to a second frame allocator
+    /// (e.g., the mm subsystem's [`crate::mm_chirho::GlobalFrameAllocatorChirho`])
+    /// to avoid double-allocating frames already used during boot.
+    pub fn next_index_chirho(&self) -> usize {
+        self.next_frame_index_chirho
+    }
+
+    /// Return the memory regions reference for constructing a sibling
+    /// allocator.
+    pub fn memory_regions_chirho(&self) -> &'static MemoryRegions {
+        self.memory_regions_chirho
+    }
+
     /// Return an iterator over all usable physical frames reported by the
     /// bootloader.
     ///

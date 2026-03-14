@@ -25,6 +25,7 @@ mod scheduler_chirho;
 mod context_switch_chirho;
 mod uaccess_chirho;
 mod mm_chirho;
+mod exec_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use bootloader_api::config::Mapping;
@@ -82,6 +83,21 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     allocator_chirho::init_heap_chirho(&mut mapper_chirho, &mut frame_allocator_chirho)
         .expect("Heap initialization failed");
     serial_println_chirho!("[OK] Heap allocator initialized");
+
+    // Initialize the mm subsystem with a second mapper and a frame allocator
+    // that starts where the boot allocator left off (to avoid double-allocating
+    // frames used for the heap and page tables).
+    {
+        let mm_mapper_chirho =
+            unsafe { memory_chirho::init_mapper_chirho(physical_memory_offset_chirho) };
+        let mm_frame_alloc_chirho = mm_chirho::GlobalFrameAllocatorChirho::new_chirho(
+            frame_allocator_chirho.memory_regions_chirho(),
+            frame_allocator_chirho.next_index_chirho(),
+        );
+        unsafe {
+            mm_chirho::init_mm_chirho(mm_mapper_chirho, mm_frame_alloc_chirho);
+        }
+    }
 
     // Phase 2: Initialize process management
     task_chirho::init_tasking_chirho();
@@ -141,6 +157,13 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         let result_chirho = syscall_chirho::syscall_dispatch_chirho(&mut test_frame_chirho);
         serial_println_chirho!("[TEST] sys_getpid returned: {}", result_chirho);
     }
+
+    // Load and execute the hello world binary
+    serial_println_chirho!();
+    serial_println_chirho!("Loading hello world ELF into userspace...");
+    exec_chirho::exec_init_chirho();
+    // If we return here, userspace exited or failed to load
+    serial_println_chirho!("Returned from exec_init_chirho (userspace exited or load failed).");
 
     serial_println_chirho!();
     serial_println_chirho!("Entering idle loop. Press keys to test keyboard interrupt.");

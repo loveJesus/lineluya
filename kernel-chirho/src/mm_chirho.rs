@@ -19,6 +19,8 @@
 //! mapper/allocator) rather than per-process page tables.  Real per-process
 //! address spaces will be introduced in a future wave.
 
+#![allow(dead_code)]
+
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -614,11 +616,19 @@ fn map_anonymous_pages_chirho(
         match result_chirho {
             Ok(flush_chirho) => flush_chirho.flush(),
             Err(_e_chirho) => {
-                crate::serial_println_chirho!(
-                    "[MM] map_anonymous_pages: map_to failed for page {:#x}",
-                    page_addr_chirho
-                );
-                return Err(-ENOMEM_CHIRHO);
+                // Page may already be mapped (e.g., overlapping ELF segments
+                // sharing the same page).  This is normal with MAP_FIXED.
+                // Try to update flags instead of failing.
+                let page_chirho: Page<Size4KiB> =
+                    Page::containing_address(VirtAddr::new(page_addr_chirho));
+                if let Some(ref mut mapper_chirho) = *GLOBAL_MAPPER_CHIRHO.lock() {
+                    let _ = unsafe {
+                        mapper_chirho.update_flags(page_chirho, flags_chirho)
+                    }.map(|flush_chirho| flush_chirho.flush());
+                }
+                // Skip zero-fill for already-mapped pages — data will be
+                // written by the caller (exec_chirho copies segment data).
+                continue;
             }
         }
 

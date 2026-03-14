@@ -17,7 +17,11 @@ WORKDIR /lineluya-chirho
 COPY Cargo.toml Cargo.lock ./
 COPY kernel-chirho/ kernel-chirho/
 COPY xtask-chirho/ xtask-chirho/
+COPY userspace-chirho/ userspace-chirho/
 COPY rust-toolchain.toml ./
+
+# Build the hello world userspace binary first (kernel embeds it via include_bytes!)
+RUN cd userspace-chirho/hello-chirho && cargo +nightly build --release 2>&1
 
 # Build the kernel (cross-compiles from ARM64 to x86_64 via LLVM)
 RUN cd kernel-chirho && cargo +nightly build 2>&1
