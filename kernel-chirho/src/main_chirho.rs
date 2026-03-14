@@ -18,9 +18,12 @@ mod allocator_chirho;
 
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
+mod syscall_entry_chirho;
 mod task_chirho;
 mod elf_chirho;
 mod scheduler_chirho;
+mod context_switch_chirho;
+mod uaccess_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use bootloader_api::config::Mapping;
@@ -90,6 +93,13 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     // SAFETY: Called once during early boot to set up SYSCALL MSRs.
     unsafe { syscall_chirho::init_syscalls_chirho() };
     serial_println_chirho!("[OK] Syscall interface initialized");
+
+    // Initialize the SYSCALL assembly entry trampoline.
+    // This allocates a dedicated kernel syscall stack and updates LSTAR
+    // to point to the real assembly stub instead of the placeholder.
+    // SAFETY: Called once after heap init; before userspace code runs.
+    unsafe { syscall_entry_chirho::init_syscall_entry_chirho() };
+    serial_println_chirho!("[OK] Syscall entry trampoline initialized");
 
     // Enable interrupts
     x86_64::instructions::interrupts::enable();

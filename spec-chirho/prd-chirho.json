@@ -8,9 +8,9 @@
   "vision_chirho": {
     "summary_chirho": "Lineluya is a ground-up rewrite of the Linux kernel in Rust, designed to be binary-compatible and drop-in swappable with the real Linux kernel. It implements the Linux syscall ABI, boot protocols, filesystem interfaces (/proc, /sys, /dev), and module system so that existing Linux userspace (init, coreutils, systemd, containers, etc.) runs unmodified.",
     "goals_chirho": [
-      "Full Linux x86_64 syscall ABI compatibility — existing ELF binaries run unmodified",
+      "Full Linux x86_64 syscall ABI compatibility \u2014 existing ELF binaries run unmodified",
       "Linux boot protocol support (bzImage format, loadable by GRUB2/systemd-boot/Limine)",
-      "Memory safety via Rust's ownership model — eliminate classes of CVEs (buffer overflows, use-after-free, data races)",
+      "Memory safety via Rust's ownership model \u2014 eliminate classes of CVEs (buffer overflows, use-after-free, data races)",
       "Performance parity with Linux (within 5% on macro benchmarks)",
       "Compatible /proc, /sys, /dev virtual filesystems",
       "ELF binary loading with dynamic linker support",
@@ -52,7 +52,7 @@
   "key_reference_projects_chirho": [
     {
       "name_chirho": "Asterinas",
-      "relevance_chirho": "MOST RELEVANT — Rust framekernel with 230+ Linux syscalls, only ~14% unsafe code via OSTD framework. Linux ABI compatible. On par with Linux in benchmarks. Published at USENIX ATC 2025. Has experimental NixOS distribution. Accepted to USENIX ATC'25.",
+      "relevance_chirho": "MOST RELEVANT \u2014 Rust framekernel with 230+ Linux syscalls, only ~14% unsafe code via OSTD framework. Linux ABI compatible. On par with Linux in benchmarks. Published at USENIX ATC 2025. Has experimental NixOS distribution. Accepted to USENIX ATC'25.",
       "url_chirho": "https://github.com/asterinas/asterinas",
       "architecture_chirho": "Framekernel: single address space (monolithic performance) with logical separation between privileged OS framework (OSTD, only unsafe Rust allowed) and de-privileged OS services (safe Rust only). Combines monolithic kernel performance with microkernel security properties.",
       "key_lesson_chirho": "Demonstrates that minimizing unsafe to a well-defined framework layer (~14%) is achievable while supporting 230+ syscalls at Linux-competitive performance."
@@ -504,18 +504,18 @@
     "testing_chirho": "QEMU x86_64 for integration tests, unit tests via custom test framework",
     "ci_chirho": "GitHub Actions with QEMU for boot tests",
     "crate_structure_chirho": {
-      "kernel-chirho": "Main kernel binary — boot, core subsystems",
-      "hal-chirho": "Hardware Abstraction Layer — CPU, APIC, IOAPIC, PCI, ACPI",
-      "mm-chirho": "Memory management — physical frame allocator, page tables, slab, VMAs",
-      "sched-chirho": "Scheduler — CFS-like fair scheduler, RT scheduler, idle",
-      "vfs-chirho": "Virtual Filesystem Switch — inode, dentry, superblock, mount",
-      "fs-chirho": "Filesystem implementations — ext4, tmpfs, procfs, sysfs, devtmpfs",
-      "net-chirho": "Networking stack — socket layer, TCP/IP, UDP, netfilter",
-      "drivers-chirho": "Device driver framework — char, block, net devices, virtio",
-      "syscall-chirho": "System call dispatch — syscall table, entry/exit, signal handling",
-      "ipc-chirho": "Inter-process communication — pipes, signals, shared memory, futex",
-      "security-chirho": "Security — capabilities, namespaces, cgroups, LSM hooks",
-      "xtask-chirho": "Build tool — kernel compilation, disk images, QEMU runner"
+      "kernel-chirho": "Main kernel binary \u2014 boot, core subsystems",
+      "hal-chirho": "Hardware Abstraction Layer \u2014 CPU, APIC, IOAPIC, PCI, ACPI",
+      "mm-chirho": "Memory management \u2014 physical frame allocator, page tables, slab, VMAs",
+      "sched-chirho": "Scheduler \u2014 CFS-like fair scheduler, RT scheduler, idle",
+      "vfs-chirho": "Virtual Filesystem Switch \u2014 inode, dentry, superblock, mount",
+      "fs-chirho": "Filesystem implementations \u2014 ext4, tmpfs, procfs, sysfs, devtmpfs",
+      "net-chirho": "Networking stack \u2014 socket layer, TCP/IP, UDP, netfilter",
+      "drivers-chirho": "Device driver framework \u2014 char, block, net devices, virtio",
+      "syscall-chirho": "System call dispatch \u2014 syscall table, entry/exit, signal handling",
+      "ipc-chirho": "Inter-process communication \u2014 pipes, signals, shared memory, futex",
+      "security-chirho": "Security \u2014 capabilities, namespaces, cgroups, LSM hooks",
+      "xtask-chirho": "Build tool \u2014 kernel compilation, disk images, QEMU runner"
     }
   },
   "phases_chirho": [
@@ -554,7 +554,7 @@
       "status_chirho": "planned",
       "description_chirho": "Task/process abstraction, context switching, basic scheduler, syscall entry, ELF loading. Goal: run a static 'hello world' ELF binary.",
       "deliverables_chirho": [
-        "TaskChirho struct (equivalent to Linux task_struct) — PID, state, registers, memory descriptor",
+        "TaskChirho struct (equivalent to Linux task_struct) \u2014 PID, state, registers, memory descriptor",
         "Kernel stack per task",
         "Context switching (save/restore CPU state via assembly)",
         "Round-robin scheduler (preemptive via timer interrupt)",
@@ -656,12 +656,12 @@
       "status_chirho": "planned",
       "description_chirho": "VFS layer, tmpfs, procfs, sysfs, devtmpfs, pipe, basic file descriptors. Goal: run BusyBox init with a shell.",
       "deliverables_chirho": [
-        "VFS layer — inode, dentry, superblock, file, file_operations abstractions",
+        "VFS layer \u2014 inode, dentry, superblock, file, file_operations abstractions",
         "File descriptor table per process",
         "tmpfs (in-memory filesystem)",
-        "procfs (/proc) — /proc/self, /proc/cpuinfo, /proc/meminfo, /proc/mounts, /proc/[pid]/*",
-        "sysfs (/sys) — basic device tree",
-        "devtmpfs (/dev) — null, zero, urandom, random, console, tty, ptmx",
+        "procfs (/proc) \u2014 /proc/self, /proc/cpuinfo, /proc/meminfo, /proc/mounts, /proc/[pid]/*",
+        "sysfs (/sys) \u2014 basic device tree",
+        "devtmpfs (/dev) \u2014 null, zero, urandom, random, console, tty, ptmx",
         "Pipe implementation (pipe/pipe2 syscalls)",
         "dup/dup2/dup3",
         "ioctl framework",
@@ -909,7 +909,7 @@
     {
       "name_chirho": "VmaChirho",
       "linux_equivalent_chirho": "vm_area_struct",
-      "description_chirho": "Virtual memory area — describes a contiguous region of virtual address space with uniform permissions and backing.",
+      "description_chirho": "Virtual memory area \u2014 describes a contiguous region of virtual address space with uniform permissions and backing.",
       "key_fields_chirho": [
         "start_chirho",
         "end_chirho",
@@ -954,7 +954,7 @@
     {
       "name_chirho": "DentryChirho",
       "linux_equivalent_chirho": "struct dentry",
-      "description_chirho": "Directory entry — caches the mapping from path component to inode.",
+      "description_chirho": "Directory entry \u2014 caches the mapping from path component to inode.",
       "key_fields_chirho": [
         "d_name_chirho",
         "d_inode_chirho",
@@ -980,7 +980,7 @@
     {
       "name_chirho": "SkBuffChirho",
       "linux_equivalent_chirho": "struct sk_buff",
-      "description_chirho": "Socket buffer — the central network packet structure. Contains packet data, headers, metadata.",
+      "description_chirho": "Socket buffer \u2014 the central network packet structure. Contains packet data, headers, metadata.",
       "key_fields_chirho": [
         "head_chirho",
         "data_chirho",
@@ -1718,7 +1718,7 @@
         "kernel-chirho/src/lib_chirho.rs"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -1742,7 +1742,7 @@
       ],
       "files_to_modify_chirho": [],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "low",
       "acceptance_criteria_chirho": [
@@ -1768,7 +1768,7 @@
       "depends_on_chirho": [
         "P2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -1791,7 +1791,7 @@
         "kernel-chirho/src/gdt_chirho.rs"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -1819,7 +1819,7 @@
       "depends_on_chirho": [
         "P2-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -1848,7 +1848,7 @@
         "P2-005",
         "P2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -1874,7 +1874,7 @@
       "depends_on_chirho": [
         "P2-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -1904,7 +1904,7 @@
         "P2-006",
         "P2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -1933,7 +1933,7 @@
       "depends_on_chirho": [
         "P2-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -1962,7 +1962,7 @@
         "P2-008",
         "P2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -1991,7 +1991,7 @@
         "P2-008",
         "P2-016"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -2104,7 +2104,7 @@
       "depends_on_chirho": [
         "P2-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "low",
       "acceptance_criteria_chirho": [
@@ -2187,7 +2187,7 @@
         "kernel-chirho/src/main_chirho.rs"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -2280,7 +2280,7 @@
         "P2-008",
         "P2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "low",
       "acceptance_criteria_chirho": [
@@ -2305,7 +2305,7 @@
         "P2-002",
         "P2-016"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -2338,7 +2338,7 @@
         "P2-022",
         "P2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -2452,7 +2452,7 @@
       "depends_on_chirho": [
         "P2-016"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -2480,7 +2480,7 @@
       "depends_on_chirho": [
         "P2-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "low",
       "acceptance_criteria_chirho": [
@@ -2505,7 +2505,7 @@
       "depends_on_chirho": [
         "P2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -2557,7 +2557,7 @@
       "depends_on_chirho": [
         "P2-029"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -2583,7 +2583,7 @@
         "P2-016",
         "P2-017"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -2608,7 +2608,7 @@
         "kernel-chirho/src/main_chirho.rs"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -2635,7 +2635,7 @@
         "kernel-chirho/src/syscall_chirho/mod_chirho.rs"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "low",
       "acceptance_criteria_chirho": [
@@ -2660,7 +2660,7 @@
         "kernel-chirho/src/task_chirho.rs"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "low",
       "acceptance_criteria_chirho": [
@@ -2685,7 +2685,7 @@
       ],
       "files_to_modify_chirho": [],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -2740,7 +2740,7 @@
       "depends_on_chirho": [
         "P2-027"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [

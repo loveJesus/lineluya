@@ -484,21 +484,9 @@ const SYSCALL_FLAG_MASK_CHIRHO: u64 =
     (1 << 8) |  // TF
     (1 << 18);  // AC
 
-/// Kernel code segment selector index (GDT entry 1, ring 0).
-/// The GDT in `gdt_chirho` puts the kernel code segment at index 1.
-const KERNEL_CS_SELECTOR_CHIRHO: u64 = 0x08;
-
-/// Kernel data segment selector (GDT entry 2, ring 0).
-/// Not explicitly loaded on SYSCALL but implied by the STAR MSR layout.
-#[allow(dead_code)]
-const KERNEL_DS_SELECTOR_CHIRHO: u64 = 0x10;
-
-/// User code segment selector base for SYSRET.
-/// SYSRET loads CS = (STAR[63:48] + 16) | 3 and SS = (STAR[63:48] + 8) | 3.
-/// With user base = 0x18:
-///   user CS = 0x18 + 16 = 0x28 | 3 = 0x2B
-///   user SS = 0x18 + 8  = 0x20 | 3 = 0x23
-const USER_CS_BASE_SELECTOR_CHIRHO: u64 = 0x18;
+// Segment selectors and STAR MSR value are defined centrally in gdt_chirho.
+// Re-use them here to stay DRY and avoid selector layout mismatches.
+use crate::gdt_chirho::STAR_MSR_VALUE_CHIRHO;
 
 // ============================================================================
 // Initialisation
@@ -560,13 +548,11 @@ pub unsafe fn init_syscalls_chirho() {
 
     // -- IA32_STAR --
     // Bits 31:0  = EIP for SYSCALL in 32-bit mode (unused, set to 0)
-    // Bits 47:32 = Kernel CS selector
-    // Bits 63:48 = User CS selector base (for SYSRET)
-    let star_value_chirho: u64 =
-        (KERNEL_CS_SELECTOR_CHIRHO << 32) | (USER_CS_BASE_SELECTOR_CHIRHO << 48);
-
+    // Bits 47:32 = Kernel CS selector (0x08)
+    // Bits 63:48 = User CS base for SYSRET (0x18)
+    // Value is pre-computed in gdt_chirho::STAR_MSR_VALUE_CHIRHO.
     let mut star_msr_chirho = Msr::new(IA32_STAR_CHIRHO);
-    star_msr_chirho.write(star_value_chirho);
+    star_msr_chirho.write(STAR_MSR_VALUE_CHIRHO);
 
     // -- IA32_LSTAR --
     // Point LSTAR at the Rust-side stub for now.  Once the assembly
