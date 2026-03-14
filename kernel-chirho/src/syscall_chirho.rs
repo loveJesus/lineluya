@@ -422,6 +422,10 @@ pub const SYS_SETTIMEOFDAY_CHIRHO: u64 = 164;
 pub const SYS_REBOOT_CHIRHO: u64 = 169;
 /// `sethostname(2)` -- set hostname.
 pub const SYS_SETHOSTNAME_CHIRHO: u64 = 170;
+/// `init_module(2)` -- load a kernel module image.
+pub const SYS_INIT_MODULE_CHIRHO: u64 = 175;
+/// `delete_module(2)` -- unload a kernel module.
+pub const SYS_DELETE_MODULE_CHIRHO: u64 = 176;
 /// `setxattr(2)` -- set an extended attribute value.
 pub const SYS_SETXATTR_CHIRHO: u64 = 188;
 /// `getxattr(2)` -- get an extended attribute value.
@@ -515,6 +519,8 @@ pub const SYS_SYNC_FILE_RANGE_CHIRHO: u64 = 277;
 pub const SYS_UTIMENSAT_CHIRHO: u64 = 280;
 /// `inotify_init1(2)` -- initialize an inotify instance.
 pub const SYS_INOTIFY_INIT1_CHIRHO: u64 = 294;
+/// `perf_event_open(2)` -- set up performance monitoring.
+pub const SYS_PERF_EVENT_OPEN_CHIRHO: u64 = 298;
 /// `fanotify_init(2)` -- create and initialize a fanotify group.
 pub const SYS_FANOTIFY_INIT_CHIRHO: u64 = 300;
 /// `fanotify_mark(2)` -- add, remove, or modify a fanotify mark.
@@ -523,6 +529,8 @@ pub const SYS_FANOTIFY_MARK_CHIRHO: u64 = 301;
 pub const SYS_NAME_TO_HANDLE_AT_CHIRHO: u64 = 303;
 /// `open_by_handle_at(2)` -- open file via a handle.
 pub const SYS_OPEN_BY_HANDLE_AT_CHIRHO: u64 = 304;
+/// `finit_module(2)` -- load a kernel module by file descriptor.
+pub const SYS_FINIT_MODULE_CHIRHO: u64 = 313;
 
 // --- Phase 5+6+7 syscall number additions ---
 

@@ -30,6 +30,12 @@ mod block_chirho;
 // Phase 6: Networking socket stubs
 mod net_chirho;
 
+// Phase 8: Hardware support — APIC, ACPI, PCI, SMP
+mod apic_chirho;
+mod acpi_chirho;
+mod pci_chirho;
+mod smp_chirho;
+
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
 mod syscall_entry_chirho;
@@ -45,6 +51,14 @@ mod pipe_chirho;
 mod process_chirho;
 mod waitqueue_chirho;
 mod tty_chirho;
+
+// Phase 9: Advanced subsystem stubs
+mod io_uring_chirho;
+mod bpf_chirho;
+mod vdso_chirho;
+mod module_chirho;
+mod power_chirho;
+mod trace_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use bootloader_api::config::Mapping;
