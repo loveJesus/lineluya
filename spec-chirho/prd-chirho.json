@@ -2770,7 +2770,7 @@
         "Cargo.toml"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3287,7 +3287,7 @@
         "P2-001",
         "P2-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3314,7 +3314,7 @@
       "depends_on_chirho": [
         "P2-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "low",
       "acceptance_criteria_chirho": [
@@ -3341,7 +3341,7 @@
         "P2-008",
         "P2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3623,7 +3623,7 @@
       "depends_on_chirho": [
         "P2-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [

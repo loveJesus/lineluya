@@ -270,6 +270,14 @@ pub const SYS_GET_ROBUST_LIST_CHIRHO: u64 = 274;
 pub const SYS_PRLIMIT64_CHIRHO: u64 = 302;
 /// `getrandom(2)` -- obtain a series of random bytes.
 pub const SYS_GETRANDOM_CHIRHO: u64 = 318;
+/// `readlinkat(2)` -- read value of a symbolic link relative to directory fd.
+pub const SYS_READLINKAT_CHIRHO: u64 = 267;
+/// `faccessat(2)` -- check user permissions for a file relative to directory fd.
+pub const SYS_FACCESSAT_CHIRHO: u64 = 269;
+/// `getdents64(2)` -- get directory entries (64-bit).
+pub const SYS_GETDENTS64_CHIRHO: u64 = 217;
+/// `statx(2)` -- get file status (extended).
+pub const SYS_STATX_CHIRHO: u64 = 332;
 /// `rseq(2)` -- restartable sequences.
 pub const SYS_RSEQ_CHIRHO: u64 = 334;
 
@@ -447,6 +455,142 @@ impl UtsNameChirho {
 static UTSNAME_CHIRHO: UtsNameChirho = UtsNameChirho::default_chirho();
 
 // ============================================================================
+// TimespecChirho -- Linux timespec structure
+// ============================================================================
+
+/// Linux `struct timespec` equivalent for clock_gettime(2).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TimespecChirho {
+    /// Seconds.
+    pub tv_sec_chirho: i64,
+    /// Nanoseconds.
+    pub tv_nsec_chirho: i64,
+}
+
+// ============================================================================
+// Rlimit64Chirho -- Linux rlimit64 structure
+// ============================================================================
+
+/// Linux `struct rlimit64` equivalent for prlimit64(2).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Rlimit64Chirho {
+    /// Soft limit.
+    pub rlim_cur_chirho: u64,
+    /// Hard limit.
+    pub rlim_max_chirho: u64,
+}
+
+/// Infinity value for resource limits.
+const RLIM_INFINITY_CHIRHO: u64 = u64::MAX;
+
+/// Resource limit constants (Linux).
+const RLIMIT_STACK_CHIRHO: u64 = 3;
+const RLIMIT_NOFILE_CHIRHO: u64 = 7;
+
+// ============================================================================
+// StatChirho -- Linux stat structure (x86_64)
+// ============================================================================
+
+/// Linux `struct stat` equivalent for fstat(2) on x86_64.
+///
+/// Layout matches the kernel's `struct stat` for x86_64.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct StatChirho {
+    pub st_dev_chirho: u64,
+    pub st_ino_chirho: u64,
+    pub st_nlink_chirho: u64,
+    pub st_mode_chirho: u32,
+    pub st_uid_chirho: u32,
+    pub st_gid_chirho: u32,
+    pub _pad0_chirho: u32,
+    pub st_rdev_chirho: u64,
+    pub st_size_chirho: i64,
+    pub st_blksize_chirho: i64,
+    pub st_blocks_chirho: i64,
+    pub st_atime_chirho: u64,
+    pub st_atime_nsec_chirho: u64,
+    pub st_mtime_chirho: u64,
+    pub st_mtime_nsec_chirho: u64,
+    pub st_ctime_chirho: u64,
+    pub st_ctime_nsec_chirho: u64,
+    pub _unused_chirho: [i64; 3],
+}
+
+impl StatChirho {
+    const fn zeroed_chirho() -> Self {
+        Self {
+            st_dev_chirho: 0,
+            st_ino_chirho: 0,
+            st_nlink_chirho: 0,
+            st_mode_chirho: 0,
+            st_uid_chirho: 0,
+            st_gid_chirho: 0,
+            _pad0_chirho: 0,
+            st_rdev_chirho: 0,
+            st_size_chirho: 0,
+            st_blksize_chirho: 0,
+            st_blocks_chirho: 0,
+            st_atime_chirho: 0,
+            st_atime_nsec_chirho: 0,
+            st_mtime_chirho: 0,
+            st_mtime_nsec_chirho: 0,
+            st_ctime_chirho: 0,
+            st_ctime_nsec_chirho: 0,
+            _unused_chirho: [0; 3],
+        }
+    }
+}
+
+/// S_IFCHR -- character device mode flag.
+const S_IFCHR_CHIRHO: u32 = 0o020000;
+/// Default permissions for character devices (rw-rw-rw-).
+const S_IRUSR_CHIRHO: u32 = 0o400;
+const S_IWUSR_CHIRHO: u32 = 0o200;
+const S_IRGRP_CHIRHO: u32 = 0o040;
+const S_IWGRP_CHIRHO: u32 = 0o020;
+const S_IROTH_CHIRHO: u32 = 0o004;
+const S_IWOTH_CHIRHO: u32 = 0o002;
+
+// ============================================================================
+// fcntl(2) command constants
+// ============================================================================
+
+/// Get file descriptor flags.
+const F_GETFD_CHIRHO: u64 = 1;
+/// Set file descriptor flags.
+const F_SETFD_CHIRHO: u64 = 2;
+/// Get file status flags.
+const F_GETFL_CHIRHO: u64 = 3;
+/// Set file status flags.
+const F_SETFL_CHIRHO: u64 = 4;
+
+// ============================================================================
+// clock_gettime(2) clock ID constants
+// ============================================================================
+
+/// CLOCK_REALTIME -- system-wide real-time clock.
+const CLOCK_REALTIME_CHIRHO: u64 = 0;
+/// CLOCK_MONOTONIC -- monotonic clock since some unspecified point.
+const CLOCK_MONOTONIC_CHIRHO: u64 = 1;
+
+// ============================================================================
+// PRNG state for getrandom(2)
+// ============================================================================
+
+/// Global xorshift64 PRNG state, seeded from TSC on first use.
+static PRNG_STATE_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Global tick counter for clock_gettime monotonic approximation.
+static TICK_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Hardcoded epoch for CLOCK_REALTIME: 2026-03-14 00:00:00 UTC
+/// = 1773532800 seconds since Unix epoch.
+const REALTIME_EPOCH_CHIRHO: i64 = 1773532800;
+
+// ============================================================================
 // Program break tracking (for brk)
 // ============================================================================
 
@@ -613,7 +757,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         ),
         SYS_OPEN_CHIRHO => -ENOENT_CHIRHO,     // stub: no filesystem yet
         SYS_CLOSE_CHIRHO => sys_close_chirho(arg0_chirho),
-        SYS_STAT_CHIRHO | SYS_FSTAT_CHIRHO | SYS_LSTAT_CHIRHO => -ENOENT_CHIRHO,
+        SYS_FSTAT_CHIRHO => sys_fstat_chirho(arg0_chirho, arg1_chirho as *mut StatChirho),
+        SYS_STAT_CHIRHO | SYS_LSTAT_CHIRHO => -ENOENT_CHIRHO,
         SYS_POLL_CHIRHO => -ENOSYS_CHIRHO,
         SYS_LSEEK_CHIRHO => -ESPIPE_CHIRHO,    // stdin/stdout not seekable
         SYS_MMAP_CHIRHO => sys_mmap_chirho(
@@ -634,8 +779,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho,
         ),
         SYS_BRK_CHIRHO => sys_brk_chirho(arg0_chirho),
-        SYS_RT_SIGACTION_CHIRHO => 0,           // silently succeed (no signals yet)
-        SYS_RT_SIGPROCMASK_CHIRHO => 0,         // silently succeed
+        SYS_RT_SIGACTION_CHIRHO => crate::signal_chirho::sys_rt_sigaction_chirho(
+            arg0_chirho as u32,
+            arg1_chirho,
+            arg2_chirho,
+            arg3_chirho,
+        ),
+        SYS_RT_SIGPROCMASK_CHIRHO => crate::signal_chirho::sys_rt_sigprocmask_chirho(
+            arg0_chirho as u32,
+            arg1_chirho,
+            arg2_chirho,
+            arg3_chirho,
+        ),
         SYS_RT_SIGRETURN_CHIRHO => -ENOSYS_CHIRHO,
         SYS_IOCTL_CHIRHO => sys_ioctl_chirho(
             arg0_chirho,
@@ -649,7 +804,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho as *const IoVecChirho,
             arg2_chirho as i32,
         ),
-        SYS_ACCESS_CHIRHO => -ENOENT_CHIRHO,
+        SYS_ACCESS_CHIRHO => sys_access_chirho(),
         SYS_PIPE_CHIRHO => -ENOSYS_CHIRHO,
         SYS_SELECT_CHIRHO => -ENOSYS_CHIRHO,
         SYS_SCHED_YIELD_CHIRHO => {
@@ -672,9 +827,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_EXECVE_CHIRHO => -ENOSYS_CHIRHO,
         SYS_EXIT_CHIRHO => sys_exit_chirho(arg0_chirho as i32),
         SYS_WAIT4_CHIRHO => -ECHILD_CHIRHO,
-        SYS_KILL_CHIRHO => -ESRCH_CHIRHO,
+        SYS_KILL_CHIRHO => crate::signal_chirho::sys_kill_chirho(
+            arg0_chirho,
+            arg1_chirho as u32,
+        ),
         SYS_UNAME_CHIRHO => sys_uname_chirho(arg0_chirho as *mut UtsNameChirho),
-        SYS_FCNTL_CHIRHO => -EBADF_CHIRHO,
+        SYS_FCNTL_CHIRHO => sys_fcntl_chirho(arg0_chirho, arg1_chirho, arg2_chirho),
         SYS_FLOCK_CHIRHO => -EBADF_CHIRHO,
         SYS_FSYNC_CHIRHO => -EBADF_CHIRHO,
         SYS_TRUNCATE_CHIRHO | SYS_FTRUNCATE_CHIRHO => -EBADF_CHIRHO,
@@ -683,26 +841,53 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_CHDIR_CHIRHO => -ENOENT_CHIRHO,
         SYS_RENAME_CHIRHO | SYS_MKDIR_CHIRHO | SYS_RMDIR_CHIRHO
         | SYS_CREAT_CHIRHO | SYS_LINK_CHIRHO | SYS_UNLINK_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_READLINK_CHIRHO => -ENOENT_CHIRHO,
+        SYS_READLINK_CHIRHO => sys_readlink_chirho(
+            arg0_chirho as *const u8,
+            arg1_chirho as *mut u8,
+            arg2_chirho as usize,
+        ),
         SYS_CHMOD_CHIRHO | SYS_CHOWN_CHIRHO => -ENOENT_CHIRHO,
-        SYS_GETUID_CHIRHO | SYS_GETEUID_CHIRHO => 0,  // root
-        SYS_GETGID_CHIRHO | SYS_GETEGID_CHIRHO => 0,  // root
-        SYS_GETPPID_CHIRHO => 0,                        // init has ppid 0
+        SYS_GETUID_CHIRHO => sys_getuid_chirho(),
+        SYS_GETEUID_CHIRHO => sys_geteuid_chirho(),
+        SYS_GETGID_CHIRHO => sys_getgid_chirho(),
+        SYS_GETEGID_CHIRHO => sys_getegid_chirho(),
+        SYS_GETPPID_CHIRHO => sys_getppid_chirho(),
         SYS_GETPGRP_CHIRHO => 1,
         SYS_SETSID_CHIRHO => 1,
         SYS_SIGALTSTACK_CHIRHO => 0,            // silently succeed
         SYS_ARCH_PRCTL_CHIRHO => sys_arch_prctl_chirho(arg0_chirho, arg1_chirho),
-        SYS_GETTID_CHIRHO => 1,                 // same as pid for now
+        SYS_GETTID_CHIRHO => sys_gettid_chirho(),
         SYS_FUTEX_CHIRHO => -ENOSYS_CHIRHO,
         SYS_SET_TID_ADDRESS_CHIRHO => sys_set_tid_address_chirho(arg0_chirho as *mut i32),
-        SYS_CLOCK_GETTIME_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_CLOCK_GETTIME_CHIRHO => sys_clock_gettime_chirho(
+            arg0_chirho,
+            arg1_chirho as *mut TimespecChirho,
+        ),
         SYS_EXIT_GROUP_CHIRHO => sys_exit_group_chirho(arg0_chirho as i32),
         SYS_OPENAT_CHIRHO => -ENOENT_CHIRHO,
         SYS_NEWFSTATAT_CHIRHO => -ENOENT_CHIRHO,
         SYS_SET_ROBUST_LIST_CHIRHO => 0,        // silently succeed
         SYS_GET_ROBUST_LIST_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_PRLIMIT64_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_GETRANDOM_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_FACCESSAT_CHIRHO => sys_faccessat_chirho(),
+        SYS_READLINKAT_CHIRHO => sys_readlinkat_chirho(
+            arg0_chirho as i32,
+            arg1_chirho as *const u8,
+            arg2_chirho as *mut u8,
+            arg3_chirho as usize,
+        ),
+        SYS_PRLIMIT64_CHIRHO => sys_prlimit64_chirho(
+            arg0_chirho as u32,
+            arg1_chirho,
+            arg2_chirho as *const Rlimit64Chirho,
+            arg3_chirho as *mut Rlimit64Chirho,
+        ),
+        SYS_GETRANDOM_CHIRHO => sys_getrandom_chirho(
+            arg0_chirho as *mut u8,
+            arg1_chirho as usize,
+            arg2_chirho as u32,
+        ),
+        SYS_GETDENTS64_CHIRHO => -ENOSYS_CHIRHO,  // needs VFS
+        SYS_STATX_CHIRHO => -ENOSYS_CHIRHO,       // stub for now
         SYS_RSEQ_CHIRHO => -ENOSYS_CHIRHO,
 
         // Catch-all for unimplemented syscalls.
@@ -1138,6 +1323,338 @@ fn sys_getcwd_chirho(buf_chirho: *mut u8, size_chirho: usize) -> i64 {
 }
 
 // ============================================================================
+// Phase 3 batch 1 syscall implementations
+// ============================================================================
+
+/// `getppid(2)` -- return parent PID.
+///
+/// Returns 1 for now (init's parent is kernel, represented as PID 1).
+fn sys_getppid_chirho() -> i64 {
+    1
+}
+
+/// `getuid(2)` -- return user ID (root = 0).
+fn sys_getuid_chirho() -> i64 {
+    0
+}
+
+/// `geteuid(2)` -- return effective user ID (root = 0).
+fn sys_geteuid_chirho() -> i64 {
+    0
+}
+
+/// `getgid(2)` -- return group ID (root = 0).
+fn sys_getgid_chirho() -> i64 {
+    0
+}
+
+/// `getegid(2)` -- return effective group ID (root = 0).
+fn sys_getegid_chirho() -> i64 {
+    0
+}
+
+/// `gettid(2)` -- return thread ID (= PID for single-threaded).
+fn sys_gettid_chirho() -> i64 {
+    1 // same as PID for single-threaded
+}
+
+/// `clock_gettime(2)` implementation.
+///
+/// For CLOCK_MONOTONIC, uses the tick counter * ~10ms per tick.
+/// For CLOCK_REALTIME, returns a hardcoded epoch (2026-03-14).
+fn sys_clock_gettime_chirho(
+    clock_id_chirho: u64,
+    tp_chirho: *mut TimespecChirho,
+) -> i64 {
+    if tp_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    let ts_chirho = match clock_id_chirho {
+        CLOCK_REALTIME_CHIRHO => {
+            // Hardcoded epoch + monotonic offset for some progression.
+            let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            TimespecChirho {
+                tv_sec_chirho: REALTIME_EPOCH_CHIRHO + (ticks_chirho as i64 / 100),
+                tv_nsec_chirho: ((ticks_chirho % 100) as i64) * 10_000_000, // 10ms per tick
+            }
+        }
+        CLOCK_MONOTONIC_CHIRHO => {
+            let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            // ~10ms per tick
+            let total_ns_chirho = ticks_chirho as i64 * 10_000_000;
+            TimespecChirho {
+                tv_sec_chirho: total_ns_chirho / 1_000_000_000,
+                tv_nsec_chirho: total_ns_chirho % 1_000_000_000,
+            }
+        }
+        _ => {
+            // Unsupported clock ID -- return EINVAL.
+            return -EINVAL_CHIRHO;
+        }
+    };
+
+    // SAFETY: Caller guarantees tp_chirho is a valid writable user-space pointer.
+    unsafe {
+        core::ptr::write(tp_chirho, ts_chirho);
+    }
+    0
+}
+
+/// Read the x86 Time Stamp Counter for PRNG seeding.
+#[inline]
+fn rdtsc_chirho() -> u64 {
+    let lo_chirho: u32;
+    let hi_chirho: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdtsc",
+            out("eax") lo_chirho,
+            out("edx") hi_chirho,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    ((hi_chirho as u64) << 32) | (lo_chirho as u64)
+}
+
+/// Xorshift64 PRNG step.
+fn xorshift64_chirho(state_chirho: u64) -> u64 {
+    let mut x_chirho = state_chirho;
+    x_chirho ^= x_chirho << 13;
+    x_chirho ^= x_chirho >> 7;
+    x_chirho ^= x_chirho << 17;
+    x_chirho
+}
+
+/// `getrandom(2)` implementation.
+///
+/// Fills the user buffer with pseudo-random bytes using a xorshift64 PRNG
+/// seeded from the TSC (rdtsc instruction).
+fn sys_getrandom_chirho(
+    buf_chirho: *mut u8,
+    buflen_chirho: usize,
+    _flags_chirho: u32,
+) -> i64 {
+    if buf_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+    if buflen_chirho == 0 {
+        return 0;
+    }
+
+    // Seed PRNG from TSC on first use.
+    let mut state_chirho = PRNG_STATE_CHIRHO.load(Ordering::Relaxed);
+    if state_chirho == 0 {
+        state_chirho = rdtsc_chirho();
+        if state_chirho == 0 {
+            state_chirho = 0xDEAD_BEEF_CAFE_BABE; // fallback seed
+        }
+        PRNG_STATE_CHIRHO.store(state_chirho, Ordering::Relaxed);
+    }
+
+    let mut offset_chirho: usize = 0;
+    while offset_chirho < buflen_chirho {
+        state_chirho = xorshift64_chirho(state_chirho);
+        let bytes_chirho = state_chirho.to_ne_bytes();
+        let remaining_chirho = buflen_chirho - offset_chirho;
+        let chunk_chirho = if remaining_chirho < 8 { remaining_chirho } else { 8 };
+        // SAFETY: Caller guarantees buf_chirho is writable for buflen_chirho bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes_chirho.as_ptr(),
+                buf_chirho.add(offset_chirho),
+                chunk_chirho,
+            );
+        }
+        offset_chirho += chunk_chirho;
+    }
+
+    PRNG_STATE_CHIRHO.store(state_chirho, Ordering::Relaxed);
+    buflen_chirho as i64
+}
+
+/// `prlimit64(2)` implementation.
+///
+/// Returns reasonable defaults for common resource limits.
+fn sys_prlimit64_chirho(
+    _pid_chirho: u32,
+    resource_chirho: u64,
+    _new_limit_chirho: *const Rlimit64Chirho,
+    old_limit_chirho: *mut Rlimit64Chirho,
+) -> i64 {
+    // If old_limit is requested, fill in defaults.
+    if !old_limit_chirho.is_null() {
+        let limit_chirho = match resource_chirho {
+            RLIMIT_STACK_CHIRHO => Rlimit64Chirho {
+                rlim_cur_chirho: 8 * 1024 * 1024,  // 8 MB
+                rlim_max_chirho: 8 * 1024 * 1024,
+            },
+            RLIMIT_NOFILE_CHIRHO => Rlimit64Chirho {
+                rlim_cur_chirho: 1024,
+                rlim_max_chirho: 1024,
+            },
+            _ => Rlimit64Chirho {
+                rlim_cur_chirho: RLIM_INFINITY_CHIRHO,
+                rlim_max_chirho: RLIM_INFINITY_CHIRHO,
+            },
+        };
+        // SAFETY: Caller guarantees old_limit_chirho is writable.
+        unsafe {
+            core::ptr::write(old_limit_chirho, limit_chirho);
+        }
+    }
+    // Silently accept new_limit settings (ignore them).
+    0
+}
+
+/// `access(2)` stub -- pretend the file exists.
+fn sys_access_chirho() -> i64 {
+    0
+}
+
+/// `faccessat(2)` stub -- pretend the file exists.
+fn sys_faccessat_chirho() -> i64 {
+    0
+}
+
+/// Helper: check if a user-space NUL-terminated string matches `target_chirho`.
+///
+/// # Safety
+///
+/// `user_str_chirho` must point to a valid NUL-terminated string in user memory.
+unsafe fn user_str_eq_chirho(user_str_chirho: *const u8, target_chirho: &[u8]) -> bool {
+    for (i_chirho, &byte_chirho) in target_chirho.iter().enumerate() {
+        let user_byte_chirho = unsafe { *user_str_chirho.add(i_chirho) };
+        if user_byte_chirho != byte_chirho {
+            return false;
+        }
+    }
+    // Check NUL terminator in user string.
+    let next_chirho = unsafe { *user_str_chirho.add(target_chirho.len()) };
+    next_chirho == 0
+}
+
+/// Path returned for /proc/self/exe readlink.
+const PROC_SELF_EXE_PATH_CHIRHO: &[u8] = b"/hello-chirho";
+
+/// `readlink(2)` implementation.
+///
+/// For "/proc/self/exe", returns "/hello-chirho". For all others, returns -ENOENT.
+fn sys_readlink_chirho(
+    path_chirho: *const u8,
+    buf_chirho: *mut u8,
+    bufsiz_chirho: usize,
+) -> i64 {
+    if path_chirho.is_null() || buf_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Check if path is "/proc/self/exe".
+    let is_proc_self_exe_chirho = unsafe {
+        user_str_eq_chirho(path_chirho, b"/proc/self/exe")
+    };
+
+    if is_proc_self_exe_chirho {
+        let copy_len_chirho = if bufsiz_chirho < PROC_SELF_EXE_PATH_CHIRHO.len() {
+            bufsiz_chirho
+        } else {
+            PROC_SELF_EXE_PATH_CHIRHO.len()
+        };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                PROC_SELF_EXE_PATH_CHIRHO.as_ptr(),
+                buf_chirho,
+                copy_len_chirho,
+            );
+        }
+        return copy_len_chirho as i64;
+    }
+
+    -ENOENT_CHIRHO
+}
+
+/// `readlinkat(2)` implementation.
+///
+/// For "/proc/self/exe", returns "/hello-chirho". Otherwise returns -ENOENT.
+fn sys_readlinkat_chirho(
+    _dirfd_chirho: i32,
+    pathname_chirho: *const u8,
+    buf_chirho: *mut u8,
+    bufsiz_chirho: usize,
+) -> i64 {
+    // Delegate to readlink -- dirfd is ignored for absolute paths.
+    sys_readlink_chirho(pathname_chirho, buf_chirho, bufsiz_chirho)
+}
+
+/// `fcntl(2)` implementation.
+///
+/// Handles F_GETFD, F_SETFD, F_GETFL, F_SETFL for fd 0, 1, 2.
+fn sys_fcntl_chirho(
+    fd_chirho: u64,
+    cmd_chirho: u64,
+    _arg_chirho: u64,
+) -> i64 {
+    // Only support stdin/stdout/stderr for now.
+    if fd_chirho > 2 {
+        return -EBADF_CHIRHO;
+    }
+
+    match cmd_chirho {
+        F_GETFD_CHIRHO => 0, // no close-on-exec set
+        F_SETFD_CHIRHO => 0, // silently accept
+        F_GETFL_CHIRHO => {
+            // Return O_RDONLY (0) for stdin, O_WRONLY (1) for stdout/stderr.
+            match fd_chirho {
+                0 => 0,     // O_RDONLY
+                1 | 2 => 1, // O_WRONLY
+                _ => 0,
+            }
+        }
+        F_SETFL_CHIRHO => 0, // silently accept
+        _ => {
+            crate::serial_println_chirho!(
+                "[SYSCALL] fcntl(fd={}, cmd={}) -> EINVAL (unsupported)",
+                fd_chirho,
+                cmd_chirho,
+            );
+            -EINVAL_CHIRHO
+        }
+    }
+}
+
+/// `fstat(2)` implementation.
+///
+/// Returns a zeroed stat struct with S_IFCHR mode for fd 0, 1, 2.
+fn sys_fstat_chirho(
+    fd_chirho: u64,
+    statbuf_chirho: *mut StatChirho,
+) -> i64 {
+    if statbuf_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    match fd_chirho {
+        0 | 1 | 2 => {
+            let mut st_chirho = StatChirho::zeroed_chirho();
+            st_chirho.st_mode_chirho = S_IFCHR_CHIRHO
+                | S_IRUSR_CHIRHO | S_IWUSR_CHIRHO
+                | S_IRGRP_CHIRHO | S_IWGRP_CHIRHO
+                | S_IROTH_CHIRHO | S_IWOTH_CHIRHO;
+            st_chirho.st_nlink_chirho = 1;
+            st_chirho.st_blksize_chirho = 1024;
+            // rdev for /dev/tty-like: major 5, minor 0 -> makedev(5,0)
+            st_chirho.st_rdev_chirho = (5 << 8) | 0;
+            // SAFETY: Caller guarantees statbuf_chirho is writable.
+            unsafe {
+                core::ptr::write(statbuf_chirho, st_chirho);
+            }
+            0
+        }
+        _ => -EBADF_CHIRHO,
+    }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -1236,7 +1753,11 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_SET_ROBUST_LIST_CHIRHO => "set_robust_list",
         SYS_GET_ROBUST_LIST_CHIRHO => "get_robust_list",
         SYS_PRLIMIT64_CHIRHO => "prlimit64",
+        SYS_GETDENTS64_CHIRHO => "getdents64",
+        SYS_READLINKAT_CHIRHO => "readlinkat",
+        SYS_FACCESSAT_CHIRHO => "faccessat",
         SYS_GETRANDOM_CHIRHO => "getrandom",
+        SYS_STATX_CHIRHO => "statx",
         SYS_RSEQ_CHIRHO => "rseq",
         _ => "unknown",
     }
