@@ -58,6 +58,11 @@ pub static HELLO_ELF_CHIRHO: &[u8] = include_bytes!(
     "../../userspace-chirho/hello-chirho/target/x86_64-unknown-none/release/hello-chirho"
 );
 
+/// BusyBox static x86_64 binary — 1.1MB, 40+ commands including ash shell.
+pub static BUSYBOX_ELF_CHIRHO: &[u8] = include_bytes!(
+    "../../userspace-chirho/busybox-chirho/output-chirho/busybox-chirho"
+);
+
 // ============================================================================
 // Error type
 // ============================================================================
@@ -696,14 +701,21 @@ pub fn jump_to_userspace_chirho(entry_point_chirho: u64, user_rsp_chirho: u64) -
 /// This function never returns — execution continues in userspace, and
 /// the kernel regains control only through syscalls or interrupts.
 pub fn exec_init_chirho() {
-    serial_println_chirho!("[EXEC] === Loading hello-chirho ELF binary ===");
+    // Try BusyBox first, fall back to hello-chirho
+    let (elf_name_chirho, elf_data_chirho) = if BUSYBOX_ELF_CHIRHO.len() > 100 {
+        ("busybox (ash shell)", BUSYBOX_ELF_CHIRHO)
+    } else {
+        ("hello-chirho", HELLO_ELF_CHIRHO)
+    };
+
+    serial_println_chirho!("[EXEC] === Loading {} ELF binary ===", elf_name_chirho);
     serial_println_chirho!(
         "[EXEC] Embedded ELF size: {} bytes",
-        HELLO_ELF_CHIRHO.len()
+        elf_data_chirho.len()
     );
 
     // Step 1: Parse and load the ELF into memory.
-    let loaded_chirho = match load_elf_into_memory_chirho(HELLO_ELF_CHIRHO) {
+    let loaded_chirho = match load_elf_into_memory_chirho(elf_data_chirho) {
         Ok(info_chirho) => info_chirho,
         Err(err_chirho) => {
             serial_println_chirho!("[EXEC] FATAL: Failed to load ELF: {:?}", err_chirho);
@@ -718,8 +730,30 @@ pub fn exec_init_chirho() {
         loaded_chirho.brk_addr_chirho
     );
 
-    // Step 2: Set up the user stack.
-    let user_rsp_chirho = setup_user_stack_chirho(&loaded_chirho);
+    // Step 2: Set up the user stack with proper argv.
+    // BusyBox uses argv[0] to determine which applet to run.
+    // Pass "sh" so it launches the ash shell.
+    let argv_chirho = if elf_data_chirho.len() > 100_000 {
+        // BusyBox — launch as shell
+        alloc::vec![
+            alloc::string::String::from("/bin/sh"),
+        ]
+    } else {
+        alloc::vec![
+            alloc::string::String::from("hello-chirho"),
+        ]
+    };
+    let envp_chirho = alloc::vec![
+        alloc::string::String::from("HOME=/root"),
+        alloc::string::String::from("PATH=/bin:/sbin"),
+        alloc::string::String::from("TERM=linux"),
+        alloc::string::String::from("PS1=lineluya# "),
+    ];
+    let user_rsp_chirho = setup_user_stack_with_args_chirho(
+        &loaded_chirho,
+        &argv_chirho,
+        &envp_chirho,
+    );
 
     serial_println_chirho!(
         "[EXEC] Ready to enter userspace. entry={:#x}, rsp={:#x}",
