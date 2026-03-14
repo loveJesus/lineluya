@@ -286,6 +286,22 @@ pub const SYS_UNLINKAT_CHIRHO: u64 = 263;
 pub const SYS_PIPE2_CHIRHO: u64 = 293;
 /// `renameat2(2)` -- rename a file with flags.
 pub const SYS_RENAMEAT2_CHIRHO: u64 = 316;
+/// `mount(2)` -- mount filesystem.
+pub const SYS_MOUNT_CHIRHO: u64 = 165;
+/// `umount2(2)` -- unmount filesystem.
+pub const SYS_UMOUNT2_CHIRHO: u64 = 166;
+/// `epoll_wait(2)` -- wait for events on an epoll fd.
+pub const SYS_EPOLL_WAIT_CHIRHO: u64 = 232;
+/// `epoll_ctl(2)` -- control interface for an epoll fd.
+pub const SYS_EPOLL_CTL_CHIRHO: u64 = 233;
+/// `pselect6(2)` -- synchronous I/O multiplexing (with sigmask).
+pub const SYS_PSELECT6_CHIRHO: u64 = 270;
+/// `ppoll(2)` -- wait for events on file descriptors (with sigmask).
+pub const SYS_PPOLL_CHIRHO: u64 = 271;
+/// `epoll_pwait(2)` -- wait for events on an epoll fd (with sigmask).
+pub const SYS_EPOLL_PWAIT_CHIRHO: u64 = 281;
+/// `epoll_create1(2)` -- open an epoll file descriptor.
+pub const SYS_EPOLL_CREATE1_CHIRHO: u64 = 291;
 /// `rseq(2)` -- restartable sequences.
 pub const SYS_RSEQ_CHIRHO: u64 = 334;
 
@@ -578,6 +594,55 @@ const F_GETFL_CHIRHO: u64 = 3;
 const F_SETFL_CHIRHO: u64 = 4;
 
 // ============================================================================
+// ioctl(2) command constants
+// ============================================================================
+
+/// TCGETS -- get terminal attributes.
+const TCGETS_CHIRHO: u64 = 0x5401;
+/// TCSETS -- set terminal attributes.
+const TCSETS_CHIRHO: u64 = 0x5402;
+/// TIOCGWINSZ -- get window size.
+const TIOCGWINSZ_CHIRHO: u64 = 0x5413;
+/// FIONREAD -- bytes available to read.
+const FIONREAD_CHIRHO: u64 = 0x541B;
+/// FIOCLEX -- set close-on-exec flag.
+const FIOCLEX_CHIRHO: u64 = 0x5451;
+
+/// Linux `struct winsize` equivalent for TIOCGWINSZ.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WinsizeChirho {
+    pub ws_row_chirho: u16,
+    pub ws_col_chirho: u16,
+    pub ws_xpixel_chirho: u16,
+    pub ws_ypixel_chirho: u16,
+}
+
+// ============================================================================
+// poll(2) / select(2) constants and structures
+// ============================================================================
+
+/// POLLIN -- there is data to read.
+const POLLIN_CHIRHO: i16 = 1;
+/// POLLOUT -- writing now will not block.
+const POLLOUT_CHIRHO: i16 = 4;
+/// POLLERR -- error condition.
+const POLLERR_CHIRHO: i16 = 8;
+/// POLLHUP -- hang up.
+const POLLHUP_CHIRHO: i16 = 16;
+/// POLLNVAL -- invalid request: fd not open.
+const POLLNVAL_CHIRHO: i16 = 32;
+
+/// Linux `struct pollfd` equivalent.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PollfdChirho {
+    pub fd_chirho: i32,
+    pub events_chirho: i16,
+    pub revents_chirho: i16,
+}
+
+// ============================================================================
 // clock_gettime(2) clock ID constants
 // ============================================================================
 
@@ -793,7 +858,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg0_chirho as *const u8,
             arg1_chirho as *mut StatChirho,
         ),
-        SYS_POLL_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_POLL_CHIRHO => sys_poll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho as i32),
         SYS_LSEEK_CHIRHO => crate::fs_chirho::sys_lseek_chirho(
             arg0_chirho,
             arg1_chirho as i64,
@@ -830,7 +895,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg3_chirho,
         ),
         SYS_RT_SIGRETURN_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_IOCTL_CHIRHO => sys_ioctl_chirho(
+        SYS_IOCTL_CHIRHO => sys_ioctl_real_chirho(
             arg0_chirho,
             arg1_chirho,
             arg2_chirho,
@@ -844,7 +909,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         ),
         SYS_ACCESS_CHIRHO => sys_access_chirho(),
         SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
-        SYS_SELECT_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_SELECT_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
         SYS_SCHED_YIELD_CHIRHO => {
             // Yield: just return success (no scheduler yet).
             0
@@ -991,6 +1056,41 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg4_chirho as *mut u8,
         ),
         SYS_RSEQ_CHIRHO => -ENOSYS_CHIRHO,
+
+        // mount / umount
+        SYS_MOUNT_CHIRHO => sys_mount_chirho(
+            arg0_chirho,
+            arg1_chirho,
+            arg2_chirho,
+            arg3_chirho,
+            arg4_chirho,
+        ),
+        SYS_UMOUNT2_CHIRHO => sys_umount2_chirho(arg0_chirho, arg1_chirho as u32),
+
+        // epoll family
+        SYS_EPOLL_CREATE1_CHIRHO => sys_epoll_create1_chirho(arg0_chirho as u32),
+        SYS_EPOLL_CTL_CHIRHO => sys_epoll_ctl_chirho(
+            arg0_chirho as i32,
+            arg1_chirho as i32,
+            arg2_chirho as i32,
+            arg3_chirho,
+        ),
+        SYS_EPOLL_WAIT_CHIRHO => sys_epoll_wait_chirho(
+            arg0_chirho as i32,
+            arg1_chirho,
+            arg2_chirho as i32,
+            arg3_chirho as i32,
+        ),
+        SYS_EPOLL_PWAIT_CHIRHO => sys_epoll_wait_chirho(
+            arg0_chirho as i32,
+            arg1_chirho,
+            arg2_chirho as i32,
+            arg3_chirho as i32,
+        ),
+
+        // pselect6 / ppoll
+        SYS_PSELECT6_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
+        SYS_PPOLL_CHIRHO => sys_poll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho as i32),
 
         // Catch-all for unimplemented syscalls.
         unknown_chirho => {
@@ -1401,6 +1501,285 @@ fn sys_ioctl_chirho(
         request_chirho,
     );
     -ENOTTY_CHIRHO
+}
+
+/// `ioctl(2)` real implementation (P3-016).
+///
+/// Dispatches to VFS FileOps::ioctl where possible. Handles common terminal
+/// and file ioctls directly for fds that have no VFS backing.
+fn sys_ioctl_real_chirho(
+    fd_chirho: u64,
+    cmd_chirho: u64,
+    arg_chirho: u64,
+) -> i64 {
+    // Try VFS fd table first
+    {
+        use crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO;
+        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
+            let fd_idx_chirho = fd_chirho as usize;
+            if fd_idx_chirho < fd_table_chirho.fds_chirho.len() {
+                if let Some(ref file_arc_chirho) = fd_table_chirho.fds_chirho[fd_idx_chirho] {
+                    let file_guard_chirho = file_arc_chirho.lock();
+                    let result_chirho = file_guard_chirho.ops_chirho.ioctl_chirho(
+                        &file_guard_chirho,
+                        cmd_chirho,
+                        arg_chirho,
+                    );
+                    return match result_chirho {
+                        Ok(val_chirho) => val_chirho,
+                        Err(err_chirho) => -err_chirho,
+                    };
+                }
+            }
+        }
+    }
+
+    // Fallback: handle common ioctls for stdin/stdout/stderr (fd 0-2)
+    match cmd_chirho {
+        TCGETS_CHIRHO | TCSETS_CHIRHO => {
+            // Not a real TTY yet; return -ENOTTY
+            -ENOTTY_CHIRHO
+        }
+        TIOCGWINSZ_CHIRHO => {
+            // Return a default 80x24 window size
+            if arg_chirho == 0 {
+                return -EFAULT_CHIRHO;
+            }
+            let winsize_chirho = WinsizeChirho {
+                ws_row_chirho: 24,
+                ws_col_chirho: 80,
+                ws_xpixel_chirho: 0,
+                ws_ypixel_chirho: 0,
+            };
+            let src_bytes_chirho = unsafe {
+                core::slice::from_raw_parts(
+                    &winsize_chirho as *const WinsizeChirho as *const u8,
+                    core::mem::size_of::<WinsizeChirho>(),
+                )
+            };
+            match crate::uaccess_chirho::copy_to_user_chirho(
+                arg_chirho,
+                src_bytes_chirho,
+                core::mem::size_of::<WinsizeChirho>(),
+            ) {
+                Ok(()) => 0,
+                Err(_) => -EFAULT_CHIRHO,
+            }
+        }
+        FIONREAD_CHIRHO => {
+            // Report 0 bytes available
+            if arg_chirho == 0 {
+                return -EFAULT_CHIRHO;
+            }
+            let zero_val_chirho: i32 = 0;
+            let src_bytes_chirho = unsafe {
+                core::slice::from_raw_parts(
+                    &zero_val_chirho as *const i32 as *const u8,
+                    core::mem::size_of::<i32>(),
+                )
+            };
+            match crate::uaccess_chirho::copy_to_user_chirho(
+                arg_chirho,
+                src_bytes_chirho,
+                core::mem::size_of::<i32>(),
+            ) {
+                Ok(()) => 0,
+                Err(_) => -EFAULT_CHIRHO,
+            }
+        }
+        FIOCLEX_CHIRHO => {
+            // Set close-on-exec: silently succeed (stub)
+            0
+        }
+        _ => {
+            crate::serial_println_chirho!(
+                "[SYSCALL] ioctl(fd={}, cmd={:#x}) -> ENOTTY (unrecognised)",
+                fd_chirho,
+                cmd_chirho,
+            );
+            -ENOTTY_CHIRHO
+        }
+    }
+}
+
+// ============================================================================
+// poll / select / epoll implementations (P3-031)
+// ============================================================================
+
+/// `poll(2)` simplified implementation.
+///
+/// Marks all valid fds as ready immediately (non-blocking stub).
+fn sys_poll_chirho(
+    fds_ptr_chirho: u64,
+    nfds_chirho: u32,
+    _timeout_chirho: i32,
+) -> i64 {
+    if fds_ptr_chirho == 0 || nfds_chirho == 0 {
+        return 0;
+    }
+
+    let entry_size_chirho = core::mem::size_of::<PollfdChirho>();
+    let total_size_chirho = entry_size_chirho * nfds_chirho as usize;
+
+    // Read pollfd array from user space
+    let mut buf_chirho = [0u8; 2048]; // supports up to ~256 fds
+    if total_size_chirho > buf_chirho.len() {
+        return -EINVAL_CHIRHO;
+    }
+    if crate::uaccess_chirho::copy_from_user_chirho(
+        &mut buf_chirho[..total_size_chirho],
+        fds_ptr_chirho,
+        total_size_chirho,
+    ).is_err() {
+        return -EFAULT_CHIRHO;
+    }
+
+    let mut ready_count_chirho: i64 = 0;
+    let pollfds_chirho = unsafe {
+        core::slice::from_raw_parts_mut(
+            buf_chirho.as_mut_ptr() as *mut PollfdChirho,
+            nfds_chirho as usize,
+        )
+    };
+
+    for pfd_chirho in pollfds_chirho.iter_mut() {
+        if pfd_chirho.fd_chirho < 0 {
+            pfd_chirho.revents_chirho = 0;
+            continue;
+        }
+        // Mark requested POLLIN/POLLOUT as ready
+        let ready_mask_chirho = pfd_chirho.events_chirho & (POLLIN_CHIRHO | POLLOUT_CHIRHO);
+        pfd_chirho.revents_chirho = ready_mask_chirho;
+        if ready_mask_chirho != 0 {
+            ready_count_chirho += 1;
+        }
+    }
+
+    // Write pollfd array back to user space
+    if crate::uaccess_chirho::copy_to_user_chirho(
+        fds_ptr_chirho,
+        &buf_chirho[..total_size_chirho],
+        total_size_chirho,
+    ).is_err() {
+        return -EFAULT_CHIRHO;
+    }
+
+    ready_count_chirho
+}
+
+/// `select(2)` simplified implementation.
+///
+/// Returns nfds (all fds ready) as a stub.
+fn sys_select_chirho(
+    nfds_chirho: i32,
+    _readfds_chirho: u64,
+    _writefds_chirho: u64,
+    _exceptfds_chirho: u64,
+    _timeout_chirho: u64,
+) -> i64 {
+    if nfds_chirho < 0 {
+        return -EINVAL_CHIRHO;
+    }
+    // Simplified: report all fds as ready
+    nfds_chirho as i64
+}
+
+/// `epoll_create1(2)` stub -- return a fake epoll fd.
+///
+/// Allocates a fake fd number from a static counter. Real epoll semantics
+/// are not implemented yet; this is enough for programs that probe epoll
+/// availability.
+fn sys_epoll_create1_chirho(_flags_chirho: u32) -> i64 {
+    static NEXT_EPOLL_FD_CHIRHO: AtomicU64 = AtomicU64::new(100);
+    let fd_chirho = NEXT_EPOLL_FD_CHIRHO.fetch_add(1, Ordering::SeqCst);
+    fd_chirho as i64
+}
+
+/// `epoll_ctl(2)` stub -- return 0 (success).
+fn sys_epoll_ctl_chirho(
+    _epfd_chirho: i32,
+    _op_chirho: i32,
+    _fd_chirho: i32,
+    _event_chirho: u64,
+) -> i64 {
+    0
+}
+
+/// `epoll_wait(2)` / `epoll_pwait(2)` stub -- return 0 (no events).
+fn sys_epoll_wait_chirho(
+    _epfd_chirho: i32,
+    _events_chirho: u64,
+    _maxevents_chirho: i32,
+    _timeout_chirho: i32,
+) -> i64 {
+    0
+}
+
+// ============================================================================
+// mount / umount implementations (P3-035)
+// ============================================================================
+
+/// `mount(2)` implementation.
+///
+/// Reads the fstype string from user space and dispatches to the
+/// appropriate filesystem mount function, then adds to the mount table.
+fn sys_mount_chirho(
+    _source_chirho: u64,
+    target_chirho: u64,
+    fstype_chirho: u64,
+    _flags_chirho: u64,
+    _data_chirho: u64,
+) -> i64 {
+    // Read target path
+    let target_path_chirho = match crate::uaccess_chirho::read_user_string_chirho(target_chirho, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Read fstype string
+    let fstype_str_chirho = match crate::uaccess_chirho::read_user_string_chirho(fstype_chirho, 256) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    crate::serial_println_chirho!(
+        "[SYSCALL] mount(target={}, fstype={})",
+        target_path_chirho,
+        fstype_str_chirho,
+    );
+
+    // Dispatch to the appropriate filesystem mount function
+    let sb_chirho = match fstype_str_chirho.as_str() {
+        "tmpfs" => crate::tmpfs_chirho::mount_tmpfs_chirho(),
+        "proc" | "procfs" => crate::procfs_chirho::mount_procfs_chirho(),
+        "devtmpfs" => crate::devtmpfs_chirho::mount_devtmpfs_chirho(),
+        _ => {
+            crate::serial_println_chirho!(
+                "[SYSCALL] mount: unsupported fstype '{}'",
+                fstype_str_chirho,
+            );
+            return -ENODEV_CHIRHO;
+        }
+    };
+
+    // Add to the mount table
+    {
+        use alloc::string::String;
+        let mut mounts_chirho = crate::fs_chirho::MOUNT_TABLE_CHIRHO.lock();
+        mounts_chirho.push(crate::fs_chirho::MountPointChirho {
+            path_chirho: String::from(target_path_chirho.as_str()),
+            superblock_chirho: sb_chirho,
+        });
+    }
+
+    0
+}
+
+/// `umount2(2)` stub -- return 0.
+fn sys_umount2_chirho(_target_chirho: u64, _flags_chirho: u32) -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] umount2 (stub) -> 0");
+    0
 }
 
 /// `getcwd(2)` stub.
@@ -2073,6 +2452,14 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_STATX_CHIRHO => "statx",
         SYS_PIPE2_CHIRHO => "pipe2",
         SYS_RSEQ_CHIRHO => "rseq",
+        SYS_MOUNT_CHIRHO => "mount",
+        SYS_UMOUNT2_CHIRHO => "umount2",
+        SYS_EPOLL_WAIT_CHIRHO => "epoll_wait",
+        SYS_EPOLL_CTL_CHIRHO => "epoll_ctl",
+        SYS_PSELECT6_CHIRHO => "pselect6",
+        SYS_PPOLL_CHIRHO => "ppoll",
+        SYS_EPOLL_PWAIT_CHIRHO => "epoll_pwait",
+        SYS_EPOLL_CREATE1_CHIRHO => "epoll_create1",
         _ => "unknown",
     }
 }

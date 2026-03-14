@@ -3230,7 +3230,7 @@
       "depends_on_chirho": [
         "P3-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3652,7 +3652,7 @@
         "P3-002",
         "P3-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3705,7 +3705,7 @@
         "P3-002",
         "P3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3758,7 +3758,7 @@
       "depends_on_chirho": [
         "P3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [

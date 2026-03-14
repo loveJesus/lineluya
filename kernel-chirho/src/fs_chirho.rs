@@ -47,10 +47,10 @@ pub struct MountPointChirho {
 static ROOT_FS_CHIRHO: Mutex<Option<Arc<Mutex<SuperblockChirho>>>> = Mutex::new(None);
 
 /// Table of mount points (checked during path resolution).
-static MOUNT_TABLE_CHIRHO: Mutex<Vec<MountPointChirho>> = Mutex::new(Vec::new());
+pub static MOUNT_TABLE_CHIRHO: Mutex<Vec<MountPointChirho>> = Mutex::new(Vec::new());
 
 /// Global file descriptor table (single-process for now).
-static GLOBAL_FD_TABLE_CHIRHO: Mutex<Option<FdTableChirho>> = Mutex::new(None);
+pub static GLOBAL_FD_TABLE_CHIRHO: Mutex<Option<FdTableChirho>> = Mutex::new(None);
 
 /// Maximum number of file descriptors.
 const MAX_FDS_CHIRHO: usize = 256;
