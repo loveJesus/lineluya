@@ -3112,7 +3112,7 @@
         "P3-002",
         "P3-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -3142,7 +3142,7 @@
         "P3-011",
         "P2-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3256,7 +3256,7 @@
       "depends_on_chirho": [
         "P3-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3372,7 +3372,7 @@
         "P3-004",
         "P2-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3430,7 +3430,7 @@
       "depends_on_chirho": [
         "P3-022"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3457,7 +3457,7 @@
         "P3-004",
         "P3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3487,7 +3487,7 @@
         "xtask-chirho/src/main_chirho.rs"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3567,7 +3567,7 @@
       "depends_on_chirho": [
         "P3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3596,7 +3596,7 @@
         "P3-001",
         "P3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3680,7 +3680,7 @@
         "P3-003",
         "P3-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "low",
       "acceptance_criteria_chirho": [
@@ -3732,7 +3732,7 @@
         "P3-003",
         "P3-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3784,7 +3784,7 @@
       "depends_on_chirho": [
         "P3-018"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3813,7 +3813,7 @@
         "P4-001",
         "P2-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -3841,7 +3841,7 @@
       "depends_on_chirho": [
         "P4-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3867,7 +3867,7 @@
       "depends_on_chirho": [
         "P4-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3898,7 +3898,7 @@
         "P3-002",
         "P3-016"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -3930,7 +3930,7 @@
       "depends_on_chirho": [
         "P4-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3960,7 +3960,7 @@
         "P4-005",
         "P3-011"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -3989,7 +3989,7 @@
         "P4-007",
         "P4-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -4019,7 +4019,7 @@
       "depends_on_chirho": [
         "P2-023"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -4046,7 +4046,7 @@
       "depends_on_chirho": [
         "P3-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -4074,7 +4074,7 @@
       "depends_on_chirho": [
         "P3-011"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -4104,7 +4104,7 @@
       "depends_on_chirho": [
         "P2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4134,7 +4134,7 @@
         "P4-008",
         "P4-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4160,7 +4160,7 @@
       "depends_on_chirho": [
         "P2-023"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -4189,7 +4189,7 @@
       "depends_on_chirho": [
         "P3-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4219,7 +4219,7 @@
         "P3-002",
         "P4-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4249,7 +4249,7 @@
         "P3-002",
         "P3-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -4278,7 +4278,7 @@
       "depends_on_chirho": [
         "P2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4308,7 +4308,7 @@
         "P3-004",
         "P2-012"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4336,7 +4336,7 @@
         "P2-012",
         "P2-017"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -4363,7 +4363,7 @@
       "depends_on_chirho": [
         "P3-018"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4389,7 +4389,7 @@
       "depends_on_chirho": [
         "P4-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4414,7 +4414,7 @@
       "depends_on_chirho": [
         "P3-013"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4441,7 +4441,7 @@
         "P4-001",
         "P3-018"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -4469,7 +4469,7 @@
         "drivers-chirho/Cargo.toml"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -4501,7 +4501,7 @@
       "depends_on_chirho": [
         "P5-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -5010,7 +5010,7 @@
       "depends_on_chirho": [
         "P3-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -5039,7 +5039,7 @@
         "kernel-chirho/src/main_chirho.rs"
       ],
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -5068,7 +5068,7 @@
         "P6-002",
         "P5-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -5574,7 +5574,7 @@
       "depends_on_chirho": [
         "P4-012"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -5603,7 +5603,7 @@
       "depends_on_chirho": [
         "P7-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "very_high",
       "acceptance_criteria_chirho": [
@@ -5631,7 +5631,7 @@
       "depends_on_chirho": [
         "P3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [

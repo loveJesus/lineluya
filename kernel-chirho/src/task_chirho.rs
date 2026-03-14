@@ -271,6 +271,12 @@ pub struct TaskChirho {
     /// Bitmask of pending (not yet delivered) signals.
     pub pending_signals_chirho: u64,
 
+    // -- Signals (full state, Phase 4) --------------------------------------
+
+    /// Full per-task signal state including per-signal dispositions, blocked
+    /// mask, and pending queue.
+    pub signal_state_chirho: crate::signal_chirho::SignalStateChirho,
+
     // -- Program break (brk) ------------------------------------------------
 
     /// Current program break address (top of the heap).  Adjusted by the
@@ -337,6 +343,7 @@ impl TaskChirho {
             gs_base_chirho: 0,
             signal_mask_chirho: 0,
             pending_signals_chirho: 0,
+            signal_state_chirho: crate::signal_chirho::SignalStateChirho::new_chirho(),
             brk_chirho: 0,
             brk_start_chirho: 0,
         }
@@ -395,6 +402,7 @@ impl TaskChirho {
             gs_base_chirho: 0,
             signal_mask_chirho: 0,
             pending_signals_chirho: 0,
+            signal_state_chirho: crate::signal_chirho::SignalStateChirho::new_chirho(),
             brk_chirho: 0,
             brk_start_chirho: 0,
         }

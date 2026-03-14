@@ -302,8 +302,201 @@ pub const SYS_PPOLL_CHIRHO: u64 = 271;
 pub const SYS_EPOLL_PWAIT_CHIRHO: u64 = 281;
 /// `epoll_create1(2)` -- open an epoll file descriptor.
 pub const SYS_EPOLL_CREATE1_CHIRHO: u64 = 291;
+/// `sysinfo(2)` -- return system information.
+pub const SYS_SYSINFO_CHIRHO: u64 = 99;
+/// `mknod(2)` -- create a special or ordinary file.
+pub const SYS_MKNOD_CHIRHO: u64 = 133;
+/// `personality(2)` -- set the process execution domain.
+pub const SYS_PERSONALITY_CHIRHO: u64 = 135;
+/// `prctl(2)` -- operations on a process.
+pub const SYS_PRCTL_CHIRHO: u64 = 157;
+/// `sched_setaffinity(2)` -- set a thread's CPU affinity mask.
+pub const SYS_SCHED_SETAFFINITY_CHIRHO: u64 = 203;
+/// `sched_getaffinity(2)` -- get a thread's CPU affinity mask.
+pub const SYS_SCHED_GETAFFINITY_CHIRHO: u64 = 204;
+/// `clock_nanosleep(2)` -- high-resolution sleep with specifiable clock.
+pub const SYS_CLOCK_NANOSLEEP_CHIRHO: u64 = 230;
+/// `mknodat(2)` -- create a special or ordinary file relative to directory fd.
+pub const SYS_MKNODAT_CHIRHO: u64 = 259;
+/// `timerfd_create(2)` -- create a timer that delivers expiration via fd.
+pub const SYS_TIMERFD_CREATE_CHIRHO: u64 = 283;
+/// `signalfd4(2)` -- create a file descriptor for accepting signals.
+pub const SYS_SIGNALFD4_CHIRHO: u64 = 289;
+/// `eventfd2(2)` -- create a file descriptor for event notification.
+pub const SYS_EVENTFD2_CHIRHO: u64 = 290;
+/// `dup3(2)` -- duplicate a file descriptor with flags.
+pub const SYS_DUP3_CHIRHO: u64 = 292;
+/// `memfd_create(2)` -- create an anonymous file.
+pub const SYS_MEMFD_CREATE_CHIRHO: u64 = 319;
 /// `rseq(2)` -- restartable sequences.
 pub const SYS_RSEQ_CHIRHO: u64 = 334;
+
+
+// --- Phase 4 syscall number additions ---
+
+/// `setuid(2)` -- set user identity.
+pub const SYS_SETUID_CHIRHO: u64 = 105;
+/// `setgid(2)` -- set group identity.
+pub const SYS_SETGID_CHIRHO: u64 = 106;
+/// `setpgid(2)` -- set process group ID.
+pub const SYS_SETPGID_CHIRHO: u64 = 109;
+/// `setreuid(2)` -- set real and effective user IDs.
+pub const SYS_SETREUID_CHIRHO: u64 = 113;
+/// `setregid(2)` -- set real and effective group IDs.
+pub const SYS_SETREGID_CHIRHO: u64 = 114;
+/// `getgroups(2)` -- get supplementary group IDs.
+pub const SYS_GETGROUPS_CHIRHO: u64 = 115;
+/// `setgroups(2)` -- set supplementary group IDs.
+pub const SYS_SETGROUPS_CHIRHO: u64 = 116;
+/// `setresuid(2)` -- set real, effective and saved user IDs.
+pub const SYS_SETRESUID_CHIRHO: u64 = 117;
+/// `getresuid(2)` -- get real, effective and saved user IDs.
+pub const SYS_GETRESUID_CHIRHO: u64 = 118;
+/// `setresgid(2)` -- set real, effective and saved group IDs.
+pub const SYS_SETRESGID_CHIRHO: u64 = 119;
+/// `getresgid(2)` -- get real, effective and saved group IDs.
+pub const SYS_GETRESGID_CHIRHO: u64 = 120;
+/// `getpgid(2)` -- get process group ID.
+pub const SYS_GETPGID_CHIRHO: u64 = 121;
+/// `getsid(2)` -- get session ID.
+pub const SYS_GETSID_CHIRHO: u64 = 124;
+/// `rt_sigpending(2)` -- examine pending signals.
+pub const SYS_RT_SIGPENDING_CHIRHO: u64 = 127;
+/// `rt_sigsuspend(2)` -- wait for a signal.
+pub const SYS_RT_SIGSUSPEND_CHIRHO: u64 = 130;
+/// `tkill(2)` -- send a signal to a thread.
+pub const SYS_TKILL_CHIRHO: u64 = 200;
+/// `tgkill(2)` -- send a signal to a thread in a thread group.
+pub const SYS_TGKILL_CHIRHO: u64 = 234;
+/// `timerfd_settime(2)` -- arm/disarm a timer fd.
+pub const SYS_TIMERFD_SETTIME_CHIRHO: u64 = 286;
+/// `timerfd_gettime(2)` -- get timer fd expiration.
+pub const SYS_TIMERFD_GETTIME_CHIRHO: u64 = 287;
+/// `eventfd(2)` -- create a file descriptor for event notification.
+pub const SYS_EVENTFD_CHIRHO: u64 = 284;
+// --- Phase 8+9 syscall number additions ---
+
+/// `sendfile(2)` -- transfer data between file descriptors.
+pub const SYS_SENDFILE_CHIRHO: u64 = 40;
+/// `fdatasync(2)` -- synchronize file data.
+pub const SYS_FDATASYNC_CHIRHO: u64 = 75;
+/// `gettimeofday(2)` -- get time.
+pub const SYS_GETTIMEOFDAY_CHIRHO: u64 = 96;
+/// `getrusage(2)` -- get resource usage.
+pub const SYS_GETRUSAGE_CHIRHO: u64 = 98;
+/// `times(2)` -- get process times.
+pub const SYS_TIMES_CHIRHO: u64 = 100;
+/// `ptrace(2)` -- process trace.
+pub const SYS_PTRACE_CHIRHO: u64 = 101;
+/// `syslog(2)` -- read/clear kernel message ring buffer.
+pub const SYS_SYSLOG_CHIRHO: u64 = 103;
+/// `getpriority(2)` -- get program scheduling priority.
+pub const SYS_GETPRIORITY_CHIRHO: u64 = 140;
+/// `setpriority(2)` -- set program scheduling priority.
+pub const SYS_SETPRIORITY_CHIRHO: u64 = 141;
+/// `sched_setparam(2)` -- set scheduling parameters.
+pub const SYS_SCHED_SETPARAM_CHIRHO: u64 = 142;
+/// `sched_getparam(2)` -- get scheduling parameters.
+pub const SYS_SCHED_GETPARAM_CHIRHO: u64 = 143;
+/// `sched_setscheduler(2)` -- set scheduling policy/parameters.
+pub const SYS_SCHED_SETSCHEDULER_CHIRHO: u64 = 144;
+/// `sched_getscheduler(2)` -- get scheduling policy.
+pub const SYS_SCHED_GETSCHEDULER_CHIRHO: u64 = 145;
+/// `sched_get_priority_max(2)` -- get static priority range (max).
+pub const SYS_SCHED_GET_PRIORITY_MAX_CHIRHO: u64 = 146;
+/// `sched_get_priority_min(2)` -- get static priority range (min).
+pub const SYS_SCHED_GET_PRIORITY_MIN_CHIRHO: u64 = 147;
+/// `mlock(2)` -- lock memory.
+pub const SYS_MLOCK_CHIRHO: u64 = 149;
+/// `munlock(2)` -- unlock memory.
+pub const SYS_MUNLOCK_CHIRHO: u64 = 150;
+/// `mlockall(2)` -- lock all memory.
+pub const SYS_MLOCKALL_CHIRHO: u64 = 151;
+/// `munlockall(2)` -- unlock all memory.
+pub const SYS_MUNLOCKALL_CHIRHO: u64 = 152;
+/// `sync(2)` -- commit buffer cache to disk.
+pub const SYS_SYNC_CHIRHO: u64 = 162;
+/// `settimeofday(2)` -- set time.
+pub const SYS_SETTIMEOFDAY_CHIRHO: u64 = 164;
+/// `reboot(2)` -- reboot or disable Ctrl-Alt-Del.
+pub const SYS_REBOOT_CHIRHO: u64 = 169;
+/// `sethostname(2)` -- set hostname.
+pub const SYS_SETHOSTNAME_CHIRHO: u64 = 170;
+/// `setxattr(2)` -- set an extended attribute value.
+pub const SYS_SETXATTR_CHIRHO: u64 = 188;
+/// `getxattr(2)` -- get an extended attribute value.
+pub const SYS_GETXATTR_CHIRHO: u64 = 191;
+/// `listxattr(2)` -- list extended attribute names.
+pub const SYS_LISTXATTR_CHIRHO: u64 = 194;
+/// `removexattr(2)` -- remove an extended attribute.
+pub const SYS_REMOVEXATTR_CHIRHO: u64 = 197;
+/// `fadvise64(2)` -- predeclare an access pattern for file data.
+pub const SYS_FADVISE64_CHIRHO: u64 = 221;
+/// `timer_create(2)` -- create a POSIX per-process timer.
+pub const SYS_TIMER_CREATE_CHIRHO: u64 = 222;
+/// `timer_settime(2)` -- arm/disarm a POSIX per-process timer.
+pub const SYS_TIMER_SETTIME_CHIRHO: u64 = 223;
+/// `timer_gettime(2)` -- fetch state of a POSIX per-process timer.
+pub const SYS_TIMER_GETTIME_CHIRHO: u64 = 224;
+/// `timer_delete(2)` -- delete a POSIX per-process timer.
+pub const SYS_TIMER_DELETE_CHIRHO: u64 = 226;
+/// `waitid(2)` -- wait for a child process to change state.
+pub const SYS_WAITID_CHIRHO: u64 = 247;
+/// `splice(2)` -- splice data to/from a pipe.
+pub const SYS_SPLICE_CHIRHO: u64 = 275;
+/// `tee(2)` -- duplicating pipe content.
+pub const SYS_TEE_CHIRHO: u64 = 276;
+/// `vmsplice(2)` -- splice user pages into a pipe.
+pub const SYS_VMSPLICE_CHIRHO: u64 = 278;
+/// `fallocate(2)` -- manipulate file space.
+pub const SYS_FALLOCATE_CHIRHO: u64 = 285;
+/// `execveat(2)` -- execute program relative to a directory file descriptor.
+pub const SYS_EXECVEAT_CHIRHO: u64 = 322;
+/// `mlock2(2)` -- lock memory (with flags).
+pub const SYS_MLOCK2_CHIRHO: u64 = 325;
+/// `copy_file_range(2)` -- copy a range of data between two files.
+pub const SYS_COPY_FILE_RANGE_CHIRHO: u64 = 326;
+/// `io_uring_setup(2)` -- set up io_uring submission/completion queues.
+pub const SYS_IO_URING_SETUP_CHIRHO: u64 = 425;
+/// `io_uring_enter(2)` -- initiate and/or complete io_uring I/O.
+pub const SYS_IO_URING_ENTER_CHIRHO: u64 = 426;
+/// `io_uring_register(2)` -- register files/buffers for io_uring.
+pub const SYS_IO_URING_REGISTER_CHIRHO: u64 = 427;
+/// `clone3(2)` -- create a child process (extended).
+pub const SYS_CLONE3_CHIRHO: u64 = 435;
+
+// --- Phase 5+6+7 syscall number additions ---
+
+/// `sendmsg(2)` -- send a message on a socket.
+pub const SYS_SENDMSG_CHIRHO: u64 = 46;
+/// `recvmsg(2)` -- receive a message from a socket.
+pub const SYS_RECVMSG_CHIRHO: u64 = 47;
+/// `getsockname(2)` -- get socket name.
+pub const SYS_GETSOCKNAME_CHIRHO: u64 = 51;
+/// `getpeername(2)` -- get name of connected peer socket.
+pub const SYS_GETPEERNAME_CHIRHO: u64 = 52;
+/// `socketpair(2)` -- create a pair of connected sockets.
+pub const SYS_SOCKETPAIR_CHIRHO: u64 = 53;
+/// `setsockopt(2)` -- set options on sockets.
+pub const SYS_SETSOCKOPT_CHIRHO: u64 = 54;
+/// `getsockopt(2)` -- get options on sockets.
+pub const SYS_GETSOCKOPT_CHIRHO: u64 = 55;
+/// `capget(2)` -- get process capabilities.
+pub const SYS_CAPGET_CHIRHO: u64 = 125;
+/// `capset(2)` -- set process capabilities.
+pub const SYS_CAPSET_CHIRHO: u64 = 126;
+/// `unshare(2)` -- disassociate parts of the process execution context.
+pub const SYS_UNSHARE_CHIRHO: u64 = 272;
+/// `accept4(2)` -- accept a connection on a socket (with flags).
+pub const SYS_ACCEPT4_CHIRHO: u64 = 288;
+/// `setns(2)` -- reassociate thread with a namespace.
+pub const SYS_SETNS_CHIRHO: u64 = 308;
+/// `seccomp(2)` -- operate on Secure Computing state.
+pub const SYS_SECCOMP_CHIRHO: u64 = 317;
+/// `bpf(2)` -- perform a command on an extended BPF map or program.
+pub const SYS_BPF_CHIRHO: u64 = 321;
+/// `landlock_create_ruleset(2)` -- create a new Landlock ruleset.
+pub const SYS_LANDLOCK_CREATE_RULESET_CHIRHO: u64 = 444;
 
 // ============================================================================
 // Linux errno constants
@@ -393,6 +586,8 @@ pub const ENOMSG_CHIRHO: i64 = 42;
 pub const ENOTSUP_CHIRHO: i64 = 95;
 /// Address already in use.
 pub const EADDRINUSE_CHIRHO: i64 = 98;
+/// Not a socket.
+pub const ENOTSOCK_CHIRHO: i64 = 88;
 /// Connection refused.
 pub const ECONNREFUSED_CHIRHO: i64 = 111;
 
@@ -408,6 +603,55 @@ const ARCH_GET_FS_CHIRHO: u64 = 0x1003;
 const ARCH_SET_GS_CHIRHO: u64 = 0x1001;
 /// Get the 64-bit base address for the GS register.
 const ARCH_GET_GS_CHIRHO: u64 = 0x1004;
+
+// ============================================================================
+// prctl(2) sub-command constants
+// ============================================================================
+
+/// PR_SET_NAME -- set the name of the calling thread.
+const PR_SET_NAME_CHIRHO: u64 = 15;
+/// PR_GET_NAME -- get the name of the calling thread.
+const PR_GET_NAME_CHIRHO: u64 = 16;
+
+// ============================================================================
+// SysinfoChirho -- Linux sysinfo structure
+// ============================================================================
+
+/// Linux `struct sysinfo` equivalent for sysinfo(2).
+///
+/// Layout matches the kernel's `struct sysinfo` on x86_64.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SysinfoChirho {
+    /// Seconds since boot.
+    pub uptime_chirho: i64,
+    /// 1, 5, and 15 minute load averages.
+    pub loads_chirho: [u64; 3],
+    /// Total usable main memory size.
+    pub totalram_chirho: u64,
+    /// Available memory size.
+    pub freeram_chirho: u64,
+    /// Amount of shared memory.
+    pub sharedram_chirho: u64,
+    /// Memory used by buffers.
+    pub bufferram_chirho: u64,
+    /// Total swap space size.
+    pub totalswap_chirho: u64,
+    /// Swap space still available.
+    pub freeswap_chirho: u64,
+    /// Number of current processes.
+    pub procs_chirho: u16,
+    /// Padding.
+    pub _pad_chirho: [u8; 6],
+    /// Total high memory size.
+    pub totalhigh_chirho: u64,
+    /// Available high memory size.
+    pub freehigh_chirho: u64,
+    /// Memory unit size in bytes.
+    pub mem_unit_chirho: u32,
+    /// Padding to 64 bytes.
+    pub _padding_chirho: [u8; 4],
+}
 
 // ============================================================================
 // UtsNameChirho -- Linux utsname structure
@@ -490,6 +734,65 @@ pub struct TimespecChirho {
     pub tv_sec_chirho: i64,
     /// Nanoseconds.
     pub tv_nsec_chirho: i64,
+}
+
+// ============================================================================
+// TimevalChirho -- Linux timeval structure (Phase 8+9)
+// ============================================================================
+
+/// Linux `struct timeval` equivalent for gettimeofday(2).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TimevalChirho {
+    /// Seconds.
+    pub tv_sec_chirho: i64,
+    /// Microseconds.
+    pub tv_usec_chirho: i64,
+}
+
+// ============================================================================
+// RusageChirho -- Linux rusage structure (Phase 8+9)
+// ============================================================================
+
+/// Linux `struct rusage` equivalent for getrusage(2).
+///
+/// Contains 18 fields (all i64/TimevalChirho). We use a flat layout matching
+/// the kernel's x86_64 struct rusage.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RusageChirho {
+    /// User CPU time used.
+    pub ru_utime_chirho: TimevalChirho,
+    /// System CPU time used.
+    pub ru_stime_chirho: TimevalChirho,
+    /// Maximum resident set size.
+    pub ru_maxrss_chirho: i64,
+    /// Integral shared memory size.
+    pub ru_ixrss_chirho: i64,
+    /// Integral unshared data size.
+    pub ru_idrss_chirho: i64,
+    /// Integral unshared stack size.
+    pub ru_isrss_chirho: i64,
+    /// Page reclaims (soft page faults).
+    pub ru_minflt_chirho: i64,
+    /// Page faults (hard page faults).
+    pub ru_majflt_chirho: i64,
+    /// Swaps.
+    pub ru_nswap_chirho: i64,
+    /// Block input operations.
+    pub ru_inblock_chirho: i64,
+    /// Block output operations.
+    pub ru_oublock_chirho: i64,
+    /// IPC messages sent.
+    pub ru_msgsnd_chirho: i64,
+    /// IPC messages received.
+    pub ru_msgrcv_chirho: i64,
+    /// Signals received.
+    pub ru_nsignals_chirho: i64,
+    /// Voluntary context switches.
+    pub ru_nvcsw_chirho: i64,
+    /// Involuntary context switches.
+    pub ru_nivcsw_chirho: i64,
 }
 
 // ============================================================================
@@ -911,12 +1214,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
         SYS_SELECT_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
         SYS_SCHED_YIELD_CHIRHO => {
-            // Yield: just return success (no scheduler yet).
+            crate::scheduler_chirho::yield_current_chirho();
             0
         }
-        SYS_MREMAP_CHIRHO | SYS_MSYNC_CHIRHO | SYS_MINCORE_CHIRHO | SYS_MADVISE_CHIRHO => {
-            -ENOSYS_CHIRHO
-        }
+        SYS_MREMAP_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_MSYNC_CHIRHO => 0,   // stub: silently succeed
+        SYS_MINCORE_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_MADVISE_CHIRHO => 0, // advisory, silently ignore
         SYS_DUP_CHIRHO => crate::fs_chirho::sys_dup_chirho(arg0_chirho),
         SYS_DUP2_CHIRHO => crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho),
         SYS_PAUSE_CHIRHO => -EINTR_CHIRHO,
@@ -924,9 +1228,66 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_GETITIMER_CHIRHO | SYS_SETITIMER_CHIRHO => -ENOSYS_CHIRHO,
         SYS_ALARM_CHIRHO => 0,                  // return 0 (no previous alarm)
         SYS_GETPID_CHIRHO => sys_getpid_chirho(),
-        SYS_SOCKET_CHIRHO | SYS_CONNECT_CHIRHO | SYS_ACCEPT_CHIRHO
-        | SYS_SENDTO_CHIRHO | SYS_RECVFROM_CHIRHO | SYS_SHUTDOWN_CHIRHO
-        | SYS_BIND_CHIRHO | SYS_LISTEN_CHIRHO => -ENOSYS_CHIRHO,
+        // --- Phase 6: Network socket stubs ---
+        SYS_SOCKET_CHIRHO => crate::net_chirho::sys_socket_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_CONNECT_CHIRHO => crate::net_chirho::sys_connect_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_ACCEPT_CHIRHO => crate::net_chirho::sys_accept_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_SENDTO_CHIRHO => crate::net_chirho::sys_sendto_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+            arg3_chirho, arg4_chirho, _arg5_chirho,
+        ),
+        SYS_RECVFROM_CHIRHO => crate::net_chirho::sys_recvfrom_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+            arg3_chirho, arg4_chirho, _arg5_chirho,
+        ),
+        SYS_SENDMSG_CHIRHO => crate::net_chirho::sys_sendmsg_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_RECVMSG_CHIRHO => crate::net_chirho::sys_recvmsg_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_SHUTDOWN_CHIRHO => crate::net_chirho::sys_shutdown_chirho(
+            arg0_chirho, arg1_chirho,
+        ),
+        SYS_BIND_CHIRHO => crate::net_chirho::sys_bind_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_LISTEN_CHIRHO => crate::net_chirho::sys_listen_chirho(
+            arg0_chirho, arg1_chirho,
+        ),
+        SYS_GETSOCKNAME_CHIRHO => crate::net_chirho::sys_getsockname_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_GETPEERNAME_CHIRHO => crate::net_chirho::sys_getpeername_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho,
+        ),
+        SYS_SOCKETPAIR_CHIRHO => crate::net_chirho::sys_socketpair_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho,
+        ),
+        SYS_SETSOCKOPT_CHIRHO => crate::net_chirho::sys_setsockopt_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho,
+        ),
+        SYS_GETSOCKOPT_CHIRHO => crate::net_chirho::sys_getsockopt_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho,
+        ),
+        SYS_ACCEPT4_CHIRHO => crate::net_chirho::sys_accept4_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho,
+        ),
+
+        // --- Phase 7 partial: Security stubs ---
+        SYS_CAPGET_CHIRHO | SYS_CAPSET_CHIRHO => 0,
+        SYS_SECCOMP_CHIRHO => 0,
+        SYS_BPF_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_UNSHARE_CHIRHO => 0,
+        SYS_SETNS_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_LANDLOCK_CREATE_RULESET_CHIRHO => -ENOSYS_CHIRHO,
+
         SYS_CLONE_CHIRHO => crate::process_chirho::sys_clone_chirho(
             arg0_chirho,
             arg1_chirho,
@@ -953,9 +1314,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         ),
         SYS_UNAME_CHIRHO => sys_uname_chirho(arg0_chirho as *mut UtsNameChirho),
         SYS_FCNTL_CHIRHO => sys_fcntl_chirho(arg0_chirho, arg1_chirho, arg2_chirho),
-        SYS_FLOCK_CHIRHO => -EBADF_CHIRHO,
-        SYS_FSYNC_CHIRHO => -EBADF_CHIRHO,
-        SYS_TRUNCATE_CHIRHO | SYS_FTRUNCATE_CHIRHO => -EBADF_CHIRHO,
+        SYS_FLOCK_CHIRHO => 0,     // stub: silently succeed
+        SYS_FSYNC_CHIRHO => 0,     // stub: silently succeed
+        SYS_FDATASYNC_CHIRHO => 0, // stub: silently succeed
+        SYS_TRUNCATE_CHIRHO => 0,  // stub: silently succeed
+        SYS_FTRUNCATE_CHIRHO => 0, // stub: silently succeed
         SYS_GETDENTS_CHIRHO => -EBADF_CHIRHO,
         SYS_GETCWD_CHIRHO => sys_getcwd_chirho(arg0_chirho as *mut u8, arg1_chirho as usize),
         SYS_CHDIR_CHIRHO => sys_chdir_chirho(arg0_chirho as *const u8),
@@ -974,13 +1337,45 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         ),
         SYS_CHMOD_CHIRHO | SYS_CHOWN_CHIRHO => -ENOENT_CHIRHO,
         SYS_GETUID_CHIRHO => sys_getuid_chirho(),
+        // Phase 4: Credentials -- setuid/setgid family (stubs, always root)
+        SYS_SETUID_CHIRHO => 0,
+        SYS_SETGID_CHIRHO => 0,
         SYS_GETEUID_CHIRHO => sys_geteuid_chirho(),
         SYS_GETGID_CHIRHO => sys_getgid_chirho(),
         SYS_GETEGID_CHIRHO => sys_getegid_chirho(),
         SYS_GETPPID_CHIRHO => sys_getppid_chirho(),
-        SYS_GETPGRP_CHIRHO => 1,
-        SYS_SETSID_CHIRHO => 1,
-        SYS_SIGALTSTACK_CHIRHO => 0,            // silently succeed
+        // Phase 4: Process group/session stubs
+        SYS_SETPGID_CHIRHO => 0,
+        SYS_GETPGRP_CHIRHO => sys_getpid_chirho(),
+        SYS_SETSID_CHIRHO => sys_getpid_chirho(),
+        SYS_SETREUID_CHIRHO => 0,
+        SYS_SETREGID_CHIRHO => 0,
+        SYS_GETGROUPS_CHIRHO => 0,
+        SYS_SETGROUPS_CHIRHO => 0,
+        SYS_SETRESUID_CHIRHO => 0,
+        SYS_GETRESUID_CHIRHO => {
+            // Write 0 (root) to ruid, euid, suid pointers
+            if arg0_chirho != 0 { unsafe { *(arg0_chirho as *mut u32) = 0; } }
+            if arg1_chirho != 0 { unsafe { *(arg1_chirho as *mut u32) = 0; } }
+            if arg2_chirho != 0 { unsafe { *(arg2_chirho as *mut u32) = 0; } }
+            0
+        },
+        SYS_SETRESGID_CHIRHO => 0,
+        SYS_GETRESGID_CHIRHO => {
+            // Write 0 (root) to rgid, egid, sgid pointers
+            if arg0_chirho != 0 { unsafe { *(arg0_chirho as *mut u32) = 0; } }
+            if arg1_chirho != 0 { unsafe { *(arg1_chirho as *mut u32) = 0; } }
+            if arg2_chirho != 0 { unsafe { *(arg2_chirho as *mut u32) = 0; } }
+            0
+        },
+        SYS_GETPGID_CHIRHO => sys_getpid_chirho(),
+        SYS_GETSID_CHIRHO => sys_getpid_chirho(),
+        // Phase 4: Additional signal syscalls
+        SYS_RT_SIGPENDING_CHIRHO => crate::signal_chirho::sys_rt_sigpending_chirho(arg0_chirho),
+        SYS_RT_SIGSUSPEND_CHIRHO => crate::signal_chirho::sys_rt_sigsuspend_chirho(arg0_chirho),
+        SYS_SIGALTSTACK_CHIRHO => crate::signal_chirho::sys_sigaltstack_chirho(arg0_chirho, arg1_chirho),
+        SYS_TKILL_CHIRHO => crate::signal_chirho::sys_tkill_chirho(arg0_chirho, arg1_chirho as u32),
+        SYS_TGKILL_CHIRHO => crate::signal_chirho::sys_tgkill_chirho(arg0_chirho, arg1_chirho, arg2_chirho as u32),
         SYS_ARCH_PRCTL_CHIRHO => sys_arch_prctl_chirho(arg0_chirho, arg1_chirho),
         SYS_GETTID_CHIRHO => sys_gettid_chirho(),
         SYS_FUTEX_CHIRHO => -ENOSYS_CHIRHO,
@@ -1055,7 +1450,35 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg3_chirho as u32,
             arg4_chirho as *mut u8,
         ),
+        SYS_SYSINFO_CHIRHO => sys_sysinfo_chirho(arg0_chirho as *mut SysinfoChirho),
+        SYS_MKNOD_CHIRHO => 0,   // stub: silently succeed
+        SYS_PERSONALITY_CHIRHO => sys_personality_chirho(arg0_chirho),
+        SYS_PRCTL_CHIRHO => sys_prctl_chirho(
+            arg0_chirho,
+            arg1_chirho,
+            arg2_chirho,
+            arg3_chirho,
+            arg4_chirho,
+        ),
+        SYS_SCHED_SETAFFINITY_CHIRHO => 0, // stub: accept
+        SYS_SCHED_GETAFFINITY_CHIRHO => sys_sched_getaffinity_chirho(
+            arg0_chirho,
+            arg1_chirho as u32,
+            arg2_chirho as *mut u8,
+        ),
+        SYS_CLOCK_NANOSLEEP_CHIRHO => 0, // stub: instant return
+        SYS_MKNODAT_CHIRHO => 0,  // stub: silently succeed
+        SYS_TIMERFD_CREATE_CHIRHO => sys_fake_fd_chirho(),
+        SYS_SIGNALFD4_CHIRHO => sys_fake_fd_chirho(),
+        SYS_EVENTFD2_CHIRHO => sys_fake_fd_chirho(),
+        SYS_DUP3_CHIRHO => crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho),
+        SYS_MEMFD_CREATE_CHIRHO => sys_fake_fd_chirho(),
         SYS_RSEQ_CHIRHO => -ENOSYS_CHIRHO,
+
+        // Phase 4: Timer/event syscalls
+        SYS_TIMERFD_SETTIME_CHIRHO => 0,  // stub: succeed
+        SYS_TIMERFD_GETTIME_CHIRHO => 0,  // stub: succeed
+        SYS_EVENTFD_CHIRHO => sys_fake_fd_chirho(), // stub: return fake fd
 
         // mount / umount
         SYS_MOUNT_CHIRHO => sys_mount_chirho(
@@ -1091,6 +1514,80 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // pselect6 / ppoll
         SYS_PSELECT6_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
         SYS_PPOLL_CHIRHO => sys_poll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho as i32),
+
+        // --- Phase 8+9: sendfile, splice, tee, vmsplice, copy_file_range ---
+        SYS_SENDFILE_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_SPLICE_CHIRHO | SYS_TEE_CHIRHO | SYS_VMSPLICE_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_COPY_FILE_RANGE_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_FALLOCATE_CHIRHO => 0,    // stub: silently succeed
+        SYS_FADVISE64_CHIRHO => 0,    // advisory, silently ignore
+        SYS_SYNC_CHIRHO => 0,         // stub: silently succeed
+
+        // --- Phase 8+9: memory locking ---
+        SYS_MLOCK_CHIRHO | SYS_MUNLOCK_CHIRHO => 0,
+        SYS_MLOCK2_CHIRHO => 0,
+        SYS_MLOCKALL_CHIRHO | SYS_MUNLOCKALL_CHIRHO => 0,
+
+        // --- Phase 8+9: process/thread/scheduling ---
+        SYS_CLONE3_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_EXECVEAT_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_WAITID_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_PTRACE_CHIRHO => -EPERM_CHIRHO,
+        SYS_SCHED_GETSCHEDULER_CHIRHO => 0,   // SCHED_NORMAL
+        SYS_SCHED_SETSCHEDULER_CHIRHO => 0,
+        SYS_SCHED_GETPARAM_CHIRHO => {
+            // Write a zeroed sched_param (priority=0) to user buf
+            if arg1_chirho != 0 {
+                unsafe { core::ptr::write_bytes(arg1_chirho as *mut u8, 0, 4); }
+            }
+            0
+        },
+        SYS_SCHED_SETPARAM_CHIRHO => 0,
+        SYS_SCHED_GET_PRIORITY_MAX_CHIRHO => 99,
+        SYS_SCHED_GET_PRIORITY_MIN_CHIRHO => 0,
+        SYS_GETPRIORITY_CHIRHO => 20,  // nice 0
+        SYS_SETPRIORITY_CHIRHO => 0,
+
+        // --- Phase 8+9: time ---
+        SYS_GETTIMEOFDAY_CHIRHO => {
+            // Write a stub timeval: use tick counter for some progression
+            if arg0_chirho != 0 {
+                let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                let tv_chirho = TimevalChirho {
+                    tv_sec_chirho: REALTIME_EPOCH_CHIRHO + (ticks_chirho as i64 / 100),
+                    tv_usec_chirho: ((ticks_chirho % 100) as i64) * 10_000,
+                };
+                unsafe { core::ptr::write(arg0_chirho as *mut TimevalChirho, tv_chirho); }
+            }
+            0
+        },
+        SYS_SETTIMEOFDAY_CHIRHO => -EPERM_CHIRHO,
+        SYS_TIMER_CREATE_CHIRHO | SYS_TIMER_SETTIME_CHIRHO
+        | SYS_TIMER_GETTIME_CHIRHO | SYS_TIMER_DELETE_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_TIMES_CHIRHO => 0,
+
+        // --- Phase 8+9: system ---
+        SYS_SYSLOG_CHIRHO => -EPERM_CHIRHO,
+        SYS_REBOOT_CHIRHO => {
+            crate::serial_println_chirho!("[SYSCALL] reboot() -- halting");
+            loop { x86_64::instructions::hlt(); }
+        },
+        SYS_GETRUSAGE_CHIRHO => {
+            // Write a zeroed rusage struct
+            if arg1_chirho != 0 {
+                unsafe { core::ptr::write_bytes(arg1_chirho as *mut u8, 0, core::mem::size_of::<RusageChirho>()); }
+            }
+            0
+        },
+        SYS_SETHOSTNAME_CHIRHO => 0,
+
+        // --- Phase 8+9: extended attributes ---
+        SYS_SETXATTR_CHIRHO | SYS_GETXATTR_CHIRHO
+        | SYS_LISTXATTR_CHIRHO | SYS_REMOVEXATTR_CHIRHO => -ENOTSUP_CHIRHO,
+
+        // --- Phase 8+9: io_uring ---
+        SYS_IO_URING_SETUP_CHIRHO | SYS_IO_URING_ENTER_CHIRHO
+        | SYS_IO_URING_REGISTER_CHIRHO => -ENOSYS_CHIRHO,
 
         // Catch-all for unimplemented syscalls.
         unknown_chirho => {
@@ -1754,6 +2251,7 @@ fn sys_mount_chirho(
         "tmpfs" => crate::tmpfs_chirho::mount_tmpfs_chirho(),
         "proc" | "procfs" => crate::procfs_chirho::mount_procfs_chirho(),
         "devtmpfs" => crate::devtmpfs_chirho::mount_devtmpfs_chirho(),
+        "sysfs" => crate::sysfs_chirho::mount_sysfs_chirho(),
         _ => {
             crate::serial_println_chirho!(
                 "[SYSCALL] mount: unsupported fstype '{}'",
@@ -1831,6 +2329,38 @@ fn sys_getgid_chirho() -> i64 {
 
 /// `getegid(2)` -- return effective group ID (root = 0).
 fn sys_getegid_chirho() -> i64 {
+    0
+}
+
+/// `getresuid(2)` -- write real, effective, saved UIDs to user buffers.
+///
+/// Stub: writes 0 (root) to all three pointers.
+fn sys_getresuid_chirho(ruid_ptr_chirho: u64, euid_ptr_chirho: u64, suid_ptr_chirho: u64) -> i64 {
+    let zero_bytes_chirho = 0u32.to_ne_bytes();
+    for ptr_chirho in [ruid_ptr_chirho, euid_ptr_chirho, suid_ptr_chirho] {
+        if ptr_chirho != 0 {
+            if crate::uaccess_chirho::copy_to_user_chirho(ptr_chirho, &zero_bytes_chirho, 4).is_err()
+            {
+                return -14; // EFAULT
+            }
+        }
+    }
+    0
+}
+
+/// `getresgid(2)` -- write real, effective, saved GIDs to user buffers.
+///
+/// Stub: writes 0 (root) to all three pointers.
+fn sys_getresgid_chirho(rgid_ptr_chirho: u64, egid_ptr_chirho: u64, sgid_ptr_chirho: u64) -> i64 {
+    let zero_bytes_chirho = 0u32.to_ne_bytes();
+    for ptr_chirho in [rgid_ptr_chirho, egid_ptr_chirho, sgid_ptr_chirho] {
+        if ptr_chirho != 0 {
+            if crate::uaccess_chirho::copy_to_user_chirho(ptr_chirho, &zero_bytes_chirho, 4).is_err()
+            {
+                return -14; // EFAULT
+            }
+        }
+    }
     0
 }
 
@@ -2056,15 +2586,29 @@ fn sys_readlink_chirho(
 
 /// `readlinkat(2)` implementation.
 ///
-/// For "/proc/self/exe", returns "/hello-chirho". Otherwise returns -ENOENT.
+/// Handles AT_FDCWD (-100) properly: for absolute paths or when dirfd is
+/// AT_FDCWD, delegates to readlink. For "/proc/self/exe", returns "/hello-chirho".
 fn sys_readlinkat_chirho(
-    _dirfd_chirho: i32,
+    dirfd_chirho: i32,
     pathname_chirho: *const u8,
     buf_chirho: *mut u8,
     bufsiz_chirho: usize,
 ) -> i64 {
-    // Delegate to readlink -- dirfd is ignored for absolute paths.
-    sys_readlink_chirho(pathname_chirho, buf_chirho, bufsiz_chirho)
+    if pathname_chirho.is_null() || buf_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    // AT_FDCWD = -100: use current working directory (which is "/")
+    // For absolute paths (starting with '/'), dirfd is ignored per POSIX.
+    // For relative paths with a real dirfd, we don't support that yet.
+    let first_byte_chirho = unsafe { *pathname_chirho };
+    if first_byte_chirho == b'/' || dirfd_chirho == -100 {
+        // Absolute path or AT_FDCWD: delegate to readlink
+        return sys_readlink_chirho(pathname_chirho, buf_chirho, bufsiz_chirho);
+    }
+
+    // Relative path with a real dirfd -- not yet supported
+    -ENOENT_CHIRHO
 }
 
 /// `fcntl(2)` implementation.
@@ -2344,6 +2888,286 @@ fn sys_getdents64_chirho(
 }
 
 // ============================================================================
+// Phase 3 batch 2 syscall implementations (P3-021)
+// ============================================================================
+
+/// Static counter for allocating fake file descriptors (eventfd, timerfd, etc.)
+static NEXT_FAKE_FD_CHIRHO: AtomicU64 = AtomicU64::new(200);
+
+/// Allocate a fake file descriptor number for stub fd-returning syscalls.
+fn sys_fake_fd_chirho() -> i64 {
+    let fd_chirho = NEXT_FAKE_FD_CHIRHO.fetch_add(1, Ordering::SeqCst);
+    fd_chirho as i64
+}
+
+/// `sysinfo(2)` implementation.
+///
+/// Writes a SysinfoChirho struct with hardcoded memory values to user buf.
+fn sys_sysinfo_chirho(info_chirho: *mut SysinfoChirho) -> i64 {
+    if info_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    let ticks_chirho = TICK_COUNTER_CHIRHO.load(Ordering::Relaxed);
+    let uptime_secs_chirho = (ticks_chirho as i64 * 10) / 1000; // ~10ms per tick
+
+    let si_chirho = SysinfoChirho {
+        uptime_chirho: uptime_secs_chirho,
+        loads_chirho: [0; 3],
+        totalram_chirho: 512 * 1024 * 1024,  // 512 MB
+        freeram_chirho: 256 * 1024 * 1024,   // 256 MB
+        sharedram_chirho: 0,
+        bufferram_chirho: 0,
+        totalswap_chirho: 0,
+        freeswap_chirho: 0,
+        procs_chirho: crate::task_chirho::task_count_chirho() as u16,
+        _pad_chirho: [0; 6],
+        totalhigh_chirho: 0,
+        freehigh_chirho: 0,
+        mem_unit_chirho: 1,
+        _padding_chirho: [0; 4],
+    };
+
+    // SAFETY: Caller guarantees info_chirho is a valid writable pointer.
+    unsafe {
+        core::ptr::write(info_chirho, si_chirho);
+    }
+    0
+}
+
+/// `sched_getaffinity(2)` implementation.
+///
+/// Writes a 1-bit CPU affinity mask (single CPU) to user buffer.
+fn sys_sched_getaffinity_chirho(
+    _pid_chirho: u64,
+    cpusetsize_chirho: u32,
+    mask_chirho: *mut u8,
+) -> i64 {
+    if mask_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+    if cpusetsize_chirho == 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    // Write a single-CPU mask: bit 0 set, rest zero.
+    // SAFETY: Caller guarantees mask_chirho is writable for cpusetsize_chirho bytes.
+    unsafe {
+        // Zero the whole buffer first
+        core::ptr::write_bytes(mask_chirho, 0, cpusetsize_chirho as usize);
+        // Set bit 0 (CPU 0)
+        *mask_chirho = 1;
+    }
+
+    // Linux returns the size of cpumask_t that was copied.
+    // Typically 8 bytes on x86_64.
+    let ret_size_chirho = if cpusetsize_chirho < 8 { cpusetsize_chirho } else { 8 };
+    ret_size_chirho as i64
+}
+
+/// `prctl(2)` implementation.
+///
+/// Handles PR_SET_NAME (set task comm), PR_GET_NAME (get task comm).
+/// Returns 0 for all other sub-commands.
+fn sys_prctl_chirho(
+    option_chirho: u64,
+    arg2_chirho: u64,
+    _arg3_chirho: u64,
+    _arg4_chirho: u64,
+    _arg5_chirho: u64,
+) -> i64 {
+    match option_chirho {
+        PR_SET_NAME_CHIRHO => {
+            // arg2 points to a NUL-terminated string (up to 16 bytes including NUL)
+            if arg2_chirho == 0 {
+                return -EFAULT_CHIRHO;
+            }
+            // Read up to 15 bytes + NUL from user space
+            let name_bytes_chirho = unsafe {
+                let mut buf_chirho = [0u8; 16];
+                for i_chirho in 0..15usize {
+                    let byte_chirho = *(arg2_chirho as *const u8).add(i_chirho);
+                    if byte_chirho == 0 {
+                        break;
+                    }
+                    buf_chirho[i_chirho] = byte_chirho;
+                }
+                buf_chirho
+            };
+
+            // Set the current task's comm field
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                let mut task_chirho = task_arc_chirho.lock();
+                task_chirho.comm_chirho = name_bytes_chirho;
+            }
+            0
+        }
+        PR_GET_NAME_CHIRHO => {
+            // arg2 points to a buffer of at least 16 bytes
+            if arg2_chirho == 0 {
+                return -EFAULT_CHIRHO;
+            }
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                let task_chirho = task_arc_chirho.lock();
+                // SAFETY: Caller guarantees arg2 is writable for 16 bytes.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        task_chirho.comm_chirho.as_ptr(),
+                        arg2_chirho as *mut u8,
+                        16,
+                    );
+                }
+            }
+            0
+        }
+        _ => {
+            // All other prctl options: silently succeed
+            0
+        }
+    }
+}
+
+// ============================================================================
+// Phase 8+9 syscall implementations
+// ============================================================================
+
+/// `pread64(2)` -- read at a given offset.
+///
+/// Forwards to the VFS read. For now, stubs with -EBADF for unknown fds.
+fn sys_pread64_chirho(
+    fd_chirho: u64,
+    buf_chirho: u64,
+    count_chirho: usize,
+    _offset_chirho: i64,
+) -> i64 {
+    // Delegate to the VFS read; offset handling is stubbed.
+    crate::fs_chirho::sys_read_real_chirho(fd_chirho, buf_chirho, count_chirho)
+}
+
+/// `pwrite64(2)` -- write at a given offset.
+///
+/// Forwards to the VFS write. For now, stubs with -EBADF for unknown fds.
+fn sys_pwrite64_chirho(
+    fd_chirho: u64,
+    buf_chirho: u64,
+    count_chirho: usize,
+    _offset_chirho: i64,
+) -> i64 {
+    crate::fs_chirho::sys_write_real_chirho(fd_chirho, buf_chirho, count_chirho)
+}
+
+/// `readv(2)` -- scatter/gather read.
+///
+/// Reads from multiple buffers via iovec.
+fn sys_readv_chirho(
+    fd_chirho: u64,
+    iov_chirho: *const IoVecChirho,
+    iovcnt_chirho: i32,
+) -> i64 {
+    if iov_chirho.is_null() || iovcnt_chirho <= 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    let mut total_read_chirho: i64 = 0;
+
+    for i_chirho in 0..iovcnt_chirho as usize {
+        let vec_entry_chirho = unsafe { &*iov_chirho.add(i_chirho) };
+        if vec_entry_chirho.iov_base_chirho.is_null() || vec_entry_chirho.iov_len_chirho == 0 {
+            continue;
+        }
+        let result_chirho = crate::fs_chirho::sys_read_real_chirho(
+            fd_chirho,
+            vec_entry_chirho.iov_base_chirho as u64,
+            vec_entry_chirho.iov_len_chirho,
+        );
+        if result_chirho < 0 {
+            if total_read_chirho > 0 {
+                return total_read_chirho;
+            }
+            return result_chirho;
+        }
+        total_read_chirho += result_chirho;
+        if (result_chirho as usize) < vec_entry_chirho.iov_len_chirho {
+            break; // short read
+        }
+    }
+
+    total_read_chirho
+}
+
+/// `sched_getparam(2)` -- write zeroed sched_param to user buf.
+///
+/// The sched_param struct contains a single i32 field (sched_priority).
+/// We write 0 (SCHED_NORMAL priority).
+fn sys_sched_getparam_chirho(param_chirho: *mut u8) -> i64 {
+    if param_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+    // struct sched_param { int sched_priority; } => 4 bytes, value 0
+    unsafe {
+        core::ptr::write_bytes(param_chirho, 0, 4);
+    }
+    0
+}
+
+/// `gettimeofday(2)` implementation.
+///
+/// Writes the current time to a TimevalChirho struct in user space.
+fn sys_gettimeofday_chirho(tv_chirho: *mut TimevalChirho) -> i64 {
+    if tv_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+    let timeval_chirho = TimevalChirho {
+        tv_sec_chirho: REALTIME_EPOCH_CHIRHO + (ticks_chirho as i64 / 100),
+        tv_usec_chirho: ((ticks_chirho % 100) as i64) * 10_000, // 10ms per tick in microseconds
+    };
+
+    unsafe {
+        core::ptr::write(tv_chirho, timeval_chirho);
+    }
+    0
+}
+
+/// `reboot(2)` -- print REBOOT message and halt.
+fn sys_reboot_chirho() -> i64 {
+    crate::serial_println_chirho!("[SYSCALL] REBOOT requested -- halting system");
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+/// `getrusage(2)` -- write zeroed RusageChirho to user buf.
+fn sys_getrusage_chirho(usage_chirho: *mut RusageChirho) -> i64 {
+    if usage_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Zero-fill the entire struct
+    unsafe {
+        core::ptr::write_bytes(
+            usage_chirho as *mut u8,
+            0,
+            core::mem::size_of::<RusageChirho>(),
+        );
+    }
+    0
+}
+
+/// `personality(2)` implementation.
+///
+/// Returns 0 (PER_LINUX) for all calls. Ignores the persona argument.
+fn sys_personality_chirho(persona_chirho: u64) -> i64 {
+    // 0xffffffff means "query current personality"
+    if persona_chirho == 0xffffffff {
+        return 0; // PER_LINUX
+    }
+    // Accept any persona, return previous (always 0 = PER_LINUX)
+    0
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -2398,6 +3222,21 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_SHUTDOWN_CHIRHO => "shutdown",
         SYS_BIND_CHIRHO => "bind",
         SYS_LISTEN_CHIRHO => "listen",
+        SYS_GETSOCKNAME_CHIRHO => "getsockname",
+        SYS_GETPEERNAME_CHIRHO => "getpeername",
+        SYS_SOCKETPAIR_CHIRHO => "socketpair",
+        SYS_SETSOCKOPT_CHIRHO => "setsockopt",
+        SYS_GETSOCKOPT_CHIRHO => "getsockopt",
+        SYS_SENDMSG_CHIRHO => "sendmsg",
+        SYS_RECVMSG_CHIRHO => "recvmsg",
+        SYS_ACCEPT4_CHIRHO => "accept4",
+        SYS_CAPGET_CHIRHO => "capget",
+        SYS_CAPSET_CHIRHO => "capset",
+        SYS_UNSHARE_CHIRHO => "unshare",
+        SYS_SETNS_CHIRHO => "setns",
+        SYS_SECCOMP_CHIRHO => "seccomp",
+        SYS_BPF_CHIRHO => "bpf",
+        SYS_LANDLOCK_CREATE_RULESET_CHIRHO => "landlock_create_ruleset",
         SYS_CLONE_CHIRHO => "clone",
         SYS_FORK_CHIRHO => "fork",
         SYS_VFORK_CHIRHO => "vfork",
@@ -2460,6 +3299,64 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_PPOLL_CHIRHO => "ppoll",
         SYS_EPOLL_PWAIT_CHIRHO => "epoll_pwait",
         SYS_EPOLL_CREATE1_CHIRHO => "epoll_create1",
+        SYS_SYSINFO_CHIRHO => "sysinfo",
+        SYS_MKNOD_CHIRHO => "mknod",
+        SYS_PERSONALITY_CHIRHO => "personality",
+        SYS_PRCTL_CHIRHO => "prctl",
+        SYS_SCHED_SETAFFINITY_CHIRHO => "sched_setaffinity",
+        SYS_SCHED_GETAFFINITY_CHIRHO => "sched_getaffinity",
+        SYS_CLOCK_NANOSLEEP_CHIRHO => "clock_nanosleep",
+        SYS_MKNODAT_CHIRHO => "mknodat",
+        SYS_TIMERFD_CREATE_CHIRHO => "timerfd_create",
+        SYS_SIGNALFD4_CHIRHO => "signalfd4",
+        SYS_EVENTFD2_CHIRHO => "eventfd2",
+        SYS_DUP3_CHIRHO => "dup3",
+        SYS_MEMFD_CREATE_CHIRHO => "memfd_create",
+        // Phase 8+9 additions
+        SYS_SENDFILE_CHIRHO => "sendfile",
+        SYS_FDATASYNC_CHIRHO => "fdatasync",
+        SYS_GETTIMEOFDAY_CHIRHO => "gettimeofday",
+        SYS_GETRUSAGE_CHIRHO => "getrusage",
+        SYS_TIMES_CHIRHO => "times",
+        SYS_PTRACE_CHIRHO => "ptrace",
+        SYS_SYSLOG_CHIRHO => "syslog",
+        SYS_GETPRIORITY_CHIRHO => "getpriority",
+        SYS_SETPRIORITY_CHIRHO => "setpriority",
+        SYS_SCHED_SETPARAM_CHIRHO => "sched_setparam",
+        SYS_SCHED_GETPARAM_CHIRHO => "sched_getparam",
+        SYS_SCHED_SETSCHEDULER_CHIRHO => "sched_setscheduler",
+        SYS_SCHED_GETSCHEDULER_CHIRHO => "sched_getscheduler",
+        SYS_SCHED_GET_PRIORITY_MAX_CHIRHO => "sched_get_priority_max",
+        SYS_SCHED_GET_PRIORITY_MIN_CHIRHO => "sched_get_priority_min",
+        SYS_MLOCK_CHIRHO => "mlock",
+        SYS_MUNLOCK_CHIRHO => "munlock",
+        SYS_MLOCKALL_CHIRHO => "mlockall",
+        SYS_MUNLOCKALL_CHIRHO => "munlockall",
+        SYS_SYNC_CHIRHO => "sync",
+        SYS_SETTIMEOFDAY_CHIRHO => "settimeofday",
+        SYS_REBOOT_CHIRHO => "reboot",
+        SYS_SETHOSTNAME_CHIRHO => "sethostname",
+        SYS_SETXATTR_CHIRHO => "setxattr",
+        SYS_GETXATTR_CHIRHO => "getxattr",
+        SYS_LISTXATTR_CHIRHO => "listxattr",
+        SYS_REMOVEXATTR_CHIRHO => "removexattr",
+        SYS_FADVISE64_CHIRHO => "fadvise64",
+        SYS_TIMER_CREATE_CHIRHO => "timer_create",
+        SYS_TIMER_SETTIME_CHIRHO => "timer_settime",
+        SYS_TIMER_GETTIME_CHIRHO => "timer_gettime",
+        SYS_TIMER_DELETE_CHIRHO => "timer_delete",
+        SYS_WAITID_CHIRHO => "waitid",
+        SYS_SPLICE_CHIRHO => "splice",
+        SYS_TEE_CHIRHO => "tee",
+        SYS_VMSPLICE_CHIRHO => "vmsplice",
+        SYS_FALLOCATE_CHIRHO => "fallocate",
+        SYS_EXECVEAT_CHIRHO => "execveat",
+        SYS_MLOCK2_CHIRHO => "mlock2",
+        SYS_COPY_FILE_RANGE_CHIRHO => "copy_file_range",
+        SYS_IO_URING_SETUP_CHIRHO => "io_uring_setup",
+        SYS_IO_URING_ENTER_CHIRHO => "io_uring_enter",
+        SYS_IO_URING_REGISTER_CHIRHO => "io_uring_register",
+        SYS_CLONE3_CHIRHO => "clone3",
         _ => "unknown",
     }
 }

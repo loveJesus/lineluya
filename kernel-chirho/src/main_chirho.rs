@@ -21,7 +21,14 @@ mod vfs_chirho;
 mod tmpfs_chirho;
 mod devtmpfs_chirho;
 mod procfs_chirho;
+mod sysfs_chirho;
 mod fs_chirho;
+
+// Phase 5: Block I/O layer
+mod block_chirho;
+
+// Phase 6: Networking socket stubs
+mod net_chirho;
 
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
@@ -36,6 +43,8 @@ mod exec_chirho;
 mod signal_chirho;
 mod pipe_chirho;
 mod process_chirho;
+mod waitqueue_chirho;
+mod tty_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use bootloader_api::config::Mapping;

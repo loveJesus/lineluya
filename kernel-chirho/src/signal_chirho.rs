@@ -417,20 +417,64 @@ pub fn sys_kill_chirho(pid_chirho: u64, sig_chirho: u32) -> i64 {
     }
 }
 
+// ============================================================================
+// SigactionChirho — Linux-compatible sigaction struct
+// ============================================================================
+
+/// SA_* flag constants matching Linux.
+pub const SA_NOCLDSTOP_CHIRHO: u64 = 1;
+pub const SA_NOCLDWAIT_CHIRHO: u64 = 2;
+pub const SA_SIGINFO_CHIRHO: u64 = 4;
+pub const SA_ONSTACK_CHIRHO: u64 = 0x0800_0000;
+pub const SA_RESTART_CHIRHO: u64 = 0x1000_0000;
+pub const SA_NODEFER_CHIRHO: u64 = 0x4000_0000;
+pub const SA_RESETHAND_CHIRHO: u64 = 0x8000_0000;
+
+/// Linux `struct sigaction` for x86_64 (kernel form: `struct k_sigaction`).
+///
+/// Layout:
+///   sa_handler:   u64   (SIG_DFL=0, SIG_IGN=1, or handler address)
+///   sa_flags:     u64
+///   sa_restorer:  u64
+///   sa_mask:      u64   (signal set — single u64 for up to 64 signals)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SigactionChirho {
+    /// Handler address (0 = SIG_DFL, 1 = SIG_IGN, else function pointer).
+    pub sa_handler_chirho: u64,
+    /// SA_* flags.
+    pub sa_flags_chirho: u64,
+    /// Restorer function (set by libc's sigaction wrapper).
+    pub sa_restorer_chirho: u64,
+    /// Additional signals to block during handler execution.
+    pub sa_mask_chirho: u64,
+}
+
+impl SigactionChirho {
+    pub const fn default_chirho() -> Self {
+        Self {
+            sa_handler_chirho: 0, // SIG_DFL
+            sa_flags_chirho: 0,
+            sa_restorer_chirho: 0,
+            sa_mask_chirho: 0,
+        }
+    }
+}
+
 /// `sys_rt_sigaction(signum, act, oldact, sigsetsize)` — examine and change
 /// a signal action.
 ///
-/// **Stub**: validates the signal number and returns success without actually
-/// modifying dispositions.  User-space handler installation requires the
-/// signal-return trampoline (`sigreturn`), which is not yet implemented.
+/// Reads the old sigaction into `oldact_chirho` (if non-null) and installs
+/// the new sigaction from `act_chirho` (if non-null) into the current task's
+/// signal state.
 ///
 /// # Returns
 ///
 /// `0` on success, `-22` (EINVAL) for invalid signal numbers.
 pub fn sys_rt_sigaction_chirho(
     signum_chirho: u32,
-    _act_chirho: u64,
-    _oldact_chirho: u64,
+    act_chirho: u64,
+    oldact_chirho: u64,
     _sigsetsize_chirho: u64,
 ) -> i64 {
     if signum_chirho == 0 || signum_chirho > MAX_SIGNAL_CHIRHO {
@@ -440,7 +484,76 @@ pub fn sys_rt_sigaction_chirho(
     if signum_chirho == SIGKILL_CHIRHO || signum_chirho == SIGSTOP_CHIRHO {
         return -22; // EINVAL
     }
-    // Stub: silently succeed.
+
+    let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => t_chirho,
+        None => return -3, // ESRCH
+    };
+
+    let mut task_chirho = task_arc_chirho.lock();
+    let idx_chirho = signum_chirho as usize;
+
+    // Write old action to userspace if oldact is non-null.
+    if oldact_chirho != 0 {
+        let old_sigaction_chirho = match &task_chirho.signal_state_chirho.actions_chirho[idx_chirho] {
+            SignalActionChirho::DefaultChirho => SigactionChirho::default_chirho(),
+            SignalActionChirho::IgnoreChirho => SigactionChirho {
+                sa_handler_chirho: 1, // SIG_IGN
+                sa_flags_chirho: 0,
+                sa_restorer_chirho: 0,
+                sa_mask_chirho: 0,
+            },
+            SignalActionChirho::HandlerChirho {
+                handler_chirho,
+                flags_chirho,
+                mask_chirho,
+            } => SigactionChirho {
+                sa_handler_chirho: *handler_chirho,
+                sa_flags_chirho: *flags_chirho,
+                sa_restorer_chirho: 0,
+                sa_mask_chirho: *mask_chirho,
+            },
+        };
+        let size_chirho = core::mem::size_of::<SigactionChirho>();
+        let src_chirho = unsafe {
+            core::slice::from_raw_parts(
+                &old_sigaction_chirho as *const SigactionChirho as *const u8,
+                size_chirho,
+            )
+        };
+        if crate::uaccess_chirho::copy_to_user_chirho(oldact_chirho, src_chirho, size_chirho).is_err() {
+            return -14; // EFAULT
+        }
+    }
+
+    // Read new action from userspace if act is non-null.
+    if act_chirho != 0 {
+        let size_chirho = core::mem::size_of::<SigactionChirho>();
+        let mut buf_chirho = [0u8; 32]; // SigactionChirho is 32 bytes
+        if crate::uaccess_chirho::copy_from_user_chirho(
+            &mut buf_chirho[..size_chirho],
+            act_chirho,
+            size_chirho,
+        )
+        .is_err()
+        {
+            return -14; // EFAULT
+        }
+        let new_sa_chirho =
+            unsafe { core::ptr::read(buf_chirho.as_ptr() as *const SigactionChirho) };
+
+        let action_chirho = match new_sa_chirho.sa_handler_chirho {
+            0 => SignalActionChirho::DefaultChirho, // SIG_DFL
+            1 => SignalActionChirho::IgnoreChirho,  // SIG_IGN
+            handler_chirho => SignalActionChirho::HandlerChirho {
+                handler_chirho,
+                flags_chirho: new_sa_chirho.sa_flags_chirho,
+                mask_chirho: new_sa_chirho.sa_mask_chirho,
+            },
+        };
+        task_chirho.signal_state_chirho.actions_chirho[idx_chirho] = action_chirho;
+    }
+
     0
 }
 
@@ -464,5 +577,73 @@ pub fn sys_rt_sigprocmask_chirho(
         return -22; // EINVAL
     }
     // Stub: silently succeed.
+    0
+}
+
+// ============================================================================
+// Additional signal syscalls (Phase 4)
+// ============================================================================
+
+/// `sys_tgkill(tgid, tid, sig)` — send signal to a specific thread
+/// in a thread group.
+///
+/// Simplified: we ignore `tgid_chirho` and just send to `tid_chirho`.
+pub fn sys_tgkill_chirho(tgid_chirho: u64, tid_chirho: u64, sig_chirho: u32) -> i64 {
+    let _ = tgid_chirho; // Thread groups not fully implemented yet
+    if sig_chirho > MAX_SIGNAL_CHIRHO {
+        return -22; // EINVAL
+    }
+    if sig_chirho == 0 {
+        // Existence check.
+        return if crate::task_chirho::find_task_by_pid_chirho(tid_chirho).is_some() {
+            0
+        } else {
+            -3 // ESRCH
+        };
+    }
+    match send_signal_chirho(tid_chirho, sig_chirho) {
+        Ok(()) => 0,
+        Err(errno_chirho) => errno_chirho,
+    }
+}
+
+/// `sys_tkill(tid, sig)` — send signal to a thread.
+pub fn sys_tkill_chirho(tid_chirho: u64, sig_chirho: u32) -> i64 {
+    sys_tgkill_chirho(0, tid_chirho, sig_chirho)
+}
+
+/// `sys_rt_sigpending(set_ptr)` — return the set of pending signals.
+///
+/// Writes the current task's pending signal mask to `set_ptr_chirho`.
+pub fn sys_rt_sigpending_chirho(set_ptr_chirho: u64) -> i64 {
+    if set_ptr_chirho == 0 {
+        return -14; // EFAULT
+    }
+
+    let pending_mask_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => t_chirho.lock().pending_signals_chirho,
+        None => 0u64,
+    };
+
+    let bytes_chirho = pending_mask_chirho.to_ne_bytes();
+    if crate::uaccess_chirho::copy_to_user_chirho(set_ptr_chirho, &bytes_chirho, 8).is_err() {
+        return -14; // EFAULT
+    }
+
+    0
+}
+
+/// `sys_rt_sigsuspend(mask_ptr)` — temporarily replace signal mask and
+/// suspend execution until a signal is delivered.
+///
+/// Stub: returns -EINTR immediately (matching expected behavior for callers).
+pub fn sys_rt_sigsuspend_chirho(_mask_ptr_chirho: u64) -> i64 {
+    -4 // EINTR
+}
+
+/// `sys_sigaltstack(ss, old_ss)` — get/set alternate signal stack.
+///
+/// Stub: returns 0 (success) without doing anything.
+pub fn sys_sigaltstack_chirho(_ss_chirho: u64, _old_ss_chirho: u64) -> i64 {
     0
 }
