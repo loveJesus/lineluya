@@ -19,3 +19,4 @@
 # Docker cache
 .dockerignore
 userspace-chirho/hello-chirho/target/
+userspace-chirho/busybox-chirho/output-chirho/
