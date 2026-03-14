@@ -5,10 +5,12 @@
 resolver = "2"
 members = [
     "kernel-chirho",
+    "kernel-core-chirho",
     "xtask-chirho",
 ]
 exclude = [
     "userspace-chirho/hello-chirho",
+    "kernel-wasm-chirho",
 ]
 
 [profile.dev]

@@ -1,0 +1,21 @@
+# For God so loved the world that he gave his only begotten Son,
+# that whoever believes in him should not perish but have eternal life. - John 3:16
+
+[package]
+name = "kernel-wasm-chirho"
+version = "0.1.0"
+edition = "2021"
+description = "Lineluya kernel — wasm32 browser target"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib_chirho.rs"
+
+[dependencies]
+kernel-core-chirho = { path = "../kernel-core-chirho" }
+spin = "0.9"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
