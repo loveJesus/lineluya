@@ -1,0 +1,60 @@
+# For God so loved the world that he gave his only begotten Son,
+# that whoever believes in him should not perish but have eternal life. - John 3:16
+
+# Build a static BusyBox binary for x86_64 with musl libc.
+# This produces a single ~1MB binary with sh, ls, cat, echo, etc.
+
+FROM alpine:latest AS builder
+
+RUN apk add --no-cache build-base linux-headers perl
+
+# Download BusyBox source
+ARG BUSYBOX_VERSION=1.36.1
+RUN wget -q "https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2" \
+    && tar xjf "busybox-${BUSYBOX_VERSION}.tar.bz2" \
+    && mv "busybox-${BUSYBOX_VERSION}" /busybox-src
+
+WORKDIR /busybox-src
+
+# Configure for static build with minimal but useful applets
+RUN make defconfig \
+    && sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config \
+    && sed -i 's/CONFIG_FEATURE_SH_STANDALONE=y/# CONFIG_FEATURE_SH_STANDALONE is not set/' .config
+
+# Build
+RUN make -j$(nproc) 2>&1 | tail -5
+
+# Verify it's static
+RUN file busybox && ldd busybox 2>&1 || true
+
+# Create a minimal initramfs
+RUN mkdir -p /initramfs/{bin,sbin,dev,proc,sys,tmp,etc} \
+    && cp busybox /initramfs/bin/busybox \
+    && ln -s busybox /initramfs/bin/sh \
+    && ln -s busybox /initramfs/bin/ls \
+    && ln -s busybox /initramfs/bin/cat \
+    && ln -s busybox /initramfs/bin/echo \
+    && ln -s busybox /initramfs/bin/mkdir \
+    && ln -s busybox /initramfs/bin/mount \
+    && ln -s busybox /initramfs/bin/ps \
+    && ln -s busybox /initramfs/bin/uname \
+    && ln -s busybox /initramfs/bin/pwd \
+    && ln -s busybox /initramfs/bin/id \
+    && ln -s busybox /initramfs/bin/env \
+    && ln -s busybox /initramfs/bin/head \
+    && ln -s busybox /initramfs/bin/tail \
+    && ln -s busybox /initramfs/bin/wc \
+    && ln -s busybox /initramfs/bin/grep \
+    && ln -s busybox /initramfs/bin/sed \
+    && ln -s busybox /initramfs/bin/vi \
+    && echo '#!/bin/sh' > /initramfs/init \
+    && echo 'echo "Lineluya init - John 3:16"' >> /initramfs/init \
+    && echo 'mount -t proc none /proc 2>/dev/null' >> /initramfs/init \
+    && echo 'mount -t sysfs none /sys 2>/dev/null' >> /initramfs/init \
+    && echo 'exec /bin/sh' >> /initramfs/init \
+    && chmod +x /initramfs/init
+
+# Output stage
+FROM scratch
+COPY --from=builder /initramfs/bin/busybox /busybox
+COPY --from=builder /initramfs/ /initramfs/
