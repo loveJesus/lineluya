@@ -1,20 +1,16 @@
 # For God so loved the world that he gave his only begotten Son,
 # that whoever believes in him should not perish but have eternal life. - John 3:16
 
-[workspace]
-resolver = "2"
-members = [
-    "kernel-chirho",
-    "xtask-chirho",
-]
-exclude = [
-    "userspace-chirho/hello-chirho",
-]
+[package]
+name = "hello-chirho"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hello-chirho"
+path = "src/main_chirho.rs"
 
 [profile.dev]
 panic = "abort"
-
 [profile.release]
 panic = "abort"
-lto = true
-opt-level = 2

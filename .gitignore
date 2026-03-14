@@ -18,3 +18,4 @@
 
 # Docker cache
 .dockerignore
+userspace-chirho/hello-chirho/target/
