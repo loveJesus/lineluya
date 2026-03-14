@@ -1353,8 +1353,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho,
             arg3_chirho,
             arg4_chirho,
+            frame_chirho,
         ),
-        SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO => crate::process_chirho::sys_fork_chirho(),
+        SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO => crate::process_chirho::sys_fork_chirho(frame_chirho),
         SYS_EXECVE_CHIRHO => crate::process_chirho::sys_execve_chirho(
             arg0_chirho,
             arg1_chirho,

@@ -223,11 +223,16 @@ pub struct TaskChirho {
     /// syscall or interrupt) and restored on return.
     pub user_rsp_chirho: u64,
 
-    // -- File descriptors (simplified) --------------------------------------
+    // -- File descriptors ----------------------------------------------------
 
     /// The next file descriptor number to hand out.  A proper fd table will
     /// replace this once the VFS layer is in place.
     pub next_fd_chirho: usize,
+
+    /// Per-process file descriptor table.  `None` for kernel tasks that do
+    /// not interact with the VFS.  User tasks get a table allocated at
+    /// creation time; fork() duplicates it for the child.
+    pub fd_table_chirho: Option<crate::vfs_chirho::FdTableChirho>,
 
     // -- Scheduling ---------------------------------------------------------
 
@@ -332,6 +337,7 @@ impl TaskChirho {
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: 0,
             next_fd_chirho: 0,
+            fd_table_chirho: None,
             priority_chirho: DEFAULT_PRIORITY_CHIRHO,
             time_slice_chirho: DEFAULT_TIME_SLICE_CHIRHO,
             uid_chirho: 0,
@@ -389,6 +395,7 @@ impl TaskChirho {
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: user_stack_chirho,
             next_fd_chirho: 3, // 0=stdin, 1=stdout, 2=stderr pre-allocated
+            fd_table_chirho: Some(crate::vfs_chirho::FdTableChirho::new_chirho(256)),
             priority_chirho: DEFAULT_PRIORITY_CHIRHO,
             time_slice_chirho: DEFAULT_TIME_SLICE_CHIRHO,
             // User tasks start as root for now; a proper credential model

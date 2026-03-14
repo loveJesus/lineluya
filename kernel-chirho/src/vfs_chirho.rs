@@ -329,4 +329,15 @@ impl FdTableChirho {
         self.fds_chirho[new_fd_chirho] = Some(file_chirho);
         Ok(new_fd_chirho)
     }
+
+    /// Clone the entire file descriptor table.
+    ///
+    /// Each open file description (`Arc<Mutex<FileChirho>>`) is shared with the
+    /// clone (matching POSIX fork semantics where parent and child share the
+    /// underlying open file descriptions but have independent fd tables).
+    pub fn clone_table_chirho(&self) -> Self {
+        Self {
+            fds_chirho: self.fds_chirho.clone(),
+        }
+    }
 }

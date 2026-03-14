@@ -185,7 +185,7 @@ fn dev_file_ops_chirho(major_chirho: u32, minor_chirho: u32) -> &'static dyn Fil
 /// Walks the path component-by-component using `InodeOps::lookup`.
 /// Checks mount points: if the accumulated path matches a mount point,
 /// resolution continues from that filesystem's root inode.
-fn resolve_path_chirho(
+pub fn resolve_path_chirho(
     path_chirho: &str,
 ) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
     // Only absolute paths for now

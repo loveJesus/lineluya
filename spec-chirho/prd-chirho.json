@@ -3513,7 +3513,7 @@
         "P3-012",
         "P3-011"
       ],
-      "status_chirho": "done",
+      "status_chirho": "todo",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [
@@ -3541,7 +3541,7 @@
       "depends_on_chirho": [
         "P3-026"
       ],
-      "status_chirho": "done",
+      "status_chirho": "todo",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [

@@ -54,7 +54,7 @@ const USER_STACK_SIZE_CHIRHO: u64 = 8 * 1024 * 1024;
 /// The embedded hello-world ELF binary, compiled for x86_64-unknown-none.
 /// `include_bytes!` embeds the file contents directly into the kernel image
 /// at compile time.
-static HELLO_ELF_CHIRHO: &[u8] = include_bytes!(
+pub static HELLO_ELF_CHIRHO: &[u8] = include_bytes!(
     "../../userspace-chirho/hello-chirho/target/x86_64-unknown-none/release/hello-chirho"
 );
 
@@ -402,6 +402,190 @@ pub fn setup_user_stack_chirho(
     );
 
     // Verify alignment.
+    debug_assert_eq!(sp_chirho % 16, 0, "User RSP must be 16-byte aligned");
+
+    sp_chirho
+}
+
+// ============================================================================
+// Step 2b: Set up the user stack with argv/envp (for execve)
+// ============================================================================
+
+/// Allocate a user stack and build the initial stack layout with the provided
+/// argv and envp arrays, matching the standard Linux process stack layout.
+///
+/// Layout (high to low):
+///   - Environment strings
+///   - Argument strings
+///   - Program name string (for AT_EXECFN)
+///   - 16 random bytes (for AT_RANDOM)
+///   - Padding for alignment
+///   - Auxiliary vector entries
+///   - NULL (envp terminator)
+///   - envp[n-1] ... envp[0] pointers
+///   - NULL (argv terminator)
+///   - argv[argc-1] ... argv[0] pointers
+///   - argc
+///
+/// Returns the final RSP value (16-byte aligned, pointing to argc).
+pub fn setup_user_stack_with_args_chirho(
+    loaded_chirho: &LoadedElfChirho,
+    argv_chirho: &[alloc::string::String],
+    envp_chirho: &[alloc::string::String],
+) -> u64 {
+    let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
+
+    let stack_bottom_chirho = USER_STACK_TOP_CHIRHO - USER_STACK_SIZE_CHIRHO;
+
+    serial_println_chirho!(
+        "[EXEC] Allocating user stack (execve): {:#x}..{:#x} ({} MiB)",
+        stack_bottom_chirho,
+        USER_STACK_TOP_CHIRHO,
+        USER_STACK_SIZE_CHIRHO / (1024 * 1024)
+    );
+
+    // Map the stack pages.
+    {
+        let mut mm_guard_chirho = mm_lock_chirho.lock();
+        let mm_ref_chirho = mm_guard_chirho.as_mut().expect("MM not initialised for stack");
+        mm_ref_chirho
+            .mmap_chirho(
+                stack_bottom_chirho,
+                USER_STACK_SIZE_CHIRHO,
+                PROT_READ_CHIRHO | PROT_WRITE_CHIRHO,
+                MAP_ANONYMOUS_CHIRHO | MAP_PRIVATE_CHIRHO | MAP_FIXED_CHIRHO,
+                -1,
+                0,
+            )
+            .expect("Failed to map user stack");
+    }
+
+    let mut sp_chirho = USER_STACK_TOP_CHIRHO;
+
+    // Helper: push bytes onto the stack, return the address of the written data.
+    let push_bytes_chirho = |sp_ref_chirho: &mut u64, data_chirho: &[u8]| -> u64 {
+        *sp_ref_chirho -= data_chirho.len() as u64;
+        let addr_chirho = *sp_ref_chirho;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                data_chirho.as_ptr(),
+                addr_chirho as *mut u8,
+                data_chirho.len(),
+            );
+        }
+        addr_chirho
+    };
+
+    // -- Write environment strings onto the stack (high addresses) --
+    let mut envp_addrs_chirho: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+    for env_str_chirho in envp_chirho.iter().rev() {
+        let mut bytes_chirho = env_str_chirho.as_bytes().to_vec();
+        bytes_chirho.push(0); // NUL terminator
+        let addr_chirho = push_bytes_chirho(&mut sp_chirho, &bytes_chirho);
+        envp_addrs_chirho.push(addr_chirho);
+    }
+    envp_addrs_chirho.reverse();
+
+    // -- Write argument strings onto the stack --
+    let mut argv_addrs_chirho: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+    for arg_str_chirho in argv_chirho.iter().rev() {
+        let mut bytes_chirho = arg_str_chirho.as_bytes().to_vec();
+        bytes_chirho.push(0); // NUL terminator
+        let addr_chirho = push_bytes_chirho(&mut sp_chirho, &bytes_chirho);
+        argv_addrs_chirho.push(addr_chirho);
+    }
+    argv_addrs_chirho.reverse();
+
+    // -- Write 16 "random" bytes for AT_RANDOM --
+    sp_chirho -= 16;
+    let random_addr_chirho = sp_chirho;
+    let random_bytes_chirho: [u8; 16] = [
+        0x4A, 0x6F, 0x68, 0x6E, // "John"
+        0x33, 0x3A, 0x31, 0x36, // "3:16"
+        0xDE, 0xAD, 0xBE, 0xEF,
+        0xCA, 0xFE, 0xBA, 0xBE,
+    ];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            random_bytes_chirho.as_ptr(),
+            sp_chirho as *mut u8,
+            16,
+        );
+    }
+
+    // -- Align SP to 8 bytes --
+    sp_chirho = sp_chirho & !7;
+
+    // Helper: push a u64 onto the stack.
+    let push_u64_chirho = |sp_ref_chirho: &mut u64, val_chirho: u64| {
+        *sp_ref_chirho -= 8;
+        unsafe {
+            core::ptr::write(*sp_ref_chirho as *mut u64, val_chirho);
+        }
+    };
+
+    // -- Auxiliary vector entries --
+    let auxv_entries_chirho: [(u64, u64); 9] = [
+        (AT_PAGESZ_CHIRHO, PAGE_SIZE_CHIRHO),
+        (AT_ENTRY_CHIRHO, loaded_chirho.entry_point_chirho),
+        (AT_PHDR_CHIRHO, loaded_chirho.phdr_addr_chirho),
+        (AT_PHNUM_CHIRHO, loaded_chirho.phdr_num_chirho as u64),
+        (AT_PHENT_CHIRHO, loaded_chirho.phdr_size_chirho as u64),
+        (AT_UID_CHIRHO, 0),
+        (AT_GID_CHIRHO, 0),
+        (AT_RANDOM_CHIRHO, random_addr_chirho),
+        (AT_NULL_CHIRHO, 0),
+    ];
+
+    // Calculate total frame size for alignment.
+    let argc_chirho = argv_chirho.len() as u64;
+    let auxv_size_chirho = auxv_entries_chirho.len() * 2 * 8;
+    // argc + argv pointers + argv NULL + envp pointers + envp NULL + auxv
+    let frame_size_chirho = 8
+        + (argv_chirho.len() * 8) as u64
+        + 8
+        + (envp_chirho.len() * 8) as u64
+        + 8
+        + auxv_size_chirho as u64;
+
+    // Align sp so that (sp - frame_size) is 16-byte aligned.
+    let target_sp_chirho = (sp_chirho - frame_size_chirho) & !0xF;
+    sp_chirho = target_sp_chirho + frame_size_chirho;
+
+    // Push auxv entries in reverse order.
+    for idx_chirho in (0..auxv_entries_chirho.len()).rev() {
+        let (type_chirho, val_chirho) = auxv_entries_chirho[idx_chirho];
+        push_u64_chirho(&mut sp_chirho, val_chirho);
+        push_u64_chirho(&mut sp_chirho, type_chirho);
+    }
+
+    // Push envp NULL terminator.
+    push_u64_chirho(&mut sp_chirho, 0);
+
+    // Push envp pointers in reverse order.
+    for idx_chirho in (0..envp_addrs_chirho.len()).rev() {
+        push_u64_chirho(&mut sp_chirho, envp_addrs_chirho[idx_chirho]);
+    }
+
+    // Push argv NULL terminator.
+    push_u64_chirho(&mut sp_chirho, 0);
+
+    // Push argv pointers in reverse order.
+    for idx_chirho in (0..argv_addrs_chirho.len()).rev() {
+        push_u64_chirho(&mut sp_chirho, argv_addrs_chirho[idx_chirho]);
+    }
+
+    // Push argc.
+    push_u64_chirho(&mut sp_chirho, argc_chirho);
+
+    serial_println_chirho!(
+        "[EXEC] User stack set up (execve). RSP={:#x}, argc={}, envc={} (16-byte aligned: {})",
+        sp_chirho,
+        argc_chirho,
+        envp_chirho.len(),
+        sp_chirho % 16 == 0
+    );
+
     debug_assert_eq!(sp_chirho % 16, 0, "User RSP must be 16-byte aligned");
 
     sp_chirho
