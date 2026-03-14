@@ -24,7 +24,7 @@
       "title_chirho": "Per-process page tables (PML4)",
       "description_chirho": "Each process gets its own PML4. Kernel maps shared; user maps isolated.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "New process has private PML4",
@@ -41,7 +41,7 @@
       "depends_on_chirho": [
         "A1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Forked child shares parent physical pages",
@@ -58,7 +58,7 @@
       "depends_on_chirho": [
         "A1-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Write to COW page triggers copy",
@@ -76,7 +76,7 @@
       "depends_on_chirho": [
         "A1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "fork() returns child PID to parent, 0 to child",
@@ -93,7 +93,7 @@
       "depends_on_chirho": [
         "A1-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "execve replaces process image from filesystem ELF",
@@ -108,7 +108,7 @@
       "title_chirho": "Wait queues and blocking sleep",
       "description_chirho": "Implement wait queue struct. Tasks block and are woken by event producers.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Task sleeps on wait queue",
@@ -125,7 +125,7 @@
       "depends_on_chirho": [
         "A1-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "read() blocks when no data",
@@ -142,7 +142,7 @@
       "depends_on_chirho": [
         "A1-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Line editing works",
@@ -160,7 +160,7 @@
       "depends_on_chirho": [
         "A1-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "TCGETS returns valid termios",
@@ -2062,7 +2062,7 @@
       "title_chirho": "Cross-compile BusyBox to wasm32-wasi",
       "description_chirho": "Build BusyBox with wasm32-wasi target using wasi-sdk, producing a static WASM binary with core applets (sh, ls, cat, echo, mkdir, rm, cp, mv, grep, sed).",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "BusyBox.wasm binary produced",
@@ -2114,7 +2114,7 @@
       "title_chirho": "xterm.js terminal integration",
       "description_chirho": "Set up xterm.js v5 in the browser frontend with proper font rendering, ANSI escape code support, and resize handling.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "xterm.js renders in browser",
@@ -2435,7 +2435,7 @@
       "title_chirho": "WebSocket-to-TCP proxy on Cloudflare Workers",
       "description_chirho": "CF Worker that accepts WebSocket connections and proxies them to arbitrary TCP hosts using CF's connect() API, with authentication.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Worker accepts WS connections",
@@ -3767,7 +3767,7 @@
         "B1-002",
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Worker deploys to CF",

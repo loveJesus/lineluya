@@ -560,23 +560,79 @@ pub fn sys_rt_sigaction_chirho(
 /// `sys_rt_sigprocmask(how, set, oldset, sigsetsize)` — examine and change
 /// blocked signals.
 ///
-/// **Stub**: returns success without modifying the mask.  Full
-/// implementation will read/write `task.signal_mask_chirho`.
+/// Reads the old blocked mask into `oldset_chirho` (if non-null) and updates
+/// the current task's `signal_mask_chirho` according to `how_chirho`:
+///   - `SIG_BLOCK`   (0): blocked |= *set
+///   - `SIG_UNBLOCK` (1): blocked &= ~*set
+///   - `SIG_SETMASK` (2): blocked = *set
+///
+/// SIGKILL and SIGSTOP can never be blocked.
 ///
 /// # Returns
 ///
 /// `0` on success, `-22` (EINVAL) for an invalid `how_chirho` value.
 pub fn sys_rt_sigprocmask_chirho(
     how_chirho: u32,
-    _set_chirho: u64,
-    _oldset_chirho: u64,
+    set_chirho: u64,
+    oldset_chirho: u64,
     _sigsetsize_chirho: u64,
 ) -> i64 {
     // Valid `how` values: SIG_BLOCK=0, SIG_UNBLOCK=1, SIG_SETMASK=2
     if how_chirho > 2 {
         return -22; // EINVAL
     }
-    // Stub: silently succeed.
+
+    let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => t_chirho,
+        None => return -3, // ESRCH
+    };
+
+    let mut task_chirho = task_arc_chirho.lock();
+
+    // Write old blocked mask to userspace if oldset is non-null.
+    if oldset_chirho != 0 {
+        let old_mask_chirho = task_chirho.signal_mask_chirho;
+        let bytes_chirho = old_mask_chirho.to_ne_bytes();
+        if crate::uaccess_chirho::copy_to_user_chirho(oldset_chirho, &bytes_chirho, 8).is_err() {
+            return -14; // EFAULT
+        }
+    }
+
+    // Read new set from userspace if set is non-null.
+    if set_chirho != 0 {
+        let mut buf_chirho = [0u8; 8];
+        if crate::uaccess_chirho::copy_from_user_chirho(&mut buf_chirho, set_chirho, 8).is_err() {
+            return -14; // EFAULT
+        }
+        let new_set_chirho = u64::from_ne_bytes(buf_chirho);
+
+        // Mask that prevents blocking SIGKILL (9) and SIGSTOP (19).
+        let unblockable_chirho: u64 =
+            (1u64 << SIGKILL_CHIRHO) | (1u64 << SIGSTOP_CHIRHO);
+
+        match how_chirho {
+            0 => {
+                // SIG_BLOCK
+                task_chirho.signal_mask_chirho |= new_set_chirho;
+            }
+            1 => {
+                // SIG_UNBLOCK
+                task_chirho.signal_mask_chirho &= !new_set_chirho;
+            }
+            2 => {
+                // SIG_SETMASK
+                task_chirho.signal_mask_chirho = new_set_chirho;
+            }
+            _ => unreachable!(),
+        }
+
+        // Ensure SIGKILL and SIGSTOP are never blocked.
+        task_chirho.signal_mask_chirho &= !unblockable_chirho;
+
+        // Also update the signal_state_chirho blocked mask for consistency.
+        task_chirho.signal_state_chirho.blocked_chirho = task_chirho.signal_mask_chirho;
+    }
+
     0
 }
 

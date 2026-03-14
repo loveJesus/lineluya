@@ -977,6 +977,10 @@ const TIOCGWINSZ_CHIRHO: u64 = 0x5413;
 const FIONREAD_CHIRHO: u64 = 0x541B;
 /// FIOCLEX -- set close-on-exec flag.
 const FIOCLEX_CHIRHO: u64 = 0x5451;
+/// TIOCGPGRP -- get foreground process group ID.
+const TIOCGPGRP_CHIRHO: u64 = 0x540F;
+/// TIOCSPGRP -- set foreground process group ID.
+const TIOCSPGRP_CHIRHO: u64 = 0x5410;
 
 /// Linux `struct winsize` equivalent for TIOCGWINSZ.
 #[repr(C)]
@@ -1264,7 +1268,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho,
             arg3_chirho,
         ),
-        SYS_RT_SIGRETURN_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_RT_SIGRETURN_CHIRHO => {
+            // Stub: signal frame restoration not yet implemented.
+            // Return 0 so BusyBox doesn't crash on signal handler return.
+            crate::serial_println_chirho!("[SYSCALL] rt_sigreturn (stub, returning 0)");
+            0
+        },
         SYS_IOCTL_CHIRHO => sys_ioctl_real_chirho(
             arg0_chirho,
             arg1_chirho,
@@ -1541,7 +1550,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_TIMERFD_CREATE_CHIRHO => sys_fake_fd_chirho(),
         SYS_SIGNALFD4_CHIRHO => sys_fake_fd_chirho(),
         SYS_EVENTFD2_CHIRHO => sys_fake_fd_chirho(),
-        SYS_DUP3_CHIRHO => crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho),
+        SYS_DUP3_CHIRHO => crate::fs_chirho::sys_dup3_chirho(arg0_chirho, arg1_chirho, arg2_chirho as u32),
         SYS_MEMFD_CREATE_CHIRHO => sys_fake_fd_chirho(),
         SYS_RSEQ_CHIRHO => -ENOSYS_CHIRHO,
 
@@ -2054,7 +2063,10 @@ fn sys_uname_chirho(buf_chirho: *mut UtsNameChirho) -> i64 {
 /// Returns the PID of the calling process.  Since Lineluya currently runs a
 /// single process (init), this always returns 1.
 fn sys_getpid_chirho() -> i64 {
-    1
+    match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => t_chirho.lock().pid_chirho as i64,
+        None => 1, // fallback for early boot
+    }
 }
 
 /// `mmap(2)` implementation.
@@ -2238,6 +2250,33 @@ fn sys_ioctl_real_chirho(
         }
         FIOCLEX_CHIRHO => {
             // Set close-on-exec: silently succeed (stub)
+            0
+        }
+        TIOCGPGRP_CHIRHO => {
+            // Return the foreground process group ID (= our PID, since we
+            // are the only process group for now).
+            if arg_chirho == 0 {
+                return -EFAULT_CHIRHO;
+            }
+            let pgrp_chirho: i32 = sys_getpid_chirho() as i32;
+            let src_bytes_chirho = unsafe {
+                core::slice::from_raw_parts(
+                    &pgrp_chirho as *const i32 as *const u8,
+                    core::mem::size_of::<i32>(),
+                )
+            };
+            match crate::uaccess_chirho::copy_to_user_chirho(
+                arg_chirho,
+                src_bytes_chirho,
+                core::mem::size_of::<i32>(),
+            ) {
+                Ok(()) => 0,
+                Err(_) => -EFAULT_CHIRHO,
+            }
+        }
+        TIOCSPGRP_CHIRHO => {
+            // Set the foreground process group ID — accept silently.
+            // BusyBox ash calls this to set its own pgrp.
             0
         }
         _ => {
@@ -2458,9 +2497,15 @@ fn sys_getcwd_chirho(buf_chirho: *mut u8, size_chirho: usize) -> i64 {
 
 /// `getppid(2)` -- return parent PID.
 ///
-/// Returns 1 for now (init's parent is kernel, represented as PID 1).
+/// Returns the current task's actual parent PID.
 fn sys_getppid_chirho() -> i64 {
-    1
+    match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => {
+            let ppid_chirho = t_chirho.lock().ppid_chirho;
+            if ppid_chirho == 0 { 1 } else { ppid_chirho as i64 }
+        }
+        None => 1, // fallback
+    }
 }
 
 /// `getuid(2)` -- return user ID (root = 0).
@@ -2517,7 +2562,8 @@ fn sys_getresgid_chirho(rgid_ptr_chirho: u64, egid_ptr_chirho: u64, sgid_ptr_chi
 
 /// `gettid(2)` -- return thread ID (= PID for single-threaded).
 fn sys_gettid_chirho() -> i64 {
-    1 // same as PID for single-threaded
+    // For single-threaded processes, TID == PID.
+    sys_getpid_chirho()
 }
 
 /// `clock_gettime(2)` implementation.
@@ -2798,9 +2844,27 @@ fn sys_fcntl_chirho(
     }
 }
 
+/// Helper: fill a `StatChirho` from an `InodeChirho`.
+fn fill_stat_from_inode_chirho(
+    st_chirho: &mut StatChirho,
+    inode_chirho: &crate::vfs_chirho::InodeChirho,
+) {
+    st_chirho.st_ino_chirho = inode_chirho.ino_chirho;
+    st_chirho.st_mode_chirho = inode_chirho.mode_chirho;
+    st_chirho.st_nlink_chirho = inode_chirho.nlink_chirho as u64;
+    st_chirho.st_uid_chirho = inode_chirho.uid_chirho;
+    st_chirho.st_gid_chirho = inode_chirho.gid_chirho;
+    st_chirho.st_size_chirho = inode_chirho.size_chirho as i64;
+    st_chirho.st_blksize_chirho = 4096;
+    st_chirho.st_blocks_chirho = ((inode_chirho.size_chirho + 511) / 512) as i64;
+    st_chirho.st_atime_chirho = inode_chirho.atime_chirho;
+    st_chirho.st_mtime_chirho = inode_chirho.mtime_chirho;
+    st_chirho.st_ctime_chirho = inode_chirho.ctime_chirho;
+}
+
 /// `fstat(2)` implementation.
 ///
-/// Returns a zeroed stat struct with S_IFCHR mode for fd 0, 1, 2.
+/// Gets the file from the FD table and fills stat from its inode fields.
 fn sys_fstat_chirho(
     fd_chirho: u64,
     statbuf_chirho: *mut StatChirho,
@@ -2809,35 +2873,42 @@ fn sys_fstat_chirho(
         return -EFAULT_CHIRHO;
     }
 
-    match fd_chirho {
-        0 | 1 | 2 => {
-            let mut st_chirho = StatChirho::zeroed_chirho();
-            st_chirho.st_mode_chirho = S_IFCHR_CHIRHO
-                | S_IRUSR_CHIRHO | S_IWUSR_CHIRHO
-                | S_IRGRP_CHIRHO | S_IWGRP_CHIRHO
-                | S_IROTH_CHIRHO | S_IWOTH_CHIRHO;
-            st_chirho.st_nlink_chirho = 1;
-            st_chirho.st_blksize_chirho = 1024;
-            // rdev for /dev/tty-like: major 5, minor 0 -> makedev(5,0)
-            st_chirho.st_rdev_chirho = (5 << 8) | 0;
-            // SAFETY: Caller guarantees statbuf_chirho is writable.
-            unsafe {
-                core::ptr::write(statbuf_chirho, st_chirho);
-            }
-            0
+    // Get the file from the FD table
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.get_chirho(fd_chirho as usize) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
         }
-        _ => -EBADF_CHIRHO,
+    };
+
+    let mut st_chirho = StatChirho::zeroed_chirho();
+
+    {
+        let file_guard_chirho = file_arc_chirho.lock();
+        let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+        fill_stat_from_inode_chirho(&mut st_chirho, &inode_guard_chirho);
     }
+
+    // SAFETY: Caller guarantees statbuf_chirho is writable user-space pointer.
+    unsafe {
+        core::ptr::write(statbuf_chirho, st_chirho);
+    }
+    0
 }
 
 // ============================================================================
-// Stat family syscall implementations (P3-014)
+// Stat family syscall implementations (wired to VFS)
 // ============================================================================
 
 /// `stat(2)` implementation.
 ///
-/// Resolves the pathname and fills `statbuf_chirho` with file metadata.
-/// Currently a stub: returns a zeroed S_IFREG stat for any non-null path.
+/// Resolves the pathname via VFS path resolution and fills `statbuf_chirho`
+/// with inode metadata.
 fn sys_stat_chirho(
     pathname_chirho: *const u8,
     statbuf_chirho: *mut StatChirho,
@@ -2846,12 +2917,26 @@ fn sys_stat_chirho(
         return -EFAULT_CHIRHO;
     }
 
-    crate::serial_println_chirho!("[SYSCALL] stat(pathname, statbuf) -> stub S_IFREG");
+    // Read pathname from user space
+    let path_str_chirho = match crate::uaccess_chirho::read_user_string_chirho(
+        pathname_chirho as u64,
+        4096,
+    ) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Resolve through VFS
+    let (inode_arc_chirho, _file_ops_chirho) = match crate::fs_chirho::resolve_path_chirho(&path_str_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
 
     let mut st_chirho = StatChirho::zeroed_chirho();
-    st_chirho.st_mode_chirho = S_IFREG_CHIRHO | 0o644;
-    st_chirho.st_nlink_chirho = 1;
-    st_chirho.st_blksize_chirho = 4096;
+    {
+        let inode_guard_chirho = inode_arc_chirho.lock();
+        fill_stat_from_inode_chirho(&mut st_chirho, &inode_guard_chirho);
+    }
 
     // SAFETY: Caller guarantees statbuf_chirho is writable.
     unsafe {
@@ -2862,54 +2947,69 @@ fn sys_stat_chirho(
 
 /// `lstat(2)` implementation.
 ///
-/// Like stat but does not follow symlinks. Currently identical to stat stub.
+/// Like stat but does not follow symlinks.  Currently identical to stat
+/// since Lineluya does not yet have symlink-following path resolution.
 fn sys_lstat_chirho(
     pathname_chirho: *const u8,
     statbuf_chirho: *mut StatChirho,
 ) -> i64 {
-    if pathname_chirho.is_null() || statbuf_chirho.is_null() {
-        return -EFAULT_CHIRHO;
-    }
-
-    crate::serial_println_chirho!("[SYSCALL] lstat(pathname, statbuf) -> stub S_IFREG (no symlink follow)");
-
-    let mut st_chirho = StatChirho::zeroed_chirho();
-    st_chirho.st_mode_chirho = S_IFREG_CHIRHO | 0o644;
-    st_chirho.st_nlink_chirho = 1;
-    st_chirho.st_blksize_chirho = 4096;
-
-    // SAFETY: Caller guarantees statbuf_chirho is writable.
-    unsafe {
-        core::ptr::write(statbuf_chirho, st_chirho);
-    }
-    0
+    // lstat is identical to stat until we add symlink following
+    sys_stat_chirho(pathname_chirho, statbuf_chirho)
 }
 
 /// `fstatat(2)` / `newfstatat(2)` implementation (syscall 262).
 ///
-/// Gets file status relative to a directory fd. Currently a stub that returns
-/// a zeroed S_IFREG stat.
+/// Gets file status relative to a directory fd.  Resolves the pathname
+/// through VFS (ignoring dirfd for absolute paths) and fills stat from
+/// the resolved inode.
 fn sys_fstatat_chirho(
-    _dirfd_chirho: i32,
+    dirfd_chirho: i32,
     pathname_chirho: *const u8,
     statbuf_chirho: *mut StatChirho,
-    _flags_chirho: u32,
+    flags_chirho: u32,
 ) -> i64 {
     if statbuf_chirho.is_null() {
         return -EFAULT_CHIRHO;
     }
 
-    // If pathname is NULL with AT_EMPTY_PATH, behave like fstat on dirfd.
-    // For now, return a stub stat for any call.
-    crate::serial_println_chirho!(
-        "[SYSCALL] fstatat(dirfd, pathname={:#x}, statbuf, flags) -> stub S_IFREG",
+    // AT_EMPTY_PATH (0x1000): if pathname is empty, operate on dirfd itself
+    const AT_EMPTY_PATH_CHIRHO: u32 = 0x1000;
+
+    if pathname_chirho.is_null() {
+        // NULL pathname with AT_EMPTY_PATH => fstat on dirfd
+        if flags_chirho & AT_EMPTY_PATH_CHIRHO != 0 {
+            return sys_fstat_chirho(dirfd_chirho as u64, statbuf_chirho);
+        }
+        return -EFAULT_CHIRHO;
+    }
+
+    // Read pathname from user space
+    let path_str_chirho = match crate::uaccess_chirho::read_user_string_chirho(
         pathname_chirho as u64,
-    );
+        4096,
+    ) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // If empty string with AT_EMPTY_PATH, fstat the dirfd
+    if path_str_chirho.is_empty() && (flags_chirho & AT_EMPTY_PATH_CHIRHO != 0) {
+        return sys_fstat_chirho(dirfd_chirho as u64, statbuf_chirho);
+    }
+
+    // For now, only absolute paths are resolved (ignoring dirfd)
+    let _ = dirfd_chirho;
+
+    let (inode_arc_chirho, _file_ops_chirho) = match crate::fs_chirho::resolve_path_chirho(&path_str_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
 
     let mut st_chirho = StatChirho::zeroed_chirho();
-    st_chirho.st_mode_chirho = S_IFREG_CHIRHO | 0o644;
-    st_chirho.st_nlink_chirho = 1;
-    st_chirho.st_blksize_chirho = 4096;
+    {
+        let inode_guard_chirho = inode_arc_chirho.lock();
+        fill_stat_from_inode_chirho(&mut st_chirho, &inode_guard_chirho);
+    }
 
     // SAFETY: Caller guarantees statbuf_chirho is writable.
     unsafe {
@@ -3028,14 +3128,108 @@ fn sys_chdir_chirho(
 
 /// `getdents64(2)` implementation (syscall 217).
 ///
-/// Returns -ENOSYS: needs VFS readdir wiring to function.
+/// Reads directory entries from the file descriptor into a user-space buffer,
+/// producing `LinuxDirent64Chirho` records.  Delegates to `FileOps::readdir`
+/// for the actual directory iteration.
 fn sys_getdents64_chirho(
-    _fd_chirho: u64,
-    _dirp_chirho: *mut u8,
-    _count_chirho: usize,
+    fd_chirho: u64,
+    dirp_chirho: *mut u8,
+    count_chirho: usize,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] getdents64(fd, dirp, count) -> ENOSYS (needs VFS readdir)");
-    -ENOSYS_CHIRHO
+    use crate::uaccess_chirho::copy_to_user_chirho;
+
+    if dirp_chirho.is_null() || count_chirho == 0 {
+        return -EFAULT_CHIRHO;
+    }
+
+    // 1. Get the file from the FD table
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.get_chirho(fd_chirho as usize) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
+        }
+    };
+
+    // 2. Collect directory entries via readdir callback into a kernel buffer
+    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    let mut bytes_written_chirho: usize = 0;
+    let mut error_chirho: Option<i64> = None;
+
+    {
+        let mut file_guard_chirho = file_arc_chirho.lock();
+        let readdir_result_chirho = file_guard_chirho.ops_chirho.readdir_chirho(
+            &mut file_guard_chirho,
+            &mut |name_chirho: &str, ino_chirho: u64, d_type_chirho: u8| -> bool {
+                // LinuxDirent64 layout:
+                //   u64  d_ino     (8 bytes, offset 0)
+                //   i64  d_off     (8 bytes, offset 8)
+                //   u16  d_reclen  (2 bytes, offset 16)
+                //   u8   d_type    (1 byte,  offset 18)
+                //   char d_name[]  (variable, offset 19, NUL-terminated)
+                // d_reclen must be 8-byte aligned
+                let name_bytes_chirho = name_chirho.as_bytes();
+                let name_len_chirho = name_bytes_chirho.len() + 1; // +1 for NUL
+                let reclen_unaligned_chirho: usize = 8 + 8 + 2 + 1 + name_len_chirho; // 19 + name_len
+                let reclen_chirho = (reclen_unaligned_chirho + 7) & !7; // align to 8
+
+                if bytes_written_chirho + reclen_chirho > count_chirho {
+                    return false; // buffer full
+                }
+
+                let offset_chirho = bytes_written_chirho;
+                let d_off_chirho = (bytes_written_chirho + reclen_chirho) as i64;
+
+                // Write d_ino (u64)
+                kernel_buf_chirho[offset_chirho..offset_chirho + 8]
+                    .copy_from_slice(&ino_chirho.to_ne_bytes());
+                // Write d_off (i64)
+                kernel_buf_chirho[offset_chirho + 8..offset_chirho + 16]
+                    .copy_from_slice(&d_off_chirho.to_ne_bytes());
+                // Write d_reclen (u16)
+                kernel_buf_chirho[offset_chirho + 16..offset_chirho + 18]
+                    .copy_from_slice(&(reclen_chirho as u16).to_ne_bytes());
+                // Write d_type (u8)
+                kernel_buf_chirho[offset_chirho + 18] = d_type_chirho;
+                // Write d_name (NUL-terminated)
+                kernel_buf_chirho[offset_chirho + 19..offset_chirho + 19 + name_bytes_chirho.len()]
+                    .copy_from_slice(name_bytes_chirho);
+                kernel_buf_chirho[offset_chirho + 19 + name_bytes_chirho.len()] = 0; // NUL
+                // Zero any padding bytes
+                for i_chirho in (offset_chirho + 19 + name_len_chirho)..(offset_chirho + reclen_chirho) {
+                    kernel_buf_chirho[i_chirho] = 0;
+                }
+
+                bytes_written_chirho += reclen_chirho;
+                true // continue iteration
+            },
+        );
+
+        if let Err(errno_chirho) = readdir_result_chirho {
+            error_chirho = Some(errno_chirho);
+        }
+    }
+
+    if let Some(errno_chirho) = error_chirho {
+        return errno_chirho;
+    }
+
+    // 3. Copy kernel buffer to user space
+    if bytes_written_chirho > 0 {
+        if let Err(_) = copy_to_user_chirho(
+            dirp_chirho as u64,
+            &kernel_buf_chirho[..bytes_written_chirho],
+            bytes_written_chirho,
+        ) {
+            return -EFAULT_CHIRHO;
+        }
+    }
+
+    bytes_written_chirho as i64
 }
 
 // ============================================================================

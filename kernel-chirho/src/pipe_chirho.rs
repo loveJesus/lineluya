@@ -326,6 +326,74 @@ pub fn create_pipe_chirho() -> (Arc<Mutex<FileChirho>>, Arc<Mutex<FileChirho>>) 
 // Syscall entry points
 // ---------------------------------------------------------------------------
 
+/// Internal helper: create a pipe and install both ends into the global
+/// fd table, writing the two fd numbers to the user-space `int[2]` array
+/// at `fds_ptr_chirho`.
+fn pipe_common_chirho(fds_ptr_chirho: u64) -> i64 {
+    use crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO;
+
+    // 1. Create the pipe (read_end, write_end).
+    let (read_file_chirho, write_file_chirho) = create_pipe_chirho();
+
+    // 2. Install into the global fd table.
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+        Some(t_chirho) => t_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+
+    let read_fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
+        Ok(fd_chirho) => fd_chirho,
+        Err(e_chirho) => return e_chirho,
+    };
+    fd_table_chirho.fds_chirho[read_fd_chirho] = Some(read_file_chirho);
+
+    let write_fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
+        Ok(fd_chirho) => fd_chirho,
+        Err(e_chirho) => {
+            // Roll back the read fd.
+            fd_table_chirho.fds_chirho[read_fd_chirho] = None;
+            return e_chirho;
+        }
+    };
+    fd_table_chirho.fds_chirho[write_fd_chirho] = Some(write_file_chirho);
+
+    // Drop the lock before writing to userspace.
+    drop(fd_table_guard_chirho);
+
+    // 3. Write the two fd numbers to user space as int[2] (i32[2]).
+    let fds_array_chirho: [i32; 2] = [read_fd_chirho as i32, write_fd_chirho as i32];
+    let src_bytes_chirho = unsafe {
+        core::slice::from_raw_parts(
+            fds_array_chirho.as_ptr() as *const u8,
+            core::mem::size_of::<[i32; 2]>(),
+        )
+    };
+    if crate::uaccess_chirho::copy_to_user_chirho(
+        fds_ptr_chirho,
+        src_bytes_chirho,
+        core::mem::size_of::<[i32; 2]>(),
+    )
+    .is_err()
+    {
+        // Roll back both fds on write failure.
+        let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        if let Some(t_chirho) = fd_table_guard_chirho.as_mut() {
+            t_chirho.fds_chirho[read_fd_chirho] = None;
+            t_chirho.fds_chirho[write_fd_chirho] = None;
+        }
+        return -EFAULT_CHIRHO;
+    }
+
+    crate::serial_println_chirho!(
+        "[PIPE] pipe created: read_fd={}, write_fd={}",
+        read_fd_chirho,
+        write_fd_chirho,
+    );
+
+    0
+}
+
 /// `pipe(int pipefd[2])` — create a pipe.
 ///
 /// Writes the read-end fd to `pipefd[0]` and the write-end fd to `pipefd[1]`.
@@ -336,20 +404,13 @@ pub fn sys_pipe_chirho(fds_ptr_chirho: u64) -> i64 {
     }
 
     crate::serial_println_chirho!("[PIPE] sys_pipe called (fds_ptr={:#x})", fds_ptr_chirho);
-
-    // In a full implementation we would:
-    // 1. Create the pipe via create_pipe_chirho()
-    // 2. Install both ends into the current task's fd table
-    // 3. Write the fd numbers to the user-space array at fds_ptr_chirho
-    //
-    // For now, since we don't have a per-task fd table wired in yet,
-    // return -ENOSYS as a stub.
-    -ENOSYS_CHIRHO
+    pipe_common_chirho(fds_ptr_chirho)
 }
 
 /// `pipe2(int pipefd[2], int flags)` — create a pipe with flags.
 ///
 /// Like `sys_pipe_chirho` but accepts `O_CLOEXEC`, `O_NONBLOCK`, etc.
+/// Flags are accepted but not yet enforced (BusyBox just needs the pipe to exist).
 pub fn sys_pipe2_chirho(fds_ptr_chirho: u64, flags_chirho: u32) -> i64 {
     if fds_ptr_chirho == 0 {
         return -EFAULT_CHIRHO;
@@ -361,6 +422,7 @@ pub fn sys_pipe2_chirho(fds_ptr_chirho: u64, flags_chirho: u32) -> i64 {
         flags_chirho,
     );
 
-    // Stub — same rationale as sys_pipe_chirho.
-    -ENOSYS_CHIRHO
+    // Flags (O_CLOEXEC, O_NONBLOCK) are accepted but not enforced yet.
+    let _ = flags_chirho;
+    pipe_common_chirho(fds_ptr_chirho)
 }

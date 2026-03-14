@@ -357,12 +357,27 @@ pub fn sys_openat_chirho(
     flags_chirho: u32,
     mode_chirho: u32,
 ) -> i64 {
-    let _ = dirfd_chirho; // TODO: support relative paths with dirfd
-
     // Read the pathname from user space
-    let pathname_chirho = match read_user_string_chirho(pathname_addr_chirho, 4096) {
+    let raw_pathname_chirho = match read_user_string_chirho(pathname_addr_chirho, 4096) {
         Ok(s_chirho) => s_chirho,
         Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Handle AT_FDCWD (-100): if the path is relative and dirfd is AT_FDCWD,
+    // prepend the current working directory (default "/").
+    let pathname_chirho = if !raw_pathname_chirho.starts_with('/') {
+        if dirfd_chirho == AT_FDCWD_CHIRHO {
+            // Prepend CWD — for now we always use "/" as the working directory.
+            let mut full_path_chirho = alloc::string::String::from("/");
+            full_path_chirho.push_str(&raw_pathname_chirho);
+            full_path_chirho
+        } else {
+            // Non-AT_FDCWD dirfd for relative paths is not yet supported.
+            // Fall through and try resolving the raw path anyway.
+            raw_pathname_chirho
+        }
+    } else {
+        raw_pathname_chirho
     };
 
     // Resolve the path
@@ -553,6 +568,49 @@ pub fn sys_dup2_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 {
 
     // Close whatever was at newfd (if anything), then place the dup there
     fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
+
+    new_chirho as i64
+}
+
+/// `dup3(2)` -- duplicate a file descriptor with flags (e.g. O_CLOEXEC).
+///
+/// Like dup2, but if oldfd == newfd, returns -EINVAL (per Linux semantics).
+/// The `flags_chirho` argument is recorded but not yet enforced (O_CLOEXEC
+/// would matter once execve drops close-on-exec descriptors).
+pub fn sys_dup3_chirho(oldfd_chirho: u64, newfd_chirho: u64, flags_chirho: u32) -> i64 {
+    use crate::syscall_chirho::EINVAL_CHIRHO;
+
+    let old_chirho = oldfd_chirho as usize;
+    let new_chirho = newfd_chirho as usize;
+
+    // dup3 differs from dup2: oldfd == newfd is an error
+    if old_chirho == new_chirho {
+        return -EINVAL_CHIRHO;
+    }
+
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+        Some(t_chirho) => t_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+
+    // Get the file for the old fd
+    let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+
+    // Ensure the new fd slot exists
+    if new_chirho >= fd_table_chirho.fds_chirho.len() {
+        return -EBADF_CHIRHO;
+    }
+
+    // Close whatever was at newfd (if anything), then place the dup there
+    fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
+
+    // Note: O_CLOEXEC flag (flags_chirho) is accepted but not yet enforced
+    // until execve implements close-on-exec descriptor cleanup.
+    let _ = flags_chirho;
 
     new_chirho as i64
 }

@@ -35,6 +35,7 @@ pub const O_CREAT_CHIRHO: u32 = 0o100;
 pub const O_TRUNC_CHIRHO: u32 = 0o1000;
 pub const O_APPEND_CHIRHO: u32 = 0o2000;
 pub const O_NONBLOCK_CHIRHO: u32 = 0o4000;
+pub const O_CLOEXEC_CHIRHO: u32 = 0o2000000;
 pub const O_DIRECTORY_CHIRHO: u32 = 0o200000;
 
 // ---------------------------------------------------------------------------

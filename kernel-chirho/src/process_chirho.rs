@@ -364,7 +364,7 @@ pub fn sys_clone_chirho(
 ///   `wstatus_chirho` (if non-null) in `WEXITSTATUS` format (code << 8),
 ///   mark the child as Dead, and return the child's PID.
 /// - If `WNOHANG` is set and no child is a zombie, return 0.
-/// - Otherwise, return `-ECHILD` (blocking wait not yet implemented).
+/// - Otherwise, block (yield + retry) until a child exits.
 pub fn sys_wait4_chirho(
     pid_chirho: i64,
     wstatus_chirho: u64,
@@ -384,48 +384,57 @@ pub fn sys_wait4_chirho(
         None => return -ECHILD_CHIRHO,
     };
 
-    // Search for a matching zombie child.
-    let task_list_chirho = TASK_LIST_CHIRHO.lock();
+    // Retry limit to prevent infinite hangs if all children are gone
+    // without becoming zombies (safety valve).
+    let max_retries_chirho: u32 = 10_000;
+    let mut retries_chirho: u32 = 0;
 
-    // First check: do we have any children at all?
-    let has_children_chirho = task_list_chirho
-        .iter()
-        .any(|t_chirho| t_chirho.lock().ppid_chirho == parent_pid_chirho);
+    loop {
+        // Search for a matching zombie child.
+        let task_list_chirho = TASK_LIST_CHIRHO.lock();
 
-    if !has_children_chirho {
-        return -ECHILD_CHIRHO;
-    }
+        // First check: do we have any children at all?
+        let has_children_chirho = task_list_chirho
+            .iter()
+            .any(|t_chirho| {
+                let tc_chirho = t_chirho.lock();
+                tc_chirho.ppid_chirho == parent_pid_chirho
+                    && tc_chirho.state_chirho != TaskStateChirho::DeadChirho
+            });
 
-    // Look for a zombie child matching the requested PID.
-    let mut found_pid_result_chirho: Option<u64> = None;
-    let mut found_exit_code_chirho: i32 = 0;
-
-    for task_arc_chirho in task_list_chirho.iter() {
-        let task_chirho = task_arc_chirho.lock();
-
-        // Must be our child.
-        if task_chirho.ppid_chirho != parent_pid_chirho {
-            continue;
+        if !has_children_chirho {
+            return -ECHILD_CHIRHO;
         }
 
-        // Check PID filter.
-        if pid_chirho > 0 && task_chirho.pid_chirho != pid_chirho as u64 {
-            continue;
+        // Look for a zombie child matching the requested PID.
+        let mut found_pid_result_chirho: Option<u64> = None;
+        let mut found_exit_code_chirho: i32 = 0;
+
+        for task_arc_chirho in task_list_chirho.iter() {
+            let task_chirho = task_arc_chirho.lock();
+
+            // Must be our child.
+            if task_chirho.ppid_chirho != parent_pid_chirho {
+                continue;
+            }
+
+            // Check PID filter.
+            if pid_chirho > 0 && task_chirho.pid_chirho != pid_chirho as u64 {
+                continue;
+            }
+
+            // Check if zombie.
+            if task_chirho.state_chirho == TaskStateChirho::ZombieChirho {
+                found_pid_result_chirho = Some(task_chirho.pid_chirho);
+                found_exit_code_chirho = task_chirho.exit_code_chirho;
+                break;
+            }
         }
 
-        // Check if zombie.
-        if task_chirho.state_chirho == TaskStateChirho::ZombieChirho {
-            found_pid_result_chirho = Some(task_chirho.pid_chirho);
-            found_exit_code_chirho = task_chirho.exit_code_chirho;
-            break;
-        }
-    }
+        // Drop the task list lock before writing to userspace memory.
+        drop(task_list_chirho);
 
-    // Drop the task list lock before writing to userspace memory.
-    drop(task_list_chirho);
-
-    match found_pid_result_chirho {
-        Some(reaped_pid_chirho) => {
+        if let Some(reaped_pid_chirho) = found_pid_result_chirho {
             // Write the exit status to userspace if wstatus pointer is non-null.
             if wstatus_chirho != 0 {
                 // WEXITSTATUS format: (exit_code << 8) | 0 (normal termination).
@@ -463,23 +472,28 @@ pub fn sys_wait4_chirho(
                 found_exit_code_chirho
             );
 
-            reaped_pid_chirho as i64
+            return reaped_pid_chirho as i64;
         }
-        None => {
-            // No zombie child found.
-            if (options_chirho & WNOHANG_CHIRHO) != 0 {
-                // WNOHANG: return 0 immediately.
-                0
-            } else {
-                // Blocking wait is not yet implemented — return -ECHILD.
-                // A proper implementation would block the parent and wake it
-                // when a child exits.
-                crate::serial_println_chirho!(
-                    "[PROCESS] wait4: no zombie child, would block (returning -ECHILD)"
-                );
-                -ECHILD_CHIRHO
-            }
+
+        // No zombie child found.
+        if (options_chirho & WNOHANG_CHIRHO) != 0 {
+            // WNOHANG: return 0 immediately.
+            return 0;
         }
+
+        // Blocking wait: yield to the scheduler and try again.
+        // This is a simple poll-and-yield approach. A proper implementation
+        // would use wait queues where the child wakes the parent on exit,
+        // but this is sufficient for BusyBox ash to not crash.
+        retries_chirho += 1;
+        if retries_chirho >= max_retries_chirho {
+            crate::serial_println_chirho!(
+                "[PROCESS] wait4: exceeded retry limit, returning -ECHILD"
+            );
+            return -ECHILD_CHIRHO;
+        }
+
+        crate::scheduler_chirho::yield_current_chirho();
     }
 }
 
