@@ -2219,7 +2219,7 @@
         "P2-017",
         "P2-012"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -2248,7 +2248,7 @@
         "P2-019",
         "P2-016"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -2370,7 +2370,7 @@
         "P2-004",
         "P2-016"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -2425,7 +2425,7 @@
         "P2-010",
         "P2-025"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "estimated_complexity_chirho": "high",
       "acceptance_criteria_chirho": [
@@ -2713,7 +2713,7 @@
       "depends_on_chirho": [
         "P2-036"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "estimated_complexity_chirho": "medium",
       "acceptance_criteria_chirho": [

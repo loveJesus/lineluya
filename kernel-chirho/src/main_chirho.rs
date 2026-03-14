@@ -16,6 +16,9 @@ mod interrupts_chirho;
 mod memory_chirho;
 mod allocator_chirho;
 
+// Phase 3: Virtual Filesystem Switch (VFS)
+mod vfs_chirho;
+
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
 mod syscall_entry_chirho;
