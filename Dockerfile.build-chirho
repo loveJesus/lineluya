@@ -16,6 +16,7 @@ WORKDIR /lineluya-chirho
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY kernel-chirho/ kernel-chirho/
+COPY kernel-core-chirho/ kernel-core-chirho/
 COPY xtask-chirho/ xtask-chirho/
 COPY userspace-chirho/ userspace-chirho/
 COPY rust-toolchain.toml ./
