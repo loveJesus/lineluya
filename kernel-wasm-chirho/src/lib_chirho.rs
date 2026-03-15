@@ -734,6 +734,904 @@ impl IdbDriverChirho {
 static mut IDB_DRIVER_CHIRHO: IdbDriverChirho = IdbDriverChirho::new_chirho();
 
 // ---------------------------------------------------------------------------
+// B2-002/B2-003: Socket subsystem — BSD sockets over WebSocket bridge
+// ---------------------------------------------------------------------------
+
+/// Maximum simultaneous sockets
+const MAX_SOCKETS_CHIRHO: usize = 16;
+
+/// Socket type constants
+const SOCK_STREAM_CHIRHO: u8 = 1;
+const SOCK_DGRAM_CHIRHO: u8 = 2;
+
+/// Socket state
+#[derive(Clone, Copy, PartialEq)]
+enum SocketStateChirho {
+    FreeChirho,
+    CreatedChirho,
+    ConnectingChirho,
+    ConnectedChirho,
+    ListeningChirho,
+    ClosedChirho,
+}
+
+/// Socket address: IPv4 + port
+#[derive(Clone, Copy)]
+struct SockAddrChirho {
+    ip_chirho: [u8; 4],
+    port_chirho: u16,
+}
+
+impl SockAddrChirho {
+    const fn zero_chirho() -> Self {
+        Self { ip_chirho: [0; 4], port_chirho: 0 }
+    }
+}
+
+/// Socket descriptor
+#[derive(Clone, Copy)]
+struct SocketChirho {
+    state_chirho: SocketStateChirho,
+    sock_type_chirho: u8,
+    bridge_conn_id_chirho: i32,
+    local_addr_chirho: SockAddrChirho,
+    remote_addr_chirho: SockAddrChirho,
+    /// Ring buffer for received data (B2-015: connection pooling buffer)
+    recv_buf_chirho: [u8; 256],
+    recv_head_chirho: usize,
+    recv_tail_chirho: usize,
+    /// Backlog for listening sockets (B2-011)
+    backlog_chirho: u8,
+}
+
+impl SocketChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            state_chirho: SocketStateChirho::FreeChirho,
+            sock_type_chirho: 0,
+            bridge_conn_id_chirho: -1,
+            local_addr_chirho: SockAddrChirho::zero_chirho(),
+            remote_addr_chirho: SockAddrChirho::zero_chirho(),
+            recv_buf_chirho: [0u8; 256],
+            recv_head_chirho: 0,
+            recv_tail_chirho: 0,
+            backlog_chirho: 0,
+        }
+    }
+
+    fn recv_available_chirho(&self) -> usize {
+        if self.recv_head_chirho >= self.recv_tail_chirho {
+            self.recv_head_chirho - self.recv_tail_chirho
+        } else {
+            256 - self.recv_tail_chirho + self.recv_head_chirho
+        }
+    }
+}
+
+struct SocketTableChirho {
+    sockets_chirho: [SocketChirho; MAX_SOCKETS_CHIRHO],
+}
+
+impl SocketTableChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            sockets_chirho: [SocketChirho::empty_chirho(); MAX_SOCKETS_CHIRHO],
+        }
+    }
+
+    /// Create a new socket. Returns fd (100 + slot) or -errno.
+    fn create_chirho(&mut self, sock_type_chirho: u8) -> i32 {
+        for i_chirho in 0..MAX_SOCKETS_CHIRHO {
+            if self.sockets_chirho[i_chirho].state_chirho == SocketStateChirho::FreeChirho {
+                self.sockets_chirho[i_chirho] = SocketChirho::empty_chirho();
+                self.sockets_chirho[i_chirho].state_chirho = SocketStateChirho::CreatedChirho;
+                self.sockets_chirho[i_chirho].sock_type_chirho = sock_type_chirho;
+                return (100 + i_chirho) as i32;
+            }
+        }
+        -24 // EMFILE
+    }
+
+    fn fd_to_slot_chirho(fd_chirho: i32) -> Option<usize> {
+        if fd_chirho >= 100 && fd_chirho < 100 + MAX_SOCKETS_CHIRHO as i32 {
+            Some((fd_chirho - 100) as usize)
+        } else {
+            None
+        }
+    }
+
+    /// B2-003: Connect a socket through the WebSocket bridge
+    fn connect_chirho(&mut self, fd_chirho: i32, addr_chirho: &SockAddrChirho) -> i32 {
+        let slot_chirho = match Self::fd_to_slot_chirho(fd_chirho) {
+            Some(s_chirho) => s_chirho,
+            None => return -9, // EBADF
+        };
+        let sock_chirho = &mut self.sockets_chirho[slot_chirho];
+        if sock_chirho.state_chirho != SocketStateChirho::CreatedChirho {
+            return -106; // EISCONN
+        }
+
+        // B2-010: Check for loopback
+        if addr_chirho.ip_chirho == [127, 0, 0, 1] {
+            // Loopback — connect locally
+            sock_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
+            sock_chirho.remote_addr_chirho = *addr_chirho;
+            sock_chirho.bridge_conn_id_chirho = -2; // sentinel for loopback
+            return 0;
+        }
+
+        // Format IP as string for the JS bridge
+        let mut host_buf_chirho = [0u8; 16];
+        let host_len_chirho = format_ip_chirho(
+            addr_chirho.ip_chirho[0], addr_chirho.ip_chirho[1],
+            addr_chirho.ip_chirho[2], addr_chirho.ip_chirho[3],
+            &mut host_buf_chirho,
+        );
+
+        let conn_id_chirho = unsafe {
+            js_ws_bridge_connect_chirho(
+                host_buf_chirho.as_ptr() as u32,
+                host_len_chirho as u32,
+                addr_chirho.port_chirho as u32,
+            )
+        };
+
+        if conn_id_chirho < 0 {
+            return -111; // ECONNREFUSED
+        }
+
+        sock_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
+        sock_chirho.remote_addr_chirho = *addr_chirho;
+        sock_chirho.bridge_conn_id_chirho = conn_id_chirho;
+        0
+    }
+
+    /// B2-011: Bind socket to local address
+    fn bind_chirho(&mut self, fd_chirho: i32, addr_chirho: &SockAddrChirho) -> i32 {
+        let slot_chirho = match Self::fd_to_slot_chirho(fd_chirho) {
+            Some(s_chirho) => s_chirho,
+            None => return -9,
+        };
+        self.sockets_chirho[slot_chirho].local_addr_chirho = *addr_chirho;
+        0
+    }
+
+    /// B2-011: Start listening on a socket
+    fn listen_chirho(&mut self, fd_chirho: i32, backlog_chirho: u8) -> i32 {
+        let slot_chirho = match Self::fd_to_slot_chirho(fd_chirho) {
+            Some(s_chirho) => s_chirho,
+            None => return -9,
+        };
+        let sock_chirho = &mut self.sockets_chirho[slot_chirho];
+        if sock_chirho.state_chirho != SocketStateChirho::CreatedChirho {
+            return -22; // EINVAL
+        }
+        sock_chirho.state_chirho = SocketStateChirho::ListeningChirho;
+        sock_chirho.backlog_chirho = backlog_chirho;
+        0
+    }
+
+    /// B2-011: Accept an incoming connection (loopback only for now)
+    fn accept_chirho(&mut self, fd_chirho: i32) -> i32 {
+        let slot_chirho = match Self::fd_to_slot_chirho(fd_chirho) {
+            Some(s_chirho) => s_chirho,
+            None => return -9,
+        };
+        if self.sockets_chirho[slot_chirho].state_chirho != SocketStateChirho::ListeningChirho {
+            return -22;
+        }
+        // For now return EAGAIN (no pending connections)
+        -11 // EAGAIN
+    }
+
+    /// Send data through a socket
+    fn send_chirho(&self, fd_chirho: i32, data_chirho: &[u8]) -> i32 {
+        let slot_chirho = match Self::fd_to_slot_chirho(fd_chirho) {
+            Some(s_chirho) => s_chirho,
+            None => return -9,
+        };
+        let sock_chirho = &self.sockets_chirho[slot_chirho];
+        if sock_chirho.state_chirho != SocketStateChirho::ConnectedChirho {
+            return -107; // ENOTCONN
+        }
+        if sock_chirho.bridge_conn_id_chirho == -2 {
+            // Loopback — no actual send
+            return data_chirho.len() as i32;
+        }
+        unsafe {
+            js_ws_bridge_send_chirho(
+                sock_chirho.bridge_conn_id_chirho,
+                data_chirho.as_ptr() as u32,
+                data_chirho.len() as u32,
+            )
+        }
+    }
+
+    /// Receive data from a socket
+    fn recv_chirho(&self, fd_chirho: i32, buf_chirho: &mut [u8]) -> i32 {
+        let slot_chirho = match Self::fd_to_slot_chirho(fd_chirho) {
+            Some(s_chirho) => s_chirho,
+            None => return -9,
+        };
+        let sock_chirho = &self.sockets_chirho[slot_chirho];
+        if sock_chirho.state_chirho != SocketStateChirho::ConnectedChirho {
+            return -107;
+        }
+        if sock_chirho.bridge_conn_id_chirho == -2 {
+            return 0; // Loopback — no data
+        }
+        unsafe {
+            js_ws_bridge_recv_chirho(
+                sock_chirho.bridge_conn_id_chirho,
+                buf_chirho.as_mut_ptr() as u32,
+                buf_chirho.len() as u32,
+            )
+        }
+    }
+
+    /// Close a socket
+    fn close_chirho(&mut self, fd_chirho: i32) {
+        if let Some(slot_chirho) = Self::fd_to_slot_chirho(fd_chirho) {
+            let sock_chirho = &mut self.sockets_chirho[slot_chirho];
+            if sock_chirho.bridge_conn_id_chirho >= 0 {
+                unsafe { js_ws_bridge_close_chirho(sock_chirho.bridge_conn_id_chirho); }
+            }
+            sock_chirho.state_chirho = SocketStateChirho::ClosedChirho;
+        }
+    }
+
+    /// B2-012: Check if a socket fd is ready for reading
+    fn is_readable_chirho(&self, fd_chirho: i32) -> bool {
+        if let Some(slot_chirho) = Self::fd_to_slot_chirho(fd_chirho) {
+            let sock_chirho = &self.sockets_chirho[slot_chirho];
+            if sock_chirho.state_chirho == SocketStateChirho::ConnectedChirho {
+                if sock_chirho.bridge_conn_id_chirho == -2 { return false; }
+                let status_chirho = unsafe { js_ws_bridge_status_chirho(sock_chirho.bridge_conn_id_chirho) };
+                return status_chirho == 1; // open
+            }
+            if sock_chirho.state_chirho == SocketStateChirho::ListeningChirho {
+                return false; // No pending connections yet
+            }
+        }
+        false
+    }
+}
+
+static mut SOCKET_TABLE_CHIRHO: SocketTableChirho = SocketTableChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B2-004: DNS resolver over HTTPS (DoH)
+// ---------------------------------------------------------------------------
+
+/// Resolve a hostname to an IPv4 address using the JS DoH bridge
+fn dns_resolve_chirho(hostname_chirho: &[u8]) -> Option<[u8; 4]> {
+    let mut result_chirho = [0u8; 4];
+    let rc_chirho = unsafe {
+        js_dns_resolve_chirho(
+            hostname_chirho.as_ptr() as u32,
+            hostname_chirho.len() as u32,
+            result_chirho.as_mut_ptr() as u32,
+        )
+    };
+    if rc_chirho == 0 { Some(result_chirho) } else { None }
+}
+
+// ---------------------------------------------------------------------------
+// B2-005: HTTP client — wget/curl shell commands
+// ---------------------------------------------------------------------------
+
+/// Fetch a URL via HTTP GET. Returns response body bytes or empty on error.
+fn http_get_chirho(url_chirho: &[u8], buf_chirho: &mut [u8]) -> i32 {
+    unsafe {
+        js_http_get_chirho(
+            url_chirho.as_ptr() as u32,
+            url_chirho.len() as u32,
+            buf_chirho.as_mut_ptr() as u32,
+            buf_chirho.len() as u32,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B3-007: Block cache layer with write-back
+// ---------------------------------------------------------------------------
+
+/// Number of cached blocks
+const BLOCK_CACHE_SIZE_CHIRHO: usize = 16;
+/// Block size in bytes
+const BLOCK_SIZE_CHIRHO: usize = 512;
+
+#[derive(Clone, Copy, PartialEq)]
+enum CacheBlockStateChirho {
+    FreeChirho,
+    CleanChirho,
+    DirtyChirho,
+}
+
+#[derive(Clone, Copy)]
+struct CacheBlockChirho {
+    state_chirho: CacheBlockStateChirho,
+    block_num_chirho: u32,
+    opfs_slot_chirho: i32,
+    data_chirho: [u8; BLOCK_SIZE_CHIRHO],
+    access_count_chirho: u32,
+}
+
+impl CacheBlockChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            state_chirho: CacheBlockStateChirho::FreeChirho,
+            block_num_chirho: 0,
+            opfs_slot_chirho: -1,
+            data_chirho: [0u8; BLOCK_SIZE_CHIRHO],
+            access_count_chirho: 0,
+        }
+    }
+}
+
+struct BlockCacheChirho {
+    blocks_chirho: [CacheBlockChirho; BLOCK_CACHE_SIZE_CHIRHO],
+}
+
+impl BlockCacheChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            blocks_chirho: [CacheBlockChirho::empty_chirho(); BLOCK_CACHE_SIZE_CHIRHO],
+        }
+    }
+
+    /// Read a block, returning cached copy or fetching from OPFS
+    fn read_block_chirho(&mut self, opfs_slot_chirho: i32, block_num_chirho: u32) -> Option<&[u8; BLOCK_SIZE_CHIRHO]> {
+        // Check cache first
+        for i_chirho in 0..BLOCK_CACHE_SIZE_CHIRHO {
+            if self.blocks_chirho[i_chirho].state_chirho != CacheBlockStateChirho::FreeChirho
+                && self.blocks_chirho[i_chirho].opfs_slot_chirho == opfs_slot_chirho
+                && self.blocks_chirho[i_chirho].block_num_chirho == block_num_chirho
+            {
+                self.blocks_chirho[i_chirho].access_count_chirho += 1;
+                return Some(&self.blocks_chirho[i_chirho].data_chirho);
+            }
+        }
+        // Cache miss — find free slot or evict LRU
+        let slot_chirho = self.find_or_evict_chirho();
+        let offset_chirho = block_num_chirho * BLOCK_SIZE_CHIRHO as u32;
+        let bytes_read_chirho = unsafe {
+            OPFS_DRIVER_CHIRHO.read_chirho(
+                opfs_slot_chirho as usize,
+                offset_chirho,
+                &mut self.blocks_chirho[slot_chirho].data_chirho,
+            )
+        };
+        if bytes_read_chirho < 0 { return None; }
+        self.blocks_chirho[slot_chirho].state_chirho = CacheBlockStateChirho::CleanChirho;
+        self.blocks_chirho[slot_chirho].block_num_chirho = block_num_chirho;
+        self.blocks_chirho[slot_chirho].opfs_slot_chirho = opfs_slot_chirho;
+        self.blocks_chirho[slot_chirho].access_count_chirho = 1;
+        Some(&self.blocks_chirho[slot_chirho].data_chirho)
+    }
+
+    /// Write a block to cache (dirty, not yet flushed)
+    fn write_block_chirho(&mut self, opfs_slot_chirho: i32, block_num_chirho: u32, data_chirho: &[u8]) {
+        // Find existing or allocate
+        let mut target_chirho = None;
+        for i_chirho in 0..BLOCK_CACHE_SIZE_CHIRHO {
+            if self.blocks_chirho[i_chirho].state_chirho != CacheBlockStateChirho::FreeChirho
+                && self.blocks_chirho[i_chirho].opfs_slot_chirho == opfs_slot_chirho
+                && self.blocks_chirho[i_chirho].block_num_chirho == block_num_chirho
+            {
+                target_chirho = Some(i_chirho);
+                break;
+            }
+        }
+        let slot_chirho = target_chirho.unwrap_or_else(|| self.find_or_evict_chirho());
+        let len_chirho = if data_chirho.len() > BLOCK_SIZE_CHIRHO { BLOCK_SIZE_CHIRHO } else { data_chirho.len() };
+        self.blocks_chirho[slot_chirho].data_chirho[..len_chirho].copy_from_slice(&data_chirho[..len_chirho]);
+        self.blocks_chirho[slot_chirho].state_chirho = CacheBlockStateChirho::DirtyChirho;
+        self.blocks_chirho[slot_chirho].block_num_chirho = block_num_chirho;
+        self.blocks_chirho[slot_chirho].opfs_slot_chirho = opfs_slot_chirho;
+        self.blocks_chirho[slot_chirho].access_count_chirho += 1;
+    }
+
+    /// B3-008: Flush all dirty blocks to OPFS (fsync)
+    fn sync_all_chirho(&mut self) -> i32 {
+        let mut errors_chirho = 0i32;
+        for i_chirho in 0..BLOCK_CACHE_SIZE_CHIRHO {
+            if self.blocks_chirho[i_chirho].state_chirho == CacheBlockStateChirho::DirtyChirho {
+                let offset_chirho = self.blocks_chirho[i_chirho].block_num_chirho * BLOCK_SIZE_CHIRHO as u32;
+                let result_chirho = unsafe {
+                    OPFS_DRIVER_CHIRHO.write_chirho(
+                        self.blocks_chirho[i_chirho].opfs_slot_chirho as usize,
+                        offset_chirho,
+                        &self.blocks_chirho[i_chirho].data_chirho,
+                    )
+                };
+                if result_chirho >= 0 {
+                    self.blocks_chirho[i_chirho].state_chirho = CacheBlockStateChirho::CleanChirho;
+                } else {
+                    errors_chirho += 1;
+                }
+            }
+        }
+        if errors_chirho > 0 { -5 } else { 0 } // EIO
+    }
+
+    /// Flush dirty blocks for a specific OPFS slot
+    fn sync_slot_chirho(&mut self, opfs_slot_chirho: i32) -> i32 {
+        let mut errors_chirho = 0i32;
+        for i_chirho in 0..BLOCK_CACHE_SIZE_CHIRHO {
+            if self.blocks_chirho[i_chirho].state_chirho == CacheBlockStateChirho::DirtyChirho
+                && self.blocks_chirho[i_chirho].opfs_slot_chirho == opfs_slot_chirho
+            {
+                let offset_chirho = self.blocks_chirho[i_chirho].block_num_chirho * BLOCK_SIZE_CHIRHO as u32;
+                let result_chirho = unsafe {
+                    OPFS_DRIVER_CHIRHO.write_chirho(
+                        self.blocks_chirho[i_chirho].opfs_slot_chirho as usize,
+                        offset_chirho,
+                        &self.blocks_chirho[i_chirho].data_chirho,
+                    )
+                };
+                if result_chirho >= 0 {
+                    self.blocks_chirho[i_chirho].state_chirho = CacheBlockStateChirho::CleanChirho;
+                } else {
+                    errors_chirho += 1;
+                }
+            }
+        }
+        if errors_chirho > 0 { -5 } else { 0 }
+    }
+
+    fn find_or_evict_chirho(&mut self) -> usize {
+        // Find free slot
+        for i_chirho in 0..BLOCK_CACHE_SIZE_CHIRHO {
+            if self.blocks_chirho[i_chirho].state_chirho == CacheBlockStateChirho::FreeChirho {
+                return i_chirho;
+            }
+        }
+        // LRU eviction — find block with lowest access count
+        let mut min_idx_chirho = 0usize;
+        let mut min_count_chirho = u32::MAX;
+        for i_chirho in 0..BLOCK_CACHE_SIZE_CHIRHO {
+            if self.blocks_chirho[i_chirho].access_count_chirho < min_count_chirho {
+                min_count_chirho = self.blocks_chirho[i_chirho].access_count_chirho;
+                min_idx_chirho = i_chirho;
+            }
+        }
+        // Flush if dirty before eviction
+        if self.blocks_chirho[min_idx_chirho].state_chirho == CacheBlockStateChirho::DirtyChirho {
+            let offset_chirho = self.blocks_chirho[min_idx_chirho].block_num_chirho * BLOCK_SIZE_CHIRHO as u32;
+            unsafe {
+                OPFS_DRIVER_CHIRHO.write_chirho(
+                    self.blocks_chirho[min_idx_chirho].opfs_slot_chirho as usize,
+                    offset_chirho,
+                    &self.blocks_chirho[min_idx_chirho].data_chirho,
+                );
+            }
+        }
+        self.blocks_chirho[min_idx_chirho] = CacheBlockChirho::empty_chirho();
+        min_idx_chirho
+    }
+}
+
+static mut BLOCK_CACHE_CHIRHO: BlockCacheChirho = BlockCacheChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-001: X11 protocol message parser
+// ---------------------------------------------------------------------------
+
+/// X11 opcode constants
+const X11_CREATE_WINDOW_CHIRHO: u8 = 1;
+const X11_MAP_WINDOW_CHIRHO: u8 = 8;
+const X11_UNMAP_WINDOW_CHIRHO: u8 = 10;
+const X11_CONFIGURE_WINDOW_CHIRHO: u8 = 12;
+const X11_DESTROY_WINDOW_CHIRHO: u8 = 4;
+const X11_POLY_FILL_RECT_CHIRHO: u8 = 70;
+const X11_PUT_IMAGE_CHIRHO: u8 = 72;
+const X11_CREATE_GC_CHIRHO: u8 = 55;
+
+/// X11 event types
+const X11_KEY_PRESS_CHIRHO: u8 = 2;
+const X11_KEY_RELEASE_CHIRHO: u8 = 3;
+const X11_BUTTON_PRESS_CHIRHO: u8 = 4;
+const X11_BUTTON_RELEASE_CHIRHO: u8 = 5;
+const X11_MOTION_NOTIFY_CHIRHO: u8 = 6;
+const X11_EXPOSE_CHIRHO: u8 = 12;
+
+/// Parsed X11 request header
+#[derive(Clone, Copy)]
+struct X11RequestHeaderChirho {
+    opcode_chirho: u8,
+    data_byte_chirho: u8,
+    length_chirho: u16, // in 4-byte units
+}
+
+impl X11RequestHeaderChirho {
+    fn parse_chirho(data_chirho: &[u8]) -> Option<Self> {
+        if data_chirho.len() < 4 { return None; }
+        Some(Self {
+            opcode_chirho: data_chirho[0],
+            data_byte_chirho: data_chirho[1],
+            length_chirho: u16::from_le_bytes([data_chirho[2], data_chirho[3]]),
+        })
+    }
+}
+
+/// X11 window
+const MAX_X11_WINDOWS_CHIRHO: usize = 16;
+
+#[derive(Clone, Copy, PartialEq)]
+enum X11WindowStateChirho {
+    FreeChirho,
+    UnmappedChirho,
+    MappedChirho,
+}
+
+#[derive(Clone, Copy)]
+struct X11WindowChirho {
+    state_chirho: X11WindowStateChirho,
+    window_id_chirho: u32,
+    parent_id_chirho: u32,
+    x_chirho: i16,
+    y_chirho: i16,
+    width_chirho: u16,
+    height_chirho: u16,
+    bg_color_chirho: u32,
+    border_width_chirho: u16,
+    event_mask_chirho: u32,
+}
+
+impl X11WindowChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            state_chirho: X11WindowStateChirho::FreeChirho,
+            window_id_chirho: 0,
+            parent_id_chirho: 0,
+            x_chirho: 0,
+            y_chirho: 0,
+            width_chirho: 0,
+            height_chirho: 0,
+            bg_color_chirho: 0xFF000000, // black
+            border_width_chirho: 0,
+            event_mask_chirho: 0,
+        }
+    }
+}
+
+/// X11 server state
+struct X11ServerChirho {
+    windows_chirho: [X11WindowChirho; MAX_X11_WINDOWS_CHIRHO],
+    next_window_id_chirho: u32,
+    root_window_id_chirho: u32,
+    screen_width_chirho: u16,
+    screen_height_chirho: u16,
+    /// Event queue (circular)
+    event_queue_chirho: [[u8; 32]; 32],
+    event_head_chirho: usize,
+    event_tail_chirho: usize,
+    active_chirho: bool,
+}
+
+impl X11ServerChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            windows_chirho: [X11WindowChirho::empty_chirho(); MAX_X11_WINDOWS_CHIRHO],
+            next_window_id_chirho: 0x200, // Root is 0x100
+            root_window_id_chirho: 0x100,
+            screen_width_chirho: 640,
+            screen_height_chirho: 400,
+            event_queue_chirho: [[0u8; 32]; 32],
+            event_head_chirho: 0,
+            event_tail_chirho: 0,
+            active_chirho: false,
+        }
+    }
+
+    /// Initialize the X11 server with root window
+    fn init_chirho(&mut self) {
+        self.active_chirho = true;
+        // Create root window at slot 0
+        let root_chirho = &mut self.windows_chirho[0];
+        root_chirho.state_chirho = X11WindowStateChirho::MappedChirho;
+        root_chirho.window_id_chirho = self.root_window_id_chirho;
+        root_chirho.parent_id_chirho = 0;
+        root_chirho.x_chirho = 0;
+        root_chirho.y_chirho = 0;
+        root_chirho.width_chirho = self.screen_width_chirho;
+        root_chirho.height_chirho = self.screen_height_chirho;
+        root_chirho.bg_color_chirho = 0xFF2D2D44; // Dark blue-gray background
+        root_chirho.event_mask_chirho = 0xFFFFFFFF;
+
+        // Paint root window background via Canvas
+        unsafe {
+            js_fb_init_chirho(self.screen_width_chirho as u32, self.screen_height_chirho as u32);
+            js_fb_fill_rect_chirho(0, 0, self.screen_width_chirho as u32, self.screen_height_chirho as u32, root_chirho.bg_color_chirho);
+        }
+    }
+
+    /// B4-001: Process an X11 request
+    fn process_request_chirho(&mut self, data_chirho: &[u8]) {
+        let header_chirho = match X11RequestHeaderChirho::parse_chirho(data_chirho) {
+            Some(h_chirho) => h_chirho,
+            None => return,
+        };
+
+        match header_chirho.opcode_chirho {
+            X11_CREATE_WINDOW_CHIRHO => self.handle_create_window_chirho(data_chirho),
+            X11_MAP_WINDOW_CHIRHO => self.handle_map_window_chirho(data_chirho),
+            X11_UNMAP_WINDOW_CHIRHO => self.handle_unmap_window_chirho(data_chirho),
+            X11_DESTROY_WINDOW_CHIRHO => self.handle_destroy_window_chirho(data_chirho),
+            X11_POLY_FILL_RECT_CHIRHO => self.handle_fill_rect_chirho(data_chirho),
+            X11_PUT_IMAGE_CHIRHO => self.handle_put_image_chirho(data_chirho),
+            _ => {} // Unknown opcode, ignore
+        }
+    }
+
+    /// CreateWindow request handler
+    fn handle_create_window_chirho(&mut self, data_chirho: &[u8]) {
+        if data_chirho.len() < 32 { return; }
+        // Find free window slot
+        let slot_chirho = match self.find_free_window_chirho() {
+            Some(s_chirho) => s_chirho,
+            None => return,
+        };
+        let wid_chirho = self.alloc_window_id_chirho();
+        let parent_chirho = u32::from_le_bytes([data_chirho[8], data_chirho[9], data_chirho[10], data_chirho[11]]);
+        let x_chirho = i16::from_le_bytes([data_chirho[12], data_chirho[13]]);
+        let y_chirho = i16::from_le_bytes([data_chirho[14], data_chirho[15]]);
+        let w_chirho = u16::from_le_bytes([data_chirho[16], data_chirho[17]]);
+        let h_chirho = u16::from_le_bytes([data_chirho[18], data_chirho[19]]);
+        let bw_chirho = u16::from_le_bytes([data_chirho[20], data_chirho[21]]);
+
+        let win_chirho = &mut self.windows_chirho[slot_chirho];
+        win_chirho.state_chirho = X11WindowStateChirho::UnmappedChirho;
+        win_chirho.window_id_chirho = wid_chirho;
+        win_chirho.parent_id_chirho = parent_chirho;
+        win_chirho.x_chirho = x_chirho;
+        win_chirho.y_chirho = y_chirho;
+        win_chirho.width_chirho = w_chirho;
+        win_chirho.height_chirho = h_chirho;
+        win_chirho.border_width_chirho = bw_chirho;
+        win_chirho.bg_color_chirho = 0xFFFFFFFF; // white default
+    }
+
+    /// MapWindow — make window visible and render it on canvas
+    fn handle_map_window_chirho(&mut self, data_chirho: &[u8]) {
+        if data_chirho.len() < 8 { return; }
+        let wid_chirho = u32::from_le_bytes([data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7]]);
+        if let Some(slot_chirho) = self.find_window_chirho(wid_chirho) {
+            self.windows_chirho[slot_chirho].state_chirho = X11WindowStateChirho::MappedChirho;
+            // B4-003: Render window background to canvas
+            let win_chirho = &self.windows_chirho[slot_chirho];
+            unsafe {
+                js_fb_fill_rect_chirho(
+                    win_chirho.x_chirho as u32,
+                    win_chirho.y_chirho as u32,
+                    win_chirho.width_chirho as u32,
+                    win_chirho.height_chirho as u32,
+                    win_chirho.bg_color_chirho,
+                );
+            }
+            // Queue Expose event
+            self.queue_expose_chirho(wid_chirho, win_chirho.width_chirho, win_chirho.height_chirho);
+        }
+    }
+
+    /// UnmapWindow
+    fn handle_unmap_window_chirho(&mut self, data_chirho: &[u8]) {
+        if data_chirho.len() < 8 { return; }
+        let wid_chirho = u32::from_le_bytes([data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7]]);
+        if let Some(slot_chirho) = self.find_window_chirho(wid_chirho) {
+            self.windows_chirho[slot_chirho].state_chirho = X11WindowStateChirho::UnmappedChirho;
+        }
+    }
+
+    /// DestroyWindow
+    fn handle_destroy_window_chirho(&mut self, data_chirho: &[u8]) {
+        if data_chirho.len() < 8 { return; }
+        let wid_chirho = u32::from_le_bytes([data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7]]);
+        if let Some(slot_chirho) = self.find_window_chirho(wid_chirho) {
+            self.windows_chirho[slot_chirho].state_chirho = X11WindowStateChirho::FreeChirho;
+        }
+    }
+
+    /// B4-003: PolyFillRectangle — render filled rectangles
+    fn handle_fill_rect_chirho(&mut self, data_chirho: &[u8]) {
+        if data_chirho.len() < 20 { return; }
+        // data_chirho[4..8] = drawable (window ID)
+        // data_chirho[8..12] = GC
+        // data_chirho[12..] = rectangles (x:i16, y:i16, w:u16, h:u16) = 8 bytes each
+        let wid_chirho = u32::from_le_bytes([data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7]]);
+        if let Some(slot_chirho) = self.find_window_chirho(wid_chirho) {
+            let win_chirho = &self.windows_chirho[slot_chirho];
+            let mut i_chirho = 12usize;
+            while i_chirho + 8 <= data_chirho.len() {
+                let rx_chirho = i16::from_le_bytes([data_chirho[i_chirho], data_chirho[i_chirho + 1]]);
+                let ry_chirho = i16::from_le_bytes([data_chirho[i_chirho + 2], data_chirho[i_chirho + 3]]);
+                let rw_chirho = u16::from_le_bytes([data_chirho[i_chirho + 4], data_chirho[i_chirho + 5]]);
+                let rh_chirho = u16::from_le_bytes([data_chirho[i_chirho + 6], data_chirho[i_chirho + 7]]);
+                let abs_x_chirho = (win_chirho.x_chirho + rx_chirho) as u32;
+                let abs_y_chirho = (win_chirho.y_chirho + ry_chirho) as u32;
+                unsafe {
+                    js_fb_fill_rect_chirho(abs_x_chirho, abs_y_chirho, rw_chirho as u32, rh_chirho as u32, 0xFFFFFFFF);
+                }
+                i_chirho += 8;
+            }
+        }
+    }
+
+    /// B4-003: PutImage — blit pixel data to canvas
+    fn handle_put_image_chirho(&mut self, data_chirho: &[u8]) {
+        if data_chirho.len() < 24 { return; }
+        let wid_chirho = u32::from_le_bytes([data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7]]);
+        if let Some(slot_chirho) = self.find_window_chirho(wid_chirho) {
+            let win_chirho = &self.windows_chirho[slot_chirho];
+            let w_chirho = u16::from_le_bytes([data_chirho[12], data_chirho[13]]);
+            let h_chirho = u16::from_le_bytes([data_chirho[14], data_chirho[15]]);
+            let dst_x_chirho = i16::from_le_bytes([data_chirho[16], data_chirho[17]]);
+            let dst_y_chirho = i16::from_le_bytes([data_chirho[18], data_chirho[19]]);
+            let pixel_data_chirho = &data_chirho[24..];
+            let abs_x_chirho = (win_chirho.x_chirho + dst_x_chirho) as u32;
+            let abs_y_chirho = (win_chirho.y_chirho + dst_y_chirho) as u32;
+            unsafe {
+                js_fb_put_rect_chirho(abs_x_chirho, abs_y_chirho, w_chirho as u32, h_chirho as u32, pixel_data_chirho.as_ptr() as u32);
+            }
+        }
+    }
+
+    /// Queue an Expose event for a window
+    fn queue_expose_chirho(&mut self, window_id_chirho: u32, width_chirho: u16, height_chirho: u16) {
+        let next_chirho = (self.event_head_chirho + 1) % 32;
+        if next_chirho == self.event_tail_chirho { return; } // Queue full
+        let evt_chirho = &mut self.event_queue_chirho[self.event_head_chirho];
+        evt_chirho[0] = X11_EXPOSE_CHIRHO;
+        // bytes 4..8 = window
+        evt_chirho[4] = (window_id_chirho & 0xFF) as u8;
+        evt_chirho[5] = ((window_id_chirho >> 8) & 0xFF) as u8;
+        evt_chirho[6] = ((window_id_chirho >> 16) & 0xFF) as u8;
+        evt_chirho[7] = ((window_id_chirho >> 24) & 0xFF) as u8;
+        // bytes 8..10 = x, 10..12 = y
+        evt_chirho[8] = 0; evt_chirho[9] = 0;
+        evt_chirho[10] = 0; evt_chirho[11] = 0;
+        // bytes 12..14 = width, 14..16 = height
+        evt_chirho[12] = (width_chirho & 0xFF) as u8;
+        evt_chirho[13] = ((width_chirho >> 8) & 0xFF) as u8;
+        evt_chirho[14] = (height_chirho & 0xFF) as u8;
+        evt_chirho[15] = ((height_chirho >> 8) & 0xFF) as u8;
+        self.event_head_chirho = next_chirho;
+    }
+
+    /// B4-006/B4-007: Process input events from browser and route to X11 clients
+    fn poll_input_events_chirho(&mut self) {
+        if !self.active_chirho { return; }
+
+        // Poll mouse events
+        let mut mouse_data_chirho = [0u32; 4];
+        let has_mouse_chirho = unsafe { js_input_mouse_chirho(mouse_data_chirho.as_mut_ptr() as u32) };
+        if has_mouse_chirho > 0 {
+            let mx_chirho = mouse_data_chirho[0] as i16;
+            let my_chirho = mouse_data_chirho[1] as i16;
+            let buttons_chirho = mouse_data_chirho[2];
+            let event_type_chirho = mouse_data_chirho[3];
+            // Find the topmost mapped window at (mx, my)
+            let target_wid_chirho = self.find_window_at_chirho(mx_chirho, my_chirho);
+            if target_wid_chirho != 0 {
+                let x11_type_chirho = match event_type_chirho {
+                    0 => X11_MOTION_NOTIFY_CHIRHO,
+                    1 => X11_BUTTON_PRESS_CHIRHO,
+                    2 => X11_BUTTON_RELEASE_CHIRHO,
+                    _ => X11_MOTION_NOTIFY_CHIRHO,
+                };
+                self.queue_mouse_event_chirho(x11_type_chirho, target_wid_chirho, mx_chirho, my_chirho, buttons_chirho as u8);
+            }
+        }
+
+        // Poll keyboard events
+        let mut kb_data_chirho = [0u32; 3];
+        let has_kb_chirho = unsafe { js_input_keyboard_chirho(kb_data_chirho.as_mut_ptr() as u32) };
+        if has_kb_chirho > 0 {
+            let keycode_chirho = kb_data_chirho[0] as u8;
+            let modifiers_chirho = kb_data_chirho[1] as u16;
+            let pressed_chirho = kb_data_chirho[2] != 0;
+            let x11_type_chirho = if pressed_chirho { X11_KEY_PRESS_CHIRHO } else { X11_KEY_RELEASE_CHIRHO };
+            // Route to focused (topmost mapped) window
+            let focus_wid_chirho = self.get_focus_window_chirho();
+            if focus_wid_chirho != 0 {
+                self.queue_key_event_chirho(x11_type_chirho, focus_wid_chirho, keycode_chirho, modifiers_chirho);
+            }
+        }
+    }
+
+    fn queue_mouse_event_chirho(&mut self, event_type_chirho: u8, window_id_chirho: u32, x_chirho: i16, y_chirho: i16, buttons_chirho: u8) {
+        let next_chirho = (self.event_head_chirho + 1) % 32;
+        if next_chirho == self.event_tail_chirho { return; }
+        let evt_chirho = &mut self.event_queue_chirho[self.event_head_chirho];
+        *evt_chirho = [0u8; 32];
+        evt_chirho[0] = event_type_chirho;
+        evt_chirho[1] = buttons_chirho;
+        evt_chirho[4] = (window_id_chirho & 0xFF) as u8;
+        evt_chirho[5] = ((window_id_chirho >> 8) & 0xFF) as u8;
+        evt_chirho[6] = ((window_id_chirho >> 16) & 0xFF) as u8;
+        evt_chirho[7] = ((window_id_chirho >> 24) & 0xFF) as u8;
+        evt_chirho[24] = (x_chirho & 0xFF) as u8;
+        evt_chirho[25] = ((x_chirho >> 8) & 0xFF) as u8;
+        evt_chirho[26] = (y_chirho & 0xFF) as u8;
+        evt_chirho[27] = ((y_chirho >> 8) & 0xFF) as u8;
+        self.event_head_chirho = next_chirho;
+    }
+
+    fn queue_key_event_chirho(&mut self, event_type_chirho: u8, window_id_chirho: u32, keycode_chirho: u8, modifiers_chirho: u16) {
+        let next_chirho = (self.event_head_chirho + 1) % 32;
+        if next_chirho == self.event_tail_chirho { return; }
+        let evt_chirho = &mut self.event_queue_chirho[self.event_head_chirho];
+        *evt_chirho = [0u8; 32];
+        evt_chirho[0] = event_type_chirho;
+        evt_chirho[1] = keycode_chirho;
+        evt_chirho[4] = (window_id_chirho & 0xFF) as u8;
+        evt_chirho[5] = ((window_id_chirho >> 8) & 0xFF) as u8;
+        evt_chirho[6] = ((window_id_chirho >> 16) & 0xFF) as u8;
+        evt_chirho[7] = ((window_id_chirho >> 24) & 0xFF) as u8;
+        evt_chirho[28] = (modifiers_chirho & 0xFF) as u8;
+        evt_chirho[29] = ((modifiers_chirho >> 8) & 0xFF) as u8;
+        self.event_head_chirho = next_chirho;
+    }
+
+    fn find_free_window_chirho(&self) -> Option<usize> {
+        for i_chirho in 0..MAX_X11_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].state_chirho == X11WindowStateChirho::FreeChirho {
+                return Some(i_chirho);
+            }
+        }
+        None
+    }
+
+    fn find_window_chirho(&self, wid_chirho: u32) -> Option<usize> {
+        for i_chirho in 0..MAX_X11_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].state_chirho != X11WindowStateChirho::FreeChirho
+                && self.windows_chirho[i_chirho].window_id_chirho == wid_chirho
+            {
+                return Some(i_chirho);
+            }
+        }
+        None
+    }
+
+    /// Find the topmost mapped window at a given coordinate
+    fn find_window_at_chirho(&self, x_chirho: i16, y_chirho: i16) -> u32 {
+        // Search in reverse order (later = on top)
+        for i_chirho in (0..MAX_X11_WINDOWS_CHIRHO).rev() {
+            let win_chirho = &self.windows_chirho[i_chirho];
+            if win_chirho.state_chirho == X11WindowStateChirho::MappedChirho {
+                let x2_chirho = win_chirho.x_chirho + win_chirho.width_chirho as i16;
+                let y2_chirho = win_chirho.y_chirho + win_chirho.height_chirho as i16;
+                if x_chirho >= win_chirho.x_chirho && x_chirho < x2_chirho
+                    && y_chirho >= win_chirho.y_chirho && y_chirho < y2_chirho
+                {
+                    return win_chirho.window_id_chirho;
+                }
+            }
+        }
+        self.root_window_id_chirho
+    }
+
+    /// Get the focused window (topmost mapped non-root)
+    fn get_focus_window_chirho(&self) -> u32 {
+        for i_chirho in (1..MAX_X11_WINDOWS_CHIRHO).rev() {
+            if self.windows_chirho[i_chirho].state_chirho == X11WindowStateChirho::MappedChirho {
+                return self.windows_chirho[i_chirho].window_id_chirho;
+            }
+        }
+        self.root_window_id_chirho
+    }
+
+    fn alloc_window_id_chirho(&mut self) -> u32 {
+        let id_chirho = self.next_window_id_chirho;
+        self.next_window_id_chirho += 1;
+        id_chirho
+    }
+}
+
+static mut X11_SERVER_CHIRHO: X11ServerChirho = X11ServerChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
 // B1-014: Environment variables store
 // ---------------------------------------------------------------------------
 
@@ -1871,6 +2769,13 @@ fn dispatch_single_command_chirho(cmd_bytes_chirho: &[u8]) {
             kwrite_chirho("  \x1b[1;32mmount\x1b[0m      - Show mounted filesystems\r\n");
             kwrite_chirho("  \x1b[1;32mdf\x1b[0m         - Show storage usage (OPFS/IndexedDB)\r\n");
             kwrite_chirho("  \x1b[1;32mselftest\x1b[0m   - Run integration self-tests\r\n");
+            kwrite_chirho("  \x1b[1;32mwget\x1b[0m       - Fetch URL via HTTP GET\r\n");
+            kwrite_chirho("  \x1b[1;32mnslookup\x1b[0m   - DNS lookup via DoH\r\n");
+            kwrite_chirho("  \x1b[1;32mnetstat\x1b[0m    - Show socket connections\r\n");
+            kwrite_chirho("  \x1b[1;32msync\x1b[0m       - Flush block cache to storage\r\n");
+            kwrite_chirho("  \x1b[1;32mquota\x1b[0m      - Show browser storage quota\r\n");
+            kwrite_chirho("  \x1b[1;32mstartx\x1b[0m     - Start X11 server (Canvas 2D)\r\n");
+            kwrite_chirho("  \x1b[1;32mxinfo\x1b[0m      - Show X11 server info\r\n");
             kwrite_chirho("\r\nI/O: Supports | (pipe), > >> < 2> (redirection)\r\n");
         }
         b"uname" => {
@@ -1997,6 +2902,19 @@ fn dispatch_single_command_chirho(cmd_bytes_chirho: &[u8]) {
         // B3-001/B3-002: Storage commands
         b"mount" => cmd_mount_chirho(),
         b"df" => cmd_df_chirho(),
+        // B2-005: HTTP client commands
+        b"wget" | b"curl" => cmd_wget_chirho(args_chirho),
+        // B2-004: DNS resolver
+        b"nslookup" | b"dig" | b"host" => cmd_nslookup_chirho(args_chirho),
+        // B2-015: Connection status
+        b"netstat" => cmd_netstat_chirho(),
+        // B3-008: Sync/flush
+        b"sync" => cmd_sync_chirho(),
+        // B3-010: Storage quota
+        b"quota" => cmd_quota_chirho(),
+        // B4-001/B4-003: X11 server
+        b"startx" => cmd_startx_chirho(),
+        b"xinfo" => cmd_xinfo_chirho(),
         // B1-019: Integration self-test
         b"selftest" => cmd_selftest_chirho(),
         _ => {
@@ -2240,6 +3158,258 @@ fn cmd_df_chirho() {
     kwrite_chirho("tmpfs          256K        0K   256K  /tmp\r\n");
     kwrite_chirho("opfs         quota  (browser-managed)  /home\r\n");
     kwrite_chirho("indexeddb    quota  (browser-managed)  /var\r\n");
+}
+
+// ---------------------------------------------------------------------------
+// B2-005: wget/curl — HTTP GET via fetch()
+// ---------------------------------------------------------------------------
+
+fn cmd_wget_chirho(args_chirho: &[u8]) {
+    if args_chirho.is_empty() {
+        kwrite_chirho("Usage: wget <url>\r\n");
+        return;
+    }
+    kwrite_chirho("Connecting to ");
+    kwrite_bytes_chirho(args_chirho);
+    kwrite_chirho("...\r\n");
+
+    let mut response_buf_chirho = [0u8; 4096];
+    let bytes_read_chirho = http_get_chirho(args_chirho, &mut response_buf_chirho);
+
+    if bytes_read_chirho < 0 {
+        kwrite_chirho("wget: failed to fetch URL (error ");
+        write_u64_chirho((-bytes_read_chirho) as u64);
+        kwrite_chirho(")\r\n");
+    } else if bytes_read_chirho == 0 {
+        kwrite_chirho("wget: empty response\r\n");
+    } else {
+        let len_chirho = bytes_read_chirho as usize;
+        kwrite_chirho("Received ");
+        write_u64_chirho(len_chirho as u64);
+        kwrite_chirho(" bytes\r\n");
+        // Display first 512 bytes of response
+        let display_len_chirho = if len_chirho > 512 { 512 } else { len_chirho };
+        kwrite_bytes_chirho(&response_buf_chirho[..display_len_chirho]);
+        if display_len_chirho < len_chirho {
+            kwrite_chirho("\r\n... (truncated)\r\n");
+        } else if response_buf_chirho[display_len_chirho - 1] != b'\n' {
+            kwrite_chirho("\r\n");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B2-004: nslookup — DNS resolution via DoH
+// ---------------------------------------------------------------------------
+
+fn cmd_nslookup_chirho(args_chirho: &[u8]) {
+    if args_chirho.is_empty() {
+        kwrite_chirho("Usage: nslookup <hostname>\r\n");
+        return;
+    }
+    kwrite_chirho("Server:\t\t1.1.1.1 (Cloudflare DoH)\r\n");
+    kwrite_chirho("Name:\t\t");
+    kwrite_bytes_chirho(args_chirho);
+    kwrite_chirho("\r\n");
+
+    match dns_resolve_chirho(args_chirho) {
+        Some(ip_chirho) => {
+            kwrite_chirho("Address:\t");
+            write_u64_chirho(ip_chirho[0] as u64);
+            kwrite_chirho(".");
+            write_u64_chirho(ip_chirho[1] as u64);
+            kwrite_chirho(".");
+            write_u64_chirho(ip_chirho[2] as u64);
+            kwrite_chirho(".");
+            write_u64_chirho(ip_chirho[3] as u64);
+            kwrite_chirho("\r\n");
+        }
+        None => {
+            kwrite_chirho("Address:\t(resolution pending — async via DoH)\r\n");
+            kwrite_chirho("  Hint: DNS-over-HTTPS queries are async in browser\r\n");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B2-015: netstat — show socket connections
+// ---------------------------------------------------------------------------
+
+fn cmd_netstat_chirho() {
+    kwrite_chirho("\x1b[1;37mActive Internet connections\x1b[0m\r\n");
+    kwrite_chirho("Proto  State       Local Address         Foreign Address\r\n");
+    unsafe {
+        let mut found_chirho = false;
+        for i_chirho in 0..MAX_SOCKETS_CHIRHO {
+            let sock_chirho = &SOCKET_TABLE_CHIRHO.sockets_chirho[i_chirho];
+            if sock_chirho.state_chirho == SocketStateChirho::FreeChirho { continue; }
+            found_chirho = true;
+            // Protocol
+            if sock_chirho.sock_type_chirho == SOCK_STREAM_CHIRHO {
+                kwrite_chirho("tcp    ");
+            } else {
+                kwrite_chirho("udp    ");
+            }
+            // State
+            match sock_chirho.state_chirho {
+                SocketStateChirho::CreatedChirho => kwrite_chirho("CREATED     "),
+                SocketStateChirho::ConnectingChirho => kwrite_chirho("CONNECTING  "),
+                SocketStateChirho::ConnectedChirho => kwrite_chirho("ESTABLISHED "),
+                SocketStateChirho::ListeningChirho => kwrite_chirho("LISTEN      "),
+                SocketStateChirho::ClosedChirho => kwrite_chirho("CLOSED      "),
+                _ => kwrite_chirho("???         "),
+            }
+            // Local address
+            let la_chirho = &sock_chirho.local_addr_chirho;
+            write_u64_chirho(la_chirho.ip_chirho[0] as u64); kwrite_chirho(".");
+            write_u64_chirho(la_chirho.ip_chirho[1] as u64); kwrite_chirho(".");
+            write_u64_chirho(la_chirho.ip_chirho[2] as u64); kwrite_chirho(".");
+            write_u64_chirho(la_chirho.ip_chirho[3] as u64); kwrite_chirho(":");
+            write_u64_chirho(la_chirho.port_chirho as u64);
+            kwrite_chirho("  ");
+            // Remote address
+            let ra_chirho = &sock_chirho.remote_addr_chirho;
+            write_u64_chirho(ra_chirho.ip_chirho[0] as u64); kwrite_chirho(".");
+            write_u64_chirho(ra_chirho.ip_chirho[1] as u64); kwrite_chirho(".");
+            write_u64_chirho(ra_chirho.ip_chirho[2] as u64); kwrite_chirho(".");
+            write_u64_chirho(ra_chirho.ip_chirho[3] as u64); kwrite_chirho(":");
+            write_u64_chirho(ra_chirho.port_chirho as u64);
+            kwrite_chirho("\r\n");
+        }
+        if !found_chirho {
+            kwrite_chirho("(no active connections)\r\n");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B3-008: sync — flush all dirty cache blocks to persistent storage
+// ---------------------------------------------------------------------------
+
+fn cmd_sync_chirho() {
+    kwrite_chirho("Syncing block cache to persistent storage...\r\n");
+    let result_chirho = unsafe { BLOCK_CACHE_CHIRHO.sync_all_chirho() };
+    if result_chirho == 0 {
+        kwrite_chirho("\x1b[1;32mSync complete.\x1b[0m\r\n");
+    } else {
+        kwrite_chirho("\x1b[1;31mSync failed with errors.\x1b[0m\r\n");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B3-010: quota — display storage quota usage
+// ---------------------------------------------------------------------------
+
+fn cmd_quota_chirho() {
+    kwrite_chirho("\x1b[1;37mBrowser Storage Quota\x1b[0m\r\n");
+    let mut result_chirho = [0u32; 4];
+    let rc_chirho = unsafe { js_storage_quota_chirho(result_chirho.as_mut_ptr() as u32) };
+    if rc_chirho == 0 {
+        let used_chirho = result_chirho[0] as u64 | ((result_chirho[1] as u64) << 32);
+        let quota_chirho = result_chirho[2] as u64 | ((result_chirho[3] as u64) << 32);
+        let used_mb_chirho = used_chirho / (1024 * 1024);
+        let quota_mb_chirho = quota_chirho / (1024 * 1024);
+        kwrite_chirho("Used:  ");
+        write_u64_chirho(used_mb_chirho);
+        kwrite_chirho(" MB\r\n");
+        kwrite_chirho("Quota: ");
+        write_u64_chirho(quota_mb_chirho);
+        kwrite_chirho(" MB\r\n");
+        if quota_chirho > 0 {
+            let pct_chirho = (used_chirho * 100) / quota_chirho;
+            kwrite_chirho("Usage: ");
+            write_u64_chirho(pct_chirho);
+            kwrite_chirho("%\r\n");
+            if pct_chirho > 90 {
+                kwrite_chirho("\x1b[1;31mWARNING: Storage nearly full!\x1b[0m\r\n");
+            }
+        }
+    } else {
+        kwrite_chirho("  (Storage API not available — using estimates)\r\n");
+        let pages_chirho = core::arch::wasm32::memory_size(0);
+        kwrite_chirho("  WASM memory: ");
+        write_u64_chirho((pages_chirho * 64) as u64);
+        kwrite_chirho(" KB\r\n");
+        kwrite_chirho("  OPFS: browser-managed quota\r\n");
+        kwrite_chirho("  IndexedDB: browser-managed quota\r\n");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B4-001/B4-003: startx — start X11 server with canvas framebuffer
+// ---------------------------------------------------------------------------
+
+fn cmd_startx_chirho() {
+    unsafe {
+        if X11_SERVER_CHIRHO.active_chirho {
+            kwrite_chirho("X11 server already running\r\n");
+            return;
+        }
+        kwrite_chirho("\x1b[1;37mStarting X11 server...\x1b[0m\r\n");
+
+        // Initialize the X11 server
+        X11_SERVER_CHIRHO.init_chirho();
+
+        kwrite_chirho("\x1b[1;32m[OK]\x1b[0m X11 server initialized (");
+        write_u64_chirho(X11_SERVER_CHIRHO.screen_width_chirho as u64);
+        kwrite_chirho("x");
+        write_u64_chirho(X11_SERVER_CHIRHO.screen_height_chirho as u64);
+        kwrite_chirho(")\r\n");
+        kwrite_chirho("\x1b[1;32m[OK]\x1b[0m Root window ID: 0x");
+        write_hex32_chirho(X11_SERVER_CHIRHO.root_window_id_chirho);
+        kwrite_chirho("\r\n");
+        kwrite_chirho("\x1b[1;32m[OK]\x1b[0m Canvas 2D framebuffer backend\r\n");
+        kwrite_chirho("\x1b[1;32m[OK]\x1b[0m Mouse/keyboard event routing active\r\n");
+        kwrite_chirho("\r\nX11 display :0 ready. Use 'xinfo' for details.\r\n");
+
+        // Draw a simple "desktop" with title bar
+        js_fb_fill_rect_chirho(0, 0, 640, 20, 0xFF1A1A2E); // top bar
+        let title_chirho = b"Lineluya X11 - :0";
+        js_fb_draw_text_chirho(8, 4, title_chirho.as_ptr() as u32, title_chirho.len() as u32, 0xFF7C9BFF);
+    }
+}
+
+fn cmd_xinfo_chirho() {
+    unsafe {
+        if !X11_SERVER_CHIRHO.active_chirho {
+            kwrite_chirho("X11 server not running. Use 'startx' to start.\r\n");
+            return;
+        }
+        kwrite_chirho("\x1b[1;37mX11 Server Information\x1b[0m\r\n");
+        kwrite_chirho("Display:    :0\r\n");
+        kwrite_chirho("Screen:     0\r\n");
+        kwrite_chirho("Resolution: ");
+        write_u64_chirho(X11_SERVER_CHIRHO.screen_width_chirho as u64);
+        kwrite_chirho("x");
+        write_u64_chirho(X11_SERVER_CHIRHO.screen_height_chirho as u64);
+        kwrite_chirho("\r\n");
+        kwrite_chirho("Depth:      32 (RGBA)\r\n");
+        kwrite_chirho("Backend:    Canvas 2D (HTML5)\r\n");
+        kwrite_chirho("Root WID:   0x");
+        write_hex32_chirho(X11_SERVER_CHIRHO.root_window_id_chirho);
+        kwrite_chirho("\r\n");
+        kwrite_chirho("Next WID:   0x");
+        write_hex32_chirho(X11_SERVER_CHIRHO.next_window_id_chirho);
+        kwrite_chirho("\r\n");
+        // Count mapped windows
+        let mut mapped_chirho = 0u32;
+        for i_chirho in 0..MAX_X11_WINDOWS_CHIRHO {
+            if X11_SERVER_CHIRHO.windows_chirho[i_chirho].state_chirho == X11WindowStateChirho::MappedChirho {
+                mapped_chirho += 1;
+            }
+        }
+        kwrite_chirho("Windows:    ");
+        write_u64_chirho(mapped_chirho as u64);
+        kwrite_chirho(" mapped\r\n");
+        kwrite_chirho("Events:     ");
+        let pending_chirho = if X11_SERVER_CHIRHO.event_head_chirho >= X11_SERVER_CHIRHO.event_tail_chirho {
+            X11_SERVER_CHIRHO.event_head_chirho - X11_SERVER_CHIRHO.event_tail_chirho
+        } else {
+            32 - X11_SERVER_CHIRHO.event_tail_chirho + X11_SERVER_CHIRHO.event_head_chirho
+        };
+        write_u64_chirho(pending_chirho as u64);
+        kwrite_chirho(" pending\r\n");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2865,9 +4035,6 @@ fn cmd_grep_chirho(args_chirho: &[u8]) {
 // ---------------------------------------------------------------------------
 // Syscall dispatch — Linux syscall numbers -> implementations
 // ---------------------------------------------------------------------------
-
-/// Next socket file descriptor
-static mut NEXT_SOCK_FD_CHIRHO: u32 = 99;
 
 #[no_mangle]
 pub extern "C" fn syscall_chirho(

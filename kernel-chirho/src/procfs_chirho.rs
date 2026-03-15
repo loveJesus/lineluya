@@ -938,6 +938,43 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
         })));
     }
 
+    // Add the /proc/net/ dentry with tcp and udp children (A3-015).
+    let net_tcp_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("tcp"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: net_tcp_inode_chirho.ino_chirho,
+            mode_chirho: net_tcp_inode_chirho.mode_chirho,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 1,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: net_tcp_inode_chirho.ops_chirho, fs_data_chirho: None,
+        }))),
+        parent_chirho: None, children_chirho: Vec::new(),
+    }));
+    let net_udp_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("udp"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: net_udp_inode_chirho.ino_chirho,
+            mode_chirho: net_udp_inode_chirho.mode_chirho,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 1,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: net_udp_inode_chirho.ops_chirho, fs_data_chirho: None,
+        }))),
+        parent_chirho: None, children_chirho: Vec::new(),
+    }));
+    let net_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("net"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: net_dir_inode_chirho.ino_chirho,
+            mode_chirho: net_dir_inode_chirho.mode_chirho,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 2,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: net_dir_inode_chirho.ops_chirho, fs_data_chirho: None,
+        }))),
+        parent_chirho: None,
+        children_chirho: alloc::vec![net_tcp_dentry_chirho, net_udp_dentry_chirho],
+    }));
+    children_chirho.push(net_dentry_chirho);
+
     // Add the /proc/1/ dentry to root children.
     children_chirho.push(pid1_dentry_chirho);
 
