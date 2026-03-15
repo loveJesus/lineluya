@@ -1851,21 +1851,30 @@ fn sys_write_chirho(
                 return 0;
             }
 
-            // Write bytes directly to serial port WITHOUT acquiring the
-            // serial Mutex. This allows the page fault handler to print
-            // diagnostics if a page fault occurs during the copy.
-            for i_chirho in 0..count_chirho {
-                let byte_chirho: u8 = unsafe {
-                    core::ptr::read_volatile(buf_ptr_chirho.add(i_chirho))
-                };
-                unsafe {
-                    // Wait for transmit buffer empty
-                    while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                    x86_64::instructions::port::Port::<u8>::new(0x3F8).write(byte_chirho);
+            // Copy user buffer to kernel stack first, THEN write to serial.
+            // This uses copy_from_user which validates the address range.
+            // We process in 256-byte chunks to avoid huge stack allocations.
+            let mut written_chirho: usize = 0;
+            while written_chirho < count_chirho {
+                let chunk_chirho = core::cmp::min(256, count_chirho - written_chirho);
+                let mut kbuf_chirho = [0u8; 256];
+                let src_addr_chirho = buf_ptr_chirho as u64 + written_chirho as u64;
+                if crate::uaccess_chirho::copy_from_user_chirho(
+                    &mut kbuf_chirho[..chunk_chirho], src_addr_chirho, chunk_chirho,
+                ).is_err() {
+                    return if written_chirho > 0 { written_chirho as i64 } else { -EFAULT_CHIRHO };
                 }
+                // Write the chunk to serial port
+                for j_chirho in 0..chunk_chirho {
+                    unsafe {
+                        while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                        x86_64::instructions::port::Port::<u8>::new(0x3F8).write(kbuf_chirho[j_chirho]);
+                    }
+                }
+                written_chirho += chunk_chirho;
             }
 
-            count_chirho as i64
+            written_chirho as i64
         }
         _ => -EBADF_CHIRHO,
     }
