@@ -42,8 +42,9 @@ const PROC_SUPER_MAGIC_CHIRHO: u64 = 0x9fa0;
 // ---------------------------------------------------------------------------
 
 /// Wrapper so we can store a `fn() -> String` inside `Box<dyn Any + Send>`.
+#[derive(Clone)]
 pub struct ProcGeneratorChirho {
-    generate_chirho: fn() -> String,
+    pub generate_chirho: fn() -> String,
 }
 
 /// Wrapper for symlink targets stored in `fs_data_chirho`.

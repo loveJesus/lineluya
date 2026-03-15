@@ -7,6 +7,7 @@
 //! filesystem, mount points, path resolution, and the per-process (currently
 //! global) file descriptor table.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -404,24 +405,31 @@ pub fn resolve_path_chirho(
                             }
                         };
 
-                    // Unwrap the Arc to get the owned InodeChirho, then wrap in Mutex
-                    let owned_inode_chirho = match Arc::try_unwrap(child_inode_chirho) {
-                        Ok(inode_chirho) => inode_chirho,
-                        Err(arc_chirho) => {
-                            // Arc has multiple owners — clone without fs_data
-                            InodeChirho {
-                                ino_chirho: arc_chirho.ino_chirho,
-                                mode_chirho: arc_chirho.mode_chirho,
-                                uid_chirho: arc_chirho.uid_chirho,
-                                gid_chirho: arc_chirho.gid_chirho,
-                                size_chirho: arc_chirho.size_chirho,
-                                nlink_chirho: arc_chirho.nlink_chirho,
-                                atime_chirho: arc_chirho.atime_chirho,
-                                mtime_chirho: arc_chirho.mtime_chirho,
-                                ctime_chirho: arc_chirho.ctime_chirho,
-                                ops_chirho: arc_chirho.ops_chirho,
-                                fs_data_chirho: None,
-                            }
+                    // Clone the inode, preserving fs_data for procfs
+                    let owned_inode_chirho = {
+                        let fs_data_clone_chirho: Option<Box<dyn core::any::Any + Send>> =
+                            if let Some(ref data_chirho) = child_inode_chirho.fs_data_chirho {
+                                // Clone ProcGeneratorChirho if present
+                                if let Some(gen_chirho) = data_chirho.downcast_ref::<crate::procfs_chirho::ProcGeneratorChirho>() {
+                                    Some(Box::new(gen_chirho.clone()) as Box<dyn core::any::Any + Send>)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                        InodeChirho {
+                            ino_chirho: child_inode_chirho.ino_chirho,
+                            mode_chirho: child_inode_chirho.mode_chirho,
+                            uid_chirho: child_inode_chirho.uid_chirho,
+                            gid_chirho: child_inode_chirho.gid_chirho,
+                            size_chirho: child_inode_chirho.size_chirho,
+                            nlink_chirho: child_inode_chirho.nlink_chirho,
+                            atime_chirho: child_inode_chirho.atime_chirho,
+                            mtime_chirho: child_inode_chirho.mtime_chirho,
+                            ctime_chirho: child_inode_chirho.ctime_chirho,
+                            ops_chirho: child_inode_chirho.ops_chirho,
+                            fs_data_chirho: fs_data_clone_chirho,
                         }
                     };
                     let wrapped_chirho = Arc::new(Mutex::new(owned_inode_chirho));
