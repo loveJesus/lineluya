@@ -148,6 +148,38 @@ pub fn copy_from_user_chirho(
 
     validate_user_range_chirho(user_src_chirho, len_chirho)?;
 
+    // Ensure user pages are mapped before accessing.
+    // Uses try_lock to avoid deadlock when mm locks are held by caller.
+    {
+        use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB};
+        use x86_64::VirtAddr;
+        let start_page_chirho = user_src_chirho & !0xFFF;
+        let end_addr_chirho = user_src_chirho + len_chirho as u64;
+
+        if let Some(mut mg_chirho) = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock() {
+            if let Some(mut ag_chirho) = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() {
+                if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+                    let mut pg_chirho = start_page_chirho;
+                    while pg_chirho < end_addr_chirho {
+                        let page_obj_chirho: Page<Size4KiB> = Page::containing_address(VirtAddr::new(pg_chirho));
+                        // Try to map — if already mapped, map_to fails silently
+                        if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
+                            let flags_chirho = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+                            match unsafe { mapper_chirho.map_to(page_obj_chirho, frame_chirho, flags_chirho, alloc_chirho) } {
+                                Ok(flush_chirho) => {
+                                    flush_chirho.flush();
+                                    unsafe { core::ptr::write_bytes(pg_chirho as *mut u8, 0, 4096); }
+                                }
+                                Err(_) => {} // Already mapped — fine
+                            }
+                        }
+                        pg_chirho += 4096;
+                    }
+                }
+            }
+        }
+    }
+
     unsafe {
         core::ptr::copy_nonoverlapping(
             user_src_chirho as *const u8,
