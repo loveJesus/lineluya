@@ -1240,8 +1240,21 @@ impl VirtioBlkDeviceChirho {
         }
         vq_chirho.avail_idx_chirho = avail_idx_chirho.wrapping_add(1);
 
-        // Memory barrier before notify.
+        // Read back avail ring to verify writes
+        let avail_flags_chirho = unsafe { ptr::read_volatile(avail_base_chirho) };
+        let avail_idx_verify_chirho = unsafe { ptr::read_volatile(avail_base_chirho.add(1)) };
+        let avail_ring0_chirho = unsafe { ptr::read_volatile(avail_base_chirho.add(2)) };
+        // Read back first descriptor
+        let desc0_chirho = unsafe { ptr::read_volatile(desc_base_chirho) };
+        crate::serial_println_chirho!(
+            "    [VirtIO-IO] avail: flags={} idx={} ring[0]={} | desc[0]: addr={:#x} len={} flags={} next={}",
+            avail_flags_chirho, avail_idx_verify_chirho, avail_ring0_chirho,
+            desc0_chirho.addr_chirho, desc0_chirho.len_chirho, desc0_chirho.flags_chirho, desc0_chirho.next_chirho
+        );
+
+        // Memory barrier + cache flush before notify.
         fence(Ordering::SeqCst);
+        unsafe { core::arch::asm!("wbinvd", options(nomem, nostack)); }
 
         // Notify the device.
         self.notify_chirho(0);
