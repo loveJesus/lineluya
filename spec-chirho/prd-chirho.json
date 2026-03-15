@@ -565,7 +565,7 @@
         "A2-006",
         "A2-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Module registers /dev/foo",
@@ -582,7 +582,7 @@
       "depends_on_chirho": [
         "A2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Module registers IRQ handler",
@@ -921,7 +921,7 @@
       "depends_on_chirho": [
         "A3-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Lost packets retransmitted",
@@ -939,7 +939,7 @@
         "A3-007",
         "A3-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "TCP server: bind+listen+accept",
@@ -1457,7 +1457,7 @@
       "depends_on_chirho": [
         "A5-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Tasks scheduled on multiple CPUs",
@@ -1472,7 +1472,7 @@
       "title_chirho": "ACPI table parsing (RSDP/RSDT/MADT/FADT)",
       "description_chirho": "Parse ACPI tables for hardware topology, APIC info, power management.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "MADT parsed for APIC/IOAPIC info",
@@ -1489,7 +1489,7 @@
       "depends_on_chirho": [
         "A5-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "PCI devices enumerated",
@@ -1763,7 +1763,7 @@
       "title_chirho": "futex syscall",
       "description_chirho": "Implement FUTEX_WAIT/FUTEX_WAKE for userspace mutexes and condition variables.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "pthread_mutex works via futex",
@@ -1780,7 +1780,7 @@
       "depends_on_chirho": [
         "A6-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "pthreads work",
@@ -2355,7 +2355,7 @@
         "B1-009",
         "B1-012"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "command & runs in background",
@@ -2374,7 +2374,7 @@
         "B1-009",
         "B1-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "echo foo > file writes to file",
@@ -2396,7 +2396,7 @@
         "B1-010",
         "B1-018"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Shell prompt '$ ' appears on load",
@@ -2419,7 +2419,7 @@
         "B1-016",
         "B1-013"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Kernel boots without errors",
@@ -2509,7 +2509,7 @@
         "B2-003",
         "B2-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "wget http://example.com succeeds",
@@ -2527,7 +2527,7 @@
       "depends_on_chirho": [
         "B2-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "TLS handshake completes",
@@ -2546,7 +2546,7 @@
         "B2-003",
         "B2-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "SSH connection establishes",
@@ -2747,7 +2747,7 @@
       "depends_on_chirho": [
         "B3-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Rootfs image downloaded on first visit",
@@ -2766,7 +2766,7 @@
         "B2-003",
         "B3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "NBD protocol over WS",
@@ -2784,7 +2784,7 @@
       "depends_on_chirho": [
         "B3-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Server serves block reads/writes",
@@ -2929,7 +2929,7 @@
       "title_chirho": "X11 protocol message parser",
       "description_chirho": "Parse X11 protocol messages (CreateWindow, MapWindow, PutImage, PolyFillRectangle, etc.) from byte streams.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Parse all core X11 request types",
@@ -2948,7 +2948,7 @@
         "B4-001",
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Accepts X11 client connections",
@@ -2966,7 +2966,7 @@
       "depends_on_chirho": [
         "B4-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Windows render on canvas",
@@ -3409,7 +3409,7 @@
       "depends_on_chirho": [
         "B5-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "shmget creates shared segment",
@@ -3446,7 +3446,7 @@
       "depends_on_chirho": [
         "B5-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Process suspends on source Worker",
@@ -3466,7 +3466,7 @@
         "B5-006",
         "B1-019"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "make -j4 completes without errors",
@@ -3522,7 +3522,7 @@
         "B4-002",
         "B3-009"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Shows directory listing with icons",
@@ -3541,7 +3541,7 @@
         "B4-010",
         "B6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Terminal opens from taskbar",
@@ -3578,7 +3578,7 @@
       "depends_on_chirho": [
         "B6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Install prompt appears",

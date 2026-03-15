@@ -183,7 +183,7 @@ struct BlockDeviceEntryChirho {
 /// during initialisation.  The VFS / filesystem code looks up devices by name
 /// or index.
 pub struct BlockDeviceRegistryChirho {
-    devices_chirho: Mutex<Vec<BlockDeviceEntryChirho>>,
+    pub devices_chirho: Mutex<Vec<BlockDeviceEntryChirho>>,
 }
 
 impl BlockDeviceRegistryChirho {
@@ -219,6 +219,42 @@ impl BlockDeviceRegistryChirho {
     /// Return the number of registered devices.
     pub fn count_chirho(&self) -> usize {
         self.devices_chirho.lock().len()
+    }
+
+    /// Read a single block (sector) from a registered device by index.
+    ///
+    /// Returns `Ok(())` on success, or an error if the device index is
+    /// out of range or the read fails.
+    pub fn read_block_chirho(
+        &self,
+        device_idx_chirho: usize,
+        block_nr_chirho: u64,
+        buf_chirho: &mut [u8],
+    ) -> Result<(), i64> {
+        let devices_chirho = self.devices_chirho.lock();
+        if device_idx_chirho >= devices_chirho.len() {
+            return Err(-19); // ENODEV
+        }
+        devices_chirho[device_idx_chirho]
+            .device_chirho
+            .read_block_chirho(block_nr_chirho, buf_chirho)
+    }
+
+    /// Write a single block (sector) to a registered device by index.
+    #[allow(dead_code)]
+    pub fn write_block_chirho(
+        &self,
+        device_idx_chirho: usize,
+        block_nr_chirho: u64,
+        buf_chirho: &[u8],
+    ) -> Result<(), i64> {
+        let devices_chirho = self.devices_chirho.lock();
+        if device_idx_chirho >= devices_chirho.len() {
+            return Err(-19); // ENODEV
+        }
+        devices_chirho[device_idx_chirho]
+            .device_chirho
+            .write_block_chirho(block_nr_chirho, buf_chirho)
     }
 }
 

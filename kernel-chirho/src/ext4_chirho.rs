@@ -564,3 +564,523 @@ pub fn inode_table_offset_chirho(
 ) -> u64 {
     local_index_chirho as u64 * inode_size_chirho as u64
 }
+
+// ===========================================================================
+// A4-010: Page cache for block devices
+// ===========================================================================
+
+use alloc::collections::BTreeMap;
+
+/// A simple LRU page cache for block device reads.
+///
+/// Caches blocks keyed by (device_id, block_number). When the cache
+/// exceeds `max_pages_chirho`, the least-recently-used entry is evicted.
+pub struct PageCacheChirho {
+    /// Cached pages: key = (device_id, block_nr), value = data.
+    pages_chirho: BTreeMap<(u32, u64), CachedPageChirho>,
+    /// Access counter for LRU ordering.
+    access_counter_chirho: u64,
+    /// Maximum number of pages to keep in the cache.
+    max_pages_chirho: usize,
+}
+
+/// A single cached page (one filesystem block).
+struct CachedPageChirho {
+    /// Block data.
+    data_chirho: Vec<u8>,
+    /// Last access timestamp (monotonic counter).
+    last_access_chirho: u64,
+    /// Whether the page has been modified (dirty).
+    dirty_chirho: bool,
+}
+
+impl PageCacheChirho {
+    /// Create a new page cache with the given maximum capacity.
+    pub const fn new_chirho(max_pages_chirho: usize) -> Self {
+        Self {
+            pages_chirho: BTreeMap::new(),
+            access_counter_chirho: 0,
+            max_pages_chirho,
+        }
+    }
+
+    /// Look up a cached block. Returns `Some(&[u8])` on hit, `None` on miss.
+    pub fn get_chirho(&mut self, device_id_chirho: u32, block_nr_chirho: u64) -> Option<&[u8]> {
+        self.access_counter_chirho += 1;
+        let counter_chirho = self.access_counter_chirho;
+        if let Some(page_chirho) = self.pages_chirho.get_mut(&(device_id_chirho, block_nr_chirho)) {
+            page_chirho.last_access_chirho = counter_chirho;
+            return Some(&page_chirho.data_chirho);
+        }
+        None
+    }
+
+    /// Insert a block into the cache. Evicts the LRU page if at capacity.
+    pub fn insert_chirho(
+        &mut self,
+        device_id_chirho: u32,
+        block_nr_chirho: u64,
+        data_chirho: Vec<u8>,
+    ) {
+        // Evict LRU if at capacity.
+        if self.pages_chirho.len() >= self.max_pages_chirho {
+            self.evict_lru_chirho();
+        }
+
+        self.access_counter_chirho += 1;
+        self.pages_chirho.insert(
+            (device_id_chirho, block_nr_chirho),
+            CachedPageChirho {
+                data_chirho,
+                last_access_chirho: self.access_counter_chirho,
+                dirty_chirho: false,
+            },
+        );
+    }
+
+    /// Mark a cached page as dirty.
+    #[allow(dead_code)]
+    pub fn mark_dirty_chirho(&mut self, device_id_chirho: u32, block_nr_chirho: u64) {
+        if let Some(page_chirho) = self.pages_chirho.get_mut(&(device_id_chirho, block_nr_chirho)) {
+            page_chirho.dirty_chirho = true;
+        }
+    }
+
+    /// Evict the least-recently-used (oldest access counter) page.
+    fn evict_lru_chirho(&mut self) {
+        let mut lru_key_chirho: Option<(u32, u64)> = None;
+        let mut lru_access_chirho: u64 = u64::MAX;
+
+        for (key_chirho, page_chirho) in self.pages_chirho.iter() {
+            if page_chirho.last_access_chirho < lru_access_chirho {
+                lru_access_chirho = page_chirho.last_access_chirho;
+                lru_key_chirho = Some(*key_chirho);
+            }
+        }
+
+        if let Some(key_chirho) = lru_key_chirho {
+            self.pages_chirho.remove(&key_chirho);
+        }
+    }
+
+    /// Invalidate all cached pages for a given device.
+    #[allow(dead_code)]
+    pub fn invalidate_device_chirho(&mut self, device_id_chirho: u32) {
+        self.pages_chirho
+            .retain(|key_chirho, _| key_chirho.0 != device_id_chirho);
+    }
+
+    /// Return the number of cached pages.
+    #[allow(dead_code)]
+    pub fn len_chirho(&self) -> usize {
+        self.pages_chirho.len()
+    }
+}
+
+/// Global page cache instance (protected by a spinlock).
+pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
+    spin::Mutex::new(PageCacheChirho::new_chirho(1024));
+
+// ===========================================================================
+// A4-009: ext4 read-only VFS integration
+// ===========================================================================
+
+/// Cached ext4 filesystem state for a mounted partition.
+///
+/// Holds the parsed superblock and group descriptors so that inode/block
+/// lookups don't need to re-parse them on every access.
+pub struct Ext4MountChirho {
+    /// Parsed superblock.
+    pub sb_chirho: Ext4SuperblockChirho,
+    /// Block group descriptors.
+    pub group_descs_chirho: Vec<Ext4GroupDescChirho>,
+    /// Block size in bytes (1024, 2048, or 4096).
+    pub block_size_chirho: u32,
+    /// Device ID in the block registry (for read_block calls).
+    pub device_id_chirho: u32,
+    /// Whether this mount is read-only.
+    pub readonly_chirho: bool,
+}
+
+impl Ext4MountChirho {
+    /// Read a single block from the underlying device.
+    ///
+    /// Checks the page cache first; on miss, reads from the block device
+    /// and caches the result.
+    #[allow(dead_code)]
+    pub fn read_block_cached_chirho(&self, block_nr_chirho: u64) -> Option<Vec<u8>> {
+        // Check page cache.
+        {
+            let mut cache_chirho = PAGE_CACHE_CHIRHO.lock();
+            if let Some(data_chirho) = cache_chirho.get_chirho(self.device_id_chirho, block_nr_chirho) {
+                return Some(data_chirho.to_vec());
+            }
+        }
+
+        // Cache miss — read from device.
+        let bs_chirho = self.block_size_chirho as usize;
+        let sectors_per_block_chirho = bs_chirho / 512;
+        let start_sector_chirho = block_nr_chirho * sectors_per_block_chirho as u64;
+
+        let mut buf_chirho = alloc::vec![0u8; bs_chirho];
+
+        // Read sector by sector (our block device trait reads 512-byte sectors).
+        let registry_chirho = &crate::block_chirho::BLOCK_REGISTRY_CHIRHO;
+        for i_chirho in 0..sectors_per_block_chirho {
+            let sector_chirho = start_sector_chirho + i_chirho as u64;
+            let offset_chirho = i_chirho * 512;
+            if registry_chirho
+                .read_block_chirho(
+                    self.device_id_chirho as usize,
+                    sector_chirho,
+                    &mut buf_chirho[offset_chirho..offset_chirho + 512],
+                )
+                .is_err()
+            {
+                return None;
+            }
+        }
+
+        // Insert into page cache.
+        {
+            let mut cache_chirho = PAGE_CACHE_CHIRHO.lock();
+            cache_chirho.insert_chirho(self.device_id_chirho, block_nr_chirho, buf_chirho.clone());
+        }
+
+        Some(buf_chirho)
+    }
+
+    /// Read an ext4 inode by inode number.
+    #[allow(dead_code)]
+    pub fn read_inode_chirho(&self, ino_chirho: u32) -> Option<Ext4InodeChirho> {
+        let (group_chirho, local_chirho) =
+            inode_to_group_chirho(ino_chirho, self.sb_chirho.s_inodes_per_group_chirho);
+
+        if group_chirho as usize >= self.group_descs_chirho.len() {
+            return None;
+        }
+
+        let gd_chirho = &self.group_descs_chirho[group_chirho as usize];
+        let inode_table_block_chirho = gd_chirho.inode_table_chirho(self.sb_chirho.has_64bit_chirho());
+        let inode_size_chirho = self.sb_chirho.inode_size_chirho();
+        let byte_offset_chirho = inode_table_offset_chirho(local_chirho, inode_size_chirho);
+
+        // Which block contains this inode?
+        let block_nr_chirho = inode_table_block_chirho + byte_offset_chirho / self.block_size_chirho as u64;
+        let offset_in_block_chirho = (byte_offset_chirho % self.block_size_chirho as u64) as usize;
+
+        let block_data_chirho = self.read_block_cached_chirho(block_nr_chirho)?;
+
+        if offset_in_block_chirho + core::mem::size_of::<Ext4InodeChirho>() > block_data_chirho.len() {
+            return None;
+        }
+
+        let inode_chirho: Ext4InodeChirho = unsafe {
+            core::ptr::read_unaligned(
+                block_data_chirho.as_ptr().add(offset_in_block_chirho) as *const Ext4InodeChirho,
+            )
+        };
+
+        Some(inode_chirho)
+    }
+
+    /// Read file data for an inode using its extent tree.
+    ///
+    /// Returns all the file data by walking the extent tree and reading
+    /// the corresponding data blocks.
+    #[allow(dead_code)]
+    pub fn read_file_data_chirho(&self, inode_chirho: &Ext4InodeChirho) -> Option<Vec<u8>> {
+        let file_size_chirho = inode_chirho.size_chirho() as usize;
+        if file_size_chirho == 0 {
+            return Some(Vec::new());
+        }
+
+        if !inode_chirho.uses_extents_chirho() {
+            // Non-extent (legacy block map) — not supported yet.
+            return None;
+        }
+
+        let header_chirho = inode_chirho.extent_header_chirho();
+        if !header_chirho.is_valid_chirho() {
+            return None;
+        }
+
+        let mut data_chirho = Vec::new();
+        let block_copy_chirho = inode_chirho.i_block_chirho;
+
+        // Depth 0 = leaf extents directly in i_block.
+        if header_chirho.eh_depth_chirho == 0 {
+            self.read_leaf_extents_chirho(&block_copy_chirho, &header_chirho, file_size_chirho, &mut data_chirho)?;
+        } else {
+            // Multi-level extent tree — read index entries, then recurse.
+            self.read_extent_tree_chirho(&block_copy_chirho, &header_chirho, file_size_chirho, &mut data_chirho)?;
+        }
+
+        // Truncate to actual file size.
+        data_chirho.truncate(file_size_chirho);
+        Some(data_chirho)
+    }
+
+    /// Read leaf extents from the i_block array.
+    fn read_leaf_extents_chirho(
+        &self,
+        block_data_chirho: &[u32; 15],
+        header_chirho: &Ext4ExtentHeaderChirho,
+        _max_size_chirho: usize,
+        out_chirho: &mut Vec<u8>,
+    ) -> Option<()> {
+        let entries_count_chirho = header_chirho.eh_entries_chirho as usize;
+        // Each extent is 12 bytes, starting after the 12-byte header.
+        let raw_bytes_chirho: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                block_data_chirho.as_ptr() as *const u8,
+                60,
+            )
+        };
+
+        for i_chirho in 0..entries_count_chirho {
+            let offset_chirho = 12 + i_chirho * 12; // after header
+            if offset_chirho + 12 > raw_bytes_chirho.len() {
+                break;
+            }
+            let extent_chirho: Ext4ExtentChirho = unsafe {
+                core::ptr::read_unaligned(
+                    raw_bytes_chirho.as_ptr().add(offset_chirho) as *const Ext4ExtentChirho,
+                )
+            };
+            let phys_start_chirho = extent_chirho.physical_block_chirho();
+            let count_chirho = extent_chirho.block_count_chirho();
+
+            for blk_chirho in 0..count_chirho {
+                let block_data_result_chirho = self.read_block_cached_chirho(phys_start_chirho + blk_chirho as u64)?;
+                out_chirho.extend_from_slice(&block_data_result_chirho);
+            }
+        }
+
+        Some(())
+    }
+
+    /// Recursively read a multi-level extent tree.
+    fn read_extent_tree_chirho(
+        &self,
+        block_data_chirho: &[u32; 15],
+        header_chirho: &Ext4ExtentHeaderChirho,
+        max_size_chirho: usize,
+        out_chirho: &mut Vec<u8>,
+    ) -> Option<()> {
+        let entries_count_chirho = header_chirho.eh_entries_chirho as usize;
+        let raw_bytes_chirho: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                block_data_chirho.as_ptr() as *const u8,
+                60,
+            )
+        };
+
+        for i_chirho in 0..entries_count_chirho {
+            let offset_chirho = 12 + i_chirho * 12;
+            if offset_chirho + 12 > raw_bytes_chirho.len() {
+                break;
+            }
+            let idx_chirho: Ext4ExtentIdxChirho = unsafe {
+                core::ptr::read_unaligned(
+                    raw_bytes_chirho.as_ptr().add(offset_chirho) as *const Ext4ExtentIdxChirho,
+                )
+            };
+
+            let child_block_chirho = idx_chirho.child_block_chirho();
+            let child_data_chirho = self.read_block_cached_chirho(child_block_chirho)?;
+
+            // Parse the child node's header.
+            if child_data_chirho.len() < 12 {
+                return None;
+            }
+            let child_header_chirho: Ext4ExtentHeaderChirho = unsafe {
+                core::ptr::read_unaligned(
+                    child_data_chirho.as_ptr() as *const Ext4ExtentHeaderChirho,
+                )
+            };
+
+            if !child_header_chirho.is_valid_chirho() {
+                return None;
+            }
+
+            if child_header_chirho.eh_depth_chirho == 0 {
+                // Leaf node: read extents from the block data.
+                let leaf_count_chirho = child_header_chirho.eh_entries_chirho as usize;
+                for j_chirho in 0..leaf_count_chirho {
+                    let ext_off_chirho = 12 + j_chirho * 12;
+                    if ext_off_chirho + 12 > child_data_chirho.len() {
+                        break;
+                    }
+                    let extent_chirho: Ext4ExtentChirho = unsafe {
+                        core::ptr::read_unaligned(
+                            child_data_chirho.as_ptr().add(ext_off_chirho) as *const Ext4ExtentChirho,
+                        )
+                    };
+                    let phys_start_chirho = extent_chirho.physical_block_chirho();
+                    let count_chirho = extent_chirho.block_count_chirho();
+
+                    for blk_chirho in 0..count_chirho {
+                        if out_chirho.len() >= max_size_chirho {
+                            return Some(());
+                        }
+                        let block_result_chirho = self.read_block_cached_chirho(phys_start_chirho + blk_chirho as u64)?;
+                        out_chirho.extend_from_slice(&block_result_chirho);
+                    }
+                }
+            }
+            // Deeper levels would recurse further (rare in practice).
+        }
+
+        Some(())
+    }
+
+    /// List directory entries for a given directory inode.
+    #[allow(dead_code)]
+    pub fn read_dir_entries_chirho(&self, dir_ino_chirho: u32) -> Option<Vec<DirEntryInfoChirho>> {
+        let inode_chirho = self.read_inode_chirho(dir_ino_chirho)?;
+        if !inode_chirho.is_dir_chirho() {
+            return None;
+        }
+
+        let data_chirho = self.read_file_data_chirho(&inode_chirho)?;
+        Some(parse_dir_entries_chirho(&data_chirho))
+    }
+
+    /// Look up a file by name in a directory.
+    #[allow(dead_code)]
+    pub fn lookup_in_dir_chirho(
+        &self,
+        dir_ino_chirho: u32,
+        name_chirho: &str,
+    ) -> Option<DirEntryInfoChirho> {
+        let entries_chirho = self.read_dir_entries_chirho(dir_ino_chirho)?;
+        for entry_chirho in entries_chirho {
+            if entry_chirho.name_chirho == name_chirho {
+                return Some(entry_chirho);
+            }
+        }
+        None
+    }
+
+    /// Resolve a path (e.g. "/usr/bin/ls") to an inode number, starting
+    /// from the root inode.
+    #[allow(dead_code)]
+    pub fn resolve_path_chirho(&self, path_chirho: &str) -> Option<u32> {
+        let mut current_ino_chirho = EXT4_ROOT_INO_CHIRHO;
+
+        for component_chirho in path_chirho.split('/') {
+            if component_chirho.is_empty() || component_chirho == "." {
+                continue;
+            }
+            if component_chirho == ".." {
+                // For simplicity, treat ".." as staying at current (safe for read-only).
+                continue;
+            }
+            let entry_chirho = self.lookup_in_dir_chirho(current_ino_chirho, component_chirho)?;
+            current_ino_chirho = entry_chirho.inode_chirho;
+        }
+
+        Some(current_ino_chirho)
+    }
+}
+
+// ===========================================================================
+// A4-011: ext4 block and inode allocation from bitmaps
+// ===========================================================================
+
+/// Allocate a free block from the given block group.
+///
+/// Scans the block bitmap for the first free bit, marks it as used,
+/// and returns the global block number.
+///
+/// `bitmap_data_chirho` is the raw block bitmap (one bit per block in the group).
+/// Returns `Some(global_block_nr)` or `None` if the group is full.
+#[allow(dead_code)]
+pub fn alloc_block_in_group_chirho(
+    bitmap_data_chirho: &mut [u8],
+    group_chirho: u32,
+    blocks_per_group_chirho: u32,
+    first_data_block_chirho: u32,
+) -> Option<u64> {
+    for byte_idx_chirho in 0..bitmap_data_chirho.len() {
+        let byte_chirho = bitmap_data_chirho[byte_idx_chirho];
+        if byte_chirho == 0xFF {
+            continue; // all bits set
+        }
+        for bit_chirho in 0..8u32 {
+            if byte_chirho & (1 << bit_chirho) == 0 {
+                // Found a free block.
+                bitmap_data_chirho[byte_idx_chirho] |= 1 << bit_chirho;
+                let local_block_chirho = byte_idx_chirho as u32 * 8 + bit_chirho;
+                if local_block_chirho >= blocks_per_group_chirho {
+                    return None; // past the end of this group
+                }
+                let global_block_chirho =
+                    group_chirho as u64 * blocks_per_group_chirho as u64
+                    + local_block_chirho as u64
+                    + first_data_block_chirho as u64;
+                return Some(global_block_chirho);
+            }
+        }
+    }
+    None
+}
+
+/// Allocate a free inode from the given block group.
+///
+/// Scans the inode bitmap for the first free bit, marks it as used,
+/// and returns the global inode number (1-based).
+#[allow(dead_code)]
+pub fn alloc_inode_in_group_chirho(
+    bitmap_data_chirho: &mut [u8],
+    group_chirho: u32,
+    inodes_per_group_chirho: u32,
+) -> Option<u32> {
+    for byte_idx_chirho in 0..bitmap_data_chirho.len() {
+        let byte_chirho = bitmap_data_chirho[byte_idx_chirho];
+        if byte_chirho == 0xFF {
+            continue;
+        }
+        for bit_chirho in 0..8u32 {
+            if byte_chirho & (1 << bit_chirho) == 0 {
+                bitmap_data_chirho[byte_idx_chirho] |= 1 << bit_chirho;
+                let local_inode_chirho = byte_idx_chirho as u32 * 8 + bit_chirho;
+                if local_inode_chirho >= inodes_per_group_chirho {
+                    return None;
+                }
+                // Inode numbers are 1-based.
+                let global_inode_chirho =
+                    group_chirho * inodes_per_group_chirho + local_inode_chirho + 1;
+                return Some(global_inode_chirho);
+            }
+        }
+    }
+    None
+}
+
+/// Free a block by clearing its bit in the block bitmap.
+#[allow(dead_code)]
+pub fn free_block_in_group_chirho(
+    bitmap_data_chirho: &mut [u8],
+    local_block_chirho: u32,
+) {
+    let byte_idx_chirho = (local_block_chirho / 8) as usize;
+    let bit_chirho = local_block_chirho % 8;
+    if byte_idx_chirho < bitmap_data_chirho.len() {
+        bitmap_data_chirho[byte_idx_chirho] &= !(1 << bit_chirho);
+    }
+}
+
+/// Free an inode by clearing its bit in the inode bitmap.
+#[allow(dead_code)]
+pub fn free_inode_in_group_chirho(
+    bitmap_data_chirho: &mut [u8],
+    local_inode_chirho: u32,
+) {
+    let byte_idx_chirho = (local_inode_chirho / 8) as usize;
+    let bit_chirho = local_inode_chirho % 8;
+    if byte_idx_chirho < bitmap_data_chirho.len() {
+        bitmap_data_chirho[byte_idx_chirho] &= !(1 << bit_chirho);
+    }
+}

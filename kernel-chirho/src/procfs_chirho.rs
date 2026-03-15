@@ -99,6 +99,36 @@ fn gen_modules_chirho() -> String {
     crate::ko_loader_chirho::gen_proc_modules_chirho()
 }
 
+/// Generate `/proc/devices` — character and block device list (A6-010).
+fn gen_devices_chirho() -> String {
+    String::from("Character devices:\n  1 mem\n  4 tty\n  5 /dev/tty\n  5 /dev/console\n136 pts\n\nBlock devices:\n  8 sd\n259 blkext\n")
+}
+
+/// Generate `/proc/interrupts` — IRQ counters (A6-010).
+fn gen_interrupts_chirho() -> String {
+    String::from("           CPU0\n  0:       0   IO-APIC  0-edge    timer\n  1:       0   IO-APIC  1-edge    i8042\n  8:       0   IO-APIC  8-edge    rtc0\n 14:       0   IO-APIC 14-edge    ata_piix\n")
+}
+
+/// Generate `/proc/diskstats` — disk I/O statistics (A6-010).
+fn gen_diskstats_chirho() -> String {
+    String::from("   8       0 sda 0 0 0 0 0 0 0 0 0 0 0\n")
+}
+
+/// Generate `/proc/vmstat` — virtual memory statistics (A6-010).
+fn gen_vmstat_chirho() -> String {
+    String::from("nr_free_pages 65536\nnr_active_anon 1024\nnr_inactive_anon 512\nnr_active_file 2048\nnr_inactive_file 1024\nnr_dirty 0\nnr_writeback 0\npgfault 0\npgmajfault 0\n")
+}
+
+/// Generate `/proc/sys/kernel/hostname` content (A6-010).
+fn gen_hostname_chirho() -> String {
+    String::from("lineluya\n")
+}
+
+/// Generate `/proc/sys/kernel/osrelease` content (A6-010).
+fn gen_osrelease_chirho() -> String {
+    String::from("0.2.0-lineluya-chirho\n")
+}
+
 /// Generate `/proc/net/tcp` — delegates to the networking subsystem.
 fn gen_net_tcp_chirho() -> String {
     crate::net_chirho::gen_proc_net_tcp_chirho()
@@ -694,6 +724,10 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     let cmdline_inode_chirho = make_proc_file_chirho(gen_cmdline_chirho);
     let loadavg_inode_chirho = make_proc_file_chirho(gen_loadavg_chirho);
     let modules_inode_chirho = make_proc_file_chirho(gen_modules_chirho);
+    let devices_inode_chirho = make_proc_file_chirho(gen_devices_chirho);
+    let interrupts_inode_chirho = make_proc_file_chirho(gen_interrupts_chirho);
+    let diskstats_inode_chirho = make_proc_file_chirho(gen_diskstats_chirho);
+    let vmstat_inode_chirho = make_proc_file_chirho(gen_vmstat_chirho);
     let self_inode_chirho = make_proc_symlink_chirho("/proc/1");
 
     // -- /proc/net/ directory (A3-015) --
@@ -825,6 +859,30 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             inode_chirho: modules_inode_chirho.clone(),
         },
         ProcEntryChirho {
+            name_chirho: String::from("devices"),
+            ino_chirho: devices_inode_chirho.ino_chirho,
+            mode_chirho: devices_inode_chirho.mode_chirho,
+            inode_chirho: devices_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("interrupts"),
+            ino_chirho: interrupts_inode_chirho.ino_chirho,
+            mode_chirho: interrupts_inode_chirho.mode_chirho,
+            inode_chirho: interrupts_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("diskstats"),
+            ino_chirho: diskstats_inode_chirho.ino_chirho,
+            mode_chirho: diskstats_inode_chirho.mode_chirho,
+            inode_chirho: diskstats_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("vmstat"),
+            ino_chirho: vmstat_inode_chirho.ino_chirho,
+            mode_chirho: vmstat_inode_chirho.mode_chirho,
+            inode_chirho: vmstat_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
             name_chirho: String::from("self"),
             ino_chirho: self_inode_chirho.ino_chirho,
             mode_chirho: self_inode_chirho.mode_chirho,
@@ -873,6 +931,10 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
         ("mounts", mounts_inode_chirho),
         ("cmdline", cmdline_inode_chirho),
         ("loadavg", loadavg_inode_chirho),
+        ("devices", devices_inode_chirho),
+        ("interrupts", interrupts_inode_chirho),
+        ("diskstats", diskstats_inode_chirho),
+        ("vmstat", vmstat_inode_chirho),
         ("modules", modules_inode_chirho),
         ("self", self_inode_chirho),
     ];
