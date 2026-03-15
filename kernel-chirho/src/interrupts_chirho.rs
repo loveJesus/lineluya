@@ -160,12 +160,26 @@ extern "x86-interrupt" fn double_fault_handler_chirho(
     stack_frame_chirho: InterruptStackFrame,
     error_code_chirho: u64,
 ) -> ! {
-    crate::serial_println_chirho!(
-        "[EXCEPTION] DOUBLE FAULT (error code: {})\n{:#?}",
-        error_code_chirho,
-        stack_frame_chirho
-    );
-    // A double fault is not recoverable. Halt the CPU forever.
+    // Write directly to serial port without mutex (avoid deadlock)
+    unsafe {
+        let mut port_chirho = x86_64::instructions::port::Port::<u8>::new(0x3F8);
+        for b_chirho in b"\r\n[DOUBLE FAULT] last_sc=" {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            port_chirho.write(*b_chirho);
+        }
+        let sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+        let mut buf_chirho = [0u8; 4];
+        buf_chirho[0] = b'0' + ((sc_chirho / 100) % 10) as u8;
+        buf_chirho[1] = b'0' + ((sc_chirho / 10) % 10) as u8;
+        buf_chirho[2] = b'0' + (sc_chirho % 10) as u8;
+        buf_chirho[3] = b'\n';
+        for b_chirho in &buf_chirho {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            port_chirho.write(*b_chirho);
+        }
+    }
+    // Disable interrupts and halt forever
+    x86_64::instructions::interrupts::disable();
     loop {
         x86_64::instructions::hlt();
     }
