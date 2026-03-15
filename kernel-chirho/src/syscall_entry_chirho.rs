@@ -249,11 +249,15 @@ pub unsafe fn init_syscall_entry_chirho() {
                 as *mut x86_64::structures::tss::TaskStateSegment;
             (*tss_ptr_chirho).privilege_stack_table[0] =
                 x86_64::VirtAddr::new(rsp0_top_chirho);
+            // Also update IST[1] (page fault stack) to heap memory
+            (*tss_ptr_chirho).interrupt_stack_table[1] =
+                x86_64::VirtAddr::new(rsp0_top_chirho - 16384);
         }
 
         crate::serial_println_chirho!(
-            "[SYSCALL-ENTRY] TSS.RSP0 updated to heap stack at {:#x}",
-            rsp0_top_chirho
+            "[SYSCALL-ENTRY] TSS.RSP0={:#x}, IST[1]={:#x} (heap)",
+            rsp0_top_chirho,
+            rsp0_top_chirho - 16384
         );
     }
 

@@ -86,7 +86,11 @@ static IDT_CHIRHO: spin::Lazy<InterruptDescriptorTable> = spin::Lazy::new(|| {
             .set_stack_index(crate::gdt_chirho::DOUBLE_FAULT_IST_INDEX_CHIRHO);
     }
 
-    idt_chirho.page_fault.set_handler_fn(page_fault_handler_chirho);
+    unsafe {
+        idt_chirho.page_fault
+            .set_handler_fn(page_fault_handler_chirho)
+            .set_stack_index(crate::gdt_chirho::PAGE_FAULT_IST_INDEX_CHIRHO);
+    }
     idt_chirho.general_protection_fault.set_handler_fn(general_protection_fault_handler_chirho);
 
     // --- Hardware interrupt handlers ---
