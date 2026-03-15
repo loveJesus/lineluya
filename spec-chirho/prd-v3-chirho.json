@@ -1,137 +1,230 @@
 {
-  "header_chirho": "John 3:16",
-  "version_chirho": "3.0",
+  "header_chirho": "For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life. - John 3:16",
+  "version_chirho": "3.1",
   "codename_chirho": "Promised Land",
+  "description_chirho": "Get Lineluya to run Alpine Linux with sqlite, gcc, ssh, python, rust, and X11/XTerm",
   "implementation_tasks_chirho": [
     {
       "id_chirho": "P1-001",
-      "title_chirho": "Fix ls command hang (openat/fstat/getdents64 VFS path)",
-      "status_chirho": "todo"
+      "title_chirho": "Fix cat /proc/version (generator returns empty)",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P1-002",
-      "title_chirho": "Fix cat command for /proc files",
-      "status_chirho": "todo"
+      "title_chirho": "Fix ls /proc (procfs directory listing)",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P1-003",
-      "title_chirho": "Fix mkdir/rmdir/touch commands",
-      "status_chirho": "todo"
+      "title_chirho": "Fix ls /tmp and ls subdirectories",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P1-004",
-      "title_chirho": "Fix cd command (chdir syscall)",
-      "status_chirho": "todo"
+      "title_chirho": "Fix mkdir (verify creates dirs in tmpfs)",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P1-005",
-      "title_chirho": "Fix pipe operator (cmd1 | cmd2)",
-      "status_chirho": "todo"
+      "title_chirho": "Fix cat for tmpfs files (echo foo > /tmp/bar; cat /tmp/bar)",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
+    },
+    {
+      "id_chirho": "P1-006",
+      "title_chirho": "Fix shell environment persistence across commands (vfork re-exec)",
+      "status_chirho": "todo",
+      "priority_chirho": "medium"
+    },
+    {
+      "id_chirho": "P1-007",
+      "title_chirho": "Remove syscall debug logging for clean output",
+      "status_chirho": "todo",
+      "priority_chirho": "medium"
     },
     {
       "id_chirho": "P2-001",
-      "title_chirho": "VirtIO-blk QEMU disk read/write working",
-      "status_chirho": "todo"
+      "title_chirho": "VirtIO-blk probe in QEMU (detect disk)",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P2-002",
-      "title_chirho": "ext4 mount real disk partition in QEMU",
-      "status_chirho": "todo"
+      "title_chirho": "VirtIO-blk read sectors working",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P2-003",
-      "title_chirho": "Alpine rootfs disk image creation",
-      "status_chirho": "todo"
+      "title_chirho": "ext4 superblock parse from real disk",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P2-004",
-      "title_chirho": "Mount Alpine rootfs as / at boot",
-      "status_chirho": "todo"
+      "title_chirho": "ext4 read-only mount at /mnt",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
+    },
+    {
+      "id_chirho": "P2-005",
+      "title_chirho": "Create Alpine rootfs ext4 disk image",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
+    },
+    {
+      "id_chirho": "P2-006",
+      "title_chirho": "Mount Alpine rootfs as / (pivot_root or chroot)",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
+    },
+    {
+      "id_chirho": "P2-007",
+      "title_chirho": "ls on ext4 directories works",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
+    },
+    {
+      "id_chirho": "P2-008",
+      "title_chirho": "cat on ext4 files works",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P3-001",
-      "title_chirho": "VirtIO-net QEMU NIC driver working",
-      "status_chirho": "todo"
+      "title_chirho": "VirtIO-net probe in QEMU (detect NIC)",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-002",
-      "title_chirho": "DHCP client for IP assignment",
-      "status_chirho": "todo"
+      "title_chirho": "VirtIO-net send/receive packets",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-003",
-      "title_chirho": "DNS resolution working",
-      "status_chirho": "todo"
+      "title_chirho": "ARP + IPv4 + ICMP ping gateway",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-004",
-      "title_chirho": "TCP connect/send/recv working (wget test)",
-      "status_chirho": "todo"
+      "title_chirho": "DHCP client (get IP from QEMU)",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-005",
-      "title_chirho": "ping localhost and gateway working",
-      "status_chirho": "todo"
+      "title_chirho": "UDP DNS resolution",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
+    },
+    {
+      "id_chirho": "P3-006",
+      "title_chirho": "TCP connect + send + recv (wget test)",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
+    },
+    {
+      "id_chirho": "P3-007",
+      "title_chirho": "Socket syscalls work for userspace programs",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P4-001",
-      "title_chirho": "musl dynamic linker (ld-musl) loads and runs",
-      "status_chirho": "todo"
+      "title_chirho": "Load ET_DYN (PIE) executables",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P4-002",
-      "title_chirho": "apk package manager runs",
-      "status_chirho": "todo"
+      "title_chirho": "Load ld-musl-x86_64.so.1 interpreter",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P4-003",
-      "title_chirho": "apk add sqlite3 and run sqlite3",
-      "status_chirho": "todo"
+      "title_chirho": "musl C runtime init succeeds",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P4-004",
-      "title_chirho": "apk add gcc and compile hello.c",
-      "status_chirho": "todo"
-    },
-    {
-      "id_chirho": "P4-005",
-      "title_chirho": "SSH server (dropbear) runs, connect from host",
-      "status_chirho": "todo"
-    },
-    {
-      "id_chirho": "P4-006",
-      "title_chirho": "Python interpreter runs",
-      "status_chirho": "todo"
-    },
-    {
-      "id_chirho": "P4-007",
-      "title_chirho": "Rust toolchain runs (cargo build hello)",
-      "status_chirho": "todo"
+      "title_chirho": "Dynamically linked /bin/busybox from Alpine works",
+      "status_chirho": "todo",
+      "priority_chirho": "critical"
     },
     {
       "id_chirho": "P5-001",
-      "title_chirho": "X11 server (Xvfb or Xorg fbdev) runs",
-      "status_chirho": "todo"
+      "title_chirho": "apk package manager runs",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-002",
-      "title_chirho": "XTerm launches in X11",
-      "status_chirho": "todo"
+      "title_chirho": "sqlite3 runs (apk add sqlite)",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-003",
-      "title_chirho": "Framebuffer renders X11 display in QEMU window",
-      "status_chirho": "todo"
+      "title_chirho": "gcc runs (apk add gcc; gcc hello.c)",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-004",
-      "title_chirho": "Mouse and keyboard input to X11 apps",
-      "status_chirho": "todo"
+      "title_chirho": "dropbear SSH server runs",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-005",
-      "title_chirho": "Basic window manager (twm/openbox) runs",
-      "status_chirho": "todo"
+      "title_chirho": "python3 runs (apk add python3)",
+      "status_chirho": "todo",
+      "priority_chirho": "high"
+    },
+    {
+      "id_chirho": "P5-006",
+      "title_chirho": "rust toolchain runs (apk add rust; cargo build)",
+      "status_chirho": "todo",
+      "priority_chirho": "medium"
+    },
+    {
+      "id_chirho": "P6-001",
+      "title_chirho": "Framebuffer /dev/fb0 device for X11",
+      "status_chirho": "todo",
+      "priority_chirho": "medium"
+    },
+    {
+      "id_chirho": "P6-002",
+      "title_chirho": "Xorg or Xvfb runs with fbdev",
+      "status_chirho": "todo",
+      "priority_chirho": "medium"
+    },
+    {
+      "id_chirho": "P6-003",
+      "title_chirho": "XTerm launches and shows prompt",
+      "status_chirho": "todo",
+      "priority_chirho": "medium"
+    },
+    {
+      "id_chirho": "P6-004",
+      "title_chirho": "Keyboard + mouse input to X11",
+      "status_chirho": "todo",
+      "priority_chirho": "medium"
+    },
+    {
+      "id_chirho": "P6-005",
+      "title_chirho": "Basic window manager (twm) runs",
+      "status_chirho": "todo",
+      "priority_chirho": "low"
     }
   ]
 }
