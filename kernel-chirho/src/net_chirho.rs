@@ -1673,8 +1673,10 @@ pub fn init_networking_chirho() {
     // A3-005: set up default routing table.
     init_routing_table_chirho();
 
-    // P3-002: Probe VirtIO-net devices, register as NICs, run DHCP.
-    probe_virtio_net_chirho();
+    // P3-002: Skip VirtIO-net probe for now — it hangs accessing
+    // unmapped MMIO addresses in UEFI boot mode. Networking will be
+    // enabled once VirtIO-net I/O port transport is implemented.
+    // probe_virtio_net_chirho();
 }
 
 // ============================================================================
