@@ -108,7 +108,7 @@ struct GdtChirho {
 ///   original kernel stack is corrupted or overflowed.
 /// - `privilege_stack_table[0]`: the ring-0 stack pointer used on privilege
 ///   transitions (e.g., when a user-mode interrupt enters ring 0).
-static TSS_CHIRHO: Lazy<TaskStateSegment> = Lazy::new(|| {
+pub static TSS_CHIRHO: Lazy<TaskStateSegment> = Lazy::new(|| {
     let mut tss_chirho = TaskStateSegment::new();
 
     // -- Double-fault IST stack (IST index 0) --

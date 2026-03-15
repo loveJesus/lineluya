@@ -232,6 +232,31 @@ pub unsafe fn init_syscall_entry_chirho() {
         stack_top_chirho,
     );
 
+    // Update TSS.RSP0 to a heap-allocated stack so ring 3→0 exception
+    // transitions work. The BSS-based stack set during GDT init might
+    // be at an address that's not accessible during page faults.
+    {
+        let mut rsp0_stack_chirho: Vec<u8> = Vec::with_capacity(32 * 1024);
+        rsp0_stack_chirho.resize(32 * 1024, 0);
+        let rsp0_top_chirho = (rsp0_stack_chirho.as_ptr() as u64 + 32 * 1024) & !0xF;
+        core::mem::forget(rsp0_stack_chirho);
+
+        // Write directly to the TSS memory. The TSS is a Lazy<TaskStateSegment>
+        // which is already initialized. We write via raw pointer to update RSP0.
+        unsafe {
+            let tss_ptr_chirho = &crate::gdt_chirho::TSS_CHIRHO as *const _
+                as *const x86_64::structures::tss::TaskStateSegment
+                as *mut x86_64::structures::tss::TaskStateSegment;
+            (*tss_ptr_chirho).privilege_stack_table[0] =
+                x86_64::VirtAddr::new(rsp0_top_chirho);
+        }
+
+        crate::serial_println_chirho!(
+            "[SYSCALL-ENTRY] TSS.RSP0 updated to heap stack at {:#x}",
+            rsp0_top_chirho
+        );
+    }
+
     // -- Update IA32_LSTAR to point to the assembly trampoline --
     const IA32_LSTAR_CHIRHO: u32 = 0xC000_0082;
     let entry_addr_chirho = syscall_entry_chirho as *const () as u64;
