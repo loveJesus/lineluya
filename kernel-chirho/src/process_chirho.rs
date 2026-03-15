@@ -203,8 +203,12 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
     // --- 6. Add the child to the scheduler run queue ---
     crate::scheduler_chirho::add_task_chirho(child_pid_chirho);
 
-    // --- 7. Return child PID to the parent ---
-    child_pid_chirho as i64
+    // --- 7. vfork semantics: return 0 to run the child path immediately ---
+    // Since we don't have preemptive scheduling, we pretend to be the child
+    // so that ash calls execve() right away. The "parent" path never runs
+    // until the child exits or calls execve.
+    // When the child eventually exits, sys_exit will re-exec the shell.
+    0i64
 }
 
 // ===========================================================================
