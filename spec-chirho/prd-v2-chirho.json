@@ -79,79 +79,79 @@
     {
       "id_chirho": "D1-012",
       "title_chirho": "Cargo clippy clean pass",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-013",
       "title_chirho": "Reduce unsafe blocks with safe abstractions",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-014",
       "title_chirho": "Kernel panic handler with stack trace",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-015",
       "title_chirho": "Serial debug log levels",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-016",
       "title_chirho": "Performance benchmarks vs Linux",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-017",
       "title_chirho": "Memory leak detector",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-018",
       "title_chirho": "WASM browser test automation",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-019",
       "title_chirho": "Code coverage reporting",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-020",
       "title_chirho": "Documentation generation",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-001",
       "title_chirho": "GRUB multiboot2 support",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-002",
       "title_chirho": "USB boot drive creation script",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-003",
       "title_chirho": "VGA text mode console driver",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-004",
       "title_chirho": "PS/2 keyboard driver (real hardware)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
@@ -163,55 +163,55 @@
     {
       "id_chirho": "E1-006",
       "title_chirho": "E820 memory map integration",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-007",
       "title_chirho": "Real AHCI disk read/write test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-008",
       "title_chirho": "Real e1000 NIC ping test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-009",
       "title_chirho": "SMP boot on real multi-core CPU",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-010",
       "title_chirho": "UEFI framebuffer console",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-011",
       "title_chirho": "Kernel module loading from disk",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-012",
       "title_chirho": "initramfs boot with BusyBox",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-013",
       "title_chirho": "Real hardware boot test report",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "E1-014",
       "title_chirho": "Kernel command line from bootloader",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
@@ -241,7 +241,7 @@
     {
       "id_chirho": "F1-004",
       "title_chirho": "User namespace UID/GID mapping",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
@@ -259,115 +259,115 @@
     {
       "id_chirho": "F1-007",
       "title_chirho": "Overlay filesystem (overlayfs)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-008",
       "title_chirho": "Container image unpacking (OCI)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-009",
       "title_chirho": "Minimal container runtime (runc-like)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-010",
       "title_chirho": "Docker socket API compatibility",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-011",
       "title_chirho": "Container networking (bridge + NAT)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-012",
       "title_chirho": "Container resource limits",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-013",
       "title_chirho": "Container process isolation test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-014",
       "title_chirho": "Multi-container orchestration",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-015",
       "title_chirho": "Container runtime integration test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-001",
       "title_chirho": "Alpine rootfs extraction and mount",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-002",
       "title_chirho": "Dynamic linker (ld-musl) execution",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-003",
       "title_chirho": "musl libc syscall compatibility",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-004",
       "title_chirho": "apk package manager execution",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-005",
       "title_chirho": "OpenRC init system boot",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-006",
       "title_chirho": "SSH server (dropbear) execution",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-007",
       "title_chirho": "Alpine networking (ifconfig, ping, wget)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-008",
       "title_chirho": "Alpine package install test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-009",
       "title_chirho": "Rust compilation within Alpine",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "G1-010",
       "title_chirho": "Full Alpine boot integration test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     }
   ]
