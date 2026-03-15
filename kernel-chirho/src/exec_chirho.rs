@@ -703,7 +703,7 @@ pub fn jump_to_userspace_chirho(entry_point_chirho: u64, user_rsp_chirho: u64) -
 /// the kernel regains control only through syscalls or interrupts.
 pub fn exec_init_chirho() {
     // Try BusyBox first, fall back to hello-chirho
-    let (elf_name_chirho, elf_data_chirho) = if BUSYBOX_ELF_CHIRHO.len() > 100 {
+    let (elf_name_chirho, elf_data_chirho) = if false && BUSYBOX_ELF_CHIRHO.len() > 100 {
         ("busybox (ash shell)", BUSYBOX_ELF_CHIRHO)
     } else {
         ("hello-chirho", HELLO_ELF_CHIRHO)

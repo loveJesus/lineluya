@@ -159,9 +159,10 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     fs_chirho::init_fs_chirho();
 
     // Enable the Local APIC and configure IOAPIC keyboard routing.
-    // UEFI mode disables the PIC and uses APIC for interrupt delivery.
-    interrupts_chirho::init_local_apic_chirho();
-    interrupts_chirho::init_ioapic_keyboard_chirho();
+    // Note: In BIOS mode with bootloader crate, IOAPIC init may conflict
+    // with PIC. Skip IOAPIC for now — use PIC for both timer and keyboard.
+    // interrupts_chirho::init_local_apic_chirho();
+    // interrupts_chirho::init_ioapic_keyboard_chirho();
 
     // Enable interrupts
     x86_64::instructions::interrupts::enable();
@@ -221,7 +222,7 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
 /// This is more power-efficient than a busy spin loop.
 pub fn hlt_loop_chirho() -> ! {
     loop {
-        x86_64::instructions::hlt();
+        x86_64::instructions::interrupts::enable_and_hlt();
     }
 }
 
