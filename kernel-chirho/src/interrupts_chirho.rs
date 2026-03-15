@@ -92,6 +92,7 @@ static IDT_CHIRHO: spin::Lazy<InterruptDescriptorTable> = spin::Lazy::new(|| {
             .set_stack_index(crate::gdt_chirho::PAGE_FAULT_IST_INDEX_CHIRHO);
     }
     idt_chirho.general_protection_fault.set_handler_fn(general_protection_fault_handler_chirho);
+    idt_chirho.segment_not_present.set_handler_fn(segment_not_present_handler_chirho);
 
     // --- Hardware interrupt handlers ---
 
@@ -100,6 +101,10 @@ static IDT_CHIRHO: spin::Lazy<InterruptDescriptorTable> = spin::Lazy::new(|| {
 
     idt_chirho[InterruptIndexChirho::KeyboardChirho.as_u8_chirho()]
         .set_handler_fn(keyboard_interrupt_handler_chirho);
+
+    // Serial port COM1 (IRQ 4 = vector 36) — fires when serial data arrives
+    idt_chirho[(PIC_1_OFFSET_CHIRHO + 4)]
+        .set_handler_fn(serial_interrupt_handler_chirho);
 
     idt_chirho
 });
@@ -435,5 +440,41 @@ pub fn init_ioapic_keyboard_chirho() {
             timer_vector_chirho,
             vector_chirho
         );
+    }
+}
+
+/// Segment Not Present (#NP) handler — vector 11.
+/// This fires when the CPU tries to use a segment descriptor that has the
+/// Present bit clear. Usually caused by a bad SS/CS selector during SYSRET.
+extern "x86-interrupt" fn segment_not_present_handler_chirho(
+    stack_frame_chirho: InterruptStackFrame,
+    error_code_chirho: u64,
+) {
+    crate::serial_println_chirho!(
+        "[EXCEPTION] SEGMENT NOT PRESENT (error code: {:#x})\n{:#?}",
+        error_code_chirho,
+        stack_frame_chirho
+    );
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+/// Serial port COM1 interrupt handler (IRQ 4, vector 36).
+/// Fires when data arrives on the serial port. We just acknowledge
+/// the interrupt — the actual data reading happens in the polling loop.
+extern "x86-interrupt" fn serial_interrupt_handler_chirho(
+    _stack_frame_chirho: InterruptStackFrame,
+) {
+    // Don't read data here — the polling loop in sys_read_stdin handles it.
+    // Just send EOI to acknowledge the interrupt.
+    unsafe {
+        PICS_CHIRHO
+            .lock()
+            .notify_end_of_interrupt((PIC_1_OFFSET_CHIRHO + 4) as u8);
+        // LAPIC EOI
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let lapic_eoi_chirho = (phys_offset_chirho + 0xFEE0_00B0u64) as *mut u32;
+        core::ptr::write_volatile(lapic_eoi_chirho, 0);
     }
 }
