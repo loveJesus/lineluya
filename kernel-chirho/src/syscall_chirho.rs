@@ -2217,7 +2217,25 @@ fn sys_ioctl_real_chirho(
     cmd_chirho: u64,
     arg_chirho: u64,
 ) -> i64 {
-    // Try VFS fd table first
+    // Handle terminal ioctls for ANY fd before VFS dispatch.
+    // BusyBox dups the TTY to high fds and calls ioctl on them.
+    match cmd_chirho {
+        TIOCGPGRP_CHIRHO => {
+            if arg_chirho != 0 {
+                let pgrp_chirho: i32 = sys_getpid_chirho() as i32;
+                let _ = crate::uaccess_chirho::copy_to_user_chirho(
+                    arg_chirho,
+                    unsafe { core::slice::from_raw_parts(&pgrp_chirho as *const i32 as *const u8, 4) },
+                    4,
+                );
+            }
+            return 0;
+        }
+        TIOCSPGRP_CHIRHO => return 0,
+        _ => {}
+    }
+
+    // Try VFS fd table
     {
         use crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO;
         let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
@@ -2231,16 +2249,18 @@ fn sys_ioctl_real_chirho(
                         cmd_chirho,
                         arg_chirho,
                     );
-                    return match result_chirho {
-                        Ok(val_chirho) => val_chirho,
-                        Err(err_chirho) => -err_chirho,
-                    };
+                    match result_chirho {
+                        Ok(val_chirho) => return val_chirho,
+                        Err(e_chirho) if e_chirho != ENOSYS_CHIRHO && e_chirho != ENOTTY_CHIRHO => return -e_chirho,
+                        _ => {} // Fall through to common handler
+                    }
                 }
             }
         }
     }
 
-    // Fallback: handle common ioctls for stdin/stdout/stderr (fd 0-2)
+    // Fallback: handle common terminal ioctls for any fd
+    // (BusyBox dup's the TTY to fd 4+ and calls ioctl on it)
     match cmd_chirho {
         TCGETS_CHIRHO | TCSETS_CHIRHO => {
             // Not a real TTY yet; return -ENOTTY

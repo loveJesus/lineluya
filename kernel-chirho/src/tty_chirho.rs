@@ -298,7 +298,7 @@ impl FileOpsChirho for TtyFileOpsChirho {
         if nonblock_chirho {
             let mut ldisc_chirho = self.tty_chirho.ldisc_chirho.lock();
             if !ldisc_chirho.has_data_chirho() {
-                return Err(-crate::syscall_chirho::EAGAIN_CHIRHO);
+                return Err(crate::syscall_chirho::EAGAIN_CHIRHO);
             }
             let data_chirho = ldisc_chirho.read_chirho(buf_chirho.len());
             let n_chirho = data_chirho.len();
@@ -336,7 +336,7 @@ impl FileOpsChirho for TtyFileOpsChirho {
         _offset_chirho: i64,
         _whence_chirho: u32,
     ) -> Result<u64, i64> {
-        Err(-29) // ESPIPE -- TTYs are not seekable
+        Err(29) // ESPIPE -- TTYs are not seekable
     }
 
     fn ioctl_chirho(
@@ -355,7 +355,7 @@ impl FileOpsChirho for TtyFileOpsChirho {
         match cmd_chirho {
             TCGETS_CHIRHO => {
                 if arg_chirho == 0 {
-                    return Err(-14); // EFAULT
+                    return Err(14); // EFAULT
                 }
                 let ldisc_chirho = self.tty_chirho.ldisc_chirho.lock();
                 let termios_chirho = ldisc_chirho.termios_chirho();
@@ -373,13 +373,13 @@ impl FileOpsChirho for TtyFileOpsChirho {
                 )
                 .is_err()
                 {
-                    return Err(-14); // EFAULT
+                    return Err(14); // EFAULT
                 }
                 Ok(0)
             }
             TCSETS_CHIRHO => {
                 if arg_chirho == 0 {
-                    return Err(-14); // EFAULT
+                    return Err(14); // EFAULT
                 }
                 let size_chirho = core::mem::size_of::<TermiosChirho>();
                 let mut buf_chirho = [0u8; 128]; // TermiosChirho is well under 128 bytes
@@ -390,7 +390,7 @@ impl FileOpsChirho for TtyFileOpsChirho {
                 )
                 .is_err()
                 {
-                    return Err(-14); // EFAULT
+                    return Err(14); // EFAULT
                 }
                 let termios_chirho = unsafe {
                     core::ptr::read(buf_chirho.as_ptr() as *const TermiosChirho)
@@ -404,7 +404,7 @@ impl FileOpsChirho for TtyFileOpsChirho {
             TIOCGWINSZ_CHIRHO => {
                 // Return a default 80x24 window size.
                 if arg_chirho == 0 {
-                    return Err(-14); // EFAULT
+                    return Err(14); // EFAULT
                 }
                 let winsize_chirho: [u8; 8] = {
                     let row_chirho: u16 = 24;
@@ -429,11 +429,25 @@ impl FileOpsChirho for TtyFileOpsChirho {
                 )
                 .is_err()
                 {
-                    return Err(-14); // EFAULT
+                    return Err(14); // EFAULT
                 }
                 Ok(0)
             }
-            _ => Err(-25), // ENOTTY
+            // TIOCGPGRP (0x540F) — return foreground process group
+            0x540F => {
+                if arg_chirho != 0 {
+                    let pgid_chirho: i32 = 0; // current process group
+                    let _ = crate::uaccess_chirho::copy_to_user_chirho(
+                        arg_chirho,
+                        &pgid_chirho.to_ne_bytes(),
+                        4,
+                    );
+                }
+                Ok(0)
+            }
+            // TIOCSPGRP (0x5410) — set foreground process group
+            0x5410 => Ok(0), // silently accept
+            _ => Err(25), // ENOTTY (positive errno)
         }
     }
 
@@ -442,6 +456,6 @@ impl FileOpsChirho for TtyFileOpsChirho {
         _file_chirho: &mut FileChirho,
         _callback_chirho: &mut dyn FnMut(&str, u64, u8) -> bool,
     ) -> Result<usize, i64> {
-        Err(-20) // ENOTDIR
+        Err(20) // ENOTDIR
     }
 }
