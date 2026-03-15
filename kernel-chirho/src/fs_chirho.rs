@@ -21,6 +21,7 @@ use crate::syscall_chirho::{
     EBADF_CHIRHO, EFAULT_CHIRHO, ENOENT_CHIRHO, ENOTDIR_CHIRHO,
 };
 use crate::tmpfs_chirho::TMPFS_FILE_OPS_CHIRHO;
+use crate::procfs_chirho::{PROC_FILE_OPS_CHIRHO as PROCFS_FILE_OPS_CHIRHO, PROC_DIR_OPS_CHIRHO as PROCFS_DIR_OPS_CHIRHO};
 use crate::devtmpfs_chirho::{
     DevNodeDataChirho, DEV_CONSOLE_OPS_CHIRHO, DEV_NULL_OPS_CHIRHO,
     DEV_URANDOM_OPS_CHIRHO, DEV_ZERO_OPS_CHIRHO,
@@ -389,23 +390,41 @@ pub fn resolve_path_chirho(
                                 &TMPFS_FILE_OPS_CHIRHO
                             }
                         } else {
-                            &TMPFS_FILE_OPS_CHIRHO
+                            // Check if this is a procfs file (has ProcGenerator)
+                            if let Some(ref data_chirho) = child_inode_chirho.fs_data_chirho {
+                                if data_chirho.downcast_ref::<crate::procfs_chirho::ProcGeneratorChirho>().is_some() {
+                                    &PROCFS_FILE_OPS_CHIRHO
+                                } else if data_chirho.downcast_ref::<crate::procfs_chirho::ProcDirEntriesChirho>().is_some() {
+                                    &PROCFS_DIR_OPS_CHIRHO
+                                } else {
+                                    &TMPFS_FILE_OPS_CHIRHO
+                                }
+                            } else {
+                                &TMPFS_FILE_OPS_CHIRHO
+                            }
                         };
 
-                    // Wrap in Arc<Mutex<>> for return
-                    let wrapped_chirho = Arc::new(Mutex::new(InodeChirho {
-                        ino_chirho: child_inode_chirho.ino_chirho,
-                        mode_chirho: child_inode_chirho.mode_chirho,
-                        uid_chirho: child_inode_chirho.uid_chirho,
-                        gid_chirho: child_inode_chirho.gid_chirho,
-                        size_chirho: child_inode_chirho.size_chirho,
-                        nlink_chirho: child_inode_chirho.nlink_chirho,
-                        atime_chirho: child_inode_chirho.atime_chirho,
-                        mtime_chirho: child_inode_chirho.mtime_chirho,
-                        ctime_chirho: child_inode_chirho.ctime_chirho,
-                        ops_chirho: child_inode_chirho.ops_chirho,
-                        fs_data_chirho: None,
-                    }));
+                    // Unwrap the Arc to get the owned InodeChirho, then wrap in Mutex
+                    let owned_inode_chirho = match Arc::try_unwrap(child_inode_chirho) {
+                        Ok(inode_chirho) => inode_chirho,
+                        Err(arc_chirho) => {
+                            // Arc has multiple owners — clone without fs_data
+                            InodeChirho {
+                                ino_chirho: arc_chirho.ino_chirho,
+                                mode_chirho: arc_chirho.mode_chirho,
+                                uid_chirho: arc_chirho.uid_chirho,
+                                gid_chirho: arc_chirho.gid_chirho,
+                                size_chirho: arc_chirho.size_chirho,
+                                nlink_chirho: arc_chirho.nlink_chirho,
+                                atime_chirho: arc_chirho.atime_chirho,
+                                mtime_chirho: arc_chirho.mtime_chirho,
+                                ctime_chirho: arc_chirho.ctime_chirho,
+                                ops_chirho: arc_chirho.ops_chirho,
+                                fs_data_chirho: None,
+                            }
+                        }
+                    };
+                    let wrapped_chirho = Arc::new(Mutex::new(owned_inode_chirho));
                     return Ok((wrapped_chirho, file_ops_chirho));
                 }
 

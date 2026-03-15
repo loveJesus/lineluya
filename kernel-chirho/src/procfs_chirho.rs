@@ -42,7 +42,7 @@ const PROC_SUPER_MAGIC_CHIRHO: u64 = 0x9fa0;
 // ---------------------------------------------------------------------------
 
 /// Wrapper so we can store a `fn() -> String` inside `Box<dyn Any + Send>`.
-struct ProcGeneratorChirho {
+pub struct ProcGeneratorChirho {
     generate_chirho: fn() -> String,
 }
 
@@ -252,9 +252,9 @@ fn alloc_ino_chirho() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// File operations for proc entries that generate content dynamically.
-struct ProcFileOpsChirho;
+pub struct ProcFileOpsChirho;
 
-static PROC_FILE_OPS_CHIRHO: ProcFileOpsChirho = ProcFileOpsChirho;
+pub static PROC_FILE_OPS_CHIRHO: ProcFileOpsChirho = ProcFileOpsChirho;
 
 impl FileOpsChirho for ProcFileOpsChirho {
     fn read_chirho(
@@ -357,9 +357,9 @@ impl FileOpsChirho for ProcFileOpsChirho {
 // ---------------------------------------------------------------------------
 
 /// File operations for the /proc directory itself.
-struct ProcDirOpsChirho;
+pub struct ProcDirOpsChirho;
 
-static PROC_DIR_OPS_CHIRHO: ProcDirOpsChirho = ProcDirOpsChirho;
+pub static PROC_DIR_OPS_CHIRHO: ProcDirOpsChirho = ProcDirOpsChirho;
 
 impl FileOpsChirho for ProcDirOpsChirho {
     fn read_chirho(
@@ -626,7 +626,7 @@ impl InodeOpsChirho for NullInodeOpsChirho {
 // ---------------------------------------------------------------------------
 
 /// Holds the list of child entries for a proc directory inode.
-struct ProcDirEntriesChirho {
+pub struct ProcDirEntriesChirho {
     entries_chirho: Vec<ProcEntryChirho>,
 }
 
