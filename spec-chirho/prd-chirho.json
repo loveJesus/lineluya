@@ -207,7 +207,7 @@
       "depends_on_chirho": [
         "A1-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "pipe() returns two fds",
@@ -259,7 +259,7 @@
       "depends_on_chirho": [
         "A1-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Child process inherits parent environ",
@@ -274,7 +274,7 @@
       "title_chirho": "Per-process cwd tracking",
       "description_chirho": "Track current working directory per process. Implement chdir/getcwd syscalls.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "chdir changes cwd",
@@ -292,7 +292,7 @@
       "depends_on_chirho": [
         "A1-011"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "/proc/self/status shows current process",
@@ -309,7 +309,7 @@
       "depends_on_chirho": [
         "A1-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "SIGKILL terminates process",
@@ -327,7 +327,7 @@
       "depends_on_chirho": [
         "A1-018"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Custom SIGINT handler runs in userspace",
@@ -344,7 +344,7 @@
       "depends_on_chirho": [
         "A1-018"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "waitpid blocks until child exits",
@@ -377,7 +377,7 @@
       "depends_on_chirho": [
         "A1-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "poll blocks until fd ready",
@@ -394,7 +394,7 @@
       "depends_on_chirho": [
         "A1-018"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Foreground process group receives SIGINT",
@@ -409,7 +409,7 @@
       "title_chirho": "tmpfs write support",
       "description_chirho": "Allow creating, writing, and deleting files in tmpfs (mkdir, creat, unlink, rmdir).",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "touch/echo > file creates file in tmpfs",
