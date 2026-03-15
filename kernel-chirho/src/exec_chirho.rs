@@ -59,9 +59,10 @@ pub static HELLO_ELF_CHIRHO: &[u8] = include_bytes!(
 );
 
 /// BusyBox static x86_64 binary — 1.1MB, 40+ commands including ash shell.
-/// DISABLED: Embedding 1.1MB makes the kernel 8.3MB which the BIOS bootloader
-/// can't handle. BusyBox should be loaded from initramfs instead.
-pub static BUSYBOX_ELF_CHIRHO: &[u8] = b"";
+/// Note: BIOS boot can't handle >6MB kernels. Use UEFI boot with BusyBox.
+pub static BUSYBOX_ELF_CHIRHO: &[u8] = include_bytes!(
+    "../../userspace-chirho/busybox-chirho/output-chirho/busybox-chirho"
+);
 
 // ============================================================================
 // Error type

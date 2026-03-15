@@ -2368,13 +2368,15 @@ fn sys_poll_chirho(
     let entry_size_chirho = core::mem::size_of::<PollfdChirho>();
     let total_size_chirho = entry_size_chirho * nfds_chirho as usize;
 
-    // Read pollfd array from user space
-    let mut buf_chirho = [0u8; 2048]; // supports up to ~256 fds
-    if total_size_chirho > buf_chirho.len() {
+    // Read pollfd array from user space into an aligned buffer
+    #[repr(C, align(8))]
+    struct AlignedBufChirho([u8; 2048]);
+    let mut buf_chirho = AlignedBufChirho([0u8; 2048]);
+    if total_size_chirho > buf_chirho.0.len() {
         return -EINVAL_CHIRHO;
     }
     if crate::uaccess_chirho::copy_from_user_chirho(
-        &mut buf_chirho[..total_size_chirho],
+        &mut buf_chirho.0[..total_size_chirho],
         fds_ptr_chirho,
         total_size_chirho,
     ).is_err() {
@@ -2384,7 +2386,7 @@ fn sys_poll_chirho(
     let mut ready_count_chirho: i64 = 0;
     let pollfds_chirho = unsafe {
         core::slice::from_raw_parts_mut(
-            buf_chirho.as_mut_ptr() as *mut PollfdChirho,
+            buf_chirho.0.as_mut_ptr() as *mut PollfdChirho,
             nfds_chirho as usize,
         )
     };
@@ -2405,7 +2407,7 @@ fn sys_poll_chirho(
     // Write pollfd array back to user space
     if crate::uaccess_chirho::copy_to_user_chirho(
         fds_ptr_chirho,
-        &buf_chirho[..total_size_chirho],
+        &buf_chirho.0[..total_size_chirho],
         total_size_chirho,
     ).is_err() {
         return -EFAULT_CHIRHO;
