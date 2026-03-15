@@ -1210,11 +1210,14 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
 
     let result_chirho: i64 = match syscall_nr_chirho {
-        SYS_READ_CHIRHO => crate::fs_chirho::sys_read_real_chirho(
-            arg0_chirho,
-            arg1_chirho,
-            arg2_chirho as usize,
-        ),
+        SYS_READ_CHIRHO => {
+            if arg0_chirho == 0 {
+                // stdin → direct serial poll (no VFS, no heap, minimal stack)
+                sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
+            } else {
+                crate::fs_chirho::sys_read_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
+            }
+        },
         SYS_WRITE_CHIRHO => {
             if arg0_chirho == 1 || arg0_chirho == 2 {
                 // stdout/stderr → direct serial write (no VFS, no heap, no locks)
@@ -3814,5 +3817,49 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_NAME_TO_HANDLE_AT_CHIRHO => "name_to_handle_at",
         SYS_OPEN_BY_HANDLE_AT_CHIRHO => "open_by_handle_at",
         _ => "unknown",
+    }
+}
+
+/// Direct stdin read via serial port polling.
+/// Bypasses VFS entirely — no heap allocation, no locks, minimal stack.
+fn sys_read_stdin_chirho(buf_addr_chirho: u64, count_chirho: usize) -> i64 {
+    if count_chirho == 0 || buf_addr_chirho == 0 {
+        return 0;
+    }
+
+    // Enable interrupts so timer ticks keep running
+    x86_64::instructions::interrupts::enable();
+
+    // Poll serial port for data, write directly to user buffer
+    loop {
+        let status_chirho: u8 = unsafe {
+            x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+        };
+        if status_chirho & 0x01 != 0 {
+            // Data available — read all available bytes
+            let mut n_chirho: usize = 0;
+            while n_chirho < count_chirho {
+                let st_chirho: u8 = unsafe {
+                    x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+                };
+                if st_chirho & 0x01 == 0 { break; }
+                let byte_chirho: u8 = unsafe {
+                    x86_64::instructions::port::Port::<u8>::new(0x3F8).read()
+                };
+                let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
+                // Write directly to user buffer (single byte, no copy_from_user needed)
+                unsafe {
+                    core::ptr::write_volatile((buf_addr_chirho + n_chirho as u64) as *mut u8, ch_chirho);
+                }
+                n_chirho += 1;
+                // Stop after newline (line-buffered)
+                if ch_chirho == b'\n' { break; }
+            }
+            if n_chirho > 0 {
+                return n_chirho as i64;
+            }
+        }
+        // Yield CPU between polls
+        core::hint::spin_loop();
     }
 }

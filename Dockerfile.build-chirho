@@ -46,6 +46,9 @@ COPY userspace-chirho userspace-chirho
 # Build hello-chirho userspace binary
 RUN cd userspace-chirho/hello-chirho && cargo +nightly build --release 2>&1 | tail -3
 
+# Force rebuild by touching source files (cargo fingerprints are from Stage 2 stubs)
+RUN touch kernel-chirho/src/main_chirho.rs kernel-core-chirho/src/lib.rs
+
 # Build the kernel
 RUN cd kernel-chirho && cargo +nightly build --release 2>&1 | tail -3
 
