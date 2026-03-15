@@ -61,13 +61,13 @@
     {
       "id_chirho": "P2-003",
       "title_chirho": "ext4 superblock parse from real disk",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
       "id_chirho": "P2-004",
       "title_chirho": "ext4 read-only mount at /mnt",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
@@ -97,7 +97,7 @@
     {
       "id_chirho": "P3-001",
       "title_chirho": "VirtIO-net probe in QEMU (detect NIC)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {

@@ -1076,3 +1076,196 @@ fn test_read_sector0_chirho(dev_chirho: &VirtioBlkDeviceChirho) {
 
 /// Hex digit lookup table for formatting bytes.
 const HEX_DIGITS_CHIRHO: &[u8; 16] = b"0123456789abcdef";
+
+// ============================================================================
+// P2-003 / P2-004: ext4 superblock parsing and VFS mount at /mnt
+// ============================================================================
+
+/// After block device registration, read the ext4 superblock from the first
+/// block device, parse it, log results, and if valid mount the ext4
+/// filesystem at /mnt so `resolve_path_chirho` can access it.
+fn probe_ext4_and_mount_chirho() {
+    use alloc::string::String;
+    use crate::block_chirho::BLOCK_REGISTRY_CHIRHO;
+    use crate::ext4_chirho::{
+        parse_superblock_chirho, parse_group_descs_chirho,
+        Ext4MountChirho, SUPERBLOCK_OFFSET_CHIRHO,
+    };
+
+    let device_count_chirho = BLOCK_REGISTRY_CHIRHO.count_chirho();
+    if device_count_chirho == 0 {
+        crate::serial_println_chirho!("[EXT4] No block devices registered, skipping ext4 probe");
+        return;
+    }
+
+    crate::serial_println_chirho!(
+        "[EXT4] Probing device 0 for ext4 superblock (byte offset {})...",
+        SUPERBLOCK_OFFSET_CHIRHO
+    );
+
+    // P2-003: Read sector 2 (byte offset 1024 = ext4 superblock location).
+    // The superblock is at byte offset 1024, which spans sectors 2 and 3
+    // (each sector = 512 bytes).
+    let sb_start_sector_chirho = SUPERBLOCK_OFFSET_CHIRHO / 512; // = 2
+    let mut sb_data_chirho = vec![0u8; 1024];
+
+    for i_chirho in 0..2u64 {
+        if let Err(err_chirho) = BLOCK_REGISTRY_CHIRHO.read_block_chirho(
+            0,
+            sb_start_sector_chirho + i_chirho,
+            &mut sb_data_chirho[(i_chirho as usize * 512)..((i_chirho as usize + 1) * 512)],
+        ) {
+            crate::serial_println_chirho!(
+                "[EXT4] Failed to read superblock sector {} (err={})",
+                sb_start_sector_chirho + i_chirho,
+                err_chirho
+            );
+            return;
+        }
+    }
+
+    // Parse the superblock.
+    let sb_chirho = match parse_superblock_chirho(&sb_data_chirho) {
+        Some(sb_chirho) => sb_chirho,
+        None => {
+            crate::serial_println_chirho!(
+                "[EXT4] No valid ext4 superblock found (magic mismatch)"
+            );
+            return;
+        }
+    };
+
+    // Log superblock info (P2-003 deliverable).
+    let block_size_chirho = sb_chirho.block_size_chirho();
+    let total_blocks_chirho = sb_chirho.total_blocks_chirho();
+    let inodes_count_chirho = sb_chirho.s_inodes_count_chirho;
+    let volume_name_chirho = sb_chirho.volume_name_chirho();
+    let free_blocks_chirho = sb_chirho.free_blocks_chirho();
+    let free_inodes_chirho = sb_chirho.s_free_inodes_count_chirho;
+    let bg_count_chirho = sb_chirho.block_group_count_chirho();
+
+    crate::serial_println_chirho!("[EXT4] === Superblock parsed successfully ===");
+    crate::serial_println_chirho!(
+        "[EXT4]   Block size:     {} bytes",
+        block_size_chirho
+    );
+    crate::serial_println_chirho!(
+        "[EXT4]   Total blocks:   {} ({} MiB)",
+        total_blocks_chirho,
+        (total_blocks_chirho * block_size_chirho as u64) / (1024 * 1024)
+    );
+    crate::serial_println_chirho!(
+        "[EXT4]   Free blocks:    {}",
+        free_blocks_chirho
+    );
+    crate::serial_println_chirho!(
+        "[EXT4]   Total inodes:   {}",
+        inodes_count_chirho
+    );
+    crate::serial_println_chirho!(
+        "[EXT4]   Free inodes:    {}",
+        free_inodes_chirho
+    );
+    crate::serial_println_chirho!(
+        "[EXT4]   Block groups:   {}",
+        bg_count_chirho
+    );
+    crate::serial_println_chirho!(
+        "[EXT4]   Volume name:    \"{}\"",
+        if volume_name_chirho.is_empty() { "<none>" } else { &volume_name_chirho }
+    );
+    crate::serial_println_chirho!(
+        "[EXT4]   Features:       extents={} 64bit={} journal={}",
+        sb_chirho.has_extents_chirho(),
+        sb_chirho.has_64bit_chirho(),
+        sb_chirho.has_journal_chirho()
+    );
+
+    // P2-004: Create Ext4MountChirho and mount at /mnt.
+    // Read group descriptors from the block following the superblock.
+    let gd_size_chirho = sb_chirho.group_desc_size_chirho();
+    let gdt_block_chirho: u64 = if block_size_chirho == 1024 { 2 } else { 1 };
+    let gdt_bytes_chirho = bg_count_chirho as usize * gd_size_chirho as usize;
+    let gdt_blocks_needed_chirho =
+        (gdt_bytes_chirho + block_size_chirho as usize - 1) / block_size_chirho as usize;
+
+    let mut gdt_data_chirho = Vec::new();
+    let sectors_per_block_chirho = block_size_chirho as u64 / 512;
+
+    for blk_chirho in 0..gdt_blocks_needed_chirho as u64 {
+        let abs_block_chirho = gdt_block_chirho + blk_chirho;
+        let start_sec_chirho = abs_block_chirho * sectors_per_block_chirho;
+
+        let mut buf_chirho = vec![0u8; block_size_chirho as usize];
+        let mut read_ok_chirho = true;
+        for s_chirho in 0..sectors_per_block_chirho {
+            let off_chirho = (s_chirho as usize) * 512;
+            if BLOCK_REGISTRY_CHIRHO
+                .read_block_chirho(0, start_sec_chirho + s_chirho, &mut buf_chirho[off_chirho..off_chirho + 512])
+                .is_err()
+            {
+                read_ok_chirho = false;
+                break;
+            }
+        }
+        if !read_ok_chirho {
+            crate::serial_println_chirho!("[EXT4] Failed to read GDT block, aborting mount");
+            return;
+        }
+        gdt_data_chirho.extend_from_slice(&buf_chirho);
+    }
+
+    let group_descs_chirho =
+        parse_group_descs_chirho(&gdt_data_chirho, bg_count_chirho, gd_size_chirho);
+
+    crate::serial_println_chirho!(
+        "[EXT4] Read {} block group descriptors",
+        group_descs_chirho.len()
+    );
+
+    // Build the Ext4MountChirho.
+    let ext4_mount_chirho = Ext4MountChirho {
+        sb_chirho,
+        group_descs_chirho,
+        block_size_chirho,
+        device_id_chirho: 0,
+        readonly_chirho: true,
+    };
+
+    // Create the VFS superblock for ext4 and mount at /mnt.
+    let ext4_vfs_sb_chirho = crate::ext4_chirho::mount_ext4_vfs_chirho(ext4_mount_chirho);
+
+    // Create /mnt directory in root tmpfs and register the mount.
+    // First create the /mnt directory via the root fs.
+    {
+        // Create /mnt in the root tmpfs via resolve_parent_live_chirho
+        match crate::fs_chirho::resolve_parent_live_chirho("/mnt") {
+            Ok((parent_chirho, name_chirho)) => {
+                let parent_guard_chirho = parent_chirho.lock();
+                let _ = parent_guard_chirho.ops_chirho.mkdir_chirho(
+                    &parent_guard_chirho,
+                    &name_chirho,
+                    0o755,
+                );
+            }
+            Err(_) => {
+                crate::serial_println_chirho!("[EXT4] Warning: could not create /mnt directory");
+            }
+        }
+    }
+
+    // Register the mount in the mount table.
+    {
+        let mut mounts_chirho = crate::fs_chirho::MOUNT_TABLE_CHIRHO.lock();
+        mounts_chirho.push(crate::fs_chirho::MountPointChirho {
+            path_chirho: String::from("/mnt"),
+            superblock_chirho: ext4_vfs_sb_chirho,
+        });
+    }
+
+    crate::serial_println_chirho!(
+        "[EXT4] ext4 filesystem mounted read-only at /mnt ({} block groups, {} blocks)",
+        bg_count_chirho,
+        total_blocks_chirho
+    );
+}

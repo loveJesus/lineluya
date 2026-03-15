@@ -1781,6 +1781,21 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
     ) -> Result<(), i64> {
         Err(-30) // EROFS
     }
+
+    fn rmdir_chirho(
+        &self,
+        _parent_chirho: &crate::vfs_chirho::InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<(), i64> {
+        Err(-30) // EROFS
+    }
+
+    fn readlink_chirho(
+        &self,
+        _inode_chirho: &crate::vfs_chirho::InodeChirho,
+    ) -> Result<String, i64> {
+        Err(-22) // EINVAL — not a symlink
+    }
 }
 
 /// Static instance of ext4 inode operations.

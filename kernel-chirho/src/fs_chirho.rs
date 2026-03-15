@@ -312,6 +312,14 @@ fn clone_fs_data_chirho(
         }) as Box<dyn core::any::Any + Send>);
     }
 
+    // Ext4FsDataChirho (ext4 filesystem)
+    if let Some(ext4_data_chirho) = data_chirho.downcast_ref::<crate::ext4_chirho::Ext4FsDataChirho>() {
+        return Some(Box::new(crate::ext4_chirho::Ext4FsDataChirho {
+            ino_chirho: ext4_data_chirho.ino_chirho,
+            mount_chirho: ext4_data_chirho.mount_chirho.clone(),
+        }) as Box<dyn core::any::Any + Send>);
+    }
+
     // Mutex<TmpfsDataChirho> (tmpfs files/directories)
     if let Some(tmpfs_mutex_chirho) = data_chirho.downcast_ref::<Mutex<TmpfsDataChirho>>() {
         let inner_chirho = tmpfs_mutex_chirho.lock();
@@ -417,6 +425,13 @@ pub fn resolve_path_chirho(
             }
             if data_chirho.downcast_ref::<crate::procfs_chirho::ProcDirEntriesChirho>().is_some() {
                 return &PROCFS_DIR_OPS_CHIRHO;
+            }
+            // P2-004: ext4 filesystem data
+            if data_chirho.downcast_ref::<crate::ext4_chirho::Ext4FsDataChirho>().is_some() {
+                if inode_chirho.mode_chirho & S_IFDIR_CHIRHO == S_IFDIR_CHIRHO {
+                    return &crate::ext4_chirho::EXT4_DIR_OPS_CHIRHO;
+                }
+                return &crate::ext4_chirho::EXT4_FILE_OPS_CHIRHO;
             }
         }
         &TMPFS_FILE_OPS_CHIRHO
