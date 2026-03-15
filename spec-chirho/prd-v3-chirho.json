@@ -157,7 +157,7 @@
     {
       "id_chirho": "P4-004",
       "title_chirho": "Dynamically linked /bin/busybox from Alpine works",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
