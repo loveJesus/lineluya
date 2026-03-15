@@ -134,16 +134,24 @@ qemu-system-x86_64 \
 |-------|----------|------|--------|
 | 1 | Let There Be Light | Boot, serial, VGA, interrupts, memory, heap | **Done** ✅ |
 | 2 | Breath of Life | Processes, syscalls, ELF loading, scheduler | **Done** ✅ |
-| 3 | Firmament | VFS, tmpfs, procfs, pipes, signals, TTY | **Done** ✅ |
-| 4 | Dry Land | BusyBox shell, fork/exec/wait, blocking I/O | **Done** ✅ |
-| 5 | Vegetation | ext4 filesystem, VirtIO-blk, persistent storage | **Done** ✅ |
-| 6 | Stars | VirtIO-net, TCP/IP, DHCP, DNS (code written) | **Done** ✅ |
-| 7 | Creatures | Namespaces, cgroups, seccomp, capabilities | **Done** ✅ |
-| 8 | Image of God | ACPI, PCI, AHCI, boot protocol, SMP | **Done** ✅ |
-| 9 | Sabbath | **Alpine Linux BusyBox runs via musl!** | **Done** ✅ |
-| B1 | Browser Shell | WASM kernel, xterm.js, process table | **Done** ✅ |
-| C1 | Edge Linux | Cloudflare Worker, R2/KV/D1 devices | **Done** ✅ |
+| 3 | Firmament | VFS, tmpfs, procfs, devfs, pipes | **Done** ✅ |
+| 4 | Dry Land | BusyBox shell, fork/exec/wait | **Done** ✅ |
+| 5 | Vegetation | ext4 read-only, VirtIO-blk I/O port | **Done** ✅ |
+| 6 | Stars | TCP/IP stack, DHCP, DNS, VirtIO-net | Code written, untested |
+| 7 | Creatures | Namespaces, cgroups, seccomp structs | Code written, not enforced |
+| 8 | Image of God | ACPI parser, PCI scan, AHCI structs | Code written, untested |
+| 9 | Sabbath | **Alpine BusyBox runs via musl!** | **Done** ✅ |
+| B1 | Browser Shell | WASM kernel, xterm.js, shell builtins | Compiles, not integration tested |
+| C1 | Edge Linux | CF Worker, R2/KV/D1/DO endpoints | Code written, not deployed |
 | v3 | Clearing the Land | sqlite, gcc, ssh, python, X11/XTerm | In Progress |
+
+**Honest notes:**
+- Phases 1-5, 9 are **verified working in QEMU** (tested end-to-end)
+- Phase 6: TCP/IP code exists but VirtIO-net I/O port transport not tested (PCI probe works)
+- Phase 7: Namespace/cgroup structs exist but aren't wired into fork/exec enforcement
+- Phase 8: ACPI/PCI parsers work, AHCI/SMP are stubs, no real hardware tested
+- B1: WASM kernel compiles to 10KB, browser runtime exists, not integration tested
+- C1: CF Worker code exists, not deployed to Cloudflare
 
 ### Naming Convention
 
