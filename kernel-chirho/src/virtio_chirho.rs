@@ -129,9 +129,9 @@ const VIRTIO_MMIO_MAGIC_CHIRHO: u32 = 0x7472_6976; // "virt"
 // ============================================================================
 
 /// This descriptor continues into the next one (chained).
-const VRING_DESC_F_NEXT_CHIRHO: u16 = 1;
+pub const VRING_DESC_F_NEXT_CHIRHO: u16 = 1;
 /// This descriptor's buffer is device-writable (otherwise device-readable).
-const VRING_DESC_F_WRITE_CHIRHO: u16 = 2;
+pub const VRING_DESC_F_WRITE_CHIRHO: u16 = 2;
 
 // ============================================================================
 // Default queue size
