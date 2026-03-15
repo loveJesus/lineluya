@@ -1237,9 +1237,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
 
-    // Debug: log non-read/write syscalls to serial (helps debug ls hang)
-    if syscall_nr_chirho != SYS_READ_CHIRHO && syscall_nr_chirho != SYS_WRITE_CHIRHO
-        && syscall_nr_chirho != SYS_WRITEV_CHIRHO
+    // Debug: log ALL syscalls to serial
     {
         crate::serial_println_chirho!(
             "[SC] nr={} a0={:#x} a1={:#x} a2={:#x}",
@@ -3395,6 +3393,11 @@ fn sys_getdents64_chirho(
             error_chirho = Some(errno_chirho);
         }
     }
+
+    crate::serial_println_chirho!(
+        "[GETDENTS64] fd={}, bytes_written={}, error={:?}",
+        fd_chirho, bytes_written_chirho, error_chirho
+    );
 
     if let Some(errno_chirho) = error_chirho {
         return errno_chirho;
