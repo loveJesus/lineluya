@@ -13,13 +13,13 @@
     {
       "id_chirho": "P1-002",
       "title_chirho": "Fix ls /proc (procfs directory listing)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
       "id_chirho": "P1-003",
       "title_chirho": "Fix ls /tmp and ls subdirectories",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
@@ -31,7 +31,7 @@
     {
       "id_chirho": "P1-005",
       "title_chirho": "Fix cat for tmpfs files (echo foo > /tmp/bar; cat /tmp/bar)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
@@ -43,7 +43,7 @@
     {
       "id_chirho": "P1-007",
       "title_chirho": "Remove syscall debug logging for clean output",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium"
     },
     {
