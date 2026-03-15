@@ -850,10 +850,10 @@ pub fn read_pci_bar_chirho(device_chirho: &PciDeviceChirho, bar_index_chirho: u8
 // Kernel initialization entry point
 // ============================================================================
 
-/// Initialize VirtIO subsystem: scan PCI bus, log findings.
-///
-/// Actual device attachment happens later when the block I/O layer is ready.
-#[allow(dead_code)]
+/// Initialize VirtIO subsystem: scan PCI bus, log findings, and attempt to
+/// probe any VirtIO-blk devices found.  If a block device is successfully
+/// initialised, read sector 0 and log the first 16 bytes as a smoke test
+/// (P2-001 / P2-002).
 pub fn init_virtio_chirho() {
     crate::serial_println_chirho!("VirtIO: scanning PCI bus for VirtIO devices...");
 
@@ -873,12 +873,163 @@ pub fn init_virtio_chirho() {
             );
             if is_virtio_blk_chirho(dev_chirho) {
                 crate::serial_println_chirho!("    -> VirtIO-blk device detected");
+                probe_and_test_blk_chirho(dev_chirho);
             }
         }
     }
 
+    // Also probe well-known QEMU VirtIO-MMIO addresses (0x1000_1000 .. 0x1000_8000,
+    // step 0x1000) in case the board uses MMIO transport instead of PCI.
+    probe_qemu_mmio_chirho();
+
     crate::serial_println_chirho!(
-        "VirtIO: scan complete, {} device(s) found",
+        "VirtIO: scan complete, {} PCI device(s) found",
         devices_chirho.len()
     );
 }
+
+/// Try to read BAR0 for a VirtIO-blk PCI device, probe MMIO at that address,
+/// and if successful read sector 0 and log the first 16 bytes (P2-002).
+fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
+    let bar0_raw_chirho = read_pci_bar_chirho(pci_dev_chirho, 0);
+    // Memory BAR: bit 0 == 0; mask type bits to get base address.
+    let is_io_bar_chirho = bar0_raw_chirho & 1 != 0;
+    if is_io_bar_chirho {
+        crate::serial_println_chirho!(
+            "    VirtIO-blk BAR0 is I/O port ({:#x}), MMIO probe skipped",
+            bar0_raw_chirho
+        );
+        return;
+    }
+    let mmio_base_chirho = (bar0_raw_chirho & 0xFFFF_FFF0) as usize;
+    if mmio_base_chirho == 0 {
+        crate::serial_println_chirho!("    VirtIO-blk BAR0 is zero — device not mapped");
+        return;
+    }
+
+    crate::serial_println_chirho!(
+        "    Probing VirtIO-blk MMIO at {:#x}...",
+        mmio_base_chirho
+    );
+
+    match VirtioBlkDeviceChirho::probe_mmio_chirho(mmio_base_chirho) {
+        Some(blk_dev_chirho) => {
+            crate::serial_println_chirho!(
+                "    VirtIO-blk init OK — capacity {} sectors ({} MiB)",
+                blk_dev_chirho.capacity_sectors_chirho,
+                blk_dev_chirho.capacity_sectors_chirho / 2048
+            );
+            // P2-002: read sector 0 and log the first 16 bytes.
+            test_read_sector0_chirho(&blk_dev_chirho);
+
+            // Register the device in the global block device registry.
+            use alloc::boxed::Box;
+            use alloc::string::String;
+            let name_chirho = String::from("vda");
+            let reg_result_chirho = crate::block_chirho::BLOCK_REGISTRY_CHIRHO
+                .register_chirho(name_chirho, Box::new(blk_dev_chirho));
+            match reg_result_chirho {
+                Ok(idx_chirho) => {
+                    crate::serial_println_chirho!(
+                        "    Registered VirtIO-blk as block device index {}",
+                        idx_chirho
+                    );
+                }
+                Err(err_chirho) => {
+                    crate::serial_println_chirho!(
+                        "    Failed to register VirtIO-blk: {}",
+                        err_chirho
+                    );
+                }
+            }
+        }
+        None => {
+            crate::serial_println_chirho!(
+                "    VirtIO-blk MMIO probe failed at {:#x} (may need identity map)",
+                mmio_base_chirho
+            );
+        }
+    }
+}
+
+/// Probe QEMU's default VirtIO-MMIO address range for block devices.
+fn probe_qemu_mmio_chirho() {
+    const QEMU_MMIO_BASE_CHIRHO: usize = 0x1000_1000;
+    const QEMU_MMIO_STEP_CHIRHO: usize = 0x1000;
+    const QEMU_MMIO_COUNT_CHIRHO: usize = 8;
+
+    for i_chirho in 0..QEMU_MMIO_COUNT_CHIRHO {
+        let addr_chirho = QEMU_MMIO_BASE_CHIRHO + i_chirho * QEMU_MMIO_STEP_CHIRHO;
+        let transport_chirho = VirtioMmioTransportChirho::new_chirho(addr_chirho);
+        if !transport_chirho.check_magic_chirho() {
+            continue;
+        }
+        let dev_id_chirho = transport_chirho.device_id_chirho();
+        crate::serial_println_chirho!(
+            "  VirtIO-MMIO at {:#x}: device_type={} vendor={:#x}",
+            addr_chirho,
+            dev_id_chirho,
+            transport_chirho.vendor_id_chirho()
+        );
+        // Type 2 = block device
+        if dev_id_chirho == 2 {
+            crate::serial_println_chirho!("    -> VirtIO-blk (MMIO transport)");
+            match VirtioBlkDeviceChirho::probe_mmio_chirho(addr_chirho) {
+                Some(blk_dev_chirho) => {
+                    crate::serial_println_chirho!(
+                        "    VirtIO-blk MMIO init OK — capacity {} sectors",
+                        blk_dev_chirho.capacity_sectors_chirho
+                    );
+                    test_read_sector0_chirho(&blk_dev_chirho);
+                }
+                None => {
+                    crate::serial_println_chirho!("    VirtIO-blk MMIO probe failed");
+                }
+            }
+        }
+    }
+}
+
+/// P2-002: Read sector 0 from a VirtIO-blk device and log the first 16 bytes.
+/// This should show the MBR/GPT signature if a disk image is attached.
+fn test_read_sector0_chirho(dev_chirho: &VirtioBlkDeviceChirho) {
+    use crate::block_chirho::{BlockDeviceChirho, SECTOR_SIZE_CHIRHO};
+
+    let mut buf_chirho = vec![0u8; SECTOR_SIZE_CHIRHO];
+    match dev_chirho.read_block_chirho(0, &mut buf_chirho) {
+        Ok(()) => {
+            crate::serial_println_chirho!("    Sector 0 read OK — first 16 bytes:");
+            // Format the first 16 bytes as hex.
+            let mut hex_chirho = [0u8; 48]; // 16 * 3 max
+            let mut pos_chirho = 0usize;
+            for byte_chirho in &buf_chirho[..16] {
+                let hi_chirho = HEX_DIGITS_CHIRHO[(*byte_chirho >> 4) as usize];
+                let lo_chirho = HEX_DIGITS_CHIRHO[(*byte_chirho & 0x0F) as usize];
+                hex_chirho[pos_chirho] = hi_chirho;
+                hex_chirho[pos_chirho + 1] = lo_chirho;
+                hex_chirho[pos_chirho + 2] = b' ';
+                pos_chirho += 3;
+            }
+            if let Ok(hex_str_chirho) = core::str::from_utf8(&hex_chirho[..pos_chirho]) {
+                crate::serial_println_chirho!("    {}", hex_str_chirho);
+            }
+            // Check for MBR/GPT signatures.
+            if buf_chirho[510] == 0x55 && buf_chirho[511] == 0xAA {
+                crate::serial_println_chirho!("    MBR boot signature detected (0x55AA)");
+            }
+            if &buf_chirho[0..8] == b"EFI PART" {
+                crate::serial_println_chirho!("    GPT header signature detected");
+            }
+        }
+        Err(err_chirho) => {
+            crate::serial_println_chirho!(
+                "    Sector 0 read FAILED (err={}). Expected if no disk attached or \
+                 MMIO addresses not identity-mapped.",
+                err_chirho
+            );
+        }
+    }
+}
+
+/// Hex digit lookup table for formatting bytes.
+const HEX_DIGITS_CHIRHO: &[u8; 16] = b"0123456789abcdef";

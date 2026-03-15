@@ -214,6 +214,11 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     fs_chirho::init_fs_chirho();
     fb_println_chirho!("[OK] Filesystem layer initialized");
 
+    // Phase A4: VirtIO device discovery — scan PCI bus, probe any VirtIO-blk,
+    // and attempt to read sector 0 as a smoke test (P2-001 / P2-002).
+    virtio_chirho::init_virtio_chirho();
+    fb_println_chirho!("[OK] VirtIO subsystem initialized");
+
     net_chirho::init_networking_chirho();
     fb_println_chirho!("[OK] Networking initialized");
 
