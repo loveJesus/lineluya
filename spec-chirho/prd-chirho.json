@@ -482,7 +482,7 @@
         "A2-001",
         "A2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Relocations resolved correctly",
@@ -497,7 +497,7 @@
       "title_chirho": "Module memory allocator",
       "description_chirho": "Allocate executable kernel memory for loaded module code and data.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Module gets RX pages for .text",
@@ -515,7 +515,7 @@
         "A2-003",
         "A2-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "init_module runs on insmod",
@@ -801,7 +801,7 @@
       "depends_on_chirho": [
         "A3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Frame parser extracts MAC/type",
@@ -818,7 +818,7 @@
       "depends_on_chirho": [
         "A3-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "ARP resolves gateway MAC",
@@ -1131,7 +1131,7 @@
       "depends_on_chirho": [
         "A1-025"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "VirtIO-blk device detected",
@@ -1148,7 +1148,7 @@
       "depends_on_chirho": [
         "A4-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Requests queued and completed async",
@@ -2206,7 +2206,7 @@
       "depends_on_chirho": [
         "B1-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Each process gets unique PID",
@@ -2225,7 +2225,7 @@
         "B1-009",
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "pipe() returns two fds",
@@ -2243,7 +2243,7 @@
       "depends_on_chirho": [
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Process receives command-line arguments",
@@ -2262,7 +2262,7 @@
         "B1-009",
         "B1-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Ctrl+C terminates foreground process",
