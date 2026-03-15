@@ -26,6 +26,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::exec_chirho::{self, ExecErrorChirho, LoadedElfChirho, HELLO_ELF_CHIRHO};
+use crate::dynlink_chirho;
 use crate::fs_chirho;
 use crate::syscall_chirho::{
     SyscallFrameChirho, E2BIG_CHIRHO, EAGAIN_CHIRHO, ECHILD_CHIRHO, EFAULT_CHIRHO,
@@ -719,7 +720,127 @@ pub fn sys_execve_chirho(
     crate::serial_println_chirho!("[PROCESS] execve: reusing current page table for vfork-execve");
 
     // -----------------------------------------------------------------------
-    // Step 5: Parse and load the ELF into memory
+    // Step 5: Check for PT_INTERP (dynamic linking) and load the ELF
+    // -----------------------------------------------------------------------
+    // If argv is empty, use the filename as argv[0] (standard behaviour).
+    let effective_argv_chirho = if argv_vec_chirho.is_empty() {
+        alloc::vec![filename_str_chirho.clone()]
+    } else {
+        argv_vec_chirho
+    };
+
+    // Check whether this ELF has a PT_INTERP segment (dynamically linked).
+    let interp_path_chirho = dynlink_chirho::find_interp_in_phdrs_chirho(elf_data_chirho);
+
+    if let Some(ref raw_interp_path_chirho) = interp_path_chirho {
+        // ---------------------------------------------------------------
+        // P4-004: Dynamically linked ELF — load interpreter from ext4
+        // ---------------------------------------------------------------
+        crate::serial_println_chirho!(
+            "[PROCESS] execve: PT_INTERP detected: \"{}\"",
+            raw_interp_path_chirho
+        );
+
+        // Resolve the interpreter path. The ELF says e.g.
+        // "/lib/ld-musl-x86_64.so.1" but the Alpine rootfs is mounted
+        // at /mnt, so the actual file is /mnt/lib/ld-musl-x86_64.so.1.
+        // If the filename itself starts with /mnt, the rootfs is /mnt.
+        // Otherwise try the raw path first, then /mnt-prefixed.
+        let interp_resolved_path_chirho = resolve_interp_path_chirho(
+            raw_interp_path_chirho,
+            &filename_str_chirho,
+        );
+
+        crate::serial_println_chirho!(
+            "[PROCESS] execve: resolved interpreter path: \"{}\"",
+            interp_resolved_path_chirho
+        );
+
+        // Read the interpreter binary from the VFS (ext4).
+        let interp_data_vec_chirho = match try_read_file_chirho(&interp_resolved_path_chirho) {
+            Some(data_chirho) => {
+                crate::serial_println_chirho!(
+                    "[PROCESS] execve: loaded interpreter from VFS ({} bytes)",
+                    data_chirho.len()
+                );
+                data_chirho
+            }
+            None => {
+                crate::serial_println_chirho!(
+                    "[PROCESS] execve: interpreter \"{}\" not found, falling back to static load",
+                    interp_resolved_path_chirho
+                );
+                // Fall through to static loading below by using
+                // load_elf_with_interp_chirho with no interpreter data.
+                Vec::new()
+            }
+        };
+
+        let has_interp_data_chirho = !interp_data_vec_chirho.is_empty();
+
+        if has_interp_data_chirho {
+            // Leak interpreter data to get a &'static [u8]
+            let interp_data_leaked_chirho: &'static [u8] =
+                alloc::vec::Vec::leak(interp_data_vec_chirho);
+
+            // Load main ELF + interpreter using the existing
+            // load_elf_with_interp_chirho infrastructure.
+            let dyn_result_chirho = match exec_chirho::load_elf_with_interp_chirho(
+                elf_data_chirho,
+                Some(interp_data_leaked_chirho),
+            ) {
+                Ok(result_chirho) => result_chirho,
+                Err(err_chirho) => {
+                    crate::serial_println_chirho!(
+                        "[PROCESS] execve: dynamic ELF load failed: {:?}",
+                        err_chirho
+                    );
+                    return -ENOEXEC_CHIRHO;
+                }
+            };
+
+            crate::serial_println_chirho!(
+                "[PROCESS] execve: dynamic ELF loaded — exe_entry={:#x}, start={:#x}, interp_base={:#x}, brk={:#x}",
+                dyn_result_chirho.exe_chirho.entry_point_chirho,
+                dyn_result_chirho.start_addr_chirho,
+                dyn_result_chirho.interp_base_chirho,
+                dyn_result_chirho.exe_chirho.brk_addr_chirho
+            );
+
+            // Set up the user stack with AT_BASE for the dynamic linker.
+            // AT_ENTRY must be the main executable's entry so the
+            // interpreter can jump to it after self-relocation.
+            let user_rsp_chirho = exec_chirho::setup_user_stack_dynlink_chirho(
+                &dyn_result_chirho.exe_chirho,
+                &effective_argv_chirho,
+                &envp_vec_chirho,
+                dyn_result_chirho.interp_base_chirho,
+                dyn_result_chirho.exe_chirho.entry_point_chirho,
+            );
+
+            // Debug: verify argv[0] on the user stack
+            debug_verify_stack_chirho(user_rsp_chirho);
+
+            crate::serial_println_chirho!(
+                "[PROCESS] execve: ready to enter userspace (dynamic) — entry={:#x}, rsp={:#x}",
+                dyn_result_chirho.start_addr_chirho,
+                user_rsp_chirho
+            );
+
+            // Jump to the interpreter's entry point (not the main binary's).
+            // The interpreter (ld-musl) will self-relocate, load the main
+            // binary, resolve symbols, and eventually call main().
+            exec_chirho::jump_to_userspace_chirho(
+                dyn_result_chirho.start_addr_chirho,
+                user_rsp_chirho,
+            );
+            // UNREACHABLE
+        }
+        // If interpreter data was empty, fall through to static loading.
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 5b: Static ELF — no interpreter needed
     // -----------------------------------------------------------------------
     let loaded_chirho: LoadedElfChirho =
         match exec_chirho::load_elf_into_memory_chirho(elf_data_chirho) {
@@ -734,7 +855,7 @@ pub fn sys_execve_chirho(
         };
 
     crate::serial_println_chirho!(
-        "[PROCESS] execve: ELF loaded — entry={:#x}, phdr={:#x}, brk={:#x}",
+        "[PROCESS] execve: ELF loaded (static) — entry={:#x}, phdr={:#x}, brk={:#x}",
         loaded_chirho.entry_point_chirho,
         loaded_chirho.phdr_addr_chirho,
         loaded_chirho.brk_addr_chirho
@@ -743,13 +864,6 @@ pub fn sys_execve_chirho(
     // -----------------------------------------------------------------------
     // Step 6: Set up the user stack with argv/envp
     // -----------------------------------------------------------------------
-    // If argv is empty, use the filename as argv[0] (standard behaviour).
-    let effective_argv_chirho = if argv_vec_chirho.is_empty() {
-        alloc::vec![filename_str_chirho.clone()]
-    } else {
-        argv_vec_chirho
-    };
-
     let user_rsp_chirho = exec_chirho::setup_user_stack_with_args_chirho(
         &loaded_chirho,
         &effective_argv_chirho,
@@ -757,24 +871,10 @@ pub fn sys_execve_chirho(
     );
 
     // Debug: verify argv[0] on the user stack
-    unsafe {
-        let argc_val_chirho = core::ptr::read(user_rsp_chirho as *const u64);
-        let argv0_ptr_chirho = core::ptr::read((user_rsp_chirho + 8) as *const u64);
-        let mut argv0_buf_chirho = [0u8; 32];
-        for i_chirho in 0..31usize {
-            let b_chirho = core::ptr::read_volatile((argv0_ptr_chirho + i_chirho as u64) as *const u8);
-            if b_chirho == 0 { break; }
-            argv0_buf_chirho[i_chirho] = b_chirho;
-        }
-        let argv0_str_chirho = core::str::from_utf8(&argv0_buf_chirho).unwrap_or("???");
-        crate::serial_println_chirho!(
-            "[PROCESS] execve: VERIFY stack: argc={}, argv[0]@{:#x}=\"{}\"",
-            argc_val_chirho, argv0_ptr_chirho, argv0_str_chirho.trim_end_matches('\0')
-        );
-    }
+    debug_verify_stack_chirho(user_rsp_chirho);
 
     crate::serial_println_chirho!(
-        "[PROCESS] execve: ready to enter userspace — entry={:#x}, rsp={:#x}",
+        "[PROCESS] execve: ready to enter userspace (static) — entry={:#x}, rsp={:#x}",
         loaded_chirho.entry_point_chirho,
         user_rsp_chirho
     );
@@ -782,8 +882,6 @@ pub fn sys_execve_chirho(
     // -----------------------------------------------------------------------
     // Step 7: Jump to userspace (never returns on success)
     // -----------------------------------------------------------------------
-    // execve replaces the process image entirely. We use IRETQ to transition
-    // to the new program's entry point. This call never returns.
     exec_chirho::jump_to_userspace_chirho(loaded_chirho.entry_point_chirho, user_rsp_chirho);
 
     // UNREACHABLE: jump_to_userspace_chirho is -> !
@@ -792,6 +890,67 @@ pub fn sys_execve_chirho(
 // ===========================================================================
 // Internal helpers
 // ===========================================================================
+
+/// Resolve an interpreter path from a PT_INTERP segment.
+///
+/// The ELF binary specifies an interpreter like "/lib/ld-musl-x86_64.so.1",
+/// but the Alpine rootfs is mounted at /mnt in our VFS. This function
+/// determines the correct VFS path for the interpreter:
+///
+/// - If the executable path starts with "/mnt", the rootfs is at /mnt,
+///   so prepend "/mnt" to the interpreter path.
+/// - Otherwise, try the raw path first; if it doesn't exist, try /mnt-prefixed.
+fn resolve_interp_path_chirho(
+    interp_path_chirho: &str,
+    exe_path_chirho: &str,
+) -> String {
+    // If the executable is from /mnt (ext4 rootfs), prepend /mnt to the
+    // interpreter path.
+    if exe_path_chirho.starts_with("/mnt") {
+        let mut resolved_chirho = String::from("/mnt");
+        resolved_chirho.push_str(interp_path_chirho);
+        return resolved_chirho;
+    }
+
+    // Otherwise try the raw path first. If it resolves in the VFS, use it.
+    if fs_chirho::resolve_path_chirho(interp_path_chirho).is_ok() {
+        return String::from(interp_path_chirho);
+    }
+
+    // Fall back to /mnt-prefixed path.
+    let mut resolved_chirho = String::from("/mnt");
+    resolved_chirho.push_str(interp_path_chirho);
+    resolved_chirho
+}
+
+/// Debug helper: verify argv[0] on the user stack after setup.
+///
+/// Reads argc and argv[0] from the freshly constructed stack layout and
+/// prints them to serial for debugging.
+fn debug_verify_stack_chirho(user_rsp_chirho: u64) {
+    unsafe {
+        let argc_val_chirho = core::ptr::read(user_rsp_chirho as *const u64);
+        let argv0_ptr_chirho = core::ptr::read((user_rsp_chirho + 8) as *const u64);
+        let mut argv0_buf_chirho = [0u8; 32];
+        for i_chirho in 0..31usize {
+            let b_chirho = core::ptr::read_volatile(
+                (argv0_ptr_chirho + i_chirho as u64) as *const u8,
+            );
+            if b_chirho == 0 {
+                break;
+            }
+            argv0_buf_chirho[i_chirho] = b_chirho;
+        }
+        let argv0_str_chirho =
+            core::str::from_utf8(&argv0_buf_chirho).unwrap_or("???");
+        crate::serial_println_chirho!(
+            "[PROCESS] execve: VERIFY stack: argc={}, argv[0]@{:#x}=\"{}\"",
+            argc_val_chirho,
+            argv0_ptr_chirho,
+            argv0_str_chirho.trim_end_matches('\0')
+        );
+    }
+}
 
 /// Allocate a kernel stack on the heap and return the base (lowest) address.
 ///
