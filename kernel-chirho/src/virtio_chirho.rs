@@ -1110,10 +1110,7 @@ impl VirtioBlkDeviceChirho {
             return Err(-19); // ENODEV
         }
 
-        crate::serial_println_chirho!(
-            "    [VirtIO-IO] submit: sector={}, len={}, write={}, vq_base={:#x}",
-            sector_chirho, buf_chirho.len(), is_write_chirho, vq_base_chirho
-        );
+        // Debug logging removed for performance (was 8 lines per sector read)
         let mut vq_chirho = self.vq_chirho.lock();
         let queue_size_chirho = vq_chirho.size_chirho as usize;
 
@@ -1184,26 +1181,7 @@ impl VirtioBlkDeviceChirho {
         let status_virt_chirho = unsafe { (req_ptr_chirho as *mut u8).add(528) };
         let data_virt_chirho = unsafe { (req_ptr_chirho as *mut u8).add(16) };
 
-        crate::serial_println_chirho!(
-            "    [VirtIO-IO] descs: hdr_p={:#x} data_p={:#x} stat_p={:#x} d={}/{}/{}",
-            header_phys_chirho, data_phys_chirho, status_phys_chirho, d0_chirho, d1_chirho, d2_chirho
-        );
-        // CRITICAL VERIFY: write magic pattern to vring via heap ptr,
-        // read it back via phys_mem_offset ptr. If they differ, the
-        // two mappings point to different physical pages.
-        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let vring_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(vq_base_chirho as u64).unwrap_or(0);
-        let vring_via_physmap_chirho = (vring_phys_chirho + phys_offset_chirho) as *mut u64;
-        // Write magic via heap mapping
-        unsafe { core::ptr::write_volatile(vq_base_chirho as *mut u64, 0xDEAD_BEEF_CAFE_BABEu64); }
-        // Read back via phys mapping
-        let readback_chirho = unsafe { core::ptr::read_volatile(vring_via_physmap_chirho) };
-        crate::serial_println_chirho!(
-            "    [VirtIO-IO] COHERENCE TEST: wrote 0xDEADBEEFCAFEBABE via heap, read {:#x} via physmap (match={})",
-            readback_chirho, readback_chirho == 0xDEAD_BEEF_CAFE_BABEu64
-        );
-        // Restore zero
-        unsafe { core::ptr::write_volatile(vq_base_chirho as *mut u64, 0); }
+        // Debug logging removed for performance
 
         // Write descriptor 0: request header (device-readable).
         unsafe {
@@ -1271,53 +1249,6 @@ impl VirtioBlkDeviceChirho {
             ptr::write_volatile(idx_ptr_chirho, new_idx_chirho);
         }
         vq_chirho.avail_idx_chirho = avail_idx_chirho.wrapping_add(1);
-
-        // Read back avail ring to verify writes
-        let avail_flags_chirho = unsafe { ptr::read_volatile(avail_base_chirho) };
-        let avail_idx_verify_chirho = unsafe { ptr::read_volatile(avail_base_chirho.add(1)) };
-        let avail_ring0_chirho = unsafe { ptr::read_volatile(avail_base_chirho.add(2)) };
-        // Read back first descriptor
-        let desc0_chirho = unsafe { ptr::read_volatile(desc_base_chirho) };
-        crate::serial_println_chirho!(
-            "    [VirtIO-IO] avail: flags={} idx={} ring[0]={} | desc[0]: addr={:#x} len={} flags={} next={}",
-            avail_flags_chirho, avail_idx_verify_chirho, avail_ring0_chirho,
-            desc0_chirho.addr_chirho, desc0_chirho.len_chirho, desc0_chirho.flags_chirho, desc0_chirho.next_chirho
-        );
-
-        // Dump raw vring bytes at PFN physical address
-        let pfn_phys_chirho = (self.vq_phys_base_chirho - crate::pagetable_chirho::phys_mem_offset_chirho()) as u64;
-        crate::serial_println_chirho!(
-            "    [VirtIO-IO] PFN phys={:#x} vq_base virt={:#x}",
-            pfn_phys_chirho, vq_base_chirho
-        );
-        // Read first 32 bytes of desc[0] at PFN address
-        let pfn_virt_chirho = self.vq_phys_base_chirho as *const u8;
-        let mut hex_chirho = [0u8; 96];
-        let mut hp_chirho = 0;
-        for i_chirho in 0..32usize {
-            let b_chirho = unsafe { ptr::read_volatile(pfn_virt_chirho.add(i_chirho)) };
-            hex_chirho[hp_chirho] = b"0123456789abcdef"[(b_chirho >> 4) as usize];
-            hex_chirho[hp_chirho+1] = b"0123456789abcdef"[(b_chirho & 0xf) as usize];
-            hex_chirho[hp_chirho+2] = b' ';
-            hp_chirho += 3;
-        }
-        if let Ok(s_chirho) = core::str::from_utf8(&hex_chirho[..hp_chirho]) {
-            crate::serial_println_chirho!("    [VirtIO-IO] desc[0-1] raw: {}", s_chirho);
-        }
-        // Read avail ring (at desc_table_bytes offset)
-        let avail_off_chirho = queue_size_chirho * 16;
-        let mut ha_chirho = [0u8; 24];
-        let mut ap_chirho = 0;
-        for i_chirho in 0..8usize {
-            let b_chirho = unsafe { ptr::read_volatile(pfn_virt_chirho.add(avail_off_chirho + i_chirho)) };
-            ha_chirho[ap_chirho] = b"0123456789abcdef"[(b_chirho >> 4) as usize];
-            ha_chirho[ap_chirho+1] = b"0123456789abcdef"[(b_chirho & 0xf) as usize];
-            ha_chirho[ap_chirho+2] = b' ';
-            ap_chirho += 3;
-        }
-        if let Ok(s_chirho) = core::str::from_utf8(&ha_chirho[..ap_chirho]) {
-            crate::serial_println_chirho!("    [VirtIO-IO] avail raw: {}", s_chirho);
-        }
 
         // Memory barrier before notify.
         fence(Ordering::SeqCst);
