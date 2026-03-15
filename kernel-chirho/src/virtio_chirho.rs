@@ -1148,11 +1148,10 @@ impl VirtioBlkDeviceChirho {
             status_chirho: u8,
         }
 
-        // Allocate from contiguous physical memory (NOT heap — heap pages
-        // may not be physically contiguous, which breaks DMA).
-        static REQ_PHYS_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0x900000); // 9MB physical
-        let req_phys_chirho = REQ_PHYS_NEXT_CHIRHO.fetch_add(4096, core::sync::atomic::Ordering::SeqCst);
+        // Use a SINGLE fixed physical page for all DMA requests (reused).
+        // The previous bump allocator leaked 4KB per read, exhausting
+        // physical memory after ~4000 reads (16MB).
+        let req_phys_chirho: u64 = 0x900000; // 9MB physical — one page, reused every read
         let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         let req_ptr_chirho = (req_phys_chirho + phys_off_chirho) as *mut BlkReqFullChirho;
         unsafe {
