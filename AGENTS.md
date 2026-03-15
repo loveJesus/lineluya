@@ -109,5 +109,39 @@ overview_of_result_chirho: Did this go as planned, did you learn anything from t
 
 How granular tis should be is up to you
 
-You can modify  the following section
+You can modify the following section
 ### Agent Self Modifications (For the agent to keep things present in its context)
+
+## Project: Lineluya — Linux Kernel Rewrite in Rust
+
+### Current State (v0.5.1)
+- 17,500+ lines of Rust across 40 kernel modules
+- BusyBox ash shell runs interactively (echo, pwd, set, type, variables)
+- Boots via UEFI in QEMU, serial console I/O
+- 495 syscall dispatch entries, 66 implementations
+- VFS: tmpfs, procfs, devtmpfs, sysfs, pipes
+- Three architecture targets: x86_64 (boots), wasm32 (compiles), edge (planned)
+- v2 PRD with 227 tasks across 3 tracks (A: bare metal, B: browser, C: edge)
+
+### Key Architecture
+- kernel-chirho/ — x86_64 bare metal kernel (40 modules)
+- kernel-core-chirho/ — shared arch-independent code
+- kernel-wasm-chirho/ — wasm32 browser target
+- web-chirho/ — JS runtime, xterm.js terminal, CF Worker proxy
+- userspace-chirho/ — hello-chirho test binary, busybox static binary
+- spec-chirho/ — PRD, vision, deployment architecture, progress tracking
+
+### Build Commands
+- `make fast-kernel-chirho` — incremental kernel build (<2s)
+- `make fast-chirho` — kernel + disk images (~1s cached)
+- `make docker-chirho` — full Docker rebuild (~67s)
+- `make wasm-chirho` — build WASM kernel
+- `make serve-chirho` — serve WASM kernel in browser
+
+### Known Issues
+- Long BusyBox commands (>7 char args) crash — kernel page fault during read() syscall
+- UEFI keyboard needs USB HID (QEMU UEFI uses USB, not PS/2)
+- fork/exec works (vfork-style) but needs per-process page tables for full support
+
+### Tags
+v0.1.0 Genesis, v0.2.0 Breath of Life, v0.3.0 Firmament, v0.4.0 All Phases, v0.5.0 Dry Land (BusyBox), v0.5.1 Interactive Shell

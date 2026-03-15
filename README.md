@@ -65,21 +65,31 @@ that whoever believes in him should not perish but have eternal life.
 [OK] Syscall interface initialized
 [OK] Interrupts enabled
 
-=== Lineluya Kernel v0.1.0 ===
+=== Lineluya Kernel v0.5.1 ===
 Linux-compatible kernel written in Rust
 All subsystems initialized.
 
-[TEST] Heap allocation: Box<i32> = 42
-[TEST] Vec allocation: [1, 2, 3, 4, 5]
-[TEST] String allocation: Hallelujah! Lineluya kernel is alive!
-[TEST] sys_getpid returned: 1
+lineluya# echo test1
+test1
+lineluya# echo test2
+test2
+lineluya# pwd
+/
+lineluya# set
+HOME='/root'
+PATH='/bin:/sbin'
+PS1='lineluya# '
+TERM='linux'
+lineluya# FOO=bar
+lineluya# echo $FOO
+bar
 ```
 
 ### Architecture
 
 ```
 lineluya/
-├── kernel-chirho/           # The kernel (4,600+ lines of Rust)
+├── kernel-chirho/           # x86_64 kernel (17,500+ lines, 40 modules)
 │   ├── src/
 │   │   ├── main_chirho.rs          # Kernel entry point, init sequence
 │   │   ├── serial_chirho.rs        # UART 16550 serial driver
@@ -125,14 +135,16 @@ qemu-system-x86_64 \
 | Phase | Codename | Goal | Status |
 |-------|----------|------|--------|
 | 1 | Let There Be Light | Boot, serial, VGA, interrupts, memory, heap | Done |
-| 2 | Breath of Life | Processes, syscalls, ELF loading, scheduler | In Progress |
-| 3 | Firmament | VFS, tmpfs, procfs, pipes, BusyBox shell | Planned |
-| 4 | Dry Land | Signals, TTY, sessions, bash with job control | Planned |
+| 2 | Breath of Life | Processes, syscalls, ELF loading, scheduler | Done |
+| 3 | Firmament | VFS, tmpfs, procfs, pipes, signals, TTY | Done |
+| 4 | Dry Land | BusyBox shell, fork/exec/wait, blocking I/O | Done |
 | 5 | Vegetation | ext4 filesystem, block I/O, persistent storage | Planned |
 | 6 | Stars | TCP/IP networking, sockets, SSH | Planned |
 | 7 | Creatures | Namespaces, cgroups, seccomp, Docker support | Planned |
 | 8 | Image of God | Linux boot protocol, GRUB, real hardware boot | Planned |
 | 9 | Sabbath | Full Linux compatibility, Alpine Linux runs | Planned |
+| B1 | Browser Shell | WASM kernel, xterm.js, serial I/O | In Progress |
+| C1 | Edge Linux | Cloudflare Worker, WebSocket proxy | Planned |
 
 ### Naming Convention
 
