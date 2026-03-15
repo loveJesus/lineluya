@@ -182,10 +182,6 @@ impl MmChirho {
         if !is_anonymous_chirho || !is_private_chirho {
             // File-backed or shared mappings are not yet supported.
             if fd_chirho >= 0 {
-                crate::serial_println_chirho!(
-                    "[MM] mmap: file-backed mappings not yet supported (fd={})",
-                    fd_chirho
-                );
                 return Err(-ENOSYS_CHIRHO);
             }
             if !is_private_chirho && !is_anonymous_chirho {
@@ -233,14 +229,8 @@ impl MmChirho {
         };
         self.insert_vma_chirho(vma_chirho);
 
-        crate::serial_println_chirho!(
-            "[MM] mmap({:#x}, {:#x}, prot={:#x}, flags={:#x}) => {:#x}",
-            addr_chirho,
-            len_chirho,
-            prot_chirho,
-            flags_chirho,
-            map_addr_chirho
-        );
+        // Debug log removed — serial prints during syscalls can deadlock
+        // with the page fault handler's serial output.
 
         Ok(map_addr_chirho)
     }
@@ -279,11 +269,6 @@ impl MmChirho {
         // Remove or split overlapping VMAs.
         self.remove_overlapping_vmas_chirho(addr_chirho, aligned_len_chirho);
 
-        crate::serial_println_chirho!(
-            "[MM] munmap({:#x}, {:#x})",
-            addr_chirho,
-            aligned_len_chirho
-        );
 
         Ok(())
     }
@@ -331,12 +316,6 @@ impl MmChirho {
         // the mprotect range partially overlaps a VMA.
         self.update_vma_prot_chirho(addr_chirho, end_chirho, prot_chirho);
 
-        crate::serial_println_chirho!(
-            "[MM] mprotect({:#x}, {:#x}, prot={:#x})",
-            addr_chirho,
-            aligned_len_chirho,
-            prot_chirho
-        );
 
         Ok(())
     }
@@ -577,9 +556,6 @@ fn map_anonymous_pages_chirho(
                     None => return Err(-ENOMEM_CHIRHO),
                 },
                 None => {
-                    crate::serial_println_chirho!(
-                        "[MM] map_anonymous_pages: no frame allocator available"
-                    );
                     return Err(-ENOMEM_CHIRHO);
                 }
             }

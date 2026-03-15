@@ -72,6 +72,9 @@ pub const STAR_MSR_VALUE_CHIRHO: u64 = (0x18u64 << 48) | (0x08u64 << 32);
 /// When a double fault occurs, the CPU switches to the stack at IST entry 0,
 /// preventing a triple fault caused by a corrupted kernel stack.
 pub const DOUBLE_FAULT_IST_INDEX_CHIRHO: u16 = 0;
+/// IST index for the page fault handler — separate stack prevents double
+/// faults when a page fault occurs on a corrupted/overflowed kernel stack.
+pub const PAGE_FAULT_IST_INDEX_CHIRHO: u16 = 1;
 
 /// Size in bytes of each IST / privilege-level stack.
 /// 5 pages (20 KiB) is sufficient for interrupt and exception handling.
@@ -122,6 +125,17 @@ static TSS_CHIRHO: Lazy<TaskStateSegment> = Lazy::new(|| {
     };
     tss_chirho.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX_CHIRHO as usize] =
         double_fault_stack_end_chirho;
+
+    // -- Page fault IST stack (IST index 1) --
+    let page_fault_stack_end_chirho = {
+        static mut PAGE_FAULT_STACK_CHIRHO: [u8; STACK_SIZE_CHIRHO] = [0; STACK_SIZE_CHIRHO];
+        #[allow(static_mut_refs)]
+        let stack_start_chirho =
+            VirtAddr::from_ptr(unsafe { &PAGE_FAULT_STACK_CHIRHO });
+        stack_start_chirho + STACK_SIZE_CHIRHO as u64
+    };
+    tss_chirho.interrupt_stack_table[PAGE_FAULT_IST_INDEX_CHIRHO as usize] =
+        page_fault_stack_end_chirho;
 
     // -- Privilege stack for ring 0 --
     // SAFETY: Same reasoning as above — module-private, single init via `Lazy`.
