@@ -13,67 +13,67 @@
     {
       "id_chirho": "D1-001",
       "title_chirho": "QEMU integration test harness",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-002",
       "title_chirho": "Boot-to-shell automated test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-003",
       "title_chirho": "Syscall conformance test suite",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-004",
       "title_chirho": "VFS/tmpfs/procfs unit tests",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-005",
       "title_chirho": "Memory management stress test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-006",
       "title_chirho": "Fork/exec/wait test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-007",
       "title_chirho": "Signal delivery test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-008",
       "title_chirho": "Pipe and IPC test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-009",
       "title_chirho": "Network loopback ping test",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-010",
       "title_chirho": "ext4 read/write test with disk image",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "D1-011",
       "title_chirho": "GitHub Actions CI pipeline",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
