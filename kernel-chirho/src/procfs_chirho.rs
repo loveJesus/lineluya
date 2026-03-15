@@ -406,13 +406,36 @@ impl FileOpsChirho for ProcDirOpsChirho {
         let inode_chirho = file_chirho.inode_chirho.lock();
         if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
             if let Some(entries_chirho) = data_chirho.downcast_ref::<ProcDirEntriesChirho>() {
+                let start_chirho = file_chirho.pos_chirho as usize;
                 let mut count_chirho: usize = 0;
-                // DT_DIR = 4, DT_REG = 8, DT_LNK = 10
-                for entry_chirho in &entries_chirho.entries_chirho {
-                    let dt_type_chirho = match entry_chirho.mode_chirho & 0o170000 {
-                        0o040000 => 4u8,  // DT_DIR
-                        0o120000 => 10u8, // DT_LNK
-                        _ => 8u8,         // DT_REG
+
+                const DT_DIR_CHIRHO: u8 = 4;
+                const DT_REG_CHIRHO: u8 = 8;
+                const DT_LNK_CHIRHO: u8 = 10;
+                const S_IFMT_MASK_CHIRHO: u32 = 0o170000;
+                const S_IFDIR_VAL_CHIRHO: u32 = 0o040000;
+                const S_IFLNK_VAL_CHIRHO: u32 = 0o120000;
+
+                // Emit "." and ".." first
+                let ino_chirho = inode_chirho.ino_chirho;
+                if start_chirho == 0 {
+                    if !callback_chirho(".", ino_chirho, DT_DIR_CHIRHO) { return Ok(count_chirho); }
+                    count_chirho += 1;
+                    file_chirho.pos_chirho += 1;
+                }
+                if file_chirho.pos_chirho as usize == 1 {
+                    if !callback_chirho("..", ino_chirho, DT_DIR_CHIRHO) { return Ok(count_chirho); }
+                    count_chirho += 1;
+                    file_chirho.pos_chirho += 1;
+                }
+
+                // Emit real entries, skipping already-read ones
+                let entry_start_chirho = if start_chirho > 2 { start_chirho - 2 } else { 0 };
+                for entry_chirho in entries_chirho.entries_chirho.iter().skip(entry_start_chirho) {
+                    let dt_type_chirho = match entry_chirho.mode_chirho & S_IFMT_MASK_CHIRHO {
+                        S_IFDIR_VAL_CHIRHO => DT_DIR_CHIRHO,
+                        S_IFLNK_VAL_CHIRHO => DT_LNK_CHIRHO,
+                        _ => DT_REG_CHIRHO,
                     };
                     if !callback_chirho(
                         &entry_chirho.name_chirho,
@@ -422,6 +445,7 @@ impl FileOpsChirho for ProcDirOpsChirho {
                         break;
                     }
                     count_chirho += 1;
+                    file_chirho.pos_chirho += 1;
                 }
                 return Ok(count_chirho);
             }

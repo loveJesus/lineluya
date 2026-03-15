@@ -3562,10 +3562,7 @@ fn sys_getdents64_chirho(
         }
     }
 
-    crate::serial_println_chirho!(
-        "[GETDENTS64] fd={}, bytes_written={}, error={:?}",
-        fd_chirho, bytes_written_chirho, error_chirho
-    );
+    // Debug logging removed for clean output
 
     if let Some(errno_chirho) = error_chirho {
         return errno_chirho;
