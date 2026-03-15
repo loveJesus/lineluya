@@ -143,11 +143,10 @@ pub fn init_pics_chirho() {
     unsafe {
         PICS_CHIRHO.lock().initialize();
 
-        // Mask all PIC IRQs — we use the IOAPIC/LAPIC for interrupt delivery.
-        // The PIC is initialized for BIOS compatibility but fully masked so
-        // it doesn't interfere with IOAPIC routing.
-        x86_64::instructions::port::Port::<u8>::new(0x21).write(0xFF);
-        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0xFF);
+        // Unmask all PIC IRQs. Both PIC and IOAPIC can coexist — the PIC
+        // handles interrupts in BIOS mode, IOAPIC in UEFI mode.
+        x86_64::instructions::port::Port::<u8>::new(0x21).write(0x00);
+        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0x00);
 
         // Re-enable the PS/2 keyboard controller.
         // UEFI may have disabled it. Send command 0xAE (enable first port)
