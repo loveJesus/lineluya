@@ -1496,7 +1496,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_TGKILL_CHIRHO => crate::signal_chirho::sys_tgkill_chirho(arg0_chirho, arg1_chirho, arg2_chirho as u32),
         SYS_ARCH_PRCTL_CHIRHO => sys_arch_prctl_chirho(arg0_chirho, arg1_chirho),
         SYS_GETTID_CHIRHO => sys_gettid_chirho(),
-        SYS_FUTEX_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_FUTEX_CHIRHO => crate::futex_chirho::sys_futex_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho, _arg5_chirho,
+        ),
         SYS_SET_TID_ADDRESS_CHIRHO => sys_set_tid_address_chirho(arg0_chirho as *mut i32),
         SYS_CLOCK_GETTIME_CHIRHO => sys_clock_gettime_chirho(
             arg0_chirho,

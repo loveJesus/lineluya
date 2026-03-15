@@ -599,6 +599,47 @@ pub fn parse_madt_chirho() {
     crate::serial_println_chirho!("[STUB] ACPI: MADT parsing — use parse_madt_full_chirho()");
 }
 
+/// A5-006: Global storage for parsed ACPI information.
+///
+/// Populated by [`init_acpi_chirho`] and read by other subsystems
+/// (SMP startup, power management, timer init, etc.).
+pub static ACPI_INFO_CHIRHO: spin::Mutex<AcpiInfoChirho> =
+    spin::Mutex::new(AcpiInfoChirho::new_chirho());
+
+/// Aggregated ACPI information parsed during boot.
+#[derive(Debug)]
+pub struct AcpiInfoChirho {
+    /// Whether ACPI tables were successfully parsed.
+    pub valid_chirho: bool,
+    /// MADT info (CPU topology, IOAPIC addresses).
+    pub madt_chirho: Option<MadtInfoChirho>,
+    /// FADT PM1a control block address (for shutdown/reboot).
+    pub pm1a_control_block_chirho: u32,
+    /// FADT SCI interrupt number.
+    pub sci_interrupt_chirho: u16,
+    /// HPET base address (0 if not present).
+    pub hpet_base_addr_chirho: u64,
+    /// HPET number of timers.
+    pub hpet_num_timers_chirho: u8,
+    /// FADT reset register value / mechanism.
+    pub fadt_flags_chirho: u32,
+}
+
+impl AcpiInfoChirho {
+    /// Create an empty ACPI info structure.
+    pub const fn new_chirho() -> Self {
+        Self {
+            valid_chirho: false,
+            madt_chirho: None,
+            pm1a_control_block_chirho: 0,
+            sci_interrupt_chirho: 0,
+            hpet_base_addr_chirho: 0,
+            hpet_num_timers_chirho: 0,
+            fadt_flags_chirho: 0,
+        }
+    }
+}
+
 // ============================================================================
 // FADT — Fixed ACPI Description Table (signature "FACP")
 // ============================================================================
@@ -802,6 +843,8 @@ pub unsafe fn init_acpi_chirho(phys_offset_chirho: u64) {
         }
     };
 
+    let mut acpi_info_chirho = ACPI_INFO_CHIRHO.lock();
+
     // Prefer XSDT if available (64-bit pointers), fall back to RSDT.
     if rsdp_chirho.is_xsdt_available_chirho() {
         let xsdt_addr_copy_chirho = { rsdp_chirho.xsdt_address_chirho };
@@ -818,7 +861,8 @@ pub unsafe fn init_acpi_chirho(phys_offset_chirho: u64) {
                 b"APIC",
             )
         } {
-            let _madt_info_chirho = unsafe { parse_madt_full_chirho(madt_ptr_chirho) };
+            let madt_info_chirho = unsafe { parse_madt_full_chirho(madt_ptr_chirho) };
+            acpi_info_chirho.madt_chirho = Some(madt_info_chirho);
         }
 
         // Find and parse FADT
@@ -830,6 +874,10 @@ pub unsafe fn init_acpi_chirho(phys_offset_chirho: u64) {
             )
         } {
             unsafe { parse_fadt_chirho(fadt_ptr_chirho) };
+            let fadt_chirho = unsafe { &*(fadt_ptr_chirho as *const FadtChirho) };
+            acpi_info_chirho.pm1a_control_block_chirho = { fadt_chirho.pm1a_control_block_chirho };
+            acpi_info_chirho.sci_interrupt_chirho = { fadt_chirho.sci_interrupt_chirho };
+            acpi_info_chirho.fadt_flags_chirho = { fadt_chirho.flags_chirho };
         }
 
         // Find and parse HPET
@@ -841,6 +889,9 @@ pub unsafe fn init_acpi_chirho(phys_offset_chirho: u64) {
             )
         } {
             unsafe { parse_hpet_chirho(hpet_ptr_chirho) };
+            let hpet_chirho = unsafe { &*(hpet_ptr_chirho as *const HpetTableChirho) };
+            acpi_info_chirho.hpet_base_addr_chirho = { hpet_chirho.address_chirho.address_chirho };
+            acpi_info_chirho.hpet_num_timers_chirho = (hpet_chirho.comparator_count_chirho & 0x1F) + 1;
         }
     } else {
         let rsdt_addr_copy_chirho = { rsdp_chirho.rsdt_address_chirho };
@@ -857,7 +908,8 @@ pub unsafe fn init_acpi_chirho(phys_offset_chirho: u64) {
                 b"APIC",
             )
         } {
-            let _madt_info_chirho = unsafe { parse_madt_full_chirho(madt_ptr_chirho) };
+            let madt_info_chirho = unsafe { parse_madt_full_chirho(madt_ptr_chirho) };
+            acpi_info_chirho.madt_chirho = Some(madt_info_chirho);
         }
 
         // Find and parse FADT
@@ -869,6 +921,10 @@ pub unsafe fn init_acpi_chirho(phys_offset_chirho: u64) {
             )
         } {
             unsafe { parse_fadt_chirho(fadt_ptr_chirho) };
+            let fadt_chirho = unsafe { &*(fadt_ptr_chirho as *const FadtChirho) };
+            acpi_info_chirho.pm1a_control_block_chirho = { fadt_chirho.pm1a_control_block_chirho };
+            acpi_info_chirho.sci_interrupt_chirho = { fadt_chirho.sci_interrupt_chirho };
+            acpi_info_chirho.fadt_flags_chirho = { fadt_chirho.flags_chirho };
         }
 
         // Find and parse HPET
@@ -880,8 +936,12 @@ pub unsafe fn init_acpi_chirho(phys_offset_chirho: u64) {
             )
         } {
             unsafe { parse_hpet_chirho(hpet_ptr_chirho) };
+            let hpet_chirho = unsafe { &*(hpet_ptr_chirho as *const HpetTableChirho) };
+            acpi_info_chirho.hpet_base_addr_chirho = { hpet_chirho.address_chirho.address_chirho };
+            acpi_info_chirho.hpet_num_timers_chirho = (hpet_chirho.comparator_count_chirho & 0x1F) + 1;
         }
     }
 
-    crate::serial_println_chirho!("ACPI: initialization complete");
+    acpi_info_chirho.valid_chirho = true;
+    crate::serial_println_chirho!("ACPI: initialization complete, results stored globally");
 }

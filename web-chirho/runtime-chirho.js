@@ -172,14 +172,230 @@ class LineluyaRuntimeChirho {
         js_net_close_chirho(handleChirho) {
           // no-op stub
         },
+
+        // --- B1-015: Random ---
+        js_random_get_chirho(bufPtrChirho, lenChirho) {
+          const viewChirho = new Uint8Array(selfChirho.memoryChirho.buffer, bufPtrChirho, lenChirho);
+          crypto.getRandomValues(viewChirho);
+          return 0;
+        },
+
+        // --- B1-014: Timer ---
+        js_sleep_us_chirho(microsecondsChirho) {
+          // In sync context, sleep is a no-op (JS is single-threaded)
+          // Real sleep would need Atomics.wait in a SharedArrayBuffer worker
+        },
+
+        // --- B3-001: OPFS block device ---
+        js_opfs_open_chirho(namePtrChirho, nameLenChirho, createChirho) {
+          // Stub — OPFS requires Worker with sync access handle
+          console.log('[OPFS] open stub called');
+          return -1;
+        },
+        js_opfs_read_chirho(handleChirho, offsetChirho, bufPtrChirho, lenChirho) { return -1; },
+        js_opfs_write_chirho(handleChirho, offsetChirho, bufPtrChirho, lenChirho) { return -1; },
+        js_opfs_close_chirho(handleChirho) {},
+        js_opfs_delete_chirho(namePtrChirho, nameLenChirho) { return -1; },
+        js_opfs_size_chirho(handleChirho) { return -1; },
+        js_opfs_sync_chirho(handleChirho) { return 0; },
+
+        // --- B3-002: IndexedDB ---
+        js_idb_open_chirho(namePtrChirho, nameLenChirho) {
+          console.log('[IDB] open stub called');
+          return -1;
+        },
+        js_idb_get_chirho(handleChirho, keyPtrChirho, keyLenChirho, bufPtrChirho, bufLenChirho) { return -1; },
+        js_idb_put_chirho(handleChirho, keyPtrChirho, keyLenChirho, valPtrChirho, valLenChirho) { return -1; },
+        js_idb_delete_chirho(handleChirho, keyPtrChirho, keyLenChirho) { return -1; },
+        js_idb_list_chirho(handleChirho, bufPtrChirho, bufLenChirho) { return 0; },
+        js_idb_close_chirho(handleChirho) {},
+
+        // --- B2-004: DNS resolver over HTTPS (DoH) ---
+        js_dns_resolve_chirho(namePtrChirho, nameLenChirho, resultPtrChirho) {
+          // Async DNS — fire and forget, return -1 for "pending"
+          const nameChirho = new TextDecoder().decode(
+            new Uint8Array(selfChirho.memoryChirho.buffer, namePtrChirho, nameLenChirho)
+          );
+          console.log('[DNS] resolve:', nameChirho);
+          // Attempt DoH query asynchronously (result won't be ready synchronously)
+          fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(nameChirho)}&type=A`, {
+            headers: { 'Accept': 'application/dns-json' }
+          }).then(rChirho => rChirho.json()).then(dataChirho => {
+            if (dataChirho.Answer && dataChirho.Answer.length > 0) {
+              const ipChirho = dataChirho.Answer[0].data;
+              console.log('[DNS] resolved:', nameChirho, '->', ipChirho);
+              // Could store result for next poll
+            }
+          }).catch(eChirho => console.warn('[DNS] resolve failed:', eChirho));
+          return -1; // Pending
+        },
+
+        // --- B2-003: WebSocket-TCP bridge ---
+        js_ws_bridge_connect_chirho(hostPtrChirho, hostLenChirho, portChirho) {
+          const hostChirho = new TextDecoder().decode(
+            new Uint8Array(selfChirho.memoryChirho.buffer, hostPtrChirho, hostLenChirho)
+          );
+          console.log(`[WS-BRIDGE] connect ${hostChirho}:${portChirho}`);
+          // In production, connect to CF Worker proxy
+          return -1; // Stub
+        },
+        js_ws_bridge_send_chirho(connIdChirho, bufPtrChirho, lenChirho) { return -1; },
+        js_ws_bridge_recv_chirho(connIdChirho, bufPtrChirho, maxLenChirho) { return 0; },
+        js_ws_bridge_close_chirho(connIdChirho) {},
+        js_ws_bridge_status_chirho(connIdChirho) { return 2; }, // closed
+
+        // --- B2-005: HTTP client via fetch() ---
+        js_http_get_chirho(urlPtrChirho, urlLenChirho, bufPtrChirho, bufLenChirho) {
+          // Synchronous fetch is not possible in main thread.
+          // This stub logs and returns -1. Real impl would use Worker + Atomics.wait.
+          const urlChirho = new TextDecoder().decode(
+            new Uint8Array(selfChirho.memoryChirho.buffer, urlPtrChirho, urlLenChirho)
+          );
+          console.log('[HTTP] GET', urlChirho);
+          // Fire async fetch (result not available synchronously)
+          fetch(urlChirho).then(rChirho => rChirho.text()).then(bodyChirho => {
+            console.log('[HTTP] response length:', bodyChirho.length);
+          }).catch(eChirho => console.warn('[HTTP] fetch failed:', eChirho));
+          return -1; // Async pending
+        },
+
+        // --- B3-010: Storage quota ---
+        js_storage_quota_chirho(resultPtrChirho) {
+          // Try navigator.storage.estimate() (async, so return stub values)
+          if (navigator.storage && navigator.storage.estimate) {
+            navigator.storage.estimate().then(estimateChirho => {
+              console.log('[QUOTA]', estimateChirho);
+            });
+          }
+          // Write stub values: 0 used, 100MB quota
+          const viewChirho = new Uint32Array(selfChirho.memoryChirho.buffer, resultPtrChirho, 4);
+          viewChirho[0] = 0; viewChirho[1] = 0;
+          viewChirho[2] = 100 * 1024 * 1024; viewChirho[3] = 0;
+          return 0;
+        },
+
+        // --- B4-003: Canvas 2D framebuffer ---
+        js_fb_put_rect_chirho(xChirho, yChirho, wChirho, hChirho, dataPtrChirho) {
+          if (!selfChirho.ctxChirho || wChirho === 0 || hChirho === 0) return;
+          try {
+            const pixelsChirho = new Uint8ClampedArray(
+              selfChirho.memoryChirho.buffer, dataPtrChirho, wChirho * hChirho * 4
+            );
+            const imgChirho = new ImageData(pixelsChirho, wChirho, hChirho);
+            selfChirho.ctxChirho.putImageData(imgChirho, xChirho, yChirho);
+          } catch (eChirho) {
+            console.warn('[FB] putRect failed:', eChirho);
+          }
+        },
+
+        js_fb_fill_rect_chirho(xChirho, yChirho, wChirho, hChirho, rgbaChirho) {
+          if (!selfChirho.ctxChirho) return;
+          const rChirho = (rgbaChirho >> 16) & 0xFF;
+          const gChirho = (rgbaChirho >> 8) & 0xFF;
+          const bChirho = rgbaChirho & 0xFF;
+          const aChirho = ((rgbaChirho >> 24) & 0xFF) / 255;
+          selfChirho.ctxChirho.fillStyle = `rgba(${rChirho},${gChirho},${bChirho},${aChirho})`;
+          selfChirho.ctxChirho.fillRect(xChirho, yChirho, wChirho, hChirho);
+        },
+
+        js_fb_draw_text_chirho(xChirho, yChirho, textPtrChirho, textLenChirho, rgbaChirho) {
+          if (!selfChirho.ctxChirho) return 0;
+          const textChirho = new TextDecoder().decode(
+            new Uint8Array(selfChirho.memoryChirho.buffer, textPtrChirho, textLenChirho)
+          );
+          const rChirho = (rgbaChirho >> 16) & 0xFF;
+          const gChirho = (rgbaChirho >> 8) & 0xFF;
+          const bChirho = rgbaChirho & 0xFF;
+          selfChirho.ctxChirho.fillStyle = `rgb(${rChirho},${gChirho},${bChirho})`;
+          selfChirho.ctxChirho.font = '12px monospace';
+          selfChirho.ctxChirho.fillText(textChirho, xChirho, yChirho + 12);
+          return selfChirho.ctxChirho.measureText(textChirho).width | 0;
+        },
+
+        // --- B4-006: Mouse events ---
+        js_input_mouse_chirho(resultPtrChirho) {
+          if (!selfChirho.mouseEventsChirho || selfChirho.mouseEventsChirho.length === 0) return 0;
+          const evtChirho = selfChirho.mouseEventsChirho.shift();
+          const viewChirho = new Uint32Array(selfChirho.memoryChirho.buffer, resultPtrChirho, 4);
+          viewChirho[0] = evtChirho.xChirho;
+          viewChirho[1] = evtChirho.yChirho;
+          viewChirho[2] = evtChirho.buttonsChirho;
+          viewChirho[3] = evtChirho.typeChirho;
+          return 1;
+        },
+
+        // --- B4-007: Keyboard events ---
+        js_input_keyboard_chirho(resultPtrChirho) {
+          if (!selfChirho.keyEventsChirho || selfChirho.keyEventsChirho.length === 0) return 0;
+          const evtChirho = selfChirho.keyEventsChirho.shift();
+          const viewChirho = new Uint32Array(selfChirho.memoryChirho.buffer, resultPtrChirho, 3);
+          viewChirho[0] = evtChirho.keycodeChirho;
+          viewChirho[1] = evtChirho.modifiersChirho;
+          viewChirho[2] = evtChirho.pressedChirho ? 1 : 0;
+          return 1;
+        },
       },
     };
   }
 
+  /** Set up mouse/keyboard event listeners for B4 X11 input */
+  initInputEventsChirho() {
+    this.mouseEventsChirho = [];
+    this.keyEventsChirho = [];
+
+    if (this.canvasChirho) {
+      this.canvasChirho.addEventListener('mousemove', (eChirho) => {
+        const rectChirho = this.canvasChirho.getBoundingClientRect();
+        this.mouseEventsChirho.push({
+          xChirho: (eChirho.clientX - rectChirho.left) | 0,
+          yChirho: (eChirho.clientY - rectChirho.top) | 0,
+          buttonsChirho: eChirho.buttons,
+          typeChirho: 0, // motion
+        });
+      });
+      this.canvasChirho.addEventListener('mousedown', (eChirho) => {
+        const rectChirho = this.canvasChirho.getBoundingClientRect();
+        this.mouseEventsChirho.push({
+          xChirho: (eChirho.clientX - rectChirho.left) | 0,
+          yChirho: (eChirho.clientY - rectChirho.top) | 0,
+          buttonsChirho: eChirho.buttons,
+          typeChirho: 1, // press
+        });
+      });
+      this.canvasChirho.addEventListener('mouseup', (eChirho) => {
+        const rectChirho = this.canvasChirho.getBoundingClientRect();
+        this.mouseEventsChirho.push({
+          xChirho: (eChirho.clientX - rectChirho.left) | 0,
+          yChirho: (eChirho.clientY - rectChirho.top) | 0,
+          buttonsChirho: eChirho.buttons,
+          typeChirho: 2, // release
+        });
+      });
+
+      // Keyboard events on the canvas (needs tabindex for focus)
+      this.canvasChirho.setAttribute('tabindex', '0');
+      this.canvasChirho.addEventListener('keydown', (eChirho) => {
+        this.keyEventsChirho.push({
+          keycodeChirho: eChirho.keyCode,
+          modifiersChirho: (eChirho.shiftKey ? 1 : 0) | (eChirho.ctrlKey ? 4 : 0) | (eChirho.altKey ? 8 : 0),
+          pressedChirho: true,
+        });
+      });
+      this.canvasChirho.addEventListener('keyup', (eChirho) => {
+        this.keyEventsChirho.push({
+          keycodeChirho: eChirho.keyCode,
+          modifiersChirho: (eChirho.shiftKey ? 1 : 0) | (eChirho.ctrlKey ? 4 : 0) | (eChirho.altKey ? 8 : 0),
+          pressedChirho: false,
+        });
+      });
+    }
+  }
+
   /** Boot the kernel — load WASM and call kernel_main */
   async bootChirho(wasmUrlChirho) {
-    // Initialize xterm.js
+    // Initialize xterm.js and input event listeners
     this.initTerminalChirho();
+    this.initInputEventsChirho();
 
     try {
       const responseChirho = await fetch(wasmUrlChirho);

@@ -615,7 +615,7 @@
       "depends_on_chirho": [
         "A2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Module safely copies data to/from userspace"
@@ -682,7 +682,7 @@
       "depends_on_chirho": [
         "A2-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "cat /proc/modules shows loaded modules"
@@ -698,7 +698,7 @@
       "depends_on_chirho": [
         "A2-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Cannot rmmod module with dependents",
@@ -715,7 +715,7 @@
       "depends_on_chirho": [
         "A2-014"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "insmod hello.ko param=42 sets module parameter"
@@ -1542,7 +1542,7 @@
       "depends_on_chirho": [
         "A5-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "SATA disk detected",

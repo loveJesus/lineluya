@@ -4288,10 +4288,6 @@ pub extern "C" fn syscall_chirho(
         },
         // fcntl
         72 => 0,
-        // poll
-        7 => 1,
-        // select
-        23 => 1,
         // pipe2 — create pipe using socket table for fd allocation
         293 => unsafe {
             let fds_ptr_chirho = arg0_chirho as *mut i32;

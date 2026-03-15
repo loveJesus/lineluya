@@ -62,6 +62,7 @@ mod signal_chirho;
 mod pipe_chirho;
 mod process_chirho;
 mod waitqueue_chirho;
+mod futex_chirho;
 mod tty_chirho;
 
 // Phase 9: Advanced subsystem stubs

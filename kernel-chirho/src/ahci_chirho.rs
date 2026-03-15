@@ -618,3 +618,276 @@ pub unsafe fn init_ahci_chirho(phys_offset_chirho: u64) {
 
     crate::serial_println_chirho!("AHCI: no AHCI controller found");
 }
+
+// ============================================================================
+// A5-010: AHCI read/write commands via FIS
+// ============================================================================
+
+/// ATA READ DMA EXT command (LBA48).
+const ATA_CMD_READ_DMA_EXT_CHIRHO: u8 = 0x25;
+
+/// ATA WRITE DMA EXT command (LBA48).
+#[allow(dead_code)]
+const ATA_CMD_WRITE_DMA_EXT_CHIRHO: u8 = 0x35;
+
+/// Build a Register FIS for a DMA read/write command.
+///
+/// `lba_chirho` is the 48-bit LBA address, `count_chirho` is the number
+/// of sectors to transfer (0 = 65536), `command_chirho` is the ATA command.
+#[allow(dead_code)]
+fn build_rw_fis_chirho(
+    lba_chirho: u64,
+    count_chirho: u16,
+    command_chirho: u8,
+) -> FisRegH2dChirho {
+    FisRegH2dChirho {
+        fis_type_chirho: FIS_TYPE_REG_H2D_CHIRHO,
+        flags_chirho: 0x80, // Command bit set
+        command_chirho,
+        feature_lo_chirho: 0,
+        lba0_chirho: (lba_chirho & 0xFF) as u8,
+        lba1_chirho: ((lba_chirho >> 8) & 0xFF) as u8,
+        lba2_chirho: ((lba_chirho >> 16) & 0xFF) as u8,
+        device_chirho: 0x40, // LBA mode
+        lba3_chirho: ((lba_chirho >> 24) & 0xFF) as u8,
+        lba4_chirho: ((lba_chirho >> 32) & 0xFF) as u8,
+        lba5_chirho: ((lba_chirho >> 40) & 0xFF) as u8,
+        feature_hi_chirho: 0,
+        count_lo_chirho: (count_chirho & 0xFF) as u8,
+        count_hi_chirho: ((count_chirho >> 8) & 0xFF) as u8,
+        icc_chirho: 0,
+        control_chirho: 0,
+        reserved_chirho: [0; 4],
+    }
+}
+
+/// Issue a DMA read command on an AHCI port.
+///
+/// Reads `count_chirho` sectors starting at `lba_chirho` into the
+/// provided buffer. The buffer must be at least `count_chirho * 512` bytes.
+///
+/// # Safety
+/// - `port_chirho` must point to a valid, mapped, started HBA port.
+/// - `cmd_list_chirho` must point to a valid 32-entry command list.
+/// - `cmd_table_chirho` must point to a valid command table (128-byte aligned).
+/// - `buf_chirho` must be physically contiguous and DMA-accessible.
+#[allow(dead_code)]
+pub unsafe fn ahci_read_sectors_chirho(
+    port_chirho: &mut HbaPortChirho,
+    cmd_list_chirho: &mut HbaCmdHeaderChirho,
+    cmd_table_phys_chirho: u64,
+    cmd_table_chirho: *mut u8,
+    lba_chirho: u64,
+    count_chirho: u16,
+    buf_phys_chirho: u64,
+) -> Result<(), &'static str> {
+    let fis_chirho = build_rw_fis_chirho(lba_chirho, count_chirho, ATA_CMD_READ_DMA_EXT_CHIRHO);
+
+    // Write the FIS into the command table (offset 0).
+    unsafe {
+        core::ptr::write_unaligned(
+            cmd_table_chirho as *mut FisRegH2dChirho,
+            fis_chirho,
+        );
+    }
+
+    // Set up the PRDT entry (offset 0x80 in the command table).
+    let prdt_chirho = unsafe {
+        &mut *(cmd_table_chirho.add(0x80) as *mut HbaPrdtEntryChirho)
+    };
+    prdt_chirho.dba_chirho = (buf_phys_chirho & 0xFFFF_FFFF) as u32;
+    prdt_chirho.dbau_chirho = (buf_phys_chirho >> 32) as u32;
+    prdt_chirho.reserved_chirho = 0;
+    // Byte count = (sector_count * 512) - 1, with IOC bit set.
+    let byte_count_chirho = (count_chirho as u32) * 512 - 1;
+    prdt_chirho.dbc_chirho = byte_count_chirho | (1 << 31);
+
+    // Set up the command header (slot 0).
+    // FIS length = 5 DWORDs (20 bytes for H2D register FIS).
+    cmd_list_chirho.flags_chirho = 5; // CFL = 5, direction = D2H (read)
+    cmd_list_chirho.flags2_chirho = 0;
+    cmd_list_chirho.prdtl_chirho = 1; // One PRDT entry
+    cmd_list_chirho.prdbc_chirho = 0; // Will be updated by HBA
+    cmd_list_chirho.ctba_chirho = (cmd_table_phys_chirho & 0xFFFF_FFFF) as u32;
+    cmd_list_chirho.ctbau_chirho = (cmd_table_phys_chirho >> 32) as u32;
+    cmd_list_chirho.reserved_chirho = [0; 4];
+
+    // Clear interrupt status.
+    unsafe { ptr::write_volatile(&mut port_chirho.is_chirho, u32::MAX) };
+
+    // Issue command in slot 0.
+    fence(Ordering::SeqCst);
+    unsafe { ptr::write_volatile(&mut port_chirho.ci_chirho, 1) };
+
+    // Poll for completion.
+    let mut timeout_chirho = 1_000_000u32;
+    loop {
+        let ci_val_chirho = unsafe { ptr::read_volatile(&port_chirho.ci_chirho) };
+        if ci_val_chirho & 1 == 0 {
+            break; // Command completed
+        }
+        let tfd_val_chirho = unsafe { ptr::read_volatile(&port_chirho.tfd_chirho) };
+        if tfd_val_chirho & 0x01 != 0 {
+            // Error bit set in Task File Data.
+            return Err("AHCI: read error (TFD ERR)");
+        }
+        timeout_chirho -= 1;
+        if timeout_chirho == 0 {
+            return Err("AHCI: read timeout");
+        }
+    }
+
+    Ok(())
+}
+
+/// Issue a DMA write command on an AHCI port.
+///
+/// Writes `count_chirho` sectors starting at `lba_chirho` from the
+/// provided buffer.
+///
+/// # Safety
+/// Same requirements as [`ahci_read_sectors_chirho`].
+#[allow(dead_code)]
+pub unsafe fn ahci_write_sectors_chirho(
+    port_chirho: &mut HbaPortChirho,
+    cmd_list_chirho: &mut HbaCmdHeaderChirho,
+    cmd_table_phys_chirho: u64,
+    cmd_table_chirho: *mut u8,
+    lba_chirho: u64,
+    count_chirho: u16,
+    buf_phys_chirho: u64,
+) -> Result<(), &'static str> {
+    let fis_chirho = build_rw_fis_chirho(lba_chirho, count_chirho, ATA_CMD_WRITE_DMA_EXT_CHIRHO);
+
+    // Write the FIS into the command table.
+    unsafe {
+        core::ptr::write_unaligned(
+            cmd_table_chirho as *mut FisRegH2dChirho,
+            fis_chirho,
+        );
+    }
+
+    // Set up PRDT entry.
+    let prdt_chirho = unsafe {
+        &mut *(cmd_table_chirho.add(0x80) as *mut HbaPrdtEntryChirho)
+    };
+    prdt_chirho.dba_chirho = (buf_phys_chirho & 0xFFFF_FFFF) as u32;
+    prdt_chirho.dbau_chirho = (buf_phys_chirho >> 32) as u32;
+    prdt_chirho.reserved_chirho = 0;
+    let byte_count_chirho = (count_chirho as u32) * 512 - 1;
+    prdt_chirho.dbc_chirho = byte_count_chirho | (1 << 31);
+
+    // Command header: FIS length = 5, Write bit set (bit 6 of flags).
+    cmd_list_chirho.flags_chirho = 5 | (1 << 6); // CFL = 5, Write
+    cmd_list_chirho.flags2_chirho = 0;
+    cmd_list_chirho.prdtl_chirho = 1;
+    cmd_list_chirho.prdbc_chirho = 0;
+    cmd_list_chirho.ctba_chirho = (cmd_table_phys_chirho & 0xFFFF_FFFF) as u32;
+    cmd_list_chirho.ctbau_chirho = (cmd_table_phys_chirho >> 32) as u32;
+    cmd_list_chirho.reserved_chirho = [0; 4];
+
+    // Clear interrupt status.
+    unsafe { ptr::write_volatile(&mut port_chirho.is_chirho, u32::MAX) };
+
+    // Issue command.
+    fence(Ordering::SeqCst);
+    unsafe { ptr::write_volatile(&mut port_chirho.ci_chirho, 1) };
+
+    // Poll for completion.
+    let mut timeout_chirho = 1_000_000u32;
+    loop {
+        let ci_val_chirho = unsafe { ptr::read_volatile(&port_chirho.ci_chirho) };
+        if ci_val_chirho & 1 == 0 {
+            break;
+        }
+        let tfd_val_chirho = unsafe { ptr::read_volatile(&port_chirho.tfd_chirho) };
+        if tfd_val_chirho & 0x01 != 0 {
+            return Err("AHCI: write error (TFD ERR)");
+        }
+        timeout_chirho -= 1;
+        if timeout_chirho == 0 {
+            return Err("AHCI: write timeout");
+        }
+    }
+
+    Ok(())
+}
+
+/// Issue an IDENTIFY DEVICE command on an AHCI port and return the result.
+///
+/// # Safety
+/// Same requirements as [`ahci_read_sectors_chirho`].
+#[allow(dead_code)]
+pub unsafe fn ahci_identify_chirho(
+    port_chirho: &mut HbaPortChirho,
+    cmd_list_chirho: &mut HbaCmdHeaderChirho,
+    cmd_table_phys_chirho: u64,
+    cmd_table_chirho: *mut u8,
+    buf_phys_chirho: u64,
+    buf_virt_chirho: *mut u16,
+) -> Result<IdentifyResultChirho, &'static str> {
+    // Build IDENTIFY DEVICE FIS.
+    let fis_chirho = FisRegH2dChirho {
+        fis_type_chirho: FIS_TYPE_REG_H2D_CHIRHO,
+        flags_chirho: 0x80,
+        command_chirho: ATA_CMD_IDENTIFY_CHIRHO,
+        feature_lo_chirho: 0,
+        lba0_chirho: 0,
+        lba1_chirho: 0,
+        lba2_chirho: 0,
+        device_chirho: 0,
+        lba3_chirho: 0,
+        lba4_chirho: 0,
+        lba5_chirho: 0,
+        feature_hi_chirho: 0,
+        count_lo_chirho: 0,
+        count_hi_chirho: 0,
+        icc_chirho: 0,
+        control_chirho: 0,
+        reserved_chirho: [0; 4],
+    };
+
+    unsafe {
+        core::ptr::write_unaligned(
+            cmd_table_chirho as *mut FisRegH2dChirho,
+            fis_chirho,
+        );
+    }
+
+    // PRDT: 512 bytes (one sector) for IDENTIFY result.
+    let prdt_chirho = unsafe {
+        &mut *(cmd_table_chirho.add(0x80) as *mut HbaPrdtEntryChirho)
+    };
+    prdt_chirho.dba_chirho = (buf_phys_chirho & 0xFFFF_FFFF) as u32;
+    prdt_chirho.dbau_chirho = (buf_phys_chirho >> 32) as u32;
+    prdt_chirho.reserved_chirho = 0;
+    prdt_chirho.dbc_chirho = 511 | (1 << 31); // 512 bytes - 1, IOC
+
+    cmd_list_chirho.flags_chirho = 5;
+    cmd_list_chirho.flags2_chirho = 0;
+    cmd_list_chirho.prdtl_chirho = 1;
+    cmd_list_chirho.prdbc_chirho = 0;
+    cmd_list_chirho.ctba_chirho = (cmd_table_phys_chirho & 0xFFFF_FFFF) as u32;
+    cmd_list_chirho.ctbau_chirho = (cmd_table_phys_chirho >> 32) as u32;
+    cmd_list_chirho.reserved_chirho = [0; 4];
+
+    unsafe { ptr::write_volatile(&mut port_chirho.is_chirho, u32::MAX) };
+    fence(Ordering::SeqCst);
+    unsafe { ptr::write_volatile(&mut port_chirho.ci_chirho, 1) };
+
+    let mut timeout_chirho = 1_000_000u32;
+    loop {
+        let ci_val_chirho = unsafe { ptr::read_volatile(&port_chirho.ci_chirho) };
+        if ci_val_chirho & 1 == 0 {
+            break;
+        }
+        timeout_chirho -= 1;
+        if timeout_chirho == 0 {
+            return Err("AHCI: identify timeout");
+        }
+    }
+
+    // Parse the 256-word identify buffer.
+    let buf_slice_chirho: &[u16; 256] = unsafe { &*(buf_virt_chirho as *const [u16; 256]) };
+    Ok(IdentifyResultChirho::from_buffer_chirho(buf_slice_chirho))
+}
