@@ -2080,7 +2080,7 @@
       "depends_on_chirho": [
         "B1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Kernel loads .wasm binary",
@@ -2098,7 +2098,7 @@
       "depends_on_chirho": [
         "B1-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "WASI fd_write outputs to console",
@@ -2133,7 +2133,7 @@
         "B1-004",
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Keystrokes appear in running WASM process",
@@ -2152,7 +2152,7 @@
         "B1-004",
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Process output displays in terminal",
@@ -2170,7 +2170,7 @@
       "depends_on_chirho": [
         "B1-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "mkdir/rmdir work",
@@ -2188,7 +2188,7 @@
       "depends_on_chirho": [
         "B1-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Root / mounted to tmpfs",
@@ -3785,7 +3785,7 @@
       "depends_on_chirho": [
         "C1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "REQUEST_METHOD env set",
@@ -3803,7 +3803,7 @@
       "depends_on_chirho": [
         "C1-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "stdout parsed as HTTP response",
