@@ -277,15 +277,18 @@ impl FileOpsChirho for DevConsoleOpsChirho {
             return Ok(n_chirho);
         }
 
-        // Blocking read: spin-yield until data is available.
-        // Uses hlt to wait for interrupts (keyboard input).
+        // Blocking read: sleep until data is available.
+        // Uses enable_and_hlt() for atomic sti+hlt (no race between
+        // enabling interrupts and halting).
         loop {
+            // Check with interrupts disabled to avoid race
+            x86_64::instructions::interrupts::disable();
             if tty_chirho.ldisc_chirho.lock().has_data_chirho() {
+                x86_64::instructions::interrupts::enable();
                 break;
             }
-            // Enable interrupts and halt until next interrupt (keyboard/timer)
-            x86_64::instructions::interrupts::enable();
-            x86_64::instructions::hlt();
+            // Atomically enable interrupts and halt — wakes on any interrupt
+            x86_64::instructions::interrupts::enable_and_hlt();
         }
 
         // Data is now available — read it.
