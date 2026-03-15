@@ -158,28 +158,12 @@ extern "x86-interrupt" fn breakpoint_handler_chirho(stack_frame_chirho: Interrup
 /// are not recoverable.
 extern "x86-interrupt" fn double_fault_handler_chirho(
     stack_frame_chirho: InterruptStackFrame,
-    error_code_chirho: u64,
+    _error_code_chirho: u64,
 ) -> ! {
-    // Write directly to serial port without mutex (avoid deadlock)
-    unsafe {
-        let mut port_chirho = x86_64::instructions::port::Port::<u8>::new(0x3F8);
-        for b_chirho in b"\r\n[DOUBLE FAULT] last_sc=" {
-            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-            port_chirho.write(*b_chirho);
-        }
-        let sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
-        let mut buf_chirho = [0u8; 4];
-        buf_chirho[0] = b'0' + ((sc_chirho / 100) % 10) as u8;
-        buf_chirho[1] = b'0' + ((sc_chirho / 10) % 10) as u8;
-        buf_chirho[2] = b'0' + (sc_chirho % 10) as u8;
-        buf_chirho[3] = b'\n';
-        for b_chirho in &buf_chirho {
-            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-            port_chirho.write(*b_chirho);
-        }
-    }
-    // Disable interrupts and halt forever
-    x86_64::instructions::interrupts::disable();
+    crate::serial_println_chirho!(
+        "[EXCEPTION] DOUBLE FAULT\n{:#?}",
+        stack_frame_chirho
+    );
     loop {
         x86_64::instructions::hlt();
     }
@@ -211,40 +195,11 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
         }
     }
 
-    // Write directly to serial port without acquiring the mutex
-    // (the mutex might be held by the code that caused the fault).
-    let last_sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
-    unsafe {
-        let mut port_chirho = x86_64::instructions::port::Port::<u8>::new(0x3F8);
-        // Write a minimal crash message byte-by-byte
-        for b_chirho in b"\r\n[PAGE FAULT] sc=" {
-            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-            port_chirho.write(*b_chirho);
-        }
-        // Write last syscall number as hex
-        for shift_chirho in (0..16).rev().map(|s| s * 4) {
-            let nibble_chirho = ((last_sc_chirho >> shift_chirho) & 0xF) as u8;
-            let ch_chirho = if nibble_chirho < 10 { b'0' + nibble_chirho } else { b'a' + nibble_chirho - 10 };
-            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-            port_chirho.write(ch_chirho);
-        }
-        // Write error code
-        for b_chirho in b" err=" {
-            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-            port_chirho.write(*b_chirho);
-        }
-        let ec_chirho = error_code_chirho.bits();
-        for shift_chirho in (0..8).rev().map(|s| s * 4) {
-            let nibble_chirho = ((ec_chirho >> shift_chirho) & 0xF) as u8;
-            let ch_chirho = if nibble_chirho < 10 { b'0' + nibble_chirho } else { b'a' + nibble_chirho - 10 };
-            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-            port_chirho.write(ch_chirho);
-        }
-        for b_chirho in b"\r\n" {
-            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-            port_chirho.write(*b_chirho);
-        }
-    }
+    crate::serial_println_chirho!(
+        "[EXCEPTION] PAGE FAULT addr={:?} err={:?}",
+        faulting_address_chirho, error_code_chirho
+    );
+    crate::serial_println_chirho!("{:#?}", stack_frame_chirho);
 
     loop {
         x86_64::instructions::hlt();
