@@ -3827,18 +3827,6 @@ fn sys_read_stdin_chirho(buf_addr_chirho: u64, count_chirho: usize) -> i64 {
         return 0;
     }
 
-    // Debug: log the buffer address
-    unsafe {
-        let wait_chirho = || { while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {} };
-        for b_chirho in b"\r\nR:" { wait_chirho(); x86_64::instructions::port::Port::<u8>::new(0x3F8).write(*b_chirho); }
-        for shift_chirho in [60u64,56,52,48,44,40,36,32,28,24,20,16,12,8,4,0] {
-            let n_chirho = ((buf_addr_chirho >> shift_chirho) & 0xF) as u8;
-            wait_chirho();
-            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(if n_chirho < 10 { b'0' + n_chirho } else { b'a' + n_chirho - 10 });
-        }
-        wait_chirho(); x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'\r');
-        wait_chirho(); x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'\n');
-    }
 
     // Enable interrupts so timer ticks keep running
     x86_64::instructions::interrupts::enable();
