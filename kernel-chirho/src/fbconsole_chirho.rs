@@ -429,49 +429,53 @@ pub static FB_CONSOLE_CHIRHO: Mutex<FbConsoleChirho> = Mutex::new(FbConsoleChirh
 
 const KB_BUF_SIZE_CHIRHO: usize = 256;
 
-/// Ring buffer for keyboard input bytes (ASCII).
+/// Lock-free ring buffer for keyboard input bytes.
+/// Uses atomics so the interrupt handler (push) and sys_read (pop)
+/// never need a lock — avoids deadlocks between IRQ and syscall context.
 pub struct KbInputBufChirho {
-    buf_chirho: [u8; KB_BUF_SIZE_CHIRHO],
-    head_chirho: usize,
-    tail_chirho: usize,
+    buf_chirho: [core::sync::atomic::AtomicU8; KB_BUF_SIZE_CHIRHO],
+    head_chirho: core::sync::atomic::AtomicUsize,
+    tail_chirho: core::sync::atomic::AtomicUsize,
 }
 
 impl KbInputBufChirho {
     pub const fn new_chirho() -> Self {
+        // const initialization of atomic array
+        const ZERO_CHIRHO: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
         Self {
-            buf_chirho: [0; KB_BUF_SIZE_CHIRHO],
-            head_chirho: 0,
-            tail_chirho: 0,
+            buf_chirho: [ZERO_CHIRHO; KB_BUF_SIZE_CHIRHO],
+            head_chirho: core::sync::atomic::AtomicUsize::new(0),
+            tail_chirho: core::sync::atomic::AtomicUsize::new(0),
         }
     }
 
-    /// Push a byte (called from keyboard interrupt handler).
-    pub fn push_chirho(&mut self, byte_chirho: u8) {
-        let next_chirho = (self.tail_chirho + 1) % KB_BUF_SIZE_CHIRHO;
-        if next_chirho != self.head_chirho {
-            self.buf_chirho[self.tail_chirho] = byte_chirho;
-            self.tail_chirho = next_chirho;
+    /// Push a byte (called from keyboard interrupt handler — no lock needed).
+    pub fn push_chirho(&self, byte_chirho: u8) {
+        let tail_chirho = self.tail_chirho.load(core::sync::atomic::Ordering::Relaxed);
+        let next_chirho = (tail_chirho + 1) % KB_BUF_SIZE_CHIRHO;
+        let head_chirho = self.head_chirho.load(core::sync::atomic::Ordering::Relaxed);
+        if next_chirho != head_chirho {
+            self.buf_chirho[tail_chirho].store(byte_chirho, core::sync::atomic::Ordering::Relaxed);
+            self.tail_chirho.store(next_chirho, core::sync::atomic::Ordering::Release);
         }
     }
 
-    /// Pop a byte (called from sys_read).
-    pub fn pop_chirho(&mut self) -> Option<u8> {
-        if self.head_chirho == self.tail_chirho {
+    /// Pop a byte (called from sys_read — no lock needed).
+    pub fn pop_chirho(&self) -> Option<u8> {
+        let head_chirho = self.head_chirho.load(core::sync::atomic::Ordering::Relaxed);
+        let tail_chirho = self.tail_chirho.load(core::sync::atomic::Ordering::Acquire);
+        if head_chirho == tail_chirho {
             None
         } else {
-            let byte_chirho = self.buf_chirho[self.head_chirho];
-            self.head_chirho = (self.head_chirho + 1) % KB_BUF_SIZE_CHIRHO;
+            let byte_chirho = self.buf_chirho[head_chirho].load(core::sync::atomic::Ordering::Relaxed);
+            self.head_chirho.store((head_chirho + 1) % KB_BUF_SIZE_CHIRHO, core::sync::atomic::Ordering::Release);
             Some(byte_chirho)
         }
     }
-
-    pub fn is_empty_chirho(&self) -> bool {
-        self.head_chirho == self.tail_chirho
-    }
 }
 
-/// Global keyboard input buffer.
-pub static KB_INPUT_CHIRHO: Mutex<KbInputBufChirho> = Mutex::new(KbInputBufChirho::new_chirho());
+/// Global keyboard input buffer (lock-free, safe for IRQ + syscall).
+pub static KB_INPUT_CHIRHO: KbInputBufChirho = KbInputBufChirho::new_chirho();
 
 /// Write to both serial AND framebuffer console.
 #[macro_export]

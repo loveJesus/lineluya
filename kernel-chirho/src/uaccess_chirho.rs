@@ -23,6 +23,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt;
 
 // ============================================================================
@@ -265,35 +266,22 @@ pub fn read_user_string_chirho(
         return Err(UaccessErrorChirho::FaultChirho);
     }
 
-    validate_user_range_chirho(user_addr_chirho, max_len_chirho)?;
+    // Read byte-by-byte until NUL terminator. This avoids reading past
+    // the string into unmapped pages which would cause a page fault.
+    let mut buf_chirho = Vec::with_capacity(128);
 
-    // Read byte-by-byte until we find a NUL or exhaust the limit.
-    // Allocate a working buffer.
-    let mut buf_chirho = vec![0u8; max_len_chirho];
-
-    // SAFETY: The full range `[user_addr_chirho, user_addr_chirho +
-    // max_len_chirho)` has been validated to lie within user space.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            user_addr_chirho as *const u8,
-            buf_chirho.as_mut_ptr(),
-            max_len_chirho,
-        );
+    for i_chirho in 0..max_len_chirho {
+        let addr_chirho = user_addr_chirho + i_chirho as u64;
+        if addr_chirho > USER_SPACE_MAX_CHIRHO {
+            return Err(UaccessErrorChirho::FaultChirho);
+        }
+        let byte_chirho = unsafe { core::ptr::read_volatile(addr_chirho as *const u8) };
+        if byte_chirho == 0 {
+            break;
+        }
+        buf_chirho.push(byte_chirho);
     }
 
-    // Look for the NUL terminator.
-    let nul_pos_chirho = buf_chirho
-        .iter()
-        .position(|&byte_chirho| byte_chirho == 0)
-        .ok_or(UaccessErrorChirho::FaultChirho)?;
-
-    // Truncate to just the characters before the NUL.
-    buf_chirho.truncate(nul_pos_chirho);
-
-    // Convert to a String.  If the user-space data isn't valid UTF-8 we
-    // replace invalid sequences rather than failing, since Linux paths can
-    // contain arbitrary bytes.  For a strict version, one could return an
-    // error instead.
     let string_chirho = String::from_utf8(buf_chirho)
         .unwrap_or_else(|err_chirho| String::from_utf8_lossy(err_chirho.as_bytes()).into_owned());
 

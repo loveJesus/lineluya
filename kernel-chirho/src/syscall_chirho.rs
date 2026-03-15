@@ -1234,9 +1234,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let arg4_chirho = frame_chirho.r8_chirho;
     let _arg5_chirho = frame_chirho.r9_chirho;
 
-    // Track last syscall for post-mortem debugging (no serial output here
-    // to avoid deadlocks with the page fault handler's serial writes).
+    // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
+
+    // Debug: log non-read/write syscalls to serial (helps debug ls hang)
+    if syscall_nr_chirho != SYS_READ_CHIRHO && syscall_nr_chirho != SYS_WRITE_CHIRHO
+        && syscall_nr_chirho != SYS_WRITEV_CHIRHO
+    {
+        crate::serial_println_chirho!(
+            "[SC] nr={} a0={:#x} a1={:#x} a2={:#x}",
+            syscall_nr_chirho, arg0_chirho, arg1_chirho, arg2_chirho
+        );
+    }
 
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => {
@@ -3869,16 +3878,14 @@ fn sys_read_stdin_chirho(buf_addr_chirho: u64, count_chirho: usize) -> i64 {
 
     // Poll serial port AND PS/2 keyboard buffer, return 1 byte at a time
     loop {
-        // Check PS/2 keyboard input buffer first (from QEMU window)
-        if let Some(mut kb_chirho) = crate::fbconsole_chirho::KB_INPUT_CHIRHO.try_lock() {
-            if let Some(byte_chirho) = kb_chirho.pop_chirho() {
-                let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
-                let src_chirho = [ch_chirho];
-                if crate::uaccess_chirho::copy_to_user_chirho(buf_addr_chirho, &src_chirho, 1).is_err() {
-                    return -14; // EFAULT
-                }
-                return 1;
+        // Check PS/2 keyboard input buffer first (lock-free, from QEMU window)
+        if let Some(byte_chirho) = crate::fbconsole_chirho::KB_INPUT_CHIRHO.pop_chirho() {
+            let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
+            let src_chirho = [ch_chirho];
+            if crate::uaccess_chirho::copy_to_user_chirho(buf_addr_chirho, &src_chirho, 1).is_err() {
+                return -14; // EFAULT
             }
+            return 1;
         }
         // Check serial port (from terminal)
         let status_chirho: u8 = unsafe {

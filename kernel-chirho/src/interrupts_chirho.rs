@@ -388,10 +388,8 @@ extern "x86-interrupt" fn keyboard_interrupt_handler_chirho(
                     // Feed into TTY line discipline
                     let tty_chirho = crate::tty_chirho::tty0_chirho();
                     tty_chirho.input_char_chirho(character_chirho as u8);
-                    // Also feed into fbconsole keyboard buffer for sys_read
-                    if let Some(mut kb_chirho) = crate::fbconsole_chirho::KB_INPUT_CHIRHO.try_lock() {
-                        kb_chirho.push_chirho(character_chirho as u8);
-                    }
+                    // Feed into lock-free keyboard buffer for sys_read
+                    crate::fbconsole_chirho::KB_INPUT_CHIRHO.push_chirho(character_chirho as u8);
                     // Also push to serial port so BusyBox sees it
                     unsafe {
                         while Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
