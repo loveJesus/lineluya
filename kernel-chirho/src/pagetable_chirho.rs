@@ -69,6 +69,58 @@ fn phys_to_virt_chirho(phys_chirho: PhysAddr) -> VirtAddr {
     VirtAddr::new(phys_chirho.as_u64() + phys_mem_offset_chirho())
 }
 
+/// Translate a virtual address to its physical address by walking the page table.
+/// Returns None if the address is not mapped.
+pub fn virt_to_phys_chirho(virt_chirho: u64) -> Option<u64> {
+    let phys_offset_chirho = phys_mem_offset_chirho();
+    let (pml4_frame_chirho, _) = Cr3::read();
+    let pml4_phys_chirho = pml4_frame_chirho.start_address().as_u64();
+
+    let indices_chirho = [
+        ((virt_chirho >> 39) & 0x1FF) as usize, // PML4
+        ((virt_chirho >> 30) & 0x1FF) as usize, // PDPT
+        ((virt_chirho >> 21) & 0x1FF) as usize, // PD
+        ((virt_chirho >> 12) & 0x1FF) as usize, // PT
+    ];
+
+    let mut table_phys_chirho = pml4_phys_chirho;
+
+    for (level_chirho, &idx_chirho) in indices_chirho.iter().enumerate() {
+        let table_virt_chirho = table_phys_chirho + phys_offset_chirho;
+        let entry_chirho = unsafe {
+            let table_ptr_chirho = table_virt_chirho as *const PageTableEntry;
+            core::ptr::read_volatile(table_ptr_chirho.add(idx_chirho))
+        };
+
+        if entry_chirho.is_unused() {
+            return None;
+        }
+
+        let entry_phys_chirho = entry_chirho.addr().as_u64();
+
+        // Check for huge pages (1GiB at level 1, 2MiB at level 2)
+        let flags_chirho = entry_chirho.flags();
+        if flags_chirho.contains(PageTableFlags::HUGE_PAGE) {
+            if level_chirho == 1 {
+                // 1 GiB page
+                return Some(entry_phys_chirho + (virt_chirho & 0x3FFFFFFF));
+            } else if level_chirho == 2 {
+                // 2 MiB page
+                return Some(entry_phys_chirho + (virt_chirho & 0x1FFFFF));
+            }
+        }
+
+        if level_chirho == 3 {
+            // Final level — add page offset
+            return Some(entry_phys_chirho + (virt_chirho & 0xFFF));
+        }
+
+        table_phys_chirho = entry_phys_chirho;
+    }
+
+    None
+}
+
 /// Get a mutable reference to the page table at the given physical address.
 ///
 /// # Safety

@@ -147,6 +147,7 @@ const VIRTIO_IO_QUEUE_NOTIFY_CHIRHO: u16 = 0x10;
 /// Device Status (8-bit, read/write).
 const VIRTIO_IO_DEVICE_STATUS_CHIRHO: u16 = 0x12;
 /// ISR Status (8-bit, read).
+#[allow(dead_code)]
 const VIRTIO_IO_ISR_STATUS_CHIRHO: u16 = 0x13;
 /// Device-specific config starts here (for blk: capacity at 0x14, 64-bit).
 const VIRTIO_IO_CONFIG_CHIRHO: u16 = 0x14;
@@ -874,13 +875,12 @@ impl VirtioBlkDeviceChirho {
         // sees for DMA.  In our kernel the bootloader identity-maps low
         // memory, and the heap allocator returns addresses that are valid
         // physical addresses (the kernel runs with phys_offset mapping).
-        // For the PFN we need the physical address.
-        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let phys_base_chirho = if (aligned_ptr_chirho as u64) >= phys_offset_chirho {
-            aligned_ptr_chirho as u64 - phys_offset_chirho
-        } else {
-            aligned_ptr_chirho as u64
-        };
+        // For the PFN we need the physical address — walk the page table.
+        let phys_base_chirho = crate::pagetable_chirho::virt_to_phys_chirho(aligned_ptr_chirho as u64)
+            .unwrap_or_else(|| {
+                crate::serial_println_chirho!("    VirtIO-blk I/O: FATAL: virt_to_phys failed for {:#x}", aligned_ptr_chirho as u64);
+                0
+            });
 
         crate::serial_println_chirho!(
             "    VirtIO-blk I/O: vq virt={:#x} phys={:#x} size={} total_bytes={}",
@@ -924,33 +924,15 @@ impl VirtioBlkDeviceChirho {
         // The device and driver share this memory via DMA: the descriptor
         // table starts at the aligned base, available ring follows, and
         // used ring starts at used_ring_offset.
-        let mut vq_chirho = VirtQueueChirho::new_chirho(actual_size_chirho);
+        let vq_chirho = VirtQueueChirho::new_chirho(actual_size_chirho);
 
-        // Store pointers so we can access the raw vring memory for the
-        // available/used rings that the device reads/writes.
-        // Save the raw physical base and aligned virtual address into the
-        // vq for later use in submit_and_wait.
-        // We also need to keep the raw_mem_chirho alive.
+        // Keep the raw memory alive forever (device DMA target).
         // Store it via Box::leak so it is never freed.
         let _leaked_chirho = Box::leak(raw_mem_chirho.into_boxed_slice());
 
-        // Set up the desc/avail/used pointers in the VirtQueue to point to
-        // the device-shared memory region.
-        let desc_ptr_chirho = aligned_ptr_chirho as *mut VringDescChirho;
-        let avail_ptr_chirho =
-            (aligned_ptr_chirho + desc_table_bytes_chirho) as *mut VringAvailChirho;
-        let used_ptr_chirho =
-            (aligned_ptr_chirho + used_ring_offset_chirho) as *mut VringUsedChirho;
-
-        // Overwrite the Vec-backed desc/avail/used with pointers to the
-        // device-shared memory.  We keep the Vec storage in the struct but
-        // point the actual DMA-visible rings at the shared region.
-        // Instead, we store the shared-memory base in vq_phys_base and
-        // access the raw pointers directly during submit_and_wait.
-
-        // Initialize descriptor table in shared memory to zero (already zeroed).
         // The VirtQueueChirho struct keeps Vec-based copies for building
-        // request chains; we copy them into shared memory before notify.
+        // request chains; submit_and_wait_io copies descriptors into the
+        // device-shared memory region at vq_phys_base before notifying.
 
         Some(Self {
             transport_chirho: VirtioTransportKindChirho::IoChirho(transport_chirho),
@@ -1106,6 +1088,7 @@ impl VirtioBlkDeviceChirho {
     ///   2. Update the available ring in shared memory
     ///   3. Notify the device via I/O port write
     ///   4. Poll the used ring in shared memory for completion
+    #[allow(unused_mut)] // status_byte is mutated by device DMA, not by Rust code
     fn submit_and_wait_io_chirho(
         &self,
         sector_chirho: u64,
@@ -1157,22 +1140,16 @@ impl VirtioBlkDeviceChirho {
         // Status byte for the device to write.
         let mut status_byte_chirho: u8 = 0xFF;
 
-        // Convert virtual addresses to physical for the descriptor addresses.
-        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let to_phys_chirho = |vaddr_chirho: u64| -> u64 {
-            if vaddr_chirho >= phys_offset_chirho {
-                vaddr_chirho - phys_offset_chirho
-            } else {
-                vaddr_chirho
-            }
-        };
-
-        let header_phys_chirho =
-            to_phys_chirho(&req_header_chirho as *const VirtioBlkReqChirho as u64);
-        let data_phys_chirho =
-            to_phys_chirho(buf_chirho.as_ptr() as u64);
-        let status_phys_chirho =
-            to_phys_chirho(&status_byte_chirho as *const u8 as u64);
+        // Convert virtual addresses to physical via page table walk.
+        let header_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(
+            &req_header_chirho as *const VirtioBlkReqChirho as u64
+        ).unwrap_or(0);
+        let data_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(
+            buf_chirho.as_ptr() as u64
+        ).unwrap_or(0);
+        let status_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(
+            &status_byte_chirho as *const u8 as u64
+        ).unwrap_or(0);
 
         // Write descriptor 0: request header (device-readable).
         unsafe {
@@ -1540,15 +1517,63 @@ pub fn init_virtio_chirho() {
 /// `pci_assign_bar_chirho` before attempting the MMIO probe.
 fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
     let bar0_raw_chirho = read_pci_bar_chirho(pci_dev_chirho, 0);
-    // Memory BAR: bit 0 == 0; mask type bits to get base address.
+    // Memory BAR: bit 0 == 0; I/O BAR: bit 0 == 1.
     let is_io_bar_chirho = bar0_raw_chirho & 1 != 0;
+
     if is_io_bar_chirho {
+        // ---- I/O port transport (legacy VirtIO PCI) ----
+        let io_base_chirho = (bar0_raw_chirho & 0xFFFC) as u16;
         crate::serial_println_chirho!(
-            "    VirtIO-blk BAR0 is I/O port ({:#x}), MMIO probe skipped",
-            bar0_raw_chirho
+            "    VirtIO-blk BAR0 is I/O port: raw={:#x} base={:#06x}",
+            bar0_raw_chirho,
+            io_base_chirho
         );
+
+        // Enable I/O space access + bus mastering in PCI command register.
+        enable_io_and_busmaster_chirho(pci_dev_chirho);
+
+        match VirtioBlkDeviceChirho::probe_io_chirho(io_base_chirho) {
+            Some(blk_dev_chirho) => {
+                crate::serial_println_chirho!(
+                    "    VirtIO-blk I/O init OK — capacity {} sectors ({} MiB)",
+                    blk_dev_chirho.capacity_sectors_chirho,
+                    blk_dev_chirho.capacity_sectors_chirho / 2048
+                );
+                // Read sector 0 and log the first 16 bytes.
+                test_read_sector0_chirho(&blk_dev_chirho);
+
+                // Register the device in the global block device registry.
+                use alloc::boxed::Box;
+                use alloc::string::String;
+                let name_chirho = String::from("vda");
+                let reg_result_chirho = crate::block_chirho::BLOCK_REGISTRY_CHIRHO
+                    .register_chirho(name_chirho, Box::new(blk_dev_chirho));
+                match reg_result_chirho {
+                    Ok(idx_chirho) => {
+                        crate::serial_println_chirho!(
+                            "    Registered VirtIO-blk (I/O) as block device index {}",
+                            idx_chirho
+                        );
+                    }
+                    Err(err_chirho) => {
+                        crate::serial_println_chirho!(
+                            "    Failed to register VirtIO-blk (I/O): {}",
+                            err_chirho
+                        );
+                    }
+                }
+            }
+            None => {
+                crate::serial_println_chirho!(
+                    "    VirtIO-blk I/O probe failed at base={:#06x}",
+                    io_base_chirho
+                );
+            }
+        }
         return;
     }
+
+    // ---- MMIO transport (modern VirtIO PCI) ----
     let mut mmio_phys_chirho = (bar0_raw_chirho & 0xFFFF_FFF0) as u64;
 
     // If BAR0 is zero the UEFI firmware did not assign an MMIO address.
@@ -1627,6 +1652,39 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
             );
         }
     }
+}
+
+/// Enable I/O space access and bus mastering in the PCI command register.
+///
+/// Required before accessing VirtIO legacy I/O port BARs.
+fn enable_io_and_busmaster_chirho(dev_chirho: &PciDeviceChirho) {
+    unsafe {
+        let cmd_status_chirho = pci_config_read_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            0x04, // PCI Command/Status register
+        );
+        let cmd_chirho = (cmd_status_chirho & 0xFFFF) as u16;
+        let status_chirho = ((cmd_status_chirho >> 16) & 0xFFFF) as u16;
+        let new_cmd_chirho =
+            cmd_chirho | PCI_CMD_IO_SPACE_CHIRHO | PCI_CMD_BUS_MASTER_CHIRHO;
+        let new_dword_chirho = (new_cmd_chirho as u32) | ((status_chirho as u32) << 16);
+        pci_config_write_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            0x04,
+            new_dword_chirho,
+        );
+    }
+
+    crate::serial_println_chirho!(
+        "    PCI: enabled I/O space + bus master for {:02x}:{:02x}.{}",
+        dev_chirho.bus_chirho,
+        dev_chirho.device_chirho,
+        dev_chirho.function_chirho
+    );
 }
 
 /// Probe QEMU's default VirtIO-MMIO address range for block devices.
