@@ -668,11 +668,39 @@ pub fn sys_execve_chirho(
             leaked_chirho
         }
         None => {
-            crate::serial_println_chirho!(
-                "[PROCESS] execve: \"{}\" not found in VFS, falling back to embedded hello-chirho",
-                filename_str_chirho
-            );
-            HELLO_ELF_CHIRHO
+            // Check if the filename is a BusyBox applet — if so, load
+            // the embedded BusyBox binary with the applet name as argv[0].
+            // This emulates having /bin/ls → /bin/busybox symlinks.
+            let basename_chirho = filename_str_chirho
+                .rsplit('/')
+                .next()
+                .unwrap_or(&filename_str_chirho);
+            let busybox_applets_chirho = [
+                "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "chmod",
+                "chown", "ln", "touch", "head", "tail", "wc", "grep", "sed",
+                "awk", "sort", "uniq", "tr", "cut", "find", "xargs", "tee",
+                "du", "df", "mount", "umount", "ps", "kill", "sleep",
+                "date", "uname", "id", "whoami", "hostname", "env",
+                "printenv", "expr", "test", "true", "false", "yes",
+                "sh", "ash", "busybox", "vi", "ping", "wget", "nc",
+                "tar", "gzip", "gunzip", "dd", "hexdump", "od",
+                "dmesg", "free", "uptime", "stat", "readlink",
+                "basename", "dirname", "realpath", "seq", "printf",
+                "echo", "clear", "reset", "stty", "tty",
+            ];
+            if busybox_applets_chirho.contains(&basename_chirho) {
+                crate::serial_println_chirho!(
+                    "[PROCESS] execve: \"{}\" is a BusyBox applet, using embedded BusyBox",
+                    filename_str_chirho
+                );
+                crate::exec_chirho::BUSYBOX_ELF_CHIRHO
+            } else {
+                crate::serial_println_chirho!(
+                    "[PROCESS] execve: \"{}\" not found in VFS, falling back to embedded hello-chirho",
+                    filename_str_chirho
+                );
+                HELLO_ELF_CHIRHO
+            }
         }
     };
 
