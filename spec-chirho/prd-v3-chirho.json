@@ -163,67 +163,67 @@
     {
       "id_chirho": "P5-001",
       "title_chirho": "apk package manager runs",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-002",
       "title_chirho": "sqlite3 runs (apk add sqlite)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-003",
       "title_chirho": "gcc runs (apk add gcc; gcc hello.c)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-004",
       "title_chirho": "dropbear SSH server runs",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-005",
       "title_chirho": "python3 runs (apk add python3)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-006",
       "title_chirho": "rust toolchain runs (apk add rust; cargo build)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium"
     },
     {
       "id_chirho": "P6-001",
       "title_chirho": "Framebuffer /dev/fb0 device for X11",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium"
     },
     {
       "id_chirho": "P6-002",
       "title_chirho": "Xorg or Xvfb runs with fbdev",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium"
     },
     {
       "id_chirho": "P6-003",
       "title_chirho": "XTerm launches and shows prompt",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium"
     },
     {
       "id_chirho": "P6-004",
       "title_chirho": "Keyboard + mouse input to X11",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium"
     },
     {
       "id_chirho": "P6-005",
       "title_chirho": "Basic window manager (twm) runs",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "low"
     }
   ]
