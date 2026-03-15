@@ -1889,11 +1889,16 @@ fn sys_write_chirho(
                 ).is_err() {
                     return if written_chirho > 0 { written_chirho as i64 } else { -EFAULT_CHIRHO };
                 }
-                // Write the chunk to serial port
+                // Write the chunk to serial port AND framebuffer console
                 for j_chirho in 0..chunk_chirho {
+                    let byte_chirho = kbuf_chirho[j_chirho];
                     unsafe {
                         while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                        x86_64::instructions::port::Port::<u8>::new(0x3F8).write(kbuf_chirho[j_chirho]);
+                        x86_64::instructions::port::Port::<u8>::new(0x3F8).write(byte_chirho);
+                    }
+                    // Mirror to framebuffer console
+                    if let Some(mut fb_chirho) = crate::fbconsole_chirho::FB_CONSOLE_CHIRHO.try_lock() {
+                        fb_chirho.write_byte_chirho(byte_chirho);
                     }
                 }
                 written_chirho += chunk_chirho;
@@ -3862,8 +3867,20 @@ fn sys_read_stdin_chirho(buf_addr_chirho: u64, count_chirho: usize) -> i64 {
     // Enable interrupts so timer ticks keep running
     x86_64::instructions::interrupts::enable();
 
-    // Poll serial port, return 1 byte at a time
+    // Poll serial port AND PS/2 keyboard buffer, return 1 byte at a time
     loop {
+        // Check PS/2 keyboard input buffer first (from QEMU window)
+        if let Some(mut kb_chirho) = crate::fbconsole_chirho::KB_INPUT_CHIRHO.try_lock() {
+            if let Some(byte_chirho) = kb_chirho.pop_chirho() {
+                let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
+                let src_chirho = [ch_chirho];
+                if crate::uaccess_chirho::copy_to_user_chirho(buf_addr_chirho, &src_chirho, 1).is_err() {
+                    return -14; // EFAULT
+                }
+                return 1;
+            }
+        }
+        // Check serial port (from terminal)
         let status_chirho: u8 = unsafe {
             x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
         };
@@ -3872,7 +3889,10 @@ fn sys_read_stdin_chirho(buf_addr_chirho: u64, count_chirho: usize) -> i64 {
                 x86_64::instructions::port::Port::<u8>::new(0x3F8).read()
             };
             let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
-            // Use copy_to_user instead of raw write_volatile
+            // Echo to framebuffer too
+            if let Some(mut fb_chirho) = crate::fbconsole_chirho::FB_CONSOLE_CHIRHO.try_lock() {
+                fb_chirho.write_byte_chirho(ch_chirho);
+            }
             let src_chirho = [ch_chirho];
             if crate::uaccess_chirho::copy_to_user_chirho(buf_addr_chirho, &src_chirho, 1).is_err() {
                 return -14; // EFAULT

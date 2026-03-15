@@ -11,6 +11,7 @@ extern crate alloc;
 // Phase 1: Bare metal boot
 mod serial_chirho;
 mod vga_buffer_chirho;
+mod fbconsole_chirho;
 mod gdt_chirho;
 mod interrupts_chirho;
 mod memory_chirho;
@@ -153,6 +154,29 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         .expect("Heap initialization failed");
     serial_println_chirho!("[OK] Heap allocator initialized");
 
+    // Initialize the framebuffer console (pixel-based text on UEFI screen)
+    if let Some(fb_chirho) = boot_info_chirho.framebuffer.as_mut() {
+        let fb_info_chirho = fb_chirho.info();
+        let fb_buf_chirho = fb_chirho.buffer_mut();
+        let is_bgr_chirho = matches!(fb_info_chirho.pixel_format, bootloader_api::info::PixelFormat::Bgr);
+        fbconsole_chirho::FB_CONSOLE_CHIRHO.lock().init_chirho(
+            fb_buf_chirho.as_mut_ptr(),
+            fb_buf_chirho.len(),
+            fb_info_chirho.width,
+            fb_info_chirho.height,
+            fb_info_chirho.bytes_per_pixel,
+            fb_info_chirho.stride,
+            is_bgr_chirho,
+        );
+        fb_println_chirho!("Lineluya kernel booting...");
+        fb_println_chirho!("For God so loved the world that he gave his only begotten Son,");
+        fb_println_chirho!("that whoever believes in him should not perish but have eternal life.");
+        fb_println_chirho!("- John 3:16");
+        fb_println_chirho!();
+        fb_println_chirho!("[OK] Framebuffer console initialized ({}x{}, {}bpp)",
+            fb_info_chirho.width, fb_info_chirho.height, fb_info_chirho.bytes_per_pixel * 8);
+    }
+
     // Initialize the mm subsystem with a second mapper and a frame allocator
     // that starts where the boot allocator left off (to avoid double-allocating
     // frames used for the heap and page tables).
@@ -176,44 +200,31 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
 
     // Phase 2: Initialize process management
     task_chirho::init_tasking_chirho();
-    serial_println_chirho!("[OK] Task system initialized");
+    fb_println_chirho!("[OK] Task system initialized");
 
     scheduler_chirho::init_scheduler_chirho();
-    serial_println_chirho!("[OK] Scheduler initialized");
+    fb_println_chirho!("[OK] Scheduler initialized");
 
-    // Initialize syscall MSRs (SYSCALL/SYSRET mechanism)
-    // SAFETY: Called once during early boot to set up SYSCALL MSRs.
     unsafe { syscall_chirho::init_syscalls_chirho() };
-    serial_println_chirho!("[OK] Syscall interface initialized");
+    fb_println_chirho!("[OK] Syscall interface initialized");
 
-    // Initialize the SYSCALL assembly entry trampoline.
-    // This allocates a dedicated kernel syscall stack and updates LSTAR
-    // to point to the real assembly stub instead of the placeholder.
-    // SAFETY: Called once after heap init; before userspace code runs.
     unsafe { syscall_entry_chirho::init_syscall_entry_chirho() };
-    serial_println_chirho!("[OK] Syscall entry trampoline initialized");
+    fb_println_chirho!("[OK] Syscall entry trampoline initialized");
 
-    // Initialize the filesystem layer (root tmpfs, /dev, /proc, fd table)
     fs_chirho::init_fs_chirho();
+    fb_println_chirho!("[OK] Filesystem layer initialized");
 
-    // Phase A3: Initialize the networking subsystem (loopback device, device registry)
     net_chirho::init_networking_chirho();
+    fb_println_chirho!("[OK] Networking initialized");
 
-    // Enable the Local APIC and configure IOAPIC keyboard routing.
-    // Note: In BIOS mode with bootloader crate, IOAPIC init may conflict
-    // with PIC. Skip IOAPIC for now — use PIC for both timer and keyboard.
-    // interrupts_chirho::init_local_apic_chirho();
-    // interrupts_chirho::init_ioapic_keyboard_chirho();
-
-    // Enable interrupts
     x86_64::instructions::interrupts::enable();
-    serial_println_chirho!("[OK] Interrupts enabled");
+    fb_println_chirho!("[OK] Interrupts enabled");
 
-    serial_println_chirho!();
-    serial_println_chirho!("=== Lineluya Kernel v0.1.0 ===");
-    serial_println_chirho!("Linux-compatible kernel written in Rust");
-    serial_println_chirho!("All subsystems initialized.");
-    serial_println_chirho!();
+    fb_println_chirho!();
+    fb_println_chirho!("=== Lineluya Kernel v2.0.0 ===");
+    fb_println_chirho!("Linux-compatible kernel written in Rust");
+    fb_println_chirho!("All subsystems initialized.");
+    fb_println_chirho!();
 
     // Test heap allocation
     {
