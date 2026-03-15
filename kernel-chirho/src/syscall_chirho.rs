@@ -672,6 +672,21 @@ pub const ECONNRESET_CHIRHO: i64 = 104;
 /// Software caused connection abort.
 pub const ECONNABORTED_CHIRHO: i64 = 103;
 
+/// `ENETUNREACH` — network unreachable.
+pub const ENETUNREACH_CHIRHO: i64 = 101;
+
+/// `EHOSTUNREACH` — no route to host.
+pub const EHOSTUNREACH_CHIRHO: i64 = 113;
+
+/// `EMSGSIZE` — message too long.
+pub const EMSGSIZE_CHIRHO: i64 = 90;
+
+/// `EPROTONOSUPPORT` — protocol not supported.
+pub const EPROTONOSUPPORT_CHIRHO: i64 = 93;
+
+/// `EDESTADDRREQ` — destination address required.
+pub const EDESTADDRREQ_CHIRHO: i64 = 89;
+
 // ============================================================================
 // arch_prctl sub-command constants
 // ============================================================================

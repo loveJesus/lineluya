@@ -781,6 +781,17 @@ pub fn scan_pci_virtio_chirho() -> Vec<PciDeviceChirho> {
                 let class_code_chirho = ((reg2_chirho >> 24) & 0xFF) as u8;
                 let subclass_chirho = ((reg2_chirho >> 16) & 0xFF) as u8;
 
+                let reg3_chirho =
+                    unsafe { pci_config_read_u32_chirho(0, dev_chirho, func_chirho, 0x08) };
+                let prog_if_chirho = ((reg3_chirho >> 8) & 0xFF) as u8;
+                let revision_id_chirho = (reg3_chirho & 0xFF) as u8;
+                let hdr_type_chirho =
+                    unsafe { pci_config_read_u32_chirho(0, dev_chirho, func_chirho, 0x0C) };
+                let header_type_chirho = ((hdr_type_chirho >> 16) & 0xFF) as u8;
+                let irq_reg_chirho =
+                    unsafe { pci_config_read_u32_chirho(0, dev_chirho, func_chirho, 0x3C) };
+                let interrupt_line_chirho = (irq_reg_chirho & 0xFF) as u8;
+                let interrupt_pin_chirho = ((irq_reg_chirho >> 8) & 0xFF) as u8;
                 found_chirho.push(PciDeviceChirho {
                     bus_chirho: 0,
                     device_chirho: dev_chirho,
@@ -789,6 +800,11 @@ pub fn scan_pci_virtio_chirho() -> Vec<PciDeviceChirho> {
                     device_id_chirho,
                     class_code_chirho,
                     subclass_chirho,
+                    prog_if_chirho,
+                    revision_id_chirho,
+                    header_type_chirho,
+                    interrupt_line_chirho,
+                    interrupt_pin_chirho,
                 });
             }
 

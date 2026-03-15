@@ -53,6 +53,7 @@ mod uaccess_chirho;
 mod mm_chirho;
 mod pagetable_chirho;
 mod exec_chirho;
+mod dynlink_chirho;
 mod signal_chirho;
 mod pipe_chirho;
 mod process_chirho;

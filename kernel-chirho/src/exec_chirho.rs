@@ -84,6 +84,7 @@ pub enum ExecErrorChirho {
 // ============================================================================
 
 /// Information about a successfully loaded ELF binary.
+#[derive(Debug)]
 pub struct LoadedElfChirho {
     /// Virtual address of the program entry point.
     pub entry_point_chirho: u64,

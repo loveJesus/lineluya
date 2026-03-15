@@ -94,6 +94,89 @@ fn gen_loadavg_chirho() -> String {
     String::from("0.00 0.00 0.00 1/1 1\n")
 }
 
+/// Generate `/proc/<pid>/maps` output — the virtual memory layout of the
+/// current process, matching the Linux `/proc/PID/maps` format:
+///
+/// ```text
+/// address           perms offset  dev   inode  pathname
+/// 00400000-00452000 r-xp 00000000 00:00 0      [text]
+/// ```
+fn gen_maps_chirho() -> String {
+    use crate::mm_chirho::{
+        get_or_init_mm_chirho, PROT_READ_CHIRHO, PROT_WRITE_CHIRHO, PROT_EXEC_CHIRHO,
+        MAP_PRIVATE_CHIRHO, MAP_SHARED_CHIRHO,
+    };
+    use core::fmt::Write;
+
+    let mm_lock_chirho = get_or_init_mm_chirho();
+    let mm_guard_chirho = mm_lock_chirho.lock();
+
+    let mut output_chirho = String::new();
+
+    if let Some(ref mm_chirho) = *mm_guard_chirho {
+        for vma_chirho in &mm_chirho.vmas_chirho {
+            // Permission string: r/w/x/p (or s for shared).
+            let r_chirho = if vma_chirho.prot_chirho & PROT_READ_CHIRHO != 0 { 'r' } else { '-' };
+            let w_chirho = if vma_chirho.prot_chirho & PROT_WRITE_CHIRHO != 0 { 'w' } else { '-' };
+            let x_chirho = if vma_chirho.prot_chirho & PROT_EXEC_CHIRHO != 0 { 'x' } else { '-' };
+            let p_chirho = if vma_chirho.flags_chirho & MAP_SHARED_CHIRHO != 0 { 's' } else { 'p' };
+
+            // Guess a descriptive name based on the address range.
+            let name_chirho = guess_vma_name_chirho(vma_chirho.start_chirho, vma_chirho.end_chirho, vma_chirho.prot_chirho);
+
+            let _ = write!(
+                output_chirho,
+                "{:08x}-{:08x} {}{}{}{} {:08x} 00:00 0          {}\n",
+                vma_chirho.start_chirho,
+                vma_chirho.end_chirho,
+                r_chirho,
+                w_chirho,
+                x_chirho,
+                p_chirho,
+                0u64, // offset (anonymous mappings have 0)
+                name_chirho,
+            );
+        }
+    }
+
+    output_chirho
+}
+
+/// Heuristically guess a descriptive name for a VMA based on its address
+/// range, matching the labels Linux uses in `/proc/PID/maps`.
+fn guess_vma_name_chirho(start_chirho: u64, _end_chirho: u64, prot_chirho: u32) -> &'static str {
+    use crate::mm_chirho::{PROT_EXEC_CHIRHO, PROT_WRITE_CHIRHO};
+
+    // Stack region: typically near 0x7FFF_FFFF_xxxx.
+    if start_chirho >= 0x7FFF_F000_0000 {
+        return "[stack]";
+    }
+
+    // mmap region: near 0x7F00_xxxx_xxxx.
+    if start_chirho >= 0x7F00_0000_0000 {
+        return "";
+    }
+
+    // Heap / brk region: above the typical ELF load addresses, below mmap.
+    // We check if it's above ~16MB (typical ELF top) and below mmap.
+    if start_chirho >= 0x0100_0000 && start_chirho < 0x7F00_0000_0000 {
+        if prot_chirho & PROT_EXEC_CHIRHO != 0 {
+            return "";
+        }
+        if prot_chirho & PROT_WRITE_CHIRHO != 0 {
+            return "[heap]";
+        }
+        return "";
+    }
+
+    // Low addresses: likely ELF text/data segments.
+    if prot_chirho & PROT_EXEC_CHIRHO != 0 {
+        return "";
+    }
+
+    ""
+}
+
 // ---------------------------------------------------------------------------
 // Inode number allocation
 // ---------------------------------------------------------------------------
@@ -597,6 +680,36 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     let loadavg_inode_chirho = make_proc_file_chirho(gen_loadavg_chirho);
     let self_inode_chirho = make_proc_symlink_chirho("/proc/1");
 
+    // -- /proc/1/ directory (PID 1 process directory) --
+    // Contains: maps, status (future), etc.
+    let pid1_maps_inode_chirho = make_proc_file_chirho(gen_maps_chirho);
+
+    let pid1_entries_chirho = alloc::vec![
+        ProcEntryChirho {
+            name_chirho: String::from("maps"),
+            ino_chirho: pid1_maps_inode_chirho.ino_chirho,
+            mode_chirho: pid1_maps_inode_chirho.mode_chirho,
+            inode_chirho: pid1_maps_inode_chirho.clone(),
+        },
+    ];
+
+    let pid1_ino_chirho = alloc_ino_chirho();
+    let pid1_dir_inode_chirho = Arc::new(InodeChirho {
+        ino_chirho: pid1_ino_chirho,
+        mode_chirho: S_IFDIR_CHIRHO | 0o555,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: 0,
+        nlink_chirho: 2,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(ProcDirEntriesChirho {
+            entries_chirho: pid1_entries_chirho,
+        })),
+    });
+
     // Build the directory entries list for readdir / lookup.
     let entries_chirho = alloc::vec![
         ProcEntryChirho {
@@ -659,6 +772,12 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             mode_chirho: self_inode_chirho.mode_chirho,
             inode_chirho: self_inode_chirho.clone(),
         },
+        ProcEntryChirho {
+            name_chirho: String::from("1"),
+            ino_chirho: pid1_dir_inode_chirho.ino_chirho,
+            mode_chirho: pid1_dir_inode_chirho.mode_chirho,
+            inode_chirho: pid1_dir_inode_chirho.clone(),
+        },
     ];
 
     // Build the root directory inode for /proc.
@@ -693,6 +812,46 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
         ("self", self_inode_chirho),
     ];
 
+    // Build /proc/1/ child dentry for maps.
+    let pid1_maps_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("maps"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: pid1_maps_inode_chirho.ino_chirho,
+            mode_chirho: pid1_maps_inode_chirho.mode_chirho,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: 0,
+            nlink_chirho: 1,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: pid1_maps_inode_chirho.ops_chirho,
+            fs_data_chirho: None,
+        }))),
+        parent_chirho: None,
+        children_chirho: Vec::new(),
+    }));
+
+    // Build /proc/1/ dentry.
+    let pid1_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("1"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: pid1_dir_inode_chirho.ino_chirho,
+            mode_chirho: pid1_dir_inode_chirho.mode_chirho,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: 0,
+            nlink_chirho: 2,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: pid1_dir_inode_chirho.ops_chirho,
+            fs_data_chirho: None,
+        }))),
+        parent_chirho: None,
+        children_chirho: alloc::vec![pid1_maps_dentry_chirho],
+    }));
+
     for (name_chirho, inode_chirho) in &file_inodes_chirho {
         children_chirho.push(Arc::new(Mutex::new(DentryChirho {
             name_chirho: String::from(*name_chirho),
@@ -713,6 +872,9 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             children_chirho: Vec::new(),
         })));
     }
+
+    // Add the /proc/1/ dentry to root children.
+    children_chirho.push(pid1_dentry_chirho);
 
     // Build the root dentry.
     let root_dentry_chirho = Arc::new(Mutex::new(DentryChirho {

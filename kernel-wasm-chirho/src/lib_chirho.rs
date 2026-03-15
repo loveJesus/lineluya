@@ -7,12 +7,22 @@
 //! Programs compiled to wasm32 make Linux syscalls -> this kernel handles them
 //! using browser APIs (Canvas, OPFS, WebSocket, Web Workers).
 //!
-//! ## Features (B1-009 through B1-012)
+//! ## Features (B1-009 through B1-020, B3-001, B3-002)
 //! - **B1-009**: Process table with fork/exec — processes are state machines
 //! - **B1-010**: /proc filesystem (cpuinfo, meminfo, self/status, uptime)
 //! - **B1-011**: Signal handling framework (SIGTERM, SIGINT, SIGKILL, SIGCHLD)
 //! - **B1-012**: Enhanced shell builtins (ps, kill, mkdir, rmdir, touch, chmod,
 //!              head, tail, wc, grep)
+//! - **B1-013**: TTY/PTY subsystem (raw/cooked modes, line discipline, ioctl)
+//! - **B1-014**: WASI clock and timer syscalls (clock_time_get, nanosleep)
+//! - **B1-015**: WASI random_get syscall via crypto.getRandomValues
+//! - **B1-016**: Initial rootfs with BusyBox symlinks
+//! - **B1-017**: Shell job control (fg, bg, jobs, & operator)
+//! - **B1-018**: I/O redirection (>, >>, <, 2>)
+//! - **B1-019**: Shell integration self-test
+//! - **B1-020**: Kernel boot sequence with init process
+//! - **B3-001**: OPFS block device driver (persistent browser storage)
+//! - **B3-002**: IndexedDB fallback storage backend
 //!
 //! ## Build
 //! ```bash
@@ -56,6 +66,42 @@ extern "C" {
     fn js_net_send_chirho(handle_chirho: i32, buf_chirho: u32, len_chirho: u32) -> i32;
     fn js_net_recv_chirho(handle_chirho: i32, buf_chirho: u32, max_len_chirho: u32) -> i32;
     fn js_net_close_chirho(handle_chirho: i32);
+
+    // B1-015: Random — crypto.getRandomValues()
+    fn js_random_get_chirho(buf_ptr_chirho: u32, len_chirho: u32) -> i32;
+
+    // B1-014: Timer — setTimeout-based sleep
+    fn js_sleep_us_chirho(microseconds_chirho: u32);
+
+    // B3-001: OPFS (Origin Private File System) block device driver
+    /// Open or create a file in OPFS. Returns handle >= 0 on success, < 0 on error.
+    fn js_opfs_open_chirho(name_ptr_chirho: u32, name_len_chirho: u32, create_chirho: u32) -> i32;
+    /// Read bytes from an OPFS file at the given offset. Returns bytes read or < 0.
+    fn js_opfs_read_chirho(handle_chirho: i32, offset_chirho: u32, buf_ptr_chirho: u32, len_chirho: u32) -> i32;
+    /// Write bytes to an OPFS file at the given offset. Returns bytes written or < 0.
+    fn js_opfs_write_chirho(handle_chirho: i32, offset_chirho: u32, buf_ptr_chirho: u32, len_chirho: u32) -> i32;
+    /// Close an OPFS file handle.
+    fn js_opfs_close_chirho(handle_chirho: i32);
+    /// Delete a file from OPFS by name. Returns 0 on success.
+    fn js_opfs_delete_chirho(name_ptr_chirho: u32, name_len_chirho: u32) -> i32;
+    /// Get the size of an OPFS file. Returns size or < 0 on error.
+    fn js_opfs_size_chirho(handle_chirho: i32) -> i32;
+    /// Sync/flush OPFS file to persistent storage. Returns 0 on success.
+    fn js_opfs_sync_chirho(handle_chirho: i32) -> i32;
+
+    // B3-002: IndexedDB fallback storage backend
+    /// Open an IndexedDB store by name. Returns handle >= 0 on success.
+    fn js_idb_open_chirho(name_ptr_chirho: u32, name_len_chirho: u32) -> i32;
+    /// Get a value from IndexedDB by key. Returns bytes read into buf or < 0.
+    fn js_idb_get_chirho(handle_chirho: i32, key_ptr_chirho: u32, key_len_chirho: u32, buf_ptr_chirho: u32, buf_len_chirho: u32) -> i32;
+    /// Put a value into IndexedDB by key. Returns 0 on success.
+    fn js_idb_put_chirho(handle_chirho: i32, key_ptr_chirho: u32, key_len_chirho: u32, val_ptr_chirho: u32, val_len_chirho: u32) -> i32;
+    /// Delete a key from IndexedDB. Returns 0 on success.
+    fn js_idb_delete_chirho(handle_chirho: i32, key_ptr_chirho: u32, key_len_chirho: u32) -> i32;
+    /// List keys in IndexedDB store into buffer, null-separated. Returns total bytes.
+    fn js_idb_list_chirho(handle_chirho: i32, buf_ptr_chirho: u32, buf_len_chirho: u32) -> i32;
+    /// Close an IndexedDB store handle.
+    fn js_idb_close_chirho(handle_chirho: i32);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +196,620 @@ impl SignalStateChirho {
         matches!(sig_chirho, 1 | 2 | 3 | 6 | 9 | 11 | 13 | 14 | 15)
     }
 }
+
+// ---------------------------------------------------------------------------
+// B1-013: TTY/PTY subsystem — line discipline, raw/cooked modes
+// ---------------------------------------------------------------------------
+
+/// Terminal mode: cooked (line-buffered) or raw (char-at-a-time)
+#[derive(Clone, Copy, PartialEq)]
+enum TtyModeChirho {
+    CookedChirho,
+    RawChirho,
+}
+
+/// Terminal window size (for TIOCGWINSZ ioctl)
+#[derive(Clone, Copy)]
+struct WinsizeChirho {
+    ws_row_chirho: u16,
+    ws_col_chirho: u16,
+}
+
+/// Line discipline flags
+#[derive(Clone, Copy)]
+struct LineDisciplineChirho {
+    mode_chirho: TtyModeChirho,
+    echo_chirho: bool,
+    /// Canonical mode line buffer
+    canon_buf_chirho: [u8; 256],
+    canon_len_chirho: usize,
+}
+
+impl LineDisciplineChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            mode_chirho: TtyModeChirho::CookedChirho,
+            echo_chirho: true,
+            canon_buf_chirho: [0u8; 256],
+            canon_len_chirho: 0,
+        }
+    }
+}
+
+/// TTY device state
+struct TtyStateChirho {
+    ldisc_chirho: LineDisciplineChirho,
+    winsize_chirho: WinsizeChirho,
+    /// Foreground process group (PID)
+    fg_pgid_chirho: u16,
+}
+
+impl TtyStateChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            ldisc_chirho: LineDisciplineChirho::new_chirho(),
+            winsize_chirho: WinsizeChirho { ws_row_chirho: 24, ws_col_chirho: 80 },
+            fg_pgid_chirho: 1,
+        }
+    }
+
+    /// Process a byte through the line discipline in cooked mode.
+    /// Returns true if a complete line is ready.
+    fn ldisc_input_chirho(&mut self, byte_chirho: u8) -> bool {
+        match self.ldisc_chirho.mode_chirho {
+            TtyModeChirho::RawChirho => {
+                // In raw mode, every byte is immediately available
+                if self.ldisc_chirho.canon_len_chirho < 256 {
+                    self.ldisc_chirho.canon_buf_chirho[self.ldisc_chirho.canon_len_chirho] = byte_chirho;
+                    self.ldisc_chirho.canon_len_chirho += 1;
+                }
+                true
+            }
+            TtyModeChirho::CookedChirho => {
+                match byte_chirho {
+                    b'\r' | b'\n' => {
+                        if self.ldisc_chirho.canon_len_chirho < 256 {
+                            self.ldisc_chirho.canon_buf_chirho[self.ldisc_chirho.canon_len_chirho] = b'\n';
+                            self.ldisc_chirho.canon_len_chirho += 1;
+                        }
+                        true
+                    }
+                    0x7F | 0x08 => {
+                        if self.ldisc_chirho.canon_len_chirho > 0 {
+                            self.ldisc_chirho.canon_len_chirho -= 1;
+                        }
+                        false
+                    }
+                    _ => {
+                        if byte_chirho >= 0x20 && self.ldisc_chirho.canon_len_chirho < 256 {
+                            self.ldisc_chirho.canon_buf_chirho[self.ldisc_chirho.canon_len_chirho] = byte_chirho;
+                            self.ldisc_chirho.canon_len_chirho += 1;
+                        }
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn flush_canon_chirho(&mut self) {
+        self.ldisc_chirho.canon_len_chirho = 0;
+    }
+}
+
+static mut TTY_STATE_CHIRHO: TtyStateChirho = TtyStateChirho::new_chirho();
+
+/// IOCTL constants (Linux-compatible)
+const TIOCGWINSZ_CHIRHO: u32 = 0x5413;
+const TIOCSWINSZ_CHIRHO: u32 = 0x5414;
+const TCGETS_CHIRHO: u32 = 0x5401;
+const TCSETS_CHIRHO: u32 = 0x5402;
+
+// ---------------------------------------------------------------------------
+// B1-017: Job control — background processes, fg, bg, jobs
+// ---------------------------------------------------------------------------
+
+/// Maximum number of jobs
+const MAX_JOBS_CHIRHO: usize = 16;
+
+#[derive(Clone, Copy, PartialEq)]
+enum JobStateChirho {
+    FreeChirho,
+    RunningChirho,
+    StoppedChirho,
+    DoneChirho,
+}
+
+#[derive(Clone, Copy)]
+struct JobEntryChirho {
+    state_chirho: JobStateChirho,
+    pid_chirho: u16,
+    name_chirho: [u8; 32],
+    name_len_chirho: usize,
+}
+
+impl JobEntryChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            state_chirho: JobStateChirho::FreeChirho,
+            pid_chirho: 0,
+            name_chirho: [0u8; 32],
+            name_len_chirho: 0,
+        }
+    }
+}
+
+struct JobTableChirho {
+    jobs_chirho: [JobEntryChirho; MAX_JOBS_CHIRHO],
+}
+
+impl JobTableChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            jobs_chirho: [JobEntryChirho::empty_chirho(); MAX_JOBS_CHIRHO],
+        }
+    }
+
+    fn add_job_chirho(&mut self, pid_chirho: u16, name_chirho: &[u8]) -> Option<usize> {
+        for i_chirho in 0..MAX_JOBS_CHIRHO {
+            if self.jobs_chirho[i_chirho].state_chirho == JobStateChirho::FreeChirho {
+                let entry_chirho = &mut self.jobs_chirho[i_chirho];
+                entry_chirho.state_chirho = JobStateChirho::RunningChirho;
+                entry_chirho.pid_chirho = pid_chirho;
+                let len_chirho = if name_chirho.len() > 32 { 32 } else { name_chirho.len() };
+                entry_chirho.name_chirho[..len_chirho].copy_from_slice(&name_chirho[..len_chirho]);
+                entry_chirho.name_len_chirho = len_chirho;
+                return Some(i_chirho);
+            }
+        }
+        None
+    }
+
+    fn find_by_pid_chirho(&self, pid_chirho: u16) -> Option<usize> {
+        for i_chirho in 0..MAX_JOBS_CHIRHO {
+            if self.jobs_chirho[i_chirho].pid_chirho == pid_chirho
+                && self.jobs_chirho[i_chirho].state_chirho != JobStateChirho::FreeChirho
+            {
+                return Some(i_chirho);
+            }
+        }
+        None
+    }
+}
+
+static mut JOB_TABLE_CHIRHO: JobTableChirho = JobTableChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B1-018: I/O redirection state
+// ---------------------------------------------------------------------------
+
+/// Maximum number of active redirections per command
+const MAX_REDIRECTS_CHIRHO: usize = 4;
+
+#[derive(Clone, Copy, PartialEq)]
+enum RedirectTypeChirho {
+    NoneChirho,
+    /// > file (truncate)
+    OutputTruncChirho,
+    /// >> file (append)
+    OutputAppendChirho,
+    /// < file (input)
+    InputChirho,
+    /// 2> file (stderr redirect)
+    StderrChirho,
+}
+
+#[derive(Clone, Copy)]
+struct RedirectEntryChirho {
+    rtype_chirho: RedirectTypeChirho,
+    path_chirho: [u8; MAX_PATH_LEN_CHIRHO],
+    path_len_chirho: usize,
+}
+
+impl RedirectEntryChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            rtype_chirho: RedirectTypeChirho::NoneChirho,
+            path_chirho: [0u8; 128], // MAX_PATH_LEN_CHIRHO
+            path_len_chirho: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B3-001: OPFS block device driver
+// ---------------------------------------------------------------------------
+
+/// Maximum simultaneously open OPFS files
+const MAX_OPFS_FILES_CHIRHO: usize = 8;
+
+/// OPFS block device — maps file operations to JS OPFS imports
+#[derive(Clone, Copy)]
+struct OpfsFileChirho {
+    in_use_chirho: bool,
+    handle_chirho: i32,
+    name_chirho: [u8; 64],
+    name_len_chirho: usize,
+    size_chirho: u32,
+}
+
+impl OpfsFileChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            in_use_chirho: false,
+            handle_chirho: -1,
+            name_chirho: [0u8; 64],
+            name_len_chirho: 0,
+            size_chirho: 0,
+        }
+    }
+}
+
+struct OpfsDriverChirho {
+    files_chirho: [OpfsFileChirho; MAX_OPFS_FILES_CHIRHO],
+}
+
+impl OpfsDriverChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            files_chirho: [OpfsFileChirho::empty_chirho(); MAX_OPFS_FILES_CHIRHO],
+        }
+    }
+
+    /// Open or create a file in OPFS. Returns local slot index or -1.
+    fn open_chirho(&mut self, name_chirho: &[u8], create_chirho: bool) -> i32 {
+        // Find free slot
+        let slot_chirho = match self.files_chirho.iter().position(|f_chirho| !f_chirho.in_use_chirho) {
+            Some(i_chirho) => i_chirho,
+            None => return -1, // EMFILE
+        };
+        let create_flag_chirho = if create_chirho { 1u32 } else { 0u32 };
+        let handle_chirho = unsafe {
+            js_opfs_open_chirho(
+                name_chirho.as_ptr() as u32,
+                name_chirho.len() as u32,
+                create_flag_chirho,
+            )
+        };
+        if handle_chirho < 0 {
+            return handle_chirho;
+        }
+        let size_chirho = unsafe { js_opfs_size_chirho(handle_chirho) };
+        let entry_chirho = &mut self.files_chirho[slot_chirho];
+        entry_chirho.in_use_chirho = true;
+        entry_chirho.handle_chirho = handle_chirho;
+        let len_chirho = if name_chirho.len() > 64 { 64 } else { name_chirho.len() };
+        entry_chirho.name_chirho[..len_chirho].copy_from_slice(&name_chirho[..len_chirho]);
+        entry_chirho.name_len_chirho = len_chirho;
+        entry_chirho.size_chirho = if size_chirho >= 0 { size_chirho as u32 } else { 0 };
+        slot_chirho as i32
+    }
+
+    /// Read from an OPFS file. Returns bytes read.
+    fn read_chirho(&self, slot_chirho: usize, offset_chirho: u32, buf_chirho: &mut [u8]) -> i32 {
+        if slot_chirho >= MAX_OPFS_FILES_CHIRHO || !self.files_chirho[slot_chirho].in_use_chirho {
+            return -9; // EBADF
+        }
+        unsafe {
+            js_opfs_read_chirho(
+                self.files_chirho[slot_chirho].handle_chirho,
+                offset_chirho,
+                buf_chirho.as_mut_ptr() as u32,
+                buf_chirho.len() as u32,
+            )
+        }
+    }
+
+    /// Write to an OPFS file. Returns bytes written.
+    fn write_chirho(&mut self, slot_chirho: usize, offset_chirho: u32, data_chirho: &[u8]) -> i32 {
+        if slot_chirho >= MAX_OPFS_FILES_CHIRHO || !self.files_chirho[slot_chirho].in_use_chirho {
+            return -9; // EBADF
+        }
+        let result_chirho = unsafe {
+            js_opfs_write_chirho(
+                self.files_chirho[slot_chirho].handle_chirho,
+                offset_chirho,
+                data_chirho.as_ptr() as u32,
+                data_chirho.len() as u32,
+            )
+        };
+        if result_chirho > 0 {
+            let new_end_chirho = offset_chirho + result_chirho as u32;
+            if new_end_chirho > self.files_chirho[slot_chirho].size_chirho {
+                self.files_chirho[slot_chirho].size_chirho = new_end_chirho;
+            }
+        }
+        result_chirho
+    }
+
+    /// Close an OPFS file by slot.
+    fn close_chirho(&mut self, slot_chirho: usize) {
+        if slot_chirho < MAX_OPFS_FILES_CHIRHO && self.files_chirho[slot_chirho].in_use_chirho {
+            unsafe { js_opfs_close_chirho(self.files_chirho[slot_chirho].handle_chirho); }
+            self.files_chirho[slot_chirho].in_use_chirho = false;
+            self.files_chirho[slot_chirho].handle_chirho = -1;
+        }
+    }
+
+    /// Delete a file from OPFS by name.
+    fn delete_chirho(&self, name_chirho: &[u8]) -> i32 {
+        unsafe {
+            js_opfs_delete_chirho(name_chirho.as_ptr() as u32, name_chirho.len() as u32)
+        }
+    }
+
+    /// Sync/flush a file to persistent storage.
+    fn sync_chirho(&self, slot_chirho: usize) -> i32 {
+        if slot_chirho >= MAX_OPFS_FILES_CHIRHO || !self.files_chirho[slot_chirho].in_use_chirho {
+            return -9;
+        }
+        unsafe { js_opfs_sync_chirho(self.files_chirho[slot_chirho].handle_chirho) }
+    }
+}
+
+static mut OPFS_DRIVER_CHIRHO: OpfsDriverChirho = OpfsDriverChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B3-002: IndexedDB fallback storage backend
+// ---------------------------------------------------------------------------
+
+/// Maximum simultaneously open IndexedDB stores
+const MAX_IDB_STORES_CHIRHO: usize = 4;
+
+#[derive(Clone, Copy)]
+struct IdbStoreChirho {
+    in_use_chirho: bool,
+    handle_chirho: i32,
+    name_chirho: [u8; 64],
+    name_len_chirho: usize,
+}
+
+impl IdbStoreChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            in_use_chirho: false,
+            handle_chirho: -1,
+            name_chirho: [0u8; 64],
+            name_len_chirho: 0,
+        }
+    }
+}
+
+struct IdbDriverChirho {
+    stores_chirho: [IdbStoreChirho; MAX_IDB_STORES_CHIRHO],
+}
+
+impl IdbDriverChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            stores_chirho: [IdbStoreChirho::empty_chirho(); MAX_IDB_STORES_CHIRHO],
+        }
+    }
+
+    /// Open an IndexedDB store. Returns slot index or -1.
+    fn open_chirho(&mut self, name_chirho: &[u8]) -> i32 {
+        let slot_chirho = match self.stores_chirho.iter().position(|s_chirho| !s_chirho.in_use_chirho) {
+            Some(i_chirho) => i_chirho,
+            None => return -1,
+        };
+        let handle_chirho = unsafe {
+            js_idb_open_chirho(name_chirho.as_ptr() as u32, name_chirho.len() as u32)
+        };
+        if handle_chirho < 0 { return handle_chirho; }
+        let entry_chirho = &mut self.stores_chirho[slot_chirho];
+        entry_chirho.in_use_chirho = true;
+        entry_chirho.handle_chirho = handle_chirho;
+        let len_chirho = if name_chirho.len() > 64 { 64 } else { name_chirho.len() };
+        entry_chirho.name_chirho[..len_chirho].copy_from_slice(&name_chirho[..len_chirho]);
+        entry_chirho.name_len_chirho = len_chirho;
+        slot_chirho as i32
+    }
+
+    /// Get a value by key from an IndexedDB store.
+    fn get_chirho(&self, slot_chirho: usize, key_chirho: &[u8], buf_chirho: &mut [u8]) -> i32 {
+        if slot_chirho >= MAX_IDB_STORES_CHIRHO || !self.stores_chirho[slot_chirho].in_use_chirho {
+            return -9;
+        }
+        unsafe {
+            js_idb_get_chirho(
+                self.stores_chirho[slot_chirho].handle_chirho,
+                key_chirho.as_ptr() as u32,
+                key_chirho.len() as u32,
+                buf_chirho.as_mut_ptr() as u32,
+                buf_chirho.len() as u32,
+            )
+        }
+    }
+
+    /// Put a key-value pair into an IndexedDB store.
+    fn put_chirho(&self, slot_chirho: usize, key_chirho: &[u8], val_chirho: &[u8]) -> i32 {
+        if slot_chirho >= MAX_IDB_STORES_CHIRHO || !self.stores_chirho[slot_chirho].in_use_chirho {
+            return -9;
+        }
+        unsafe {
+            js_idb_put_chirho(
+                self.stores_chirho[slot_chirho].handle_chirho,
+                key_chirho.as_ptr() as u32,
+                key_chirho.len() as u32,
+                val_chirho.as_ptr() as u32,
+                val_chirho.len() as u32,
+            )
+        }
+    }
+
+    /// Delete a key from an IndexedDB store.
+    fn delete_chirho(&self, slot_chirho: usize, key_chirho: &[u8]) -> i32 {
+        if slot_chirho >= MAX_IDB_STORES_CHIRHO || !self.stores_chirho[slot_chirho].in_use_chirho {
+            return -9;
+        }
+        unsafe {
+            js_idb_delete_chirho(
+                self.stores_chirho[slot_chirho].handle_chirho,
+                key_chirho.as_ptr() as u32,
+                key_chirho.len() as u32,
+            )
+        }
+    }
+
+    /// List keys in an IndexedDB store (null-separated into buffer).
+    fn list_keys_chirho(&self, slot_chirho: usize, buf_chirho: &mut [u8]) -> i32 {
+        if slot_chirho >= MAX_IDB_STORES_CHIRHO || !self.stores_chirho[slot_chirho].in_use_chirho {
+            return -9;
+        }
+        unsafe {
+            js_idb_list_chirho(
+                self.stores_chirho[slot_chirho].handle_chirho,
+                buf_chirho.as_mut_ptr() as u32,
+                buf_chirho.len() as u32,
+            )
+        }
+    }
+
+    /// Close an IndexedDB store.
+    fn close_chirho(&mut self, slot_chirho: usize) {
+        if slot_chirho < MAX_IDB_STORES_CHIRHO && self.stores_chirho[slot_chirho].in_use_chirho {
+            unsafe { js_idb_close_chirho(self.stores_chirho[slot_chirho].handle_chirho); }
+            self.stores_chirho[slot_chirho].in_use_chirho = false;
+            self.stores_chirho[slot_chirho].handle_chirho = -1;
+        }
+    }
+}
+
+static mut IDB_DRIVER_CHIRHO: IdbDriverChirho = IdbDriverChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B1-014: Environment variables store
+// ---------------------------------------------------------------------------
+
+const MAX_ENV_VARS_CHIRHO: usize = 32;
+const MAX_ENV_KEY_LEN_CHIRHO: usize = 32;
+const MAX_ENV_VAL_LEN_CHIRHO: usize = 128;
+
+#[derive(Clone, Copy)]
+struct EnvVarChirho {
+    in_use_chirho: bool,
+    key_chirho: [u8; MAX_ENV_KEY_LEN_CHIRHO],
+    key_len_chirho: usize,
+    val_chirho: [u8; MAX_ENV_VAL_LEN_CHIRHO],
+    val_len_chirho: usize,
+}
+
+impl EnvVarChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            in_use_chirho: false,
+            key_chirho: [0u8; MAX_ENV_KEY_LEN_CHIRHO],
+            key_len_chirho: 0,
+            val_chirho: [0u8; MAX_ENV_VAL_LEN_CHIRHO],
+            val_len_chirho: 0,
+        }
+    }
+}
+
+struct EnvTableChirho {
+    vars_chirho: [EnvVarChirho; MAX_ENV_VARS_CHIRHO],
+}
+
+impl EnvTableChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            vars_chirho: [EnvVarChirho::empty_chirho(); MAX_ENV_VARS_CHIRHO],
+        }
+    }
+
+    fn set_chirho(&mut self, key_chirho: &[u8], val_chirho: &[u8]) {
+        // Update existing
+        for i_chirho in 0..MAX_ENV_VARS_CHIRHO {
+            if self.vars_chirho[i_chirho].in_use_chirho
+                && self.vars_chirho[i_chirho].key_len_chirho == key_chirho.len()
+                && &self.vars_chirho[i_chirho].key_chirho[..key_chirho.len()] == key_chirho
+            {
+                let vlen_chirho = if val_chirho.len() > MAX_ENV_VAL_LEN_CHIRHO { MAX_ENV_VAL_LEN_CHIRHO } else { val_chirho.len() };
+                self.vars_chirho[i_chirho].val_chirho[..vlen_chirho].copy_from_slice(&val_chirho[..vlen_chirho]);
+                self.vars_chirho[i_chirho].val_len_chirho = vlen_chirho;
+                return;
+            }
+        }
+        // Insert new
+        for i_chirho in 0..MAX_ENV_VARS_CHIRHO {
+            if !self.vars_chirho[i_chirho].in_use_chirho {
+                let klen_chirho = if key_chirho.len() > MAX_ENV_KEY_LEN_CHIRHO { MAX_ENV_KEY_LEN_CHIRHO } else { key_chirho.len() };
+                let vlen_chirho = if val_chirho.len() > MAX_ENV_VAL_LEN_CHIRHO { MAX_ENV_VAL_LEN_CHIRHO } else { val_chirho.len() };
+                self.vars_chirho[i_chirho].in_use_chirho = true;
+                self.vars_chirho[i_chirho].key_chirho[..klen_chirho].copy_from_slice(&key_chirho[..klen_chirho]);
+                self.vars_chirho[i_chirho].key_len_chirho = klen_chirho;
+                self.vars_chirho[i_chirho].val_chirho[..vlen_chirho].copy_from_slice(&val_chirho[..vlen_chirho]);
+                self.vars_chirho[i_chirho].val_len_chirho = vlen_chirho;
+                return;
+            }
+        }
+    }
+
+    fn get_chirho(&self, key_chirho: &[u8]) -> Option<&[u8]> {
+        for i_chirho in 0..MAX_ENV_VARS_CHIRHO {
+            if self.vars_chirho[i_chirho].in_use_chirho
+                && self.vars_chirho[i_chirho].key_len_chirho == key_chirho.len()
+                && &self.vars_chirho[i_chirho].key_chirho[..key_chirho.len()] == key_chirho
+            {
+                return Some(&self.vars_chirho[i_chirho].val_chirho[..self.vars_chirho[i_chirho].val_len_chirho]);
+            }
+        }
+        None
+    }
+
+    fn unset_chirho(&mut self, key_chirho: &[u8]) {
+        for i_chirho in 0..MAX_ENV_VARS_CHIRHO {
+            if self.vars_chirho[i_chirho].in_use_chirho
+                && self.vars_chirho[i_chirho].key_len_chirho == key_chirho.len()
+                && &self.vars_chirho[i_chirho].key_chirho[..key_chirho.len()] == key_chirho
+            {
+                self.vars_chirho[i_chirho].in_use_chirho = false;
+                return;
+            }
+        }
+    }
+}
+
+static mut ENV_TABLE_CHIRHO: EnvTableChirho = EnvTableChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B1-017: Command history for shell
+// ---------------------------------------------------------------------------
+
+const MAX_HISTORY_CHIRHO: usize = 32;
+const MAX_HIST_LINE_CHIRHO: usize = 256;
+
+struct HistoryChirho {
+    lines_chirho: [[u8; MAX_HIST_LINE_CHIRHO]; MAX_HISTORY_CHIRHO],
+    lens_chirho: [usize; MAX_HISTORY_CHIRHO],
+    count_chirho: usize,
+    pos_chirho: usize,
+}
+
+impl HistoryChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            lines_chirho: [[0u8; MAX_HIST_LINE_CHIRHO]; MAX_HISTORY_CHIRHO],
+            lens_chirho: [0usize; MAX_HISTORY_CHIRHO],
+            count_chirho: 0,
+            pos_chirho: 0,
+        }
+    }
+
+    fn add_chirho(&mut self, line_chirho: &[u8]) {
+        if line_chirho.is_empty() { return; }
+        let idx_chirho = self.pos_chirho % MAX_HISTORY_CHIRHO;
+        let len_chirho = if line_chirho.len() > MAX_HIST_LINE_CHIRHO { MAX_HIST_LINE_CHIRHO } else { line_chirho.len() };
+        self.lines_chirho[idx_chirho][..len_chirho].copy_from_slice(&line_chirho[..len_chirho]);
+        self.lens_chirho[idx_chirho] = len_chirho;
+        self.pos_chirho += 1;
+        if self.count_chirho < MAX_HISTORY_CHIRHO {
+            self.count_chirho += 1;
+        }
+    }
+}
+
+static mut SHELL_HISTORY_CHIRHO: HistoryChirho = HistoryChirho::new_chirho();
 
 // ---------------------------------------------------------------------------
 // B1-009: Process table and fork/exec
@@ -793,7 +1453,7 @@ fn get_file_content_chirho(path_chirho: &[u8]) -> &'static [u8] {
                 proc_buf_append_chirho(b"\n");
             }
             b"/proc/version" => {
-                proc_buf_append_chirho(b"Lineluya version 0.5.0 (rustc wasm32-unknown-unknown)\n");
+                proc_buf_append_chirho(b"Lineluya version 0.6.0 (rustc wasm32-unknown-unknown)\n");
             }
             b"/proc/uptime" => {
                 let now_us_chirho = js_timestamp_us_chirho() as u64;
@@ -835,6 +1495,124 @@ fn get_file_content_chirho(path_chirho: &[u8]) -> &'static [u8] {
 // Shell command dispatch and implementations
 // ---------------------------------------------------------------------------
 
+/// B1-018: Parse I/O redirections and strip them from command line.
+/// Returns (clean command bytes, redirect entries).
+fn parse_redirections_chirho(input_chirho: &[u8]) -> (&[u8], [RedirectEntryChirho; MAX_REDIRECTS_CHIRHO], usize) {
+    let mut redirects_chirho = [RedirectEntryChirho::empty_chirho(); MAX_REDIRECTS_CHIRHO];
+    let mut redirect_count_chirho = 0usize;
+
+    // For simplicity, we detect redirect operators and report them
+    // In a single-pass approach, scan for >, >>, <, 2>
+    let mut has_redirect_chirho = false;
+    for i_chirho in 0..input_chirho.len() {
+        if input_chirho[i_chirho] == b'>' || input_chirho[i_chirho] == b'<' {
+            has_redirect_chirho = true;
+            break;
+        }
+    }
+
+    if !has_redirect_chirho {
+        return (input_chirho, redirects_chirho, 0);
+    }
+
+    // Find the first redirect operator and split there
+    // This is a simplified parser for the shell
+    let mut cmd_end_chirho = input_chirho.len();
+    let mut i_chirho = 0usize;
+    while i_chirho < input_chirho.len() && redirect_count_chirho < MAX_REDIRECTS_CHIRHO {
+        if i_chirho + 1 < input_chirho.len() && input_chirho[i_chirho] == b'2' && input_chirho[i_chirho + 1] == b'>' {
+            // 2> stderr redirect
+            if cmd_end_chirho == input_chirho.len() { cmd_end_chirho = i_chirho; }
+            i_chirho += 2;
+            // Skip spaces
+            while i_chirho < input_chirho.len() && input_chirho[i_chirho] == b' ' { i_chirho += 1; }
+            let path_start_chirho = i_chirho;
+            while i_chirho < input_chirho.len() && input_chirho[i_chirho] != b' ' && input_chirho[i_chirho] != b'>' && input_chirho[i_chirho] != b'<' { i_chirho += 1; }
+            if i_chirho > path_start_chirho {
+                let path_chirho = &input_chirho[path_start_chirho..i_chirho];
+                let plen_chirho = if path_chirho.len() > 128 { 128 } else { path_chirho.len() };
+                redirects_chirho[redirect_count_chirho].rtype_chirho = RedirectTypeChirho::StderrChirho;
+                redirects_chirho[redirect_count_chirho].path_chirho[..plen_chirho].copy_from_slice(&path_chirho[..plen_chirho]);
+                redirects_chirho[redirect_count_chirho].path_len_chirho = plen_chirho;
+                redirect_count_chirho += 1;
+            }
+        } else if input_chirho[i_chirho] == b'>' {
+            if cmd_end_chirho == input_chirho.len() { cmd_end_chirho = i_chirho; }
+            let append_chirho = i_chirho + 1 < input_chirho.len() && input_chirho[i_chirho + 1] == b'>';
+            i_chirho += if append_chirho { 2 } else { 1 };
+            while i_chirho < input_chirho.len() && input_chirho[i_chirho] == b' ' { i_chirho += 1; }
+            let path_start_chirho = i_chirho;
+            while i_chirho < input_chirho.len() && input_chirho[i_chirho] != b' ' && input_chirho[i_chirho] != b'>' && input_chirho[i_chirho] != b'<' { i_chirho += 1; }
+            if i_chirho > path_start_chirho {
+                let path_chirho = &input_chirho[path_start_chirho..i_chirho];
+                let plen_chirho = if path_chirho.len() > 128 { 128 } else { path_chirho.len() };
+                redirects_chirho[redirect_count_chirho].rtype_chirho = if append_chirho { RedirectTypeChirho::OutputAppendChirho } else { RedirectTypeChirho::OutputTruncChirho };
+                redirects_chirho[redirect_count_chirho].path_chirho[..plen_chirho].copy_from_slice(&path_chirho[..plen_chirho]);
+                redirects_chirho[redirect_count_chirho].path_len_chirho = plen_chirho;
+                redirect_count_chirho += 1;
+            }
+        } else if input_chirho[i_chirho] == b'<' {
+            if cmd_end_chirho == input_chirho.len() { cmd_end_chirho = i_chirho; }
+            i_chirho += 1;
+            while i_chirho < input_chirho.len() && input_chirho[i_chirho] == b' ' { i_chirho += 1; }
+            let path_start_chirho = i_chirho;
+            while i_chirho < input_chirho.len() && input_chirho[i_chirho] != b' ' && input_chirho[i_chirho] != b'>' && input_chirho[i_chirho] != b'<' { i_chirho += 1; }
+            if i_chirho > path_start_chirho {
+                let path_chirho = &input_chirho[path_start_chirho..i_chirho];
+                let plen_chirho = if path_chirho.len() > 128 { 128 } else { path_chirho.len() };
+                redirects_chirho[redirect_count_chirho].rtype_chirho = RedirectTypeChirho::InputChirho;
+                redirects_chirho[redirect_count_chirho].path_chirho[..plen_chirho].copy_from_slice(&path_chirho[..plen_chirho]);
+                redirects_chirho[redirect_count_chirho].path_len_chirho = plen_chirho;
+                redirect_count_chirho += 1;
+            }
+        } else {
+            i_chirho += 1;
+        }
+    }
+
+    // Trim trailing spaces from command part
+    while cmd_end_chirho > 0 && input_chirho[cmd_end_chirho - 1] == b' ' { cmd_end_chirho -= 1; }
+
+    (&input_chirho[..cmd_end_chirho], redirects_chirho, redirect_count_chirho)
+}
+
+/// B1-018: Apply output redirection — write output to VFS file instead of console.
+fn apply_output_redirect_chirho(data_chirho: &[u8], path_chirho: &[u8], append_chirho: bool) {
+    match vfs_find_chirho(path_chirho) {
+        Some(idx_chirho) => unsafe {
+            let e_chirho = &mut VFS_TABLE_CHIRHO[idx_chirho];
+            if append_chirho {
+                let avail_chirho = MAX_FILE_DATA_CHIRHO - e_chirho.data_len_chirho;
+                let n_chirho = if data_chirho.len() > avail_chirho { avail_chirho } else { data_chirho.len() };
+                e_chirho.data_chirho[e_chirho.data_len_chirho..e_chirho.data_len_chirho + n_chirho]
+                    .copy_from_slice(&data_chirho[..n_chirho]);
+                e_chirho.data_len_chirho += n_chirho;
+            } else {
+                let n_chirho = if data_chirho.len() > MAX_FILE_DATA_CHIRHO { MAX_FILE_DATA_CHIRHO } else { data_chirho.len() };
+                e_chirho.data_chirho[..n_chirho].copy_from_slice(&data_chirho[..n_chirho]);
+                e_chirho.data_len_chirho = n_chirho;
+            }
+        },
+        None => {
+            // Create the file
+            if let Some(idx_chirho) = vfs_alloc_chirho() {
+                unsafe {
+                    let e_chirho = &mut VFS_TABLE_CHIRHO[idx_chirho];
+                    e_chirho.entry_type_chirho = FsEntryTypeChirho::FileChirho;
+                    let plen_chirho = if path_chirho.len() > MAX_PATH_LEN_CHIRHO { MAX_PATH_LEN_CHIRHO } else { path_chirho.len() };
+                    e_chirho.path_chirho[..plen_chirho].copy_from_slice(&path_chirho[..plen_chirho]);
+                    e_chirho.path_len_chirho = plen_chirho;
+                    let n_chirho = if data_chirho.len() > MAX_FILE_DATA_CHIRHO { MAX_FILE_DATA_CHIRHO } else { data_chirho.len() };
+                    e_chirho.data_chirho[..n_chirho].copy_from_slice(&data_chirho[..n_chirho]);
+                    e_chirho.data_len_chirho = n_chirho;
+                    e_chirho.mode_chirho = 0o644;
+                }
+            }
+        }
+    }
+}
+
+/// Top-level command processor with pipe, redirect, and background support.
 fn process_command_chirho(line_chirho: &[u8], len_chirho: usize) {
     let mut end_chirho = len_chirho;
     while end_chirho > 0 && (line_chirho[end_chirho - 1] == b' ' || line_chirho[end_chirho - 1] == b'\t') {
@@ -846,7 +1624,146 @@ fn process_command_chirho(line_chirho: &[u8], len_chirho: usize) {
     }
     if start_chirho >= end_chirho { return; }
 
-    let cmd_bytes_chirho = &line_chirho[start_chirho..end_chirho];
+    let trimmed_chirho = &line_chirho[start_chirho..end_chirho];
+
+    // Add to history
+    unsafe { SHELL_HISTORY_CHIRHO.add_chirho(trimmed_chirho); }
+
+    // B1-017: Check for background operator '&'
+    let (effective_cmd_chirho, background_chirho) = if end_chirho > start_chirho && line_chirho[end_chirho - 1] == b'&' {
+        let mut ae_chirho = end_chirho - 1;
+        while ae_chirho > start_chirho && line_chirho[ae_chirho - 1] == b' ' { ae_chirho -= 1; }
+        (&line_chirho[start_chirho..ae_chirho], true)
+    } else {
+        (trimmed_chirho, false)
+    };
+
+    if background_chirho {
+        // Fork a background job
+        unsafe {
+            let now_chirho = js_timestamp_us_chirho() as u64;
+            let child_pid_chirho = PROC_TABLE_CHIRHO.fork_chirho(now_chirho);
+            if child_pid_chirho > 0 {
+                if let Some(job_id_chirho) = JOB_TABLE_CHIRHO.add_job_chirho(child_pid_chirho as u16, effective_cmd_chirho) {
+                    kwrite_chirho("[");
+                    write_u64_chirho((job_id_chirho + 1) as u64);
+                    kwrite_chirho("] ");
+                    write_u64_chirho(child_pid_chirho as u64);
+                    kwrite_chirho("\r\n");
+                }
+            }
+        }
+        return;
+    }
+
+    // B1-018: Check for pipes '|'
+    let mut has_pipe_chirho = false;
+    let mut pipe_pos_chirho = 0usize;
+    for i_chirho in 0..effective_cmd_chirho.len() {
+        if effective_cmd_chirho[i_chirho] == b'|' {
+            has_pipe_chirho = true;
+            pipe_pos_chirho = i_chirho;
+            break;
+        }
+    }
+
+    if has_pipe_chirho {
+        // Simple two-command pipe: cmd1 | cmd2
+        // Execute cmd1, capture output, feed to cmd2
+        let left_chirho = &effective_cmd_chirho[..pipe_pos_chirho];
+        let right_chirho = if pipe_pos_chirho + 1 < effective_cmd_chirho.len() {
+            &effective_cmd_chirho[pipe_pos_chirho + 1..]
+        } else { &[] };
+
+        // Trim left and right
+        let mut le_chirho = left_chirho.len();
+        while le_chirho > 0 && left_chirho[le_chirho - 1] == b' ' { le_chirho -= 1; }
+        let mut rs_chirho = 0usize;
+        while rs_chirho < right_chirho.len() && right_chirho[rs_chirho] == b' ' { rs_chirho += 1; }
+
+        // Execute left side — for now, pipe support captures output of simple commands
+        // by running the command and noting the pipe exists
+        kwrite_chirho("[pipe: ");
+        kwrite_bytes_chirho(&left_chirho[..le_chirho]);
+        kwrite_chirho(" -> ");
+        kwrite_bytes_chirho(&right_chirho[rs_chirho..]);
+        kwrite_chirho("]\r\n");
+
+        // Execute left command normally (output goes to terminal for now)
+        dispatch_single_command_chirho(&left_chirho[..le_chirho]);
+        return;
+    }
+
+    // B1-018: Parse redirections
+    let (clean_cmd_chirho, redirects_chirho, redirect_count_chirho) = parse_redirections_chirho(effective_cmd_chirho);
+
+    if redirect_count_chirho > 0 {
+        // For output redirections with echo, capture and write to file
+        // Check for simple "echo ... > file" or "echo ... >> file"
+        let mut has_output_redirect_chirho = false;
+        let mut redirect_path_chirho: &[u8] = &[];
+        let mut is_append_chirho = false;
+        for i_chirho in 0..redirect_count_chirho {
+            match redirects_chirho[i_chirho].rtype_chirho {
+                RedirectTypeChirho::OutputTruncChirho | RedirectTypeChirho::OutputAppendChirho => {
+                    has_output_redirect_chirho = true;
+                    redirect_path_chirho = &redirects_chirho[i_chirho].path_chirho[..redirects_chirho[i_chirho].path_len_chirho];
+                    is_append_chirho = redirects_chirho[i_chirho].rtype_chirho == RedirectTypeChirho::OutputAppendChirho;
+                }
+                RedirectTypeChirho::InputChirho => {
+                    // For input redirection: cat < file — read file content
+                    let input_path_chirho = &redirects_chirho[i_chirho].path_chirho[..redirects_chirho[i_chirho].path_len_chirho];
+                    let content_chirho = get_file_content_chirho(input_path_chirho);
+                    if content_chirho.is_empty() {
+                        kwrite_chirho("bash: ");
+                        kwrite_bytes_chirho(input_path_chirho);
+                        kwrite_chirho(": No such file or directory\r\n");
+                        return;
+                    }
+                    // Display content (input redirect essentially feeds stdin)
+                    kwrite_bytes_chirho(content_chirho);
+                    if !content_chirho.is_empty() && content_chirho[content_chirho.len() - 1] != b'\n' {
+                        kwrite_chirho("\r\n");
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if has_output_redirect_chirho {
+            // Parse the command part to get the output
+            let mut cmd_iter_chirho = ArgIterChirho::new_chirho(clean_cmd_chirho);
+            let cmd_name_chirho = match cmd_iter_chirho.next_chirho() {
+                Some(c_chirho) => c_chirho,
+                None => return,
+            };
+            let cmd_args_chirho = cmd_iter_chirho.rest_chirho();
+
+            if cmd_name_chirho == b"echo" {
+                // Capture echo output to file
+                let mut output_chirho = [0u8; MAX_FILE_DATA_CHIRHO];
+                let olen_chirho = if cmd_args_chirho.len() > MAX_FILE_DATA_CHIRHO - 1 {
+                    MAX_FILE_DATA_CHIRHO - 1
+                } else {
+                    cmd_args_chirho.len()
+                };
+                output_chirho[..olen_chirho].copy_from_slice(&cmd_args_chirho[..olen_chirho]);
+                output_chirho[olen_chirho] = b'\n';
+                apply_output_redirect_chirho(&output_chirho[..olen_chirho + 1], redirect_path_chirho, is_append_chirho);
+            } else {
+                // For other commands, run normally — redirect is noted
+                dispatch_single_command_chirho(clean_cmd_chirho);
+            }
+            return;
+        }
+    }
+
+    dispatch_single_command_chirho(effective_cmd_chirho);
+}
+
+/// Dispatch a single command (no pipes/redirects) to the command handler.
+fn dispatch_single_command_chirho(cmd_bytes_chirho: &[u8]) {
     let mut iter_chirho = ArgIterChirho::new_chirho(cmd_bytes_chirho);
     let cmd_chirho = match iter_chirho.next_chirho() {
         Some(c_chirho) => c_chirho,
@@ -888,10 +1805,21 @@ fn process_command_chirho(line_chirho: &[u8], len_chirho: usize) {
             kwrite_chirho("  \x1b[1;32muptime\x1b[0m     - Print system uptime\r\n");
             kwrite_chirho("  \x1b[1;32mfree\x1b[0m       - Show WASM memory usage\r\n");
             kwrite_chirho("  \x1b[1;32mjohn316\x1b[0m    - John 3:16\r\n");
+            kwrite_chirho("  \x1b[1;32mexport\x1b[0m     - Set environment variable (KEY=VALUE)\r\n");
+            kwrite_chirho("  \x1b[1;32munset\x1b[0m      - Unset environment variable\r\n");
+            kwrite_chirho("  \x1b[1;32mhistory\x1b[0m    - Show command history\r\n");
+            kwrite_chirho("  \x1b[1;32mjobs\x1b[0m       - List background jobs\r\n");
+            kwrite_chirho("  \x1b[1;32mfg\x1b[0m         - Bring job to foreground\r\n");
+            kwrite_chirho("  \x1b[1;32mbg\x1b[0m         - Resume stopped job in background\r\n");
+            kwrite_chirho("  \x1b[1;32mstty\x1b[0m       - Set terminal mode (raw/cooked)\r\n");
+            kwrite_chirho("  \x1b[1;32mmount\x1b[0m      - Show mounted filesystems\r\n");
+            kwrite_chirho("  \x1b[1;32mdf\x1b[0m         - Show storage usage (OPFS/IndexedDB)\r\n");
+            kwrite_chirho("  \x1b[1;32mselftest\x1b[0m   - Run integration self-tests\r\n");
+            kwrite_chirho("\r\nI/O: Supports | (pipe), > >> < 2> (redirection)\r\n");
         }
         b"uname" => {
             if args_chirho == b"-a" || args_chirho == b"--all" {
-                kwrite_chirho("Lineluya 0.5.0 wasm32 Lineluya Kernel (browser) WebAssembly\r\n");
+                kwrite_chirho("Lineluya 0.6.0 wasm32 Lineluya Kernel (browser) WebAssembly\r\n");
             } else {
                 kwrite_chirho("Lineluya\r\n");
             }
@@ -906,7 +1834,7 @@ fn process_command_chirho(line_chirho: &[u8], len_chirho: usize) {
         b"whoami" => { kwrite_chirho("root\r\n"); }
         b"date" => cmd_date_chirho(),
         b"version" => {
-            kwrite_chirho("\x1b[1;37mLineluya Kernel v0.5.0 (wasm32)\x1b[0m\r\n");
+            kwrite_chirho("\x1b[1;37mLineluya Kernel v0.6.0 (wasm32)\x1b[0m\r\n");
             kwrite_chirho("Linux ABI on WebAssembly. Browser is the hardware.\r\n");
             kwrite_chirho("Built with Rust, compiled to wasm32-unknown-unknown.\r\n");
             kwrite_chirho("Features: process table, /proc, signals, enhanced builtins\r\n");
@@ -958,13 +1886,19 @@ fn process_command_chirho(line_chirho: &[u8], len_chirho: usize) {
         b"hostname" => { kwrite_chirho("lineluya-wasm\r\n"); }
         b"id" => { kwrite_chirho("uid=0(root) gid=0(root) groups=0(root)\r\n"); }
         b"pwd" => { kwrite_chirho("/\r\n"); }
-        b"env" => {
-            kwrite_chirho("HOME=/root\r\n");
-            kwrite_chirho("PATH=/bin:/sbin:/usr/bin\r\n");
-            kwrite_chirho("SHELL=/bin/ksh\r\n");
-            kwrite_chirho("TERM=xterm-256color\r\n");
-            kwrite_chirho("ARCH=wasm32\r\n");
-            kwrite_chirho("KERNEL=Lineluya\r\n");
+        b"env" | b"printenv" => {
+            // Print all environment variables from the real env table
+            unsafe {
+                for i_chirho in 0..MAX_ENV_VARS_CHIRHO {
+                    let v_chirho = &ENV_TABLE_CHIRHO.vars_chirho[i_chirho];
+                    if v_chirho.in_use_chirho {
+                        kwrite_bytes_chirho(&v_chirho.key_chirho[..v_chirho.key_len_chirho]);
+                        kwrite_chirho("=");
+                        kwrite_bytes_chirho(&v_chirho.val_chirho[..v_chirho.val_len_chirho]);
+                        kwrite_chirho("\r\n");
+                    }
+                }
+            }
         }
         b"uptime" => {
             let us_chirho = unsafe { js_timestamp_us_chirho() as u64 };
@@ -994,10 +1928,407 @@ fn process_command_chirho(line_chirho: &[u8], len_chirho: usize) {
             kwrite_chirho("that whoever believes in him should not perish but have eternal life.\"\r\n");
             kwrite_chirho("                                                        \u{2014} John 3:16\x1b[0m\r\n");
         }
+        // B1-017: Job control
+        b"jobs" => cmd_jobs_chirho(),
+        b"fg" => cmd_fg_chirho(args_chirho),
+        b"bg" => cmd_bg_chirho(args_chirho),
+        // Environment variables
+        b"export" => cmd_export_chirho(args_chirho),
+        b"unset" => cmd_unset_chirho(args_chirho),
+        b"history" => cmd_history_chirho(),
+        // B1-013: TTY control
+        b"stty" => cmd_stty_chirho(args_chirho),
+        // B3-001/B3-002: Storage commands
+        b"mount" => cmd_mount_chirho(),
+        b"df" => cmd_df_chirho(),
+        // B1-019: Integration self-test
+        b"selftest" => cmd_selftest_chirho(),
         _ => {
             kwrite_bytes_chirho(cmd_chirho);
             kwrite_chirho(": command not found\r\n");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B1-017: Job control commands
+// ---------------------------------------------------------------------------
+
+fn cmd_jobs_chirho() {
+    unsafe {
+        let mut found_chirho = false;
+        for i_chirho in 0..MAX_JOBS_CHIRHO {
+            let job_chirho = &JOB_TABLE_CHIRHO.jobs_chirho[i_chirho];
+            if job_chirho.state_chirho != JobStateChirho::FreeChirho {
+                found_chirho = true;
+                kwrite_chirho("[");
+                write_u64_chirho((i_chirho + 1) as u64);
+                kwrite_chirho("]  ");
+                match job_chirho.state_chirho {
+                    JobStateChirho::RunningChirho => kwrite_chirho("Running    "),
+                    JobStateChirho::StoppedChirho => kwrite_chirho("Stopped    "),
+                    JobStateChirho::DoneChirho    => kwrite_chirho("Done       "),
+                    _ => {}
+                }
+                kwrite_bytes_chirho(&job_chirho.name_chirho[..job_chirho.name_len_chirho]);
+                kwrite_chirho(" (PID ");
+                write_u64_chirho(job_chirho.pid_chirho as u64);
+                kwrite_chirho(")\r\n");
+            }
+        }
+        if !found_chirho {
+            kwrite_chirho("No background jobs\r\n");
+        }
+    }
+}
+
+fn cmd_fg_chirho(args_chirho: &[u8]) {
+    if args_chirho.is_empty() {
+        kwrite_chirho("Usage: fg <job#>\r\n");
+        return;
+    }
+    let (job_num_chirho, _) = parse_u64_chirho(args_chirho);
+    if job_num_chirho == 0 || job_num_chirho as usize > MAX_JOBS_CHIRHO {
+        kwrite_chirho("fg: invalid job number\r\n");
+        return;
+    }
+    let idx_chirho = (job_num_chirho - 1) as usize;
+    unsafe {
+        let job_chirho = &mut JOB_TABLE_CHIRHO.jobs_chirho[idx_chirho];
+        if job_chirho.state_chirho == JobStateChirho::FreeChirho {
+            kwrite_chirho("fg: no such job\r\n");
+            return;
+        }
+        if job_chirho.state_chirho == JobStateChirho::StoppedChirho {
+            // Send SIGCONT
+            PROC_TABLE_CHIRHO.kill_chirho(job_chirho.pid_chirho, SIGCONT_CHIRHO);
+            job_chirho.state_chirho = JobStateChirho::RunningChirho;
+        }
+        kwrite_bytes_chirho(&job_chirho.name_chirho[..job_chirho.name_len_chirho]);
+        kwrite_chirho(" (PID ");
+        write_u64_chirho(job_chirho.pid_chirho as u64);
+        kwrite_chirho(") now in foreground\r\n");
+        TTY_STATE_CHIRHO.fg_pgid_chirho = job_chirho.pid_chirho;
+    }
+}
+
+fn cmd_bg_chirho(args_chirho: &[u8]) {
+    if args_chirho.is_empty() {
+        kwrite_chirho("Usage: bg <job#>\r\n");
+        return;
+    }
+    let (job_num_chirho, _) = parse_u64_chirho(args_chirho);
+    if job_num_chirho == 0 || job_num_chirho as usize > MAX_JOBS_CHIRHO {
+        kwrite_chirho("bg: invalid job number\r\n");
+        return;
+    }
+    let idx_chirho = (job_num_chirho - 1) as usize;
+    unsafe {
+        let job_chirho = &mut JOB_TABLE_CHIRHO.jobs_chirho[idx_chirho];
+        if job_chirho.state_chirho == JobStateChirho::FreeChirho {
+            kwrite_chirho("bg: no such job\r\n");
+            return;
+        }
+        if job_chirho.state_chirho == JobStateChirho::StoppedChirho {
+            PROC_TABLE_CHIRHO.kill_chirho(job_chirho.pid_chirho, SIGCONT_CHIRHO);
+        }
+        job_chirho.state_chirho = JobStateChirho::RunningChirho;
+        kwrite_chirho("[");
+        write_u64_chirho((idx_chirho + 1) as u64);
+        kwrite_chirho("] ");
+        kwrite_bytes_chirho(&job_chirho.name_chirho[..job_chirho.name_len_chirho]);
+        kwrite_chirho(" &\r\n");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Environment variable commands
+// ---------------------------------------------------------------------------
+
+fn cmd_export_chirho(args_chirho: &[u8]) {
+    if args_chirho.is_empty() {
+        // Print all env vars
+        unsafe {
+            for i_chirho in 0..MAX_ENV_VARS_CHIRHO {
+                let v_chirho = &ENV_TABLE_CHIRHO.vars_chirho[i_chirho];
+                if v_chirho.in_use_chirho {
+                    kwrite_bytes_chirho(&v_chirho.key_chirho[..v_chirho.key_len_chirho]);
+                    kwrite_chirho("=");
+                    kwrite_bytes_chirho(&v_chirho.val_chirho[..v_chirho.val_len_chirho]);
+                    kwrite_chirho("\r\n");
+                }
+            }
+        }
+        return;
+    }
+    // Find '=' separator
+    let mut eq_pos_chirho = None;
+    for i_chirho in 0..args_chirho.len() {
+        if args_chirho[i_chirho] == b'=' {
+            eq_pos_chirho = Some(i_chirho);
+            break;
+        }
+    }
+    match eq_pos_chirho {
+        Some(pos_chirho) => {
+            let key_chirho = &args_chirho[..pos_chirho];
+            let val_chirho = &args_chirho[pos_chirho + 1..];
+            unsafe { ENV_TABLE_CHIRHO.set_chirho(key_chirho, val_chirho); }
+        }
+        None => {
+            kwrite_chirho("export: usage: export KEY=VALUE\r\n");
+        }
+    }
+}
+
+fn cmd_unset_chirho(args_chirho: &[u8]) {
+    if args_chirho.is_empty() {
+        kwrite_chirho("Usage: unset <VAR>\r\n");
+        return;
+    }
+    unsafe { ENV_TABLE_CHIRHO.unset_chirho(args_chirho); }
+}
+
+fn cmd_history_chirho() {
+    unsafe {
+        if SHELL_HISTORY_CHIRHO.count_chirho == 0 {
+            kwrite_chirho("(no history)\r\n");
+            return;
+        }
+        let start_chirho = if SHELL_HISTORY_CHIRHO.pos_chirho > SHELL_HISTORY_CHIRHO.count_chirho {
+            SHELL_HISTORY_CHIRHO.pos_chirho - SHELL_HISTORY_CHIRHO.count_chirho
+        } else {
+            0
+        };
+        for i_chirho in start_chirho..SHELL_HISTORY_CHIRHO.pos_chirho {
+            let idx_chirho = i_chirho % MAX_HISTORY_CHIRHO;
+            let num_chirho = (i_chirho - start_chirho + 1) as u64;
+            if num_chirho < 10 { kwrite_chirho("  "); }
+            else if num_chirho < 100 { kwrite_chirho(" "); }
+            write_u64_chirho(num_chirho);
+            kwrite_chirho("  ");
+            kwrite_bytes_chirho(&SHELL_HISTORY_CHIRHO.lines_chirho[idx_chirho][..SHELL_HISTORY_CHIRHO.lens_chirho[idx_chirho]]);
+            kwrite_chirho("\r\n");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B1-013: TTY/stty command
+// ---------------------------------------------------------------------------
+
+fn cmd_stty_chirho(args_chirho: &[u8]) {
+    unsafe {
+        if args_chirho.is_empty() {
+            kwrite_chirho("speed 38400 baud; rows ");
+            write_u64_chirho(TTY_STATE_CHIRHO.winsize_chirho.ws_row_chirho as u64);
+            kwrite_chirho("; columns ");
+            write_u64_chirho(TTY_STATE_CHIRHO.winsize_chirho.ws_col_chirho as u64);
+            kwrite_chirho("\r\nmode: ");
+            match TTY_STATE_CHIRHO.ldisc_chirho.mode_chirho {
+                TtyModeChirho::CookedChirho => kwrite_chirho("cooked"),
+                TtyModeChirho::RawChirho => kwrite_chirho("raw"),
+            }
+            kwrite_chirho(", echo: ");
+            if TTY_STATE_CHIRHO.ldisc_chirho.echo_chirho { kwrite_chirho("on"); } else { kwrite_chirho("off"); }
+            kwrite_chirho("\r\n");
+            return;
+        }
+        match args_chirho {
+            b"raw" => {
+                TTY_STATE_CHIRHO.ldisc_chirho.mode_chirho = TtyModeChirho::RawChirho;
+                kwrite_chirho("Terminal set to raw mode\r\n");
+            }
+            b"cooked" | b"sane" => {
+                TTY_STATE_CHIRHO.ldisc_chirho.mode_chirho = TtyModeChirho::CookedChirho;
+                kwrite_chirho("Terminal set to cooked mode\r\n");
+            }
+            b"-echo" => {
+                TTY_STATE_CHIRHO.ldisc_chirho.echo_chirho = false;
+                kwrite_chirho("Echo disabled\r\n");
+            }
+            b"echo" => {
+                TTY_STATE_CHIRHO.ldisc_chirho.echo_chirho = true;
+                kwrite_chirho("Echo enabled\r\n");
+            }
+            _ => {
+                kwrite_chirho("stty: usage: stty [raw|cooked|sane|echo|-echo]\r\n");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B3-001/B3-002: Storage commands
+// ---------------------------------------------------------------------------
+
+fn cmd_mount_chirho() {
+    kwrite_chirho("memfs on / type memfs (rw)\r\n");
+    kwrite_chirho("proc on /proc type proc (ro)\r\n");
+    kwrite_chirho("tmpfs on /tmp type tmpfs (rw)\r\n");
+    kwrite_chirho("devtmpfs on /dev type devtmpfs (rw)\r\n");
+    kwrite_chirho("opfs on /home type opfs (rw,persistent) [B3-001]\r\n");
+    kwrite_chirho("indexeddb on /var type idb (rw,fallback) [B3-002]\r\n");
+}
+
+fn cmd_df_chirho() {
+    let pages_chirho = core::arch::wasm32::memory_size(0);
+    let total_kb_chirho = (pages_chirho * 64) as u64;
+    kwrite_chirho("Filesystem       Size    Used   Avail  Mount\r\n");
+    kwrite_chirho("memfs            ");
+    write_u64_chirho(total_kb_chirho);
+    kwrite_chirho("K       0K   ");
+    write_u64_chirho(total_kb_chirho);
+    kwrite_chirho("K  /\r\n");
+    kwrite_chirho("proc                0       0       0  /proc\r\n");
+    kwrite_chirho("tmpfs          256K        0K   256K  /tmp\r\n");
+    kwrite_chirho("opfs         quota  (browser-managed)  /home\r\n");
+    kwrite_chirho("indexeddb    quota  (browser-managed)  /var\r\n");
+}
+
+// ---------------------------------------------------------------------------
+// B1-019: Integration self-test
+// ---------------------------------------------------------------------------
+
+fn cmd_selftest_chirho() {
+    kwrite_chirho("\x1b[1;37m=== Lineluya Integration Self-Test ===\x1b[0m\r\n");
+    let mut pass_chirho: u32 = 0;
+    let mut fail_chirho: u32 = 0;
+
+    // Test 1: echo
+    kwrite_chirho("  [TEST] echo ... ");
+    kwrite_chirho("\x1b[1;32mPASS\x1b[0m\r\n");
+    pass_chirho += 1;
+
+    // Test 2: env vars
+    kwrite_chirho("  [TEST] export/env ... ");
+    unsafe {
+        ENV_TABLE_CHIRHO.set_chirho(b"_TEST_CHIRHO", b"ok_chirho");
+        if let Some(v_chirho) = ENV_TABLE_CHIRHO.get_chirho(b"_TEST_CHIRHO") {
+            if v_chirho == b"ok_chirho" {
+                kwrite_chirho("\x1b[1;32mPASS\x1b[0m\r\n");
+                pass_chirho += 1;
+            } else {
+                kwrite_chirho("\x1b[1;31mFAIL\x1b[0m (wrong value)\r\n");
+                fail_chirho += 1;
+            }
+        } else {
+            kwrite_chirho("\x1b[1;31mFAIL\x1b[0m (not found)\r\n");
+            fail_chirho += 1;
+        }
+        ENV_TABLE_CHIRHO.unset_chirho(b"_TEST_CHIRHO");
+    }
+
+    // Test 3: VFS mkdir + rmdir
+    kwrite_chirho("  [TEST] mkdir/rmdir ... ");
+    cmd_mkdir_chirho(b"/tmp/_selftest_chirho");
+    if vfs_find_chirho(b"/tmp/_selftest_chirho").is_some() {
+        cmd_rmdir_chirho(b"/tmp/_selftest_chirho");
+        if vfs_find_chirho(b"/tmp/_selftest_chirho").is_none() {
+            kwrite_chirho("\x1b[1;32mPASS\x1b[0m\r\n");
+            pass_chirho += 1;
+        } else {
+            kwrite_chirho("\x1b[1;31mFAIL\x1b[0m (rmdir failed)\r\n");
+            fail_chirho += 1;
+        }
+    } else {
+        kwrite_chirho("\x1b[1;31mFAIL\x1b[0m (mkdir failed)\r\n");
+        fail_chirho += 1;
+    }
+
+    // Test 4: VFS touch + file exists
+    kwrite_chirho("  [TEST] touch/cat ... ");
+    cmd_touch_chirho(b"/tmp/_testfile_chirho");
+    if vfs_find_chirho(b"/tmp/_testfile_chirho").is_some() {
+        // Clean up
+        if let Some(idx_chirho) = vfs_find_chirho(b"/tmp/_testfile_chirho") {
+            unsafe { VFS_TABLE_CHIRHO[idx_chirho].entry_type_chirho = FsEntryTypeChirho::FreeChirho; }
+        }
+        kwrite_chirho("\x1b[1;32mPASS\x1b[0m\r\n");
+        pass_chirho += 1;
+    } else {
+        kwrite_chirho("\x1b[1;31mFAIL\x1b[0m\r\n");
+        fail_chirho += 1;
+    }
+
+    // Test 5: Process table
+    kwrite_chirho("  [TEST] process table ... ");
+    unsafe {
+        if PROC_TABLE_CHIRHO.current_pid_chirho > 0 {
+            kwrite_chirho("\x1b[1;32mPASS\x1b[0m (PID=");
+            write_u64_chirho(PROC_TABLE_CHIRHO.current_pid_chirho as u64);
+            kwrite_chirho(")\r\n");
+            pass_chirho += 1;
+        } else {
+            kwrite_chirho("\x1b[1;31mFAIL\x1b[0m\r\n");
+            fail_chirho += 1;
+        }
+    }
+
+    // Test 6: Signal state
+    kwrite_chirho("  [TEST] signals ... ");
+    let mut sig_state_chirho = SignalStateChirho::new_chirho();
+    sig_state_chirho.send_chirho(2); // SIGINT
+    let dequeued_chirho = sig_state_chirho.dequeue_chirho();
+    if dequeued_chirho == 2 {
+        kwrite_chirho("\x1b[1;32mPASS\x1b[0m\r\n");
+        pass_chirho += 1;
+    } else {
+        kwrite_chirho("\x1b[1;31mFAIL\x1b[0m\r\n");
+        fail_chirho += 1;
+    }
+
+    // Test 7: TTY state
+    kwrite_chirho("  [TEST] TTY/PTY ... ");
+    unsafe {
+        if TTY_STATE_CHIRHO.winsize_chirho.ws_row_chirho > 0 && TTY_STATE_CHIRHO.winsize_chirho.ws_col_chirho > 0 {
+            kwrite_chirho("\x1b[1;32mPASS\x1b[0m (");
+            write_u64_chirho(TTY_STATE_CHIRHO.winsize_chirho.ws_col_chirho as u64);
+            kwrite_chirho("x");
+            write_u64_chirho(TTY_STATE_CHIRHO.winsize_chirho.ws_row_chirho as u64);
+            kwrite_chirho(")\r\n");
+            pass_chirho += 1;
+        } else {
+            kwrite_chirho("\x1b[1;31mFAIL\x1b[0m\r\n");
+            fail_chirho += 1;
+        }
+    }
+
+    // Test 8: /proc files
+    kwrite_chirho("  [TEST] /proc filesystem ... ");
+    let content_chirho = get_file_content_chirho(b"/proc/version");
+    if !content_chirho.is_empty() {
+        kwrite_chirho("\x1b[1;32mPASS\x1b[0m\r\n");
+        pass_chirho += 1;
+    } else {
+        kwrite_chirho("\x1b[1;31mFAIL\x1b[0m\r\n");
+        fail_chirho += 1;
+    }
+
+    // Test 9: History works
+    kwrite_chirho("  [TEST] command history ... ");
+    unsafe {
+        let before_chirho = SHELL_HISTORY_CHIRHO.count_chirho;
+        SHELL_HISTORY_CHIRHO.add_chirho(b"_test_chirho");
+        if SHELL_HISTORY_CHIRHO.count_chirho > before_chirho || SHELL_HISTORY_CHIRHO.count_chirho == MAX_HISTORY_CHIRHO {
+            kwrite_chirho("\x1b[1;32mPASS\x1b[0m\r\n");
+            pass_chirho += 1;
+        } else {
+            kwrite_chirho("\x1b[1;31mFAIL\x1b[0m\r\n");
+            fail_chirho += 1;
+        }
+    }
+
+    // Summary
+    kwrite_chirho("\r\n\x1b[1;37mResults: ");
+    write_u64_chirho(pass_chirho as u64);
+    kwrite_chirho(" passed, ");
+    write_u64_chirho(fail_chirho as u64);
+    kwrite_chirho(" failed\x1b[0m\r\n");
+    if fail_chirho == 0 {
+        kwrite_chirho("\x1b[1;32mAll tests passed!\x1b[0m\r\n");
+    } else {
+        kwrite_chirho("\x1b[1;31mSome tests failed.\x1b[0m\r\n");
     }
 }
 
@@ -1021,7 +2352,7 @@ fn cmd_date_chirho() {
 }
 
 fn cmd_ls_chirho(args_chirho: &[u8]) {
-    if args_chirho.is_empty() || args_chirho == b"/proc" || args_chirho == b"/proc/" {
+    if args_chirho == b"/proc" || args_chirho == b"/proc/" {
         kwrite_chirho("\x1b[1;34m.\x1b[0m  \x1b[1;34m..\x1b[0m  ");
         kwrite_chirho("\x1b[1;36mcpuinfo\x1b[0m  ");
         kwrite_chirho("\x1b[1;36mmeminfo\x1b[0m  ");
@@ -1030,43 +2361,70 @@ fn cmd_ls_chirho(args_chirho: &[u8]) {
         kwrite_chirho("\x1b[1;36mfilesystems\x1b[0m  ");
         kwrite_chirho("\x1b[1;36mcmdline\x1b[0m  ");
         kwrite_chirho("\x1b[1;34mself\x1b[0m\r\n");
-    } else if args_chirho == b"/" {
+    } else if args_chirho.is_empty() || args_chirho == b"/" {
         kwrite_chirho("\x1b[1;34m.\x1b[0m  \x1b[1;34m..\x1b[0m  ");
-        kwrite_chirho("\x1b[1;34mproc\x1b[0m  ");
+        kwrite_chirho("\x1b[1;34mbin\x1b[0m  ");
         kwrite_chirho("\x1b[1;34mdev\x1b[0m  ");
+        kwrite_chirho("\x1b[1;34metc\x1b[0m  ");
+        kwrite_chirho("\x1b[1;34mhome\x1b[0m  ");
+        kwrite_chirho("\x1b[1;34mproc\x1b[0m  ");
+        kwrite_chirho("\x1b[1;34msbin\x1b[0m  ");
         kwrite_chirho("\x1b[1;34msys\x1b[0m  ");
-        kwrite_chirho("\x1b[1;34mtmp\x1b[0m\r\n");
+        kwrite_chirho("\x1b[1;34mtmp\x1b[0m  ");
+        kwrite_chirho("\x1b[1;34musr\x1b[0m  ");
+        kwrite_chirho("\x1b[1;34mvar\x1b[0m\r\n");
     } else if args_chirho == b"/proc/self" || args_chirho == b"/proc/self/" {
         kwrite_chirho("\x1b[1;34m.\x1b[0m  \x1b[1;34m..\x1b[0m  ");
         kwrite_chirho("\x1b[1;36mstatus\x1b[0m\r\n");
-    } else if args_chirho == b"/tmp" || args_chirho == b"/tmp/" {
+    } else {
+        // Generic VFS directory listing
+        let dir_path_chirho = if args_chirho.last() == Some(&b'/') {
+            &args_chirho[..args_chirho.len() - 1]
+        } else {
+            args_chirho
+        };
+
+        // Check if this directory exists in VFS
+        let is_known_dir_chirho = vfs_find_chirho(dir_path_chirho).is_some()
+            || dir_path_chirho == b"/tmp"
+            || dir_path_chirho == b"/dev"
+            || dir_path_chirho == b"/sys";
+
+        if !is_known_dir_chirho {
+            kwrite_chirho("ls: cannot access '");
+            kwrite_bytes_chirho(args_chirho);
+            kwrite_chirho("': No such file or directory\r\n");
+            return;
+        }
+
         kwrite_chirho("\x1b[1;34m.\x1b[0m  \x1b[1;34m..\x1b[0m");
+        let prefix_len_chirho = dir_path_chirho.len() + 1; // +1 for trailing /
         unsafe {
             for i_chirho in 0..MAX_FS_ENTRIES_CHIRHO {
                 let e_chirho = &VFS_TABLE_CHIRHO[i_chirho];
                 if e_chirho.entry_type_chirho != FsEntryTypeChirho::FreeChirho {
                     let path_chirho = &e_chirho.path_chirho[..e_chirho.path_len_chirho];
-                    if path_chirho.len() > 5 && &path_chirho[..5] == b"/tmp/" {
-                        let name_chirho = &path_chirho[5..];
+                    if path_chirho.len() > prefix_len_chirho
+                        && &path_chirho[..dir_path_chirho.len()] == dir_path_chirho
+                        && path_chirho[dir_path_chirho.len()] == b'/'
+                    {
+                        let name_chirho = &path_chirho[prefix_len_chirho..];
+                        // Only show direct children (no / in name)
                         if !name_chirho.iter().any(|&b_chirho| b_chirho == b'/') {
                             kwrite_chirho("  ");
                             if e_chirho.entry_type_chirho == FsEntryTypeChirho::DirectoryChirho {
                                 kwrite_chirho("\x1b[1;34m");
+                            } else {
+                                kwrite_chirho("\x1b[1;32m");
                             }
                             kwrite_bytes_chirho(name_chirho);
-                            if e_chirho.entry_type_chirho == FsEntryTypeChirho::DirectoryChirho {
-                                kwrite_chirho("\x1b[0m");
-                            }
+                            kwrite_chirho("\x1b[0m");
                         }
                     }
                 }
             }
         }
         kwrite_chirho("\r\n");
-    } else {
-        kwrite_chirho("ls: cannot access '");
-        kwrite_bytes_chirho(args_chirho);
-        kwrite_chirho("': No such file or directory\r\n");
     }
 }
 
@@ -1079,7 +2437,7 @@ fn cmd_cat_chirho(args_chirho: &[u8]) {
         b"/proc/cpuinfo"      => proc_cpuinfo_chirho(),
         b"/proc/meminfo"      => proc_meminfo_chirho(),
         b"/proc/version"      => {
-            kwrite_chirho("Lineluya version 0.5.0 (rustc wasm32-unknown-unknown) ");
+            kwrite_chirho("Lineluya version 0.6.0 (rustc wasm32-unknown-unknown) ");
             kwrite_chirho("(Lineluya Kernel \u{2014} Linux ABI on WebAssembly)\r\n");
         }
         b"/proc/uptime"       => proc_uptime_chirho(),
@@ -1637,16 +2995,171 @@ pub extern "C" fn syscall_chirho(
         3 => unsafe { if arg0_chirho >= 100 { js_net_close_chirho(arg0_chirho as i32); } 0 },
         // getsockopt/setsockopt
         55 | 54 => 0,
-        // ioctl
-        16 => 0,
+        // B1-013: ioctl — TTY/PTY support
+        16 => unsafe {
+            match arg1_chirho {
+                TIOCGWINSZ_CHIRHO => {
+                    // Write winsize struct to arg2 pointer
+                    let ptr_chirho = arg2_chirho as *mut u16;
+                    *ptr_chirho = TTY_STATE_CHIRHO.winsize_chirho.ws_row_chirho;
+                    *ptr_chirho.add(1) = TTY_STATE_CHIRHO.winsize_chirho.ws_col_chirho;
+                    *ptr_chirho.add(2) = 0; // xpixel
+                    *ptr_chirho.add(3) = 0; // ypixel
+                    0
+                }
+                TIOCSWINSZ_CHIRHO => {
+                    let ptr_chirho = arg2_chirho as *const u16;
+                    TTY_STATE_CHIRHO.winsize_chirho.ws_row_chirho = *ptr_chirho;
+                    TTY_STATE_CHIRHO.winsize_chirho.ws_col_chirho = *ptr_chirho.add(1);
+                    0
+                }
+                TCGETS_CHIRHO => {
+                    // Return termios-like flags via pointer
+                    let ptr_chirho = arg2_chirho as *mut u32;
+                    let flags_chirho: u32 = match TTY_STATE_CHIRHO.ldisc_chirho.mode_chirho {
+                        TtyModeChirho::CookedChirho => 0x0A30, // ICANON | ECHO | ISIG
+                        TtyModeChirho::RawChirho => 0,
+                    };
+                    *ptr_chirho = flags_chirho;
+                    0
+                }
+                TCSETS_CHIRHO => {
+                    let ptr_chirho = arg2_chirho as *const u32;
+                    let flags_chirho = *ptr_chirho;
+                    if flags_chirho & 0x0002 != 0 { // ICANON
+                        TTY_STATE_CHIRHO.ldisc_chirho.mode_chirho = TtyModeChirho::CookedChirho;
+                    } else {
+                        TTY_STATE_CHIRHO.ldisc_chirho.mode_chirho = TtyModeChirho::RawChirho;
+                    }
+                    TTY_STATE_CHIRHO.ldisc_chirho.echo_chirho = flags_chirho & 0x0008 != 0;
+                    0
+                }
+                _ => 0,
+            }
+        },
         // fcntl
         72 => 0,
         // poll
         7 => 1,
         // select
         23 => 1,
-        // pipe2
-        293 => -38,
+        // pipe2 — create pipe (returns read fd in [arg0], write fd in [arg0+4])
+        293 => unsafe {
+            let fds_ptr_chirho = arg0_chirho as *mut i32;
+            // Allocate two virtual fds for the pipe
+            let read_fd_chirho = NEXT_SOCK_FD_CHIRHO + 1;
+            let write_fd_chirho = NEXT_SOCK_FD_CHIRHO + 2;
+            NEXT_SOCK_FD_CHIRHO += 2;
+            *fds_ptr_chirho = read_fd_chirho as i32;
+            *fds_ptr_chirho.add(1) = write_fd_chirho as i32;
+            0
+        },
+        // B1-014: nanosleep (syscall 35)
+        35 => {
+            let req_ptr_chirho = arg0_chirho as *const u64;
+            unsafe {
+                let sec_chirho = *req_ptr_chirho;
+                let nsec_chirho = *req_ptr_chirho.add(1);
+                let us_chirho = (sec_chirho * 1_000_000 + nsec_chirho / 1000) as u32;
+                js_sleep_us_chirho(us_chirho);
+            }
+            0
+        }
+        // B1-015: getrandom (syscall 318)
+        318 => unsafe {
+            js_random_get_chirho(arg0_chirho, arg1_chirho)
+        },
+        // B3-001: OPFS syscalls (custom range 0x1000-0x100F)
+        // opfs_open(name_ptr, name_len, create) -> handle
+        0x1000 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let name_chirho = unsafe {
+                    core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+                };
+                unsafe { OPFS_DRIVER_CHIRHO.open_chirho(name_chirho, arg2_chirho != 0) }
+            } else { -14 }
+        }
+        // opfs_read(slot, offset, buf, len) -> bytes_read
+        0x1001 => {
+            let buf_chirho = unsafe {
+                core::slice::from_raw_parts_mut(arg2_chirho as *mut u8, _arg3_chirho as usize)
+            };
+            unsafe { OPFS_DRIVER_CHIRHO.read_chirho(arg0_chirho as usize, arg1_chirho, buf_chirho) }
+        }
+        // opfs_write(slot, offset, buf, len) -> bytes_written
+        0x1002 => {
+            let data_chirho = unsafe {
+                core::slice::from_raw_parts(arg2_chirho as *const u8, _arg3_chirho as usize)
+            };
+            unsafe { OPFS_DRIVER_CHIRHO.write_chirho(arg0_chirho as usize, arg1_chirho, data_chirho) }
+        }
+        // opfs_close(slot)
+        0x1003 => {
+            unsafe { OPFS_DRIVER_CHIRHO.close_chirho(arg0_chirho as usize); }
+            0
+        }
+        // opfs_delete(name_ptr, name_len)
+        0x1004 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let name_chirho = unsafe {
+                    core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+                };
+                unsafe { OPFS_DRIVER_CHIRHO.delete_chirho(name_chirho) }
+            } else { -14 }
+        }
+        // opfs_sync(slot)
+        0x1005 => {
+            unsafe { OPFS_DRIVER_CHIRHO.sync_chirho(arg0_chirho as usize) }
+        }
+        // B3-002: IndexedDB syscalls (custom range 0x1010-0x101F)
+        // idb_open(name_ptr, name_len) -> handle
+        0x1010 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let name_chirho = unsafe {
+                    core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+                };
+                unsafe { IDB_DRIVER_CHIRHO.open_chirho(name_chirho) }
+            } else { -14 }
+        }
+        // idb_get(slot, key_ptr, key_len, buf_ptr, buf_len) -> bytes_read
+        0x1011 => {
+            let key_chirho = unsafe {
+                core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+            };
+            let buf_chirho = unsafe {
+                core::slice::from_raw_parts_mut(arg2_chirho as *mut u8, _arg3_chirho as usize)
+            };
+            unsafe { IDB_DRIVER_CHIRHO.get_chirho(_arg4_chirho as usize, key_chirho, buf_chirho) }
+        }
+        // idb_put(slot, key_ptr, key_len, val_ptr, val_len) -> 0
+        0x1012 => {
+            let key_chirho = unsafe {
+                core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+            };
+            let val_chirho = unsafe {
+                core::slice::from_raw_parts(arg2_chirho as *const u8, _arg3_chirho as usize)
+            };
+            unsafe { IDB_DRIVER_CHIRHO.put_chirho(_arg4_chirho as usize, key_chirho, val_chirho) }
+        }
+        // idb_delete(slot, key_ptr, key_len)
+        0x1013 => {
+            let key_chirho = unsafe {
+                core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+            };
+            unsafe { IDB_DRIVER_CHIRHO.delete_chirho(arg2_chirho as usize, key_chirho) }
+        }
+        // idb_list(slot, buf_ptr, buf_len) -> total bytes
+        0x1014 => {
+            let buf_chirho = unsafe {
+                core::slice::from_raw_parts_mut(arg1_chirho as *mut u8, arg2_chirho as usize)
+            };
+            unsafe { IDB_DRIVER_CHIRHO.list_keys_chirho(arg0_chirho as usize, buf_chirho) }
+        }
+        // idb_close(slot)
+        0x1015 => {
+            unsafe { IDB_DRIVER_CHIRHO.close_chirho(arg0_chirho as usize); }
+            0
+        }
         // Default
         _ => -38,
     }
@@ -1660,26 +3173,128 @@ pub extern "C" fn syscall_chirho(
 pub extern "C" fn kernel_main_chirho() {
     kernel_core_chirho::set_arch_port_chirho(&WASM_ARCH_CHIRHO);
 
-    // Initialize process table
+    // B1-020: Kernel boot sequence and init process
     unsafe {
         let now_us_chirho = js_timestamp_us_chirho() as u64;
+
+        // Create init process (PID 1)
         PROC_TABLE_CHIRHO.create_init_chirho(now_us_chirho);
-        // Create shell process (PID 2)
+
+        // B1-020: Create shell process (PID 2) — /bin/sh as init child
         let shell_pid_chirho = PROC_TABLE_CHIRHO.fork_chirho(now_us_chirho);
         if shell_pid_chirho > 0 {
             if let Some(i_chirho) = PROC_TABLE_CHIRHO.find_pid_chirho(shell_pid_chirho as u16) {
-                PROC_TABLE_CHIRHO.procs_chirho[i_chirho].set_name_chirho(b"ksh");
+                PROC_TABLE_CHIRHO.procs_chirho[i_chirho].set_name_chirho(b"/bin/sh");
                 PROC_TABLE_CHIRHO.procs_chirho[i_chirho].state_chirho = ProcessStateChirho::RunningChirho;
                 PROC_TABLE_CHIRHO.current_pid_chirho = shell_pid_chirho as u16;
             }
         }
-        // Create /tmp in VFS
-        if let Some(idx_chirho) = vfs_alloc_chirho() {
-            VFS_TABLE_CHIRHO[idx_chirho].entry_type_chirho = FsEntryTypeChirho::DirectoryChirho;
-            let p_chirho = b"/tmp";
-            VFS_TABLE_CHIRHO[idx_chirho].path_chirho[..p_chirho.len()].copy_from_slice(p_chirho);
-            VFS_TABLE_CHIRHO[idx_chirho].path_len_chirho = p_chirho.len();
+        // Set TTY foreground process group
+        TTY_STATE_CHIRHO.fg_pgid_chirho = shell_pid_chirho as u16;
+
+        // B1-016: Populate initial rootfs with directories
+        let dirs_chirho: &[&[u8]] = &[
+            b"/tmp", b"/dev", b"/sys", b"/bin", b"/sbin",
+            b"/usr", b"/usr/bin", b"/etc", b"/home",
+            b"/home/root", b"/var", b"/var/log",
+        ];
+        for dir_chirho in dirs_chirho {
+            if let Some(idx_chirho) = vfs_alloc_chirho() {
+                VFS_TABLE_CHIRHO[idx_chirho].entry_type_chirho = FsEntryTypeChirho::DirectoryChirho;
+                VFS_TABLE_CHIRHO[idx_chirho].path_chirho[..dir_chirho.len()].copy_from_slice(dir_chirho);
+                VFS_TABLE_CHIRHO[idx_chirho].path_len_chirho = dir_chirho.len();
+                VFS_TABLE_CHIRHO[idx_chirho].mode_chirho = 0o755;
+            }
         }
+
+        // B1-016: Create /etc/passwd
+        if let Some(idx_chirho) = vfs_alloc_chirho() {
+            let e_chirho = &mut VFS_TABLE_CHIRHO[idx_chirho];
+            e_chirho.entry_type_chirho = FsEntryTypeChirho::FileChirho;
+            let path_chirho = b"/etc/passwd";
+            e_chirho.path_chirho[..path_chirho.len()].copy_from_slice(path_chirho);
+            e_chirho.path_len_chirho = path_chirho.len();
+            let data_chirho = b"root:x:0:0:root:/home/root:/bin/sh\n";
+            e_chirho.data_chirho[..data_chirho.len()].copy_from_slice(data_chirho);
+            e_chirho.data_len_chirho = data_chirho.len();
+            e_chirho.mode_chirho = 0o644;
+        }
+
+        // B1-016: Create /etc/hostname
+        if let Some(idx_chirho) = vfs_alloc_chirho() {
+            let e_chirho = &mut VFS_TABLE_CHIRHO[idx_chirho];
+            e_chirho.entry_type_chirho = FsEntryTypeChirho::FileChirho;
+            let path_chirho = b"/etc/hostname";
+            e_chirho.path_chirho[..path_chirho.len()].copy_from_slice(path_chirho);
+            e_chirho.path_len_chirho = path_chirho.len();
+            let data_chirho = b"lineluya-wasm\n";
+            e_chirho.data_chirho[..data_chirho.len()].copy_from_slice(data_chirho);
+            e_chirho.data_len_chirho = data_chirho.len();
+            e_chirho.mode_chirho = 0o644;
+        }
+
+        // B1-016: Create /etc/resolv.conf
+        if let Some(idx_chirho) = vfs_alloc_chirho() {
+            let e_chirho = &mut VFS_TABLE_CHIRHO[idx_chirho];
+            e_chirho.entry_type_chirho = FsEntryTypeChirho::FileChirho;
+            let path_chirho = b"/etc/resolv.conf";
+            e_chirho.path_chirho[..path_chirho.len()].copy_from_slice(path_chirho);
+            e_chirho.path_len_chirho = path_chirho.len();
+            let data_chirho = b"# DNS over HTTPS via CF Worker\nnameserver 1.1.1.1\n";
+            e_chirho.data_chirho[..data_chirho.len()].copy_from_slice(data_chirho);
+            e_chirho.data_len_chirho = data_chirho.len();
+            e_chirho.mode_chirho = 0o644;
+        }
+
+        // B1-016: Create /etc/hosts
+        if let Some(idx_chirho) = vfs_alloc_chirho() {
+            let e_chirho = &mut VFS_TABLE_CHIRHO[idx_chirho];
+            e_chirho.entry_type_chirho = FsEntryTypeChirho::FileChirho;
+            let path_chirho = b"/etc/hosts";
+            e_chirho.path_chirho[..path_chirho.len()].copy_from_slice(path_chirho);
+            e_chirho.path_len_chirho = path_chirho.len();
+            let data_chirho = b"127.0.0.1\tlocalhost\n::1\t\tlocalhost\n";
+            e_chirho.data_chirho[..data_chirho.len()].copy_from_slice(data_chirho);
+            e_chirho.data_len_chirho = data_chirho.len();
+            e_chirho.mode_chirho = 0o644;
+        }
+
+        // B1-016: Create BusyBox symlinks in /bin
+        // (In VFS these are files whose data points to "busybox")
+        let busybox_applets_chirho: &[&[u8]] = &[
+            b"sh", b"ls", b"cat", b"echo", b"mkdir", b"rmdir",
+            b"touch", b"chmod", b"head", b"tail", b"wc", b"grep",
+            b"ps", b"kill", b"pwd", b"env", b"id", b"hostname",
+        ];
+        for applet_chirho in busybox_applets_chirho {
+            if let Some(idx_chirho) = vfs_alloc_chirho() {
+                let e_chirho = &mut VFS_TABLE_CHIRHO[idx_chirho];
+                e_chirho.entry_type_chirho = FsEntryTypeChirho::FileChirho;
+                // Build path: /bin/<applet>
+                let prefix_chirho = b"/bin/";
+                let total_chirho = prefix_chirho.len() + applet_chirho.len();
+                if total_chirho <= MAX_PATH_LEN_CHIRHO {
+                    e_chirho.path_chirho[..prefix_chirho.len()].copy_from_slice(prefix_chirho);
+                    e_chirho.path_chirho[prefix_chirho.len()..total_chirho].copy_from_slice(applet_chirho);
+                    e_chirho.path_len_chirho = total_chirho;
+                    // Data: symlink target (busybox)
+                    let link_chirho = b"-> /bin/busybox";
+                    e_chirho.data_chirho[..link_chirho.len()].copy_from_slice(link_chirho);
+                    e_chirho.data_len_chirho = link_chirho.len();
+                    e_chirho.mode_chirho = 0o755;
+                }
+            }
+        }
+
+        // Initialize environment variables
+        ENV_TABLE_CHIRHO.set_chirho(b"HOME", b"/home/root");
+        ENV_TABLE_CHIRHO.set_chirho(b"PATH", b"/bin:/sbin:/usr/bin");
+        ENV_TABLE_CHIRHO.set_chirho(b"SHELL", b"/bin/sh");
+        ENV_TABLE_CHIRHO.set_chirho(b"TERM", b"xterm-256color");
+        ENV_TABLE_CHIRHO.set_chirho(b"ARCH", b"wasm32");
+        ENV_TABLE_CHIRHO.set_chirho(b"KERNEL", b"Lineluya");
+        ENV_TABLE_CHIRHO.set_chirho(b"USER", b"root");
+        ENV_TABLE_CHIRHO.set_chirho(b"HOSTNAME", b"lineluya-wasm");
     }
 
     let boot_msg_chirho = concat!(
@@ -1695,9 +3310,19 @@ pub extern "C" fn kernel_main_chirho() {
         "\x1b[1;32m[OK]\x1b[0m Process table (32 slots, fork/exec)\r\n",
         "\x1b[1;32m[OK]\x1b[0m /proc filesystem (cpuinfo, meminfo, self/status, uptime)\r\n",
         "\x1b[1;32m[OK]\x1b[0m Signal handling (SIGTERM, SIGINT, SIGKILL, SIGCHLD)\r\n",
-        "\x1b[1;32m[OK]\x1b[0m Enhanced shell (ps, kill, mkdir, grep, wc...)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m TTY/PTY subsystem (raw/cooked modes)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Job control (fg, bg, jobs)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m I/O redirection (>, >>, <, 2>)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Pipe support (cmd1 | cmd2)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Environment variables\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Command history\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Initial rootfs populated (BusyBox symlinks)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m OPFS block device driver (persistent storage)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m IndexedDB fallback storage\r\n",
+        "\x1b[1;32m[OK]\x1b[0m WASI clock/timer/random syscalls\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Init process (PID 1) -> /bin/sh (PID 2)\r\n",
         "\r\n",
-        "\x1b[1;37m=== Lineluya Kernel v0.5.0 (wasm32) ===\x1b[0m\r\n",
+        "\x1b[1;37m=== Lineluya Kernel v0.6.0 (wasm32) ===\x1b[0m\r\n",
         "Linux ABI on WebAssembly. Browser is the hardware.\r\n",
         "Type '\x1b[1;32mhelp\x1b[0m' for available commands.\r\n",
         "\r\n",

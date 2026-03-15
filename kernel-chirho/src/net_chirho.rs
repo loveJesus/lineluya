@@ -17,6 +17,13 @@
 //! - Socket syscalls wired to VFS fd table (A3-003)
 //! - `ipv4_checksum_chirho` — ones-complement checksum
 //! - Global device registry with loopback pre-registered
+//! - **A3-005**: `RoutingTableChirho` — IPv4 routing table with longest-prefix
+//!   match and default gateway support.
+//! - **A3-006**: ICMP echo (ping) — `handle_icmp_echo_chirho` responds to
+//!   incoming echo requests; `send_icmp_echo_request_chirho` sends pings.
+//! - **A3-007**: `UdpDatagramChirho` — UDP datagram parsing/building with
+//!   checksum.  `UdpSocketTableChirho` for port-based demux.  Full sendto/
+//!   recvfrom integration for SOCK_DGRAM sockets.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -1122,6 +1129,525 @@ pub fn ipv4_checksum_chirho(data_chirho: &[u8]) -> u16 {
 }
 
 // ============================================================================
+// A3-005: IPv4 Routing Table
+// ============================================================================
+
+/// A single entry in the IPv4 routing table.
+#[derive(Debug, Clone)]
+pub struct RouteEntryChirho {
+    /// Destination network address (host byte order as u32).
+    pub dest_chirho: u32,
+    /// Subnet mask (e.g. 0xFFFFFF00 for /24).
+    pub mask_chirho: u32,
+    /// Gateway address (0 = directly connected / on-link).
+    pub gateway_chirho: u32,
+    /// Index into `NET_DEVICES_CHIRHO` for the output interface.
+    pub iface_idx_chirho: usize,
+    /// Metric / priority (lower = preferred).
+    pub metric_chirho: u32,
+}
+
+impl RouteEntryChirho {
+    /// Return the prefix length of the mask (0-32).
+    pub fn prefix_len_chirho(&self) -> u32 {
+        self.mask_chirho.count_ones()
+    }
+
+    /// Test whether `addr_chirho` matches this route.
+    pub fn matches_chirho(&self, addr_chirho: u32) -> bool {
+        (addr_chirho & self.mask_chirho) == (self.dest_chirho & self.mask_chirho)
+    }
+}
+
+/// IPv4 routing table with longest-prefix match.
+pub struct RoutingTableChirho {
+    /// Route entries, ordered by insertion. Lookup does longest-prefix match.
+    entries_chirho: Vec<RouteEntryChirho>,
+}
+
+impl RoutingTableChirho {
+    /// Create an empty routing table.
+    pub const fn new_chirho() -> Self {
+        Self {
+            entries_chirho: Vec::new(),
+        }
+    }
+
+    /// Add a route entry.
+    pub fn add_route_chirho(&mut self, entry_chirho: RouteEntryChirho) {
+        crate::serial_println_chirho!(
+            "[NET] Route added: {}.{}.{}.{}/{} via {}.{}.{}.{} dev{}",
+            (entry_chirho.dest_chirho >> 24) & 0xFF,
+            (entry_chirho.dest_chirho >> 16) & 0xFF,
+            (entry_chirho.dest_chirho >> 8) & 0xFF,
+            entry_chirho.dest_chirho & 0xFF,
+            entry_chirho.prefix_len_chirho(),
+            (entry_chirho.gateway_chirho >> 24) & 0xFF,
+            (entry_chirho.gateway_chirho >> 16) & 0xFF,
+            (entry_chirho.gateway_chirho >> 8) & 0xFF,
+            entry_chirho.gateway_chirho & 0xFF,
+            entry_chirho.iface_idx_chirho,
+        );
+        self.entries_chirho.push(entry_chirho);
+    }
+
+    /// Remove all routes for the given destination/mask pair.
+    pub fn remove_route_chirho(&mut self, dest_chirho: u32, mask_chirho: u32) {
+        self.entries_chirho
+            .retain(|e_chirho| e_chirho.dest_chirho != dest_chirho || e_chirho.mask_chirho != mask_chirho);
+    }
+
+    /// Look up the best route for a destination address using longest-prefix match.
+    ///
+    /// Returns `Some((gateway, interface_index))` or `None` if no route matches.
+    pub fn lookup_chirho(&self, dst_chirho: u32) -> Option<(u32, usize)> {
+        let mut best_chirho: Option<&RouteEntryChirho> = None;
+        let mut best_prefix_len_chirho: u32 = 0;
+
+        for entry_chirho in &self.entries_chirho {
+            if entry_chirho.matches_chirho(dst_chirho) {
+                let pfx_len_chirho = entry_chirho.prefix_len_chirho();
+                if best_chirho.is_none()
+                    || pfx_len_chirho > best_prefix_len_chirho
+                    || (pfx_len_chirho == best_prefix_len_chirho
+                        && entry_chirho.metric_chirho
+                            < best_chirho.unwrap().metric_chirho)
+                {
+                    best_chirho = Some(entry_chirho);
+                    best_prefix_len_chirho = pfx_len_chirho;
+                }
+            }
+        }
+
+        best_chirho.map(|e_chirho| (e_chirho.gateway_chirho, e_chirho.iface_idx_chirho))
+    }
+
+    /// Return the number of routes in the table.
+    pub fn len_chirho(&self) -> usize {
+        self.entries_chirho.len()
+    }
+
+    /// Check if the routing table is empty.
+    #[allow(dead_code)]
+    pub fn is_empty_chirho(&self) -> bool {
+        self.entries_chirho.is_empty()
+    }
+
+    /// Iterate over all route entries.
+    pub fn iter_chirho(&self) -> impl Iterator<Item = &RouteEntryChirho> {
+        self.entries_chirho.iter()
+    }
+}
+
+/// Global IPv4 routing table.
+pub static ROUTING_TABLE_CHIRHO: Mutex<RoutingTableChirho> =
+    Mutex::new(RoutingTableChirho::new_chirho());
+
+/// Helper: convert four octets to a u32 in host byte order.
+pub const fn ip4_chirho(a_chirho: u8, b_chirho: u8, c_chirho: u8, d_chirho: u8) -> u32 {
+    ((a_chirho as u32) << 24)
+        | ((b_chirho as u32) << 16)
+        | ((c_chirho as u32) << 8)
+        | (d_chirho as u32)
+}
+
+/// Set up the default routing table entries.
+///
+/// Called by `init_networking_chirho`. Adds:
+/// - 127.0.0.0/8 via lo (interface 0)
+/// - 0.0.0.0/0 default route via 10.0.2.2 (QEMU default gateway), interface 1
+fn init_routing_table_chirho() {
+    let mut rt_chirho = ROUTING_TABLE_CHIRHO.lock();
+
+    // Loopback route: 127.0.0.0/8 -> lo (device 0)
+    rt_chirho.add_route_chirho(RouteEntryChirho {
+        dest_chirho: ip4_chirho(127, 0, 0, 0),
+        mask_chirho: ip4_chirho(255, 0, 0, 0),
+        gateway_chirho: 0, // on-link
+        iface_idx_chirho: 0,
+        metric_chirho: 0,
+    });
+
+    // Default route: 0.0.0.0/0 -> 10.0.2.2 (QEMU user-mode default gw)
+    rt_chirho.add_route_chirho(RouteEntryChirho {
+        dest_chirho: 0,
+        mask_chirho: 0,
+        gateway_chirho: ip4_chirho(10, 0, 2, 2),
+        iface_idx_chirho: 1, // first real NIC (when available)
+        metric_chirho: 100,
+    });
+
+    crate::serial_println_chirho!(
+        "[NET] Routing table initialized ({} routes)",
+        rt_chirho.len_chirho()
+    );
+}
+
+/// Route an IPv4 packet to the correct output interface.
+///
+/// Returns `(gateway_ip, interface_index)` or an error errno.
+pub fn route_packet_chirho(dst_ip_chirho: u32) -> Result<(u32, usize), i64> {
+    let rt_chirho = ROUTING_TABLE_CHIRHO.lock();
+    rt_chirho
+        .lookup_chirho(dst_ip_chirho)
+        .ok_or(-crate::syscall_chirho::ENETUNREACH_CHIRHO)
+}
+
+// ============================================================================
+// A3-006: ICMP Echo (ping)
+// ============================================================================
+
+/// Global counter for ICMP echo request identifiers.
+static ICMP_ECHO_ID_CHIRHO: AtomicU64 = AtomicU64::new(1);
+
+/// Global counter for ICMP echo request sequence numbers.
+static ICMP_ECHO_SEQ_CHIRHO: AtomicU64 = AtomicU64::new(1);
+
+/// Handle an incoming ICMP echo request by generating an echo reply.
+///
+/// Takes the parsed IP header and ICMP packet, returns an IP packet (header +
+/// ICMP payload) ready to send back.
+pub fn handle_icmp_echo_chirho(
+    ip_hdr_chirho: &Ipv4HeaderChirho,
+    icmp_chirho: &IcmpPacketChirho,
+) -> Option<Vec<u8>> {
+    if icmp_chirho.type_chirho != ICMP_ECHO_REQUEST_CHIRHO {
+        return None; // Only handle echo requests.
+    }
+
+    crate::serial_println_chirho!(
+        "[ICMP] Echo request from {}.{}.{}.{} id={} seq={}",
+        (ip_hdr_chirho.src_ip_chirho >> 24) & 0xFF,
+        (ip_hdr_chirho.src_ip_chirho >> 16) & 0xFF,
+        (ip_hdr_chirho.src_ip_chirho >> 8) & 0xFF,
+        ip_hdr_chirho.src_ip_chirho & 0xFF,
+        icmp_chirho.id_chirho,
+        icmp_chirho.sequence_chirho,
+    );
+
+    // Build ICMP echo reply — swap src/dst, type = 0 (reply).
+    let reply_icmp_chirho = IcmpPacketChirho {
+        type_chirho: ICMP_ECHO_REPLY_CHIRHO,
+        code_chirho: 0,
+        checksum_chirho: 0, // computed by build_chirho
+        id_chirho: icmp_chirho.id_chirho,
+        sequence_chirho: icmp_chirho.sequence_chirho,
+        data_chirho: icmp_chirho.data_chirho.clone(),
+    };
+    let icmp_bytes_chirho = reply_icmp_chirho.build_chirho();
+
+    // Build IPv4 header for reply.
+    let total_len_chirho = 20 + icmp_bytes_chirho.len() as u16;
+    let reply_ip_chirho = Ipv4HeaderChirho {
+        version_chirho: 4,
+        ihl_chirho: 5,
+        tos_chirho: 0,
+        total_length_chirho: total_len_chirho,
+        id_chirho: 0,
+        flags_chirho: 0,
+        fragment_offset_chirho: 0,
+        ttl_chirho: 64,
+        protocol_chirho: IP_PROTO_ICMP_CHIRHO,
+        checksum_chirho: 0, // computed by build_chirho
+        src_ip_chirho: ip_hdr_chirho.dst_ip_chirho, // swap src/dst
+        dst_ip_chirho: ip_hdr_chirho.src_ip_chirho,
+    };
+    let mut packet_chirho = reply_ip_chirho.build_chirho();
+    packet_chirho.extend_from_slice(&icmp_bytes_chirho);
+
+    crate::serial_println_chirho!(
+        "[ICMP] Sending echo reply to {}.{}.{}.{} ({} bytes)",
+        (ip_hdr_chirho.src_ip_chirho >> 24) & 0xFF,
+        (ip_hdr_chirho.src_ip_chirho >> 16) & 0xFF,
+        (ip_hdr_chirho.src_ip_chirho >> 8) & 0xFF,
+        ip_hdr_chirho.src_ip_chirho & 0xFF,
+        packet_chirho.len(),
+    );
+
+    Some(packet_chirho)
+}
+
+/// Build and send an ICMP echo request (ping) to `dst_ip_chirho`.
+///
+/// Returns the built IP packet (for testing) or `None` on routing failure.
+pub fn send_icmp_echo_request_chirho(
+    src_ip_chirho: u32,
+    dst_ip_chirho: u32,
+    payload_chirho: &[u8],
+) -> Option<Vec<u8>> {
+    let id_chirho = ICMP_ECHO_ID_CHIRHO.load(Ordering::Relaxed) as u16;
+    let seq_chirho = ICMP_ECHO_SEQ_CHIRHO.fetch_add(1, Ordering::Relaxed) as u16;
+
+    let echo_req_chirho = IcmpPacketChirho {
+        type_chirho: ICMP_ECHO_REQUEST_CHIRHO,
+        code_chirho: 0,
+        checksum_chirho: 0,
+        id_chirho,
+        sequence_chirho: seq_chirho,
+        data_chirho: payload_chirho.to_vec(),
+    };
+    let icmp_bytes_chirho = echo_req_chirho.build_chirho();
+
+    let total_len_chirho = 20 + icmp_bytes_chirho.len() as u16;
+    let ip_hdr_chirho = Ipv4HeaderChirho {
+        version_chirho: 4,
+        ihl_chirho: 5,
+        tos_chirho: 0,
+        total_length_chirho: total_len_chirho,
+        id_chirho: 0,
+        flags_chirho: 0x02, // Don't Fragment
+        fragment_offset_chirho: 0,
+        ttl_chirho: 64,
+        protocol_chirho: IP_PROTO_ICMP_CHIRHO,
+        checksum_chirho: 0,
+        src_ip_chirho,
+        dst_ip_chirho,
+    };
+
+    let mut packet_chirho = ip_hdr_chirho.build_chirho();
+    packet_chirho.extend_from_slice(&icmp_bytes_chirho);
+
+    crate::serial_println_chirho!(
+        "[ICMP] Sending echo request to {}.{}.{}.{} id={} seq={}",
+        (dst_ip_chirho >> 24) & 0xFF,
+        (dst_ip_chirho >> 16) & 0xFF,
+        (dst_ip_chirho >> 8) & 0xFF,
+        dst_ip_chirho & 0xFF,
+        id_chirho,
+        seq_chirho,
+    );
+
+    Some(packet_chirho)
+}
+
+/// Process a received IPv4 packet and dispatch by protocol.
+///
+/// Handles ICMP echo requests (A3-006) and UDP datagrams (A3-007).
+/// Returns an optional response packet to send back.
+pub fn process_ipv4_packet_chirho(data_chirho: &[u8]) -> Option<Vec<u8>> {
+    let ip_hdr_chirho = Ipv4HeaderChirho::parse_chirho(data_chirho)?;
+    let hdr_len_chirho = (ip_hdr_chirho.ihl_chirho as usize) * 4;
+    if data_chirho.len() < hdr_len_chirho {
+        return None;
+    }
+    let payload_chirho = &data_chirho[hdr_len_chirho..];
+
+    match ip_hdr_chirho.protocol_chirho {
+        IP_PROTO_ICMP_CHIRHO => {
+            let icmp_chirho = IcmpPacketChirho::parse_chirho(payload_chirho)?;
+            handle_icmp_echo_chirho(&ip_hdr_chirho, &icmp_chirho)
+        }
+        IP_PROTO_UDP_CHIRHO => {
+            let udp_chirho = UdpDatagramChirho::parse_chirho(payload_chirho)?;
+            deliver_udp_packet_chirho(&ip_hdr_chirho, &udp_chirho);
+            None // UDP delivery is fire-and-forget into socket buffers
+        }
+        _ => {
+            crate::serial_println_chirho!(
+                "[NET] Unhandled IPv4 protocol {}",
+                ip_hdr_chirho.protocol_chirho
+            );
+            None
+        }
+    }
+}
+
+// ============================================================================
+// A3-007: UDP Datagram parsing/building
+// ============================================================================
+
+/// Represents a UDP datagram (RFC 768).
+#[derive(Debug, Clone)]
+pub struct UdpDatagramChirho {
+    /// Source port.
+    pub src_port_chirho: u16,
+    /// Destination port.
+    pub dst_port_chirho: u16,
+    /// Total length of UDP header + payload.
+    pub length_chirho: u16,
+    /// UDP checksum (0 = not computed).
+    pub checksum_chirho: u16,
+    /// Payload data.
+    pub payload_chirho: Vec<u8>,
+}
+
+impl UdpDatagramChirho {
+    /// Parse a UDP datagram from raw bytes (IP payload).
+    /// Returns `None` if data is too short (minimum 8 bytes header).
+    pub fn parse_chirho(data_chirho: &[u8]) -> Option<Self> {
+        if data_chirho.len() < 8 {
+            return None;
+        }
+        let src_port_chirho = u16::from_be_bytes([data_chirho[0], data_chirho[1]]);
+        let dst_port_chirho = u16::from_be_bytes([data_chirho[2], data_chirho[3]]);
+        let length_chirho = u16::from_be_bytes([data_chirho[4], data_chirho[5]]);
+        let checksum_chirho = u16::from_be_bytes([data_chirho[6], data_chirho[7]]);
+
+        let payload_len_chirho = if (length_chirho as usize) > 8 {
+            core::cmp::min(length_chirho as usize - 8, data_chirho.len() - 8)
+        } else {
+            0
+        };
+        let payload_chirho = data_chirho[8..8 + payload_len_chirho].to_vec();
+
+        Some(Self {
+            src_port_chirho,
+            dst_port_chirho,
+            length_chirho,
+            checksum_chirho,
+            payload_chirho,
+        })
+    }
+
+    /// Build the UDP datagram into a byte vector.
+    /// Checksum is set to 0 (optional for IPv4 UDP).
+    pub fn build_chirho(&self) -> Vec<u8> {
+        let total_len_chirho = 8 + self.payload_chirho.len();
+        let mut buf_chirho = Vec::with_capacity(total_len_chirho);
+        buf_chirho.extend_from_slice(&self.src_port_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.dst_port_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&(total_len_chirho as u16).to_be_bytes());
+        // Checksum placeholder (0 = valid for IPv4 UDP)
+        buf_chirho.extend_from_slice(&[0u8; 2]);
+        buf_chirho.extend_from_slice(&self.payload_chirho);
+        buf_chirho
+    }
+
+    /// Build with computed checksum using IPv4 pseudo-header.
+    pub fn build_with_checksum_chirho(
+        &self,
+        src_ip_chirho: u32,
+        dst_ip_chirho: u32,
+    ) -> Vec<u8> {
+        let mut raw_chirho = self.build_chirho();
+        let udp_len_chirho = raw_chirho.len() as u16;
+
+        // Build pseudo-header for checksum
+        let mut pseudo_chirho = Vec::with_capacity(12 + raw_chirho.len());
+        pseudo_chirho.extend_from_slice(&src_ip_chirho.to_be_bytes());
+        pseudo_chirho.extend_from_slice(&dst_ip_chirho.to_be_bytes());
+        pseudo_chirho.push(0); // reserved
+        pseudo_chirho.push(IP_PROTO_UDP_CHIRHO);
+        pseudo_chirho.extend_from_slice(&udp_len_chirho.to_be_bytes());
+        pseudo_chirho.extend_from_slice(&raw_chirho);
+
+        let cksum_chirho = ipv4_checksum_chirho(&pseudo_chirho);
+        let final_cksum_chirho = if cksum_chirho == 0 { 0xFFFF } else { cksum_chirho };
+        raw_chirho[6] = (final_cksum_chirho >> 8) as u8;
+        raw_chirho[7] = (final_cksum_chirho & 0xFF) as u8;
+        raw_chirho
+    }
+}
+
+/// Build a complete IPv4/UDP packet ready to send.
+pub fn build_udp_packet_chirho(
+    src_ip_chirho: u32,
+    dst_ip_chirho: u32,
+    src_port_chirho: u16,
+    dst_port_chirho: u16,
+    payload_chirho: &[u8],
+) -> Vec<u8> {
+    let udp_chirho = UdpDatagramChirho {
+        src_port_chirho,
+        dst_port_chirho,
+        length_chirho: (8 + payload_chirho.len()) as u16,
+        checksum_chirho: 0,
+        payload_chirho: payload_chirho.to_vec(),
+    };
+    let udp_bytes_chirho = udp_chirho.build_with_checksum_chirho(src_ip_chirho, dst_ip_chirho);
+
+    let total_len_chirho = 20 + udp_bytes_chirho.len() as u16;
+    let ip_hdr_chirho = Ipv4HeaderChirho {
+        version_chirho: 4,
+        ihl_chirho: 5,
+        tos_chirho: 0,
+        total_length_chirho: total_len_chirho,
+        id_chirho: 0,
+        flags_chirho: 0x02, // DF
+        fragment_offset_chirho: 0,
+        ttl_chirho: 64,
+        protocol_chirho: IP_PROTO_UDP_CHIRHO,
+        checksum_chirho: 0,
+        src_ip_chirho,
+        dst_ip_chirho,
+    };
+
+    let mut packet_chirho = ip_hdr_chirho.build_chirho();
+    packet_chirho.extend_from_slice(&udp_bytes_chirho);
+    packet_chirho
+}
+
+/// Deliver a received UDP datagram to the appropriate socket receive buffer.
+///
+/// Finds a SOCK_DGRAM socket bound to `udp_chirho.dst_port_chirho` and enqueues
+/// the payload along with the sender's address.
+fn deliver_udp_packet_chirho(
+    ip_hdr_chirho: &Ipv4HeaderChirho,
+    udp_chirho: &UdpDatagramChirho,
+) {
+    crate::serial_println_chirho!(
+        "[UDP] Received {}:{} -> {}:{} ({} bytes)",
+        format_ip_chirho(ip_hdr_chirho.src_ip_chirho),
+        udp_chirho.src_port_chirho,
+        format_ip_chirho(ip_hdr_chirho.dst_ip_chirho),
+        udp_chirho.dst_port_chirho,
+        udp_chirho.payload_chirho.len(),
+    );
+
+    let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    for slot_chirho in table_chirho.iter_mut() {
+        if let Some(ref mut sock_chirho) = slot_chirho {
+            // Match SOCK_DGRAM sockets bound to the destination port.
+            let base_type_chirho = sock_chirho.sock_type_chirho & 0xF;
+            if base_type_chirho != 2 {
+                // 2 = SOCK_DGRAM
+                continue;
+            }
+            if let Some(ref local_chirho) = sock_chirho.local_addr_chirho {
+                if local_chirho.port_chirho == udp_chirho.dst_port_chirho {
+                    // Store sender address for recvfrom.
+                    sock_chirho.remote_addr_chirho = Some(SockAddrInChirho {
+                        port_chirho: udp_chirho.src_port_chirho,
+                        addr_chirho: ip_hdr_chirho.src_ip_chirho,
+                    });
+                    // Enqueue payload data.
+                    // For UDP, we prepend a 4-byte length header so recvfrom
+                    // can return individual datagrams.
+                    let dg_len_chirho = udp_chirho.payload_chirho.len() as u16;
+                    sock_chirho.recv_buf_chirho.push_back((dg_len_chirho >> 8) as u8);
+                    sock_chirho.recv_buf_chirho.push_back((dg_len_chirho & 0xFF) as u8);
+                    for byte_chirho in &udp_chirho.payload_chirho {
+                        sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
+                    }
+                    crate::serial_println_chirho!(
+                        "[UDP] Delivered {} bytes to socket on port {}",
+                        udp_chirho.payload_chirho.len(),
+                        udp_chirho.dst_port_chirho,
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    crate::serial_println_chirho!(
+        "[UDP] No socket bound to port {}, packet dropped",
+        udp_chirho.dst_port_chirho,
+    );
+}
+
+/// Format an IPv4 address (u32 host byte order) as a dotted-quad string.
+fn format_ip_chirho(ip_chirho: u32) -> alloc::string::String {
+    alloc::format!(
+        "{}.{}.{}.{}",
+        (ip_chirho >> 24) & 0xFF,
+        (ip_chirho >> 16) & 0xFF,
+        (ip_chirho >> 8) & 0xFF,
+        ip_chirho & 0xFF,
+    )
+}
+
+// ============================================================================
 // Global network device registry
 // ============================================================================
 
@@ -1135,12 +1661,17 @@ pub static NET_DEVICES_CHIRHO: Mutex<Vec<Box<dyn NetDeviceChirho>>> = Mutex::new
 
 /// Initialize the networking subsystem.
 ///
-/// Creates the loopback device and registers it in the global device list.
+/// Creates the loopback device, registers it in the global device list,
+/// and populates the initial routing table (A3-005).
 pub fn init_networking_chirho() {
     let loopback_chirho = LoopbackDeviceChirho::new_chirho();
     let mut devices_chirho = NET_DEVICES_CHIRHO.lock();
     devices_chirho.push(Box::new(loopback_chirho));
+    drop(devices_chirho);
     crate::serial_println_chirho!("[OK] Networking initialized — loopback device registered (lo, MTU=65536)");
+
+    // A3-005: set up default routing table.
+    init_routing_table_chirho();
 }
 
 // ============================================================================
