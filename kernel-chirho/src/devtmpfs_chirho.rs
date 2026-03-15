@@ -277,18 +277,44 @@ impl FileOpsChirho for DevConsoleOpsChirho {
             return Ok(n_chirho);
         }
 
-        // Blocking read: sleep until data is available.
-        // Uses enable_and_hlt() for atomic sti+hlt (no race between
-        // enabling interrupts and halting).
+        // Blocking read: poll PS/2 keyboard port directly.
+        // The keyboard interrupt (IRQ1) doesn't reliably fire in all
+        // boot modes, so we poll port 0x60 directly in a spin loop.
         loop {
-            // Check with interrupts disabled to avoid race
-            x86_64::instructions::interrupts::disable();
             if tty_chirho.ldisc_chirho.lock().has_data_chirho() {
-                x86_64::instructions::interrupts::enable();
                 break;
             }
-            // Atomically enable interrupts and halt — wakes on any interrupt
-            x86_64::instructions::interrupts::enable_and_hlt();
+            // Poll PS/2 status port — bit 0 means data available
+            let status_chirho: u8 = unsafe {
+                x86_64::instructions::port::Port::<u8>::new(0x64).read()
+            };
+            if status_chirho & 0x01 != 0 {
+                // Read the scancode
+                let scancode_chirho: u8 = unsafe {
+                    x86_64::instructions::port::Port::<u8>::new(0x60).read()
+                };
+                // Decode using the keyboard state machine
+                use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+                // Use a local decoder since we can't easily access the global one
+                static POLL_KBD_CHIRHO: spin::Mutex<Option<Keyboard<layouts::Us104Key, ScancodeSet1>>> =
+                    spin::Mutex::new(None);
+                let mut kbd_guard_chirho = POLL_KBD_CHIRHO.lock();
+                let kbd_chirho = kbd_guard_chirho.get_or_insert_with(|| {
+                    Keyboard::new(ScancodeSet1::new(), layouts::Us104Key, HandleControl::Ignore)
+                });
+                if let Ok(Some(key_event_chirho)) = kbd_chirho.add_byte(scancode_chirho) {
+                    if let Some(key_chirho) = kbd_chirho.process_keyevent(key_event_chirho) {
+                        match key_chirho {
+                            DecodedKey::Unicode(ch_chirho) => {
+                                tty_chirho.input_char_chirho(ch_chirho as u8);
+                            }
+                            DecodedKey::RawKey(_) => {}
+                        }
+                    }
+                }
+            }
+            // Brief yield to avoid burning CPU
+            core::hint::spin_loop();
         }
 
         // Data is now available — read it.
