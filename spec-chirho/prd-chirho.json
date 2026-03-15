@@ -852,7 +852,7 @@
       "depends_on_chirho": [
         "A3-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Packets routed to correct interface",
@@ -869,7 +869,7 @@
       "depends_on_chirho": [
         "A3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Kernel responds to ping",
@@ -886,7 +886,7 @@
       "depends_on_chirho": [
         "A3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "UDP socket sends datagram",
@@ -903,7 +903,7 @@
       "depends_on_chirho": [
         "A3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "3-way handshake completes",
@@ -1390,7 +1390,7 @@
       "depends_on_chirho": [
         "A4-015"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "GRUB loads kernel as bzImage",
@@ -1405,7 +1405,7 @@
       "title_chirho": "Real APIC implementation",
       "description_chirho": "Replace stub APIC with full Local APIC: timer, EOI, spurious vector, ICR.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "APIC timer fires at configured rate",
@@ -1423,7 +1423,7 @@
       "depends_on_chirho": [
         "A5-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "IOAPIC routes keyboard/disk IRQs",
@@ -1440,7 +1440,7 @@
       "depends_on_chirho": [
         "A5-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "All cores start and run kernel code",
@@ -1731,7 +1731,7 @@
       "depends_on_chirho": [
         "A5-020"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Dynamically linked ELF runs",
@@ -1748,7 +1748,7 @@
       "depends_on_chirho": [
         "A6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "mmap MAP_SHARED reflects file changes",
@@ -2281,7 +2281,7 @@
         "B1-005",
         "B1-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Cooked mode provides line editing",
@@ -2299,7 +2299,7 @@
       "depends_on_chirho": [
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "clock_time_get returns monotonic time",
@@ -2317,7 +2317,7 @@
       "depends_on_chirho": [
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "random_get fills buffer with random bytes",
@@ -2336,7 +2336,7 @@
         "B1-007",
         "B1-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "/bin/ls symlinks to busybox",
@@ -2711,7 +2711,7 @@
       "depends_on_chirho": [
         "B1-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "read_block/write_block work",
@@ -2729,7 +2729,7 @@
       "depends_on_chirho": [
         "B3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Mount ext4 on OPFS block device",
