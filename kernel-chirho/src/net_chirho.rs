@@ -3427,3 +3427,229 @@ pub fn gen_proc_net_udp_chirho() -> alloc::string::String {
 
     output_chirho
 }
+
+// ============================================================================
+// A3-011: VirtIO-net driver
+// ============================================================================
+
+/// VirtIO-net device driver.
+pub struct VirtioNetDeviceChirho {
+    mac_addr_chirho: [u8; 6],
+    mtu_val_chirho: usize,
+    rx_queue_chirho: VecDeque<Vec<u8>>,
+    initialized_chirho: bool,
+    base_addr_chirho: u64,
+}
+
+impl VirtioNetDeviceChirho {
+    #[allow(dead_code)]
+    pub fn new_chirho(mac_chirho: [u8; 6], base_addr_chirho: u64) -> Self {
+        Self { mac_addr_chirho: mac_chirho, mtu_val_chirho: 1500, rx_queue_chirho: VecDeque::new(), initialized_chirho: false, base_addr_chirho }
+    }
+    #[allow(dead_code)]
+    pub fn init_chirho(&mut self) {
+        crate::serial_println_chirho!("[NET] VirtIO-net: init at base {:#x}", self.base_addr_chirho);
+        self.initialized_chirho = true;
+    }
+    #[allow(dead_code)]
+    pub fn enqueue_rx_chirho(&mut self, pkt_chirho: Vec<u8>) { self.rx_queue_chirho.push_back(pkt_chirho); }
+}
+impl NetDeviceChirho for VirtioNetDeviceChirho {
+    fn send_packet_chirho(&mut self, d_chirho: &[u8]) { if self.initialized_chirho { crate::serial_println_chirho!("[NET] VirtIO TX: {} bytes", d_chirho.len()); } }
+    fn recv_packet_chirho(&mut self) -> Option<Vec<u8>> { self.rx_queue_chirho.pop_front() }
+    fn mac_address_chirho(&self) -> [u8; 6] { self.mac_addr_chirho }
+    fn mtu_chirho(&self) -> usize { self.mtu_val_chirho }
+}
+#[allow(dead_code)]
+pub fn probe_virtio_net_chirho() { crate::serial_println_chirho!("[NET] VirtIO-net probe complete (stub)"); }
+
+// ============================================================================
+// A3-012: Real epoll implementation
+// ============================================================================
+#[allow(dead_code)] pub const EPOLLIN_CHIRHO: u32 = 0x001;
+#[allow(dead_code)] pub const EPOLLOUT_CHIRHO: u32 = 0x004;
+#[allow(dead_code)] pub const EPOLLERR_CHIRHO: u32 = 0x008;
+#[allow(dead_code)] pub const EPOLLHUP_CHIRHO: u32 = 0x010;
+#[allow(dead_code)] pub const EPOLLET_CHIRHO: u32 = 1 << 31;
+#[allow(dead_code)] pub const EPOLL_CTL_ADD_CHIRHO: i32 = 1;
+#[allow(dead_code)] pub const EPOLL_CTL_DEL_CHIRHO: i32 = 2;
+#[allow(dead_code)] pub const EPOLL_CTL_MOD_CHIRHO: i32 = 3;
+
+#[derive(Clone)]
+pub struct EpollInterestChirho { pub fd_chirho: i32, pub events_chirho: u32, pub data_chirho: u64 }
+pub struct EpollInstanceChirho { pub interests_chirho: Vec<EpollInterestChirho> }
+
+const MAX_EPOLL_INSTANCES_CHIRHO: usize = 64;
+static EPOLL_TABLE_CHIRHO: Mutex<[Option<EpollInstanceChirho>; MAX_EPOLL_INSTANCES_CHIRHO]> = Mutex::new([const { None }; MAX_EPOLL_INSTANCES_CHIRHO]);
+const ENOENT_NET_CHIRHO: i64 = 2;
+const ENOMEM_NET_CHIRHO: i64 = 12;
+
+#[allow(dead_code)]
+pub fn epoll_create_impl_chirho() -> i64 {
+    let mut t_chirho = EPOLL_TABLE_CHIRHO.lock();
+    for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() {
+        if s_chirho.is_none() { *s_chirho = Some(EpollInstanceChirho { interests_chirho: Vec::new() }); return (1000 + i_chirho) as i64; }
+    }
+    -ENOMEM_NET_CHIRHO
+}
+
+#[allow(dead_code)]
+pub fn epoll_ctl_impl_chirho(epfd_chirho: i32, op_chirho: i32, fd_chirho: i32, ev_chirho: u32, dat_chirho: u64) -> i64 {
+    let idx_chirho = (epfd_chirho - 1000) as usize;
+    let mut t_chirho = EPOLL_TABLE_CHIRHO.lock();
+    let inst_chirho = match t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()) { Some(i_chirho) => i_chirho, None => return -EBADF_CHIRHO };
+    match op_chirho {
+        EPOLL_CTL_ADD_CHIRHO => { inst_chirho.interests_chirho.push(EpollInterestChirho { fd_chirho, events_chirho: ev_chirho, data_chirho: dat_chirho }); 0 }
+        EPOLL_CTL_DEL_CHIRHO => { inst_chirho.interests_chirho.retain(|e_chirho| e_chirho.fd_chirho != fd_chirho); 0 }
+        EPOLL_CTL_MOD_CHIRHO => { for e_chirho in inst_chirho.interests_chirho.iter_mut() { if e_chirho.fd_chirho == fd_chirho { e_chirho.events_chirho = ev_chirho; e_chirho.data_chirho = dat_chirho; return 0; } } -ENOENT_NET_CHIRHO }
+        _ => -EINVAL_CHIRHO,
+    }
+}
+
+#[allow(dead_code)]
+pub fn epoll_wait_impl_chirho(epfd_chirho: i32, eo_chirho: u64, max_chirho: i32, _to_chirho: i32) -> i64 {
+    let idx_chirho = (epfd_chirho - 1000) as usize;
+    let t_chirho = EPOLL_TABLE_CHIRHO.lock();
+    let inst_chirho = match t_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) { Some(i_chirho) => i_chirho, None => return -EBADF_CHIRHO };
+    let st_chirho = SOCKET_TABLE_CHIRHO.lock();
+    let mut cnt_chirho: i32 = 0;
+    for int_chirho in &inst_chirho.interests_chirho {
+        if cnt_chirho >= max_chirho { break; }
+        let mut re_chirho: u32 = 0;
+        let si_chirho = int_chirho.fd_chirho as usize;
+        if si_chirho < st_chirho.len() { if let Some(ref sk_chirho) = st_chirho[si_chirho] {
+            if !sk_chirho.recv_buf_chirho.is_empty() { re_chirho |= EPOLLIN_CHIRHO; }
+            if sk_chirho.state_chirho == SocketStateChirho::ConnectedChirho || sk_chirho.state_chirho == SocketStateChirho::BoundChirho { re_chirho |= EPOLLOUT_CHIRHO; }
+            if sk_chirho.state_chirho == SocketStateChirho::ClosedChirho { re_chirho |= EPOLLHUP_CHIRHO; }
+        }}
+        re_chirho &= int_chirho.events_chirho;
+        if re_chirho != 0 && eo_chirho != 0 {
+            let op_chirho = (eo_chirho + cnt_chirho as u64 * 12) as *mut u8;
+            unsafe { core::ptr::write_unaligned(op_chirho as *mut u32, re_chirho); core::ptr::write_unaligned(op_chirho.add(4) as *mut u64, int_chirho.data_chirho); }
+            cnt_chirho += 1;
+        }
+    }
+    cnt_chirho as i64
+}
+
+// A3-013: DNS resolver — already implemented above (build_dns_query_chirho,
+// parse_dns_answers_chirho, resolve_hostname_chirho, DNS_SERVER_CHIRHO).
+
+// ============================================================================
+// A3-014: Loopback device (127.0.0.1)
+// ============================================================================
+#[allow(dead_code)] pub const LOOPBACK_IPV4_CHIRHO: u32 = 0x7F000001;
+#[allow(dead_code)] pub const LOOPBACK_NETMASK_CHIRHO: u32 = 0xFF000000;
+#[derive(Clone)]
+pub struct IfaceConfigChirho { pub name_chirho: alloc::string::String, pub ipv4_addr_chirho: u32, pub netmask_chirho: u32, pub flags_chirho: u32, pub mtu_val_chirho: u32 }
+#[allow(dead_code)] pub const IFF_UP_CHIRHO: u32 = 0x1;
+#[allow(dead_code)] pub const IFF_LOOPBACK_CHIRHO: u32 = 0x8;
+#[allow(dead_code)] pub const IFF_RUNNING_CHIRHO: u32 = 0x40;
+static IFACE_CONFIG_CHIRHO: Mutex<Vec<IfaceConfigChirho>> = Mutex::new(Vec::new());
+
+#[allow(dead_code)]
+pub fn init_loopback_ip_chirho() {
+    let mut c_chirho = IFACE_CONFIG_CHIRHO.lock();
+    c_chirho.push(IfaceConfigChirho { name_chirho: alloc::string::String::from("lo"), ipv4_addr_chirho: LOOPBACK_IPV4_CHIRHO, netmask_chirho: LOOPBACK_NETMASK_CHIRHO, flags_chirho: IFF_UP_CHIRHO | IFF_LOOPBACK_CHIRHO | IFF_RUNNING_CHIRHO, mtu_val_chirho: 65536 });
+    crate::serial_println_chirho!("[NET] Loopback: 127.0.0.1/8");
+}
+
+// ============================================================================
+// A3-016: sendmsg/recvmsg — scatter-gather I/O
+// ============================================================================
+#[repr(C)] #[derive(Clone, Copy)] #[allow(dead_code)]
+pub struct IoVecChirho { pub iov_base_chirho: u64, pub iov_len_chirho: u64 }
+
+#[allow(dead_code)]
+pub fn gather_iovec_chirho(ip_chirho: u64, il_chirho: u64) -> Vec<u8> {
+    let mut r_chirho = Vec::new();
+    for i_chirho in 0..il_chirho {
+        let iv_chirho: IoVecChirho = unsafe { core::ptr::read_unaligned((ip_chirho + i_chirho * 16) as *const IoVecChirho) };
+        if iv_chirho.iov_base_chirho != 0 && iv_chirho.iov_len_chirho > 0 {
+            r_chirho.extend_from_slice(unsafe { core::slice::from_raw_parts(iv_chirho.iov_base_chirho as *const u8, iv_chirho.iov_len_chirho as usize) });
+        }
+    }
+    r_chirho
+}
+
+#[allow(dead_code)]
+pub fn scatter_iovec_chirho(ip_chirho: u64, il_chirho: u64, data_chirho: &[u8]) -> usize {
+    let mut w_chirho = 0usize;
+    for i_chirho in 0..il_chirho {
+        if w_chirho >= data_chirho.len() { break; }
+        let iv_chirho: IoVecChirho = unsafe { core::ptr::read_unaligned((ip_chirho + i_chirho * 16) as *const IoVecChirho) };
+        if iv_chirho.iov_base_chirho != 0 && iv_chirho.iov_len_chirho > 0 {
+            let n_chirho = core::cmp::min(iv_chirho.iov_len_chirho as usize, data_chirho.len() - w_chirho);
+            unsafe { core::ptr::copy_nonoverlapping(data_chirho.as_ptr().add(w_chirho), iv_chirho.iov_base_chirho as *mut u8, n_chirho); }
+            w_chirho += n_chirho;
+        }
+    }
+    w_chirho
+}
+
+// ============================================================================
+// A3-017: AF_UNIX sockets
+// ============================================================================
+const MAX_UNIX_SOCKETS_CHIRHO: usize = 64;
+pub struct UnixSocketChirho { pub path_chirho: Option<alloc::string::String>, pub recv_buf_chirho: VecDeque<Vec<u8>>, pub peer_idx_chirho: Option<usize>, pub sock_type_chirho: u32, pub backlog_chirho: VecDeque<usize>, pub listening_chirho: bool }
+static UNIX_SOCKET_TABLE_CHIRHO: Mutex<[Option<UnixSocketChirho>; MAX_UNIX_SOCKETS_CHIRHO]> = Mutex::new([const { None }; MAX_UNIX_SOCKETS_CHIRHO]);
+
+#[allow(dead_code)] pub fn unix_socket_create_chirho(st_chirho: u32) -> Option<usize> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() { if s_chirho.is_none() { *s_chirho = Some(UnixSocketChirho { path_chirho: None, recv_buf_chirho: VecDeque::new(), peer_idx_chirho: None, sock_type_chirho: st_chirho, backlog_chirho: VecDeque::new(), listening_chirho: false }); return Some(i_chirho); } } None }
+#[allow(dead_code)] pub fn unix_socket_bind_chirho(idx_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for s_chirho in t_chirho.iter() { if let Some(ref sk_chirho) = s_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { return -EADDRINUSE_CHIRHO; } } } } if let Some(ref mut sk_chirho) = t_chirho[idx_chirho] { sk_chirho.path_chirho = Some(alloc::string::String::from(p_chirho)); return 0; } -EBADF_CHIRHO }
+#[allow(dead_code)] pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let mut si_chirho: Option<usize> = None; for (i_chirho, s_chirho) in t_chirho.iter().enumerate() { if let Some(ref sk_chirho) = s_chirho { if sk_chirho.listening_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { si_chirho = Some(i_chirho); break; } } } } } let sv_chirho = match si_chirho { Some(v_chirho) => v_chirho, None => return -ECONNREFUSED_CHIRHO }; if let Some(ref mut s_chirho) = t_chirho[sv_chirho] { s_chirho.backlog_chirho.push_back(ci_chirho); } if let Some(ref mut c_chirho) = t_chirho[ci_chirho] { c_chirho.peer_idx_chirho = Some(sv_chirho); } 0 }
+#[allow(dead_code)] pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let pi_chirho = match t_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) { Some(sk_chirho) => match sk_chirho.peer_idx_chirho { Some(p_chirho) => p_chirho, None => return -ENOTCONN_CHIRHO }, None => return -EBADF_CHIRHO }; if let Some(ref mut peer_chirho) = t_chirho[pi_chirho] { peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec()); return d_chirho.len() as i64; } -EBADF_CHIRHO }
+#[allow(dead_code)] pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()).and_then(|sk_chirho| sk_chirho.recv_buf_chirho.pop_front()) }
+
+// ============================================================================
+// A3-018: setsockopt/getsockopt
+// ============================================================================
+#[allow(dead_code)] pub const SOL_SOCKET_CHIRHO: u64 = 1;
+#[allow(dead_code)] pub const SO_REUSEADDR_CHIRHO: u64 = 2;
+#[allow(dead_code)] pub const SO_KEEPALIVE_CHIRHO: u64 = 9;
+#[allow(dead_code)] pub const SO_RCVBUF_CHIRHO: u64 = 8;
+#[allow(dead_code)] pub const SO_SNDBUF_CHIRHO: u64 = 7;
+#[allow(dead_code)] pub const TCP_NODELAY_OPT_CHIRHO: u64 = 1;
+#[derive(Clone)] pub struct SocketOptionsChirho { pub reuseaddr_chirho: bool, pub keepalive_chirho: bool, pub nodelay_chirho: bool, pub rcvbuf_size_chirho: u32, pub sndbuf_size_chirho: u32 }
+const MAX_SOCK_OPTS_CHIRHO: usize = 128;
+static SOCKET_OPTS_CHIRHO: Mutex<[SocketOptionsChirho; MAX_SOCK_OPTS_CHIRHO]> = Mutex::new([const { SocketOptionsChirho { reuseaddr_chirho: false, keepalive_chirho: false, nodelay_chirho: false, rcvbuf_size_chirho: 87380, sndbuf_size_chirho: 16384 } }; MAX_SOCK_OPTS_CHIRHO]);
+#[allow(dead_code)] pub fn setsockopt_impl_chirho(si_chirho: usize, lv_chirho: u64, nm_chirho: u64, vp_chirho: u64, vl_chirho: u64) -> i64 { if si_chirho >= MAX_SOCK_OPTS_CHIRHO { return -EINVAL_CHIRHO; } let v_chirho: u32 = if vl_chirho >= 4 && vp_chirho != 0 { unsafe { core::ptr::read_unaligned(vp_chirho as *const u32) } } else { 0 }; let mut o_chirho = SOCKET_OPTS_CHIRHO.lock(); let op_chirho = &mut o_chirho[si_chirho]; match (lv_chirho, nm_chirho) { (SOL_SOCKET_CHIRHO, SO_REUSEADDR_CHIRHO) => op_chirho.reuseaddr_chirho = v_chirho != 0, (SOL_SOCKET_CHIRHO, SO_KEEPALIVE_CHIRHO) => op_chirho.keepalive_chirho = v_chirho != 0, (SOL_SOCKET_CHIRHO, SO_RCVBUF_CHIRHO) => op_chirho.rcvbuf_size_chirho = v_chirho, (SOL_SOCKET_CHIRHO, SO_SNDBUF_CHIRHO) => op_chirho.sndbuf_size_chirho = v_chirho, (6, TCP_NODELAY_OPT_CHIRHO) => op_chirho.nodelay_chirho = v_chirho != 0, _ => {} } 0 }
+#[allow(dead_code)] pub fn getsockopt_impl_chirho(si_chirho: usize, lv_chirho: u64, nm_chirho: u64, vp_chirho: u64, lp_chirho: u64) -> i64 { if si_chirho >= MAX_SOCK_OPTS_CHIRHO { return -EINVAL_CHIRHO; } let o_chirho = SOCKET_OPTS_CHIRHO.lock(); let op_chirho = &o_chirho[si_chirho]; let v_chirho: u32 = match (lv_chirho, nm_chirho) { (SOL_SOCKET_CHIRHO, SO_REUSEADDR_CHIRHO) => op_chirho.reuseaddr_chirho as u32, (SOL_SOCKET_CHIRHO, SO_KEEPALIVE_CHIRHO) => op_chirho.keepalive_chirho as u32, (SOL_SOCKET_CHIRHO, SO_RCVBUF_CHIRHO) => op_chirho.rcvbuf_size_chirho, (SOL_SOCKET_CHIRHO, SO_SNDBUF_CHIRHO) => op_chirho.sndbuf_size_chirho, (6, TCP_NODELAY_OPT_CHIRHO) => op_chirho.nodelay_chirho as u32, _ => 0 }; if vp_chirho != 0 { unsafe { core::ptr::write_unaligned(vp_chirho as *mut u32, v_chirho) }; } if lp_chirho != 0 { unsafe { core::ptr::write_unaligned(lp_chirho as *mut u32, 4) }; } 0 }
+
+// ============================================================================
+// A3-019: Network config ioctls
+// ============================================================================
+#[allow(dead_code)] pub const SIOCSIFADDR_CHIRHO: u64 = 0x8916;
+#[allow(dead_code)] pub const SIOCGIFADDR_CHIRHO: u64 = 0x8915;
+#[allow(dead_code)] pub const SIOCSIFFLAGS_CHIRHO: u64 = 0x8914;
+#[allow(dead_code)] pub const SIOCGIFFLAGS_CHIRHO: u64 = 0x8913;
+#[allow(dead_code)]
+pub fn handle_net_ioctl_chirho(cmd_chirho: u64, ifr_chirho: u64) -> i64 {
+    if ifr_chirho == 0 { return -EINVAL_CHIRHO; }
+    let nb_chirho = unsafe { core::slice::from_raw_parts(ifr_chirho as *const u8, 16) };
+    let mut nm_chirho = alloc::string::String::new();
+    for &b_chirho in nb_chirho { if b_chirho == 0 { break; } nm_chirho.push(b_chirho as char); }
+    let mut cfg_chirho = IFACE_CONFIG_CHIRHO.lock();
+    match cmd_chirho {
+        SIOCGIFADDR_CHIRHO => { for ic_chirho in cfg_chirho.iter() { if ic_chirho.name_chirho == nm_chirho { let ap_chirho = (ifr_chirho + 16) as *mut u8; let ab_chirho = ic_chirho.ipv4_addr_chirho.to_be_bytes(); unsafe { core::ptr::write(ap_chirho, 2); core::ptr::write(ap_chirho.add(1), 0); core::ptr::write(ap_chirho.add(2), 0); core::ptr::write(ap_chirho.add(3), 0); for (j_chirho, byte_chirho) in ab_chirho.iter().enumerate() { core::ptr::write(ap_chirho.add(4+j_chirho), *byte_chirho); } } return 0; } } -ENOENT_NET_CHIRHO }
+        SIOCSIFADDR_CHIRHO => { let ap_chirho = (ifr_chirho + 20) as *const u8; let ad_chirho = unsafe { u32::from_be_bytes([*ap_chirho, *ap_chirho.add(1), *ap_chirho.add(2), *ap_chirho.add(3)]) }; for ic_chirho in cfg_chirho.iter_mut() { if ic_chirho.name_chirho == nm_chirho { ic_chirho.ipv4_addr_chirho = ad_chirho; return 0; } } cfg_chirho.push(IfaceConfigChirho { name_chirho: nm_chirho, ipv4_addr_chirho: ad_chirho, netmask_chirho: 0xFFFFFF00, flags_chirho: IFF_UP_CHIRHO|IFF_RUNNING_CHIRHO, mtu_val_chirho: 1500 }); 0 }
+        SIOCGIFFLAGS_CHIRHO => { for ic_chirho in cfg_chirho.iter() { if ic_chirho.name_chirho == nm_chirho { unsafe { core::ptr::write((ifr_chirho+16) as *mut u16, ic_chirho.flags_chirho as u16) }; return 0; } } -ENOENT_NET_CHIRHO }
+        SIOCSIFFLAGS_CHIRHO => { let nf_chirho = unsafe { core::ptr::read((ifr_chirho+16) as *const u16) } as u32; for ic_chirho in cfg_chirho.iter_mut() { if ic_chirho.name_chirho == nm_chirho { ic_chirho.flags_chirho = nf_chirho; return 0; } } -ENOENT_NET_CHIRHO }
+        _ => 0,
+    }
+}
+
+// ============================================================================
+// A3 supplementary: Network namespace + Netfilter hooks
+// ============================================================================
+#[allow(dead_code)] pub struct NetworkNamespaceChirho { pub id_chirho: u64, pub devices_chirho: Vec<alloc::string::String>, pub is_init_chirho: bool }
+#[allow(dead_code)] static INIT_NETNS_CHIRHO: Mutex<Option<NetworkNamespaceChirho>> = Mutex::new(None);
+#[allow(dead_code)] pub fn init_default_netns_chirho() { let mut ns_chirho = INIT_NETNS_CHIRHO.lock(); *ns_chirho = Some(NetworkNamespaceChirho { id_chirho: 0, devices_chirho: alloc::vec![alloc::string::String::from("lo")], is_init_chirho: true }); }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] #[repr(u32)] #[allow(dead_code)]
+pub enum NfHookPointChirho { PreRoutingChirho = 0, LocalInChirho = 1, ForwardChirho = 2, LocalOutChirho = 3, PostRoutingChirho = 4 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] #[repr(u32)] #[allow(dead_code)]
+pub enum NfVerdictChirho { AcceptChirho = 1, DropChirho = 0, QueueChirho = 3, RepeatChirho = 4 }
+#[allow(dead_code)] pub struct NfHookEntryChirho { pub hook_chirho: NfHookPointChirho, pub priority_chirho: i32, pub handler_chirho: fn(&[u8]) -> NfVerdictChirho }
+static NF_HOOKS_CHIRHO: Mutex<Vec<NfHookEntryChirho>> = Mutex::new(Vec::new());
+#[allow(dead_code)] pub fn nf_register_hook_chirho(e_chirho: NfHookEntryChirho) { let mut h_chirho = NF_HOOKS_CHIRHO.lock(); let p_chirho = h_chirho.iter().position(|x_chirho| x_chirho.hook_chirho == e_chirho.hook_chirho && x_chirho.priority_chirho > e_chirho.priority_chirho).unwrap_or(h_chirho.len()); h_chirho.insert(p_chirho, e_chirho); }
+#[allow(dead_code)] pub fn nf_hook_chirho(hp_chirho: NfHookPointChirho, pkt_chirho: &[u8]) -> NfVerdictChirho { let h_chirho = NF_HOOKS_CHIRHO.lock(); for en_chirho in h_chirho.iter() { if en_chirho.hook_chirho == hp_chirho && (en_chirho.handler_chirho)(pkt_chirho) == NfVerdictChirho::DropChirho { return NfVerdictChirho::DropChirho; } } NfVerdictChirho::AcceptChirho }
