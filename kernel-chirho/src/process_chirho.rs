@@ -759,9 +759,14 @@ pub fn sys_execve_chirho(
         // Read the interpreter binary from the VFS (ext4).
         let interp_data_vec_chirho = match try_read_file_chirho(&interp_resolved_path_chirho) {
             Some(data_chirho) => {
+                // Log first 32 bytes to verify ELF header integrity
+                let hdr_hex_chirho: alloc::string::String = data_chirho.iter().take(32)
+                    .map(|b| alloc::format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 crate::serial_println_chirho!(
-                    "[PROCESS] execve: loaded interpreter from VFS ({} bytes)",
-                    data_chirho.len()
+                    "[PROCESS] execve: loaded interpreter from VFS ({} bytes) header: {}",
+                    data_chirho.len(), hdr_hex_chirho
                 );
                 data_chirho
             }
