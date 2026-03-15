@@ -739,3 +739,172 @@ pub fn enumerate_pci_bus_chirho() {
 pub fn init_pci_chirho() {
     enumerate_pci_bus_chirho();
 }
+
+// ============================================================================
+// PCI BAR assignment — bump allocator for MMIO address space
+// ============================================================================
+
+use core::sync::atomic::{AtomicU64, Ordering};
+
+/// Bump allocator for PCI MMIO address assignments.
+/// Starts at 0xFE00_0000 and grows upward, well below the typical 4 GiB
+/// boundary.  Each allocation is aligned to the BAR's natural size.
+static PCI_MMIO_NEXT_CHIRHO: AtomicU64 = AtomicU64::new(0xFE00_0000);
+
+/// Probe a BAR's required size, assign an MMIO address from the bump
+/// allocator, write it into the BAR register, and enable bus master +
+/// memory space in the PCI command register.
+///
+/// Returns `Some(assigned_physical_address)` on success, or `None` if the
+/// BAR is not a memory BAR or has zero size.
+///
+/// # Safety
+/// Performs PCI config space I/O and modifies device state.
+#[allow(dead_code)]
+pub unsafe fn pci_assign_bar_chirho(
+    dev_chirho: &PciDeviceChirho,
+    bar_index_chirho: u8,
+) -> Option<u64> {
+    if bar_index_chirho > 5 {
+        return None;
+    }
+
+    let bar_offset_chirho = PCI_REG_BAR0_CHIRHO + bar_index_chirho * 4;
+
+    // 1. Save the original BAR value.
+    let original_chirho = unsafe {
+        pci_config_read_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            bar_offset_chirho,
+        )
+    };
+
+    // 2. Write 0xFFFF_FFFF to probe the BAR size.
+    unsafe {
+        pci_config_write_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            bar_offset_chirho,
+            0xFFFF_FFFF,
+        );
+    }
+    let size_mask_chirho = unsafe {
+        pci_config_read_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            bar_offset_chirho,
+        )
+    };
+
+    // 3. Restore the original value (in case we bail out).
+    unsafe {
+        pci_config_write_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            bar_offset_chirho,
+            original_chirho,
+        );
+    }
+
+    // Check if it is a memory BAR (bit 0 == 0).
+    let is_io_chirho = size_mask_chirho & 1 != 0;
+    if is_io_chirho {
+        crate::serial_println_chirho!(
+            "PCI BAR{}: I/O BAR, skipping MMIO assignment",
+            bar_index_chirho
+        );
+        return None;
+    }
+
+    // Mask out type bits (bits 3:0) to get the size mask.
+    let masked_chirho = size_mask_chirho & 0xFFFF_FFF0;
+    if masked_chirho == 0 {
+        crate::serial_println_chirho!(
+            "PCI BAR{}: size probe returned zero, BAR not implemented",
+            bar_index_chirho
+        );
+        return None;
+    }
+
+    // Size = ~(masked) + 1  (two's complement of the writable bits).
+    let bar_size_chirho = (!(masked_chirho as u64 | 0xFFFF_FFFF_0000_0000)).wrapping_add(1);
+
+    crate::serial_println_chirho!(
+        "PCI BAR{}: size={:#x} bytes",
+        bar_index_chirho,
+        bar_size_chirho
+    );
+
+    // 4. Allocate from the bump allocator, aligning to bar_size_chirho.
+    let align_mask_chirho = bar_size_chirho - 1;
+    let assigned_addr_chirho: u32;
+
+    // Simple CAS loop for the bump allocator.
+    loop {
+        let current_chirho = PCI_MMIO_NEXT_CHIRHO.load(Ordering::Acquire);
+        let aligned_chirho = (current_chirho + align_mask_chirho) & !align_mask_chirho;
+        let next_chirho = aligned_chirho + bar_size_chirho;
+
+        match PCI_MMIO_NEXT_CHIRHO.compare_exchange_weak(
+            current_chirho,
+            next_chirho,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                assigned_addr_chirho = aligned_chirho as u32;
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+
+    crate::serial_println_chirho!(
+        "PCI BAR{}: assigning MMIO address {:#010x}",
+        bar_index_chirho,
+        assigned_addr_chirho
+    );
+
+    // 5. Write the assigned address into the BAR register.
+    //    Preserve type bits from original (bits 3:0), but for a fresh
+    //    assignment we write the address with bit 0 = 0 (memory BAR).
+    let bar_type_bits_chirho = original_chirho & 0x0F;
+    let bar_value_chirho = (assigned_addr_chirho & 0xFFFF_FFF0) | bar_type_bits_chirho;
+    unsafe {
+        pci_config_write_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            bar_offset_chirho,
+            bar_value_chirho,
+        );
+    }
+
+    // 6. Enable bus master + memory space in the PCI command register.
+    unsafe {
+        dev_chirho.enable_bus_master_chirho();
+    }
+
+    // Verify the BAR readback.
+    let readback_chirho = unsafe {
+        pci_config_read_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            bar_offset_chirho,
+        )
+    };
+    crate::serial_println_chirho!(
+        "PCI BAR{}: readback={:#010x} (expected {:#010x})",
+        bar_index_chirho,
+        readback_chirho,
+        bar_value_chirho
+    );
+
+    Some(assigned_addr_chirho as u64)
+}

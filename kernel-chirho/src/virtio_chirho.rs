@@ -17,7 +17,7 @@ use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
 
 use crate::block_chirho::{BlockDeviceChirho, SECTOR_SIZE_CHIRHO};
-use crate::pci_chirho::{pci_config_read_u32_chirho, PciDeviceChirho};
+use crate::pci_chirho::{pci_assign_bar_chirho, pci_config_read_u32_chirho, PciDeviceChirho};
 
 // ============================================================================
 // VirtIO PCI vendor / device constants
@@ -899,10 +899,27 @@ pub fn init_virtio_chirho() {
                     dev_chirho.function_chirho,
                     dev_chirho.device_id_chirho,
                 );
-                let bar0_chirho = read_pci_bar_chirho(dev_chirho, 0);
+                let mut bar0_chirho = read_pci_bar_chirho(dev_chirho, 0);
+                // Assign BAR0 if UEFI left it unconfigured.
+                if bar0_chirho & 0xFFFF_FFF0 == 0 && bar0_chirho & 1 == 0 {
+                    crate::serial_println_chirho!(
+                        "    VirtIO-net BAR0 is zero — assigning via pci_assign_bar_chirho"
+                    );
+                    if let Some(assigned_chirho) = unsafe { pci_assign_bar_chirho(dev_chirho, 0) } {
+                        bar0_chirho = assigned_chirho as u32;
+                        crate::serial_println_chirho!(
+                            "    VirtIO-net BAR0 assigned at {:#010x}",
+                            bar0_chirho
+                        );
+                    }
+                }
+                let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+                let net_mmio_virt_chirho =
+                    ((bar0_chirho & 0xFFFF_FFF0) as u64 + phys_offset_chirho) as usize;
                 crate::serial_println_chirho!(
-                    "    VirtIO-net BAR0={:#010x} IRQ={}",
+                    "    VirtIO-net BAR0={:#010x} virt={:#x} IRQ={}",
                     bar0_chirho,
+                    net_mmio_virt_chirho,
                     dev_chirho.interrupt_line_chirho,
                 );
             }
@@ -925,6 +942,9 @@ pub fn init_virtio_chirho() {
 
 /// Try to read BAR0 for a VirtIO-blk PCI device, probe MMIO at that address,
 /// and if successful read sector 0 and log the first 16 bytes (P2-002).
+///
+/// If UEFI left BAR0 unconfigured (zero), we program it ourselves via
+/// `pci_assign_bar_chirho` before attempting the MMIO probe.
 fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
     let bar0_raw_chirho = read_pci_bar_chirho(pci_dev_chirho, 0);
     // Memory BAR: bit 0 == 0; mask type bits to get base address.
@@ -936,18 +956,46 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
         );
         return;
     }
-    let mmio_base_chirho = (bar0_raw_chirho & 0xFFFF_FFF0) as usize;
-    if mmio_base_chirho == 0 {
-        crate::serial_println_chirho!("    VirtIO-blk BAR0 is zero — device not mapped");
-        return;
+    let mut mmio_phys_chirho = (bar0_raw_chirho & 0xFFFF_FFF0) as u64;
+
+    // If BAR0 is zero the UEFI firmware did not assign an MMIO address.
+    // Program one ourselves using the PCI BAR bump allocator.
+    if mmio_phys_chirho == 0 {
+        crate::serial_println_chirho!(
+            "    VirtIO-blk BAR0 is zero — assigning MMIO via pci_assign_bar_chirho"
+        );
+        match unsafe { pci_assign_bar_chirho(pci_dev_chirho, 0) } {
+            Some(assigned_chirho) => {
+                mmio_phys_chirho = assigned_chirho;
+                crate::serial_println_chirho!(
+                    "    VirtIO-blk BAR0 assigned at phys {:#010x}",
+                    mmio_phys_chirho
+                );
+            }
+            None => {
+                crate::serial_println_chirho!(
+                    "    VirtIO-blk BAR0 assignment failed — cannot probe"
+                );
+                return;
+            }
+        }
+    } else {
+        // BAR was already configured — ensure bus master + memory space are enabled.
+        unsafe { pci_dev_chirho.enable_bus_master_chirho() };
     }
 
+    // Convert physical BAR address to a virtual address using the
+    // bootloader-provided physical memory offset.
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let mmio_virt_chirho = (mmio_phys_chirho + phys_offset_chirho) as usize;
+
     crate::serial_println_chirho!(
-        "    Probing VirtIO-blk MMIO at {:#x}...",
-        mmio_base_chirho
+        "    Probing VirtIO-blk MMIO: phys={:#010x} virt={:#x}...",
+        mmio_phys_chirho,
+        mmio_virt_chirho
     );
 
-    match VirtioBlkDeviceChirho::probe_mmio_chirho(mmio_base_chirho) {
+    match VirtioBlkDeviceChirho::probe_mmio_chirho(mmio_virt_chirho) {
         Some(blk_dev_chirho) => {
             crate::serial_println_chirho!(
                 "    VirtIO-blk init OK — capacity {} sectors ({} MiB)",
@@ -980,8 +1028,9 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
         }
         None => {
             crate::serial_println_chirho!(
-                "    VirtIO-blk MMIO probe failed at {:#x} (may need identity map)",
-                mmio_base_chirho
+                "    VirtIO-blk MMIO probe failed at phys={:#010x} virt={:#x}",
+                mmio_phys_chirho,
+                mmio_virt_chirho
             );
         }
     }
