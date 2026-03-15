@@ -1980,33 +1980,54 @@ fn sys_close_chirho(fd_chirho: u64) -> i64 {
 
 /// `exit(2)` implementation.
 ///
-/// Prints an exit message to serial and halts the CPU.  In a multi-process
-/// kernel this would only terminate the calling process/thread; for now
-/// it halts the entire machine.
+/// Marks the current task as a zombie (so `wait4` can reap it), removes it
+/// from the scheduler run queue, and context-switches to the next task.
+/// If there is no current task (should not happen), falls back to halt.
 fn sys_exit_chirho(code_chirho: i32) -> i64 {
     crate::serial_println_chirho!(
-        "[SYSCALL] exit({}) -- process terminated",
+        "[SYSCALL] exit({}) -- process terminating",
         code_chirho
     );
-    // In a real multi-tasking kernel, we would mark the task as dead and
-    // schedule another.  For now, halt.
-    loop {
-        x86_64::instructions::hlt();
-    }
+
+    // Mark the current task as zombie with the given exit code.
+    let pid_chirho = {
+        let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+            Some(t_chirho) => t_chirho,
+            None => {
+                // No current task — fallback to halt (should not happen).
+                loop { x86_64::instructions::hlt(); }
+            }
+        };
+        let mut task_chirho = task_arc_chirho.lock();
+        task_chirho.exit_chirho(code_chirho);
+        let pid_chirho = task_chirho.pid_chirho;
+        crate::serial_println_chirho!(
+            "[SYSCALL] exit: PID={} -> zombie (exit_code={})",
+            pid_chirho,
+            code_chirho
+        );
+        pid_chirho
+    };
+
+    // Remove from scheduler run queue and context-switch to next task.
+    crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+    crate::scheduler_chirho::schedule_chirho();
+
+    // Should not be reached — the scheduler switched away. Safety halt.
+    loop { x86_64::instructions::hlt(); }
 }
 
 /// `exit_group(2)` implementation.
 ///
 /// Terminates all threads in the current thread group.  Since Lineluya is
-/// currently single-threaded, this is identical to [`sys_exit_chirho`].
+/// currently single-threaded per process, this is identical to
+/// [`sys_exit_chirho`].
 fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
     crate::serial_println_chirho!(
-        "[SYSCALL] exit_group({}) -- all threads terminated",
+        "[SYSCALL] exit_group({}) -- terminating thread group",
         code_chirho
     );
-    loop {
-        x86_64::instructions::hlt();
-    }
+    sys_exit_chirho(code_chirho)
 }
 
 /// `brk(2)` implementation.
@@ -3019,6 +3040,23 @@ fn sys_fstat_chirho(
 ///
 /// Resolves the pathname via VFS path resolution and fills `statbuf_chirho`
 /// with inode metadata.
+/// Check if a name is a known BusyBox applet.
+fn is_busybox_applet_chirho(name_chirho: &str) -> bool {
+    matches!(name_chirho,
+        "ls" | "cat" | "cp" | "mv" | "rm" | "mkdir" | "rmdir" | "chmod" |
+        "chown" | "ln" | "touch" | "head" | "tail" | "wc" | "grep" | "sed" |
+        "awk" | "sort" | "uniq" | "tr" | "cut" | "find" | "xargs" | "tee" |
+        "du" | "df" | "mount" | "umount" | "ps" | "kill" | "sleep" |
+        "date" | "uname" | "id" | "whoami" | "hostname" | "env" |
+        "printenv" | "expr" | "test" | "true" | "false" | "yes" |
+        "sh" | "ash" | "busybox" | "vi" | "ping" | "wget" | "nc" |
+        "tar" | "gzip" | "gunzip" | "dd" | "hexdump" | "od" |
+        "dmesg" | "free" | "uptime" | "stat" | "readlink" |
+        "basename" | "dirname" | "realpath" | "seq" | "printf" |
+        "echo" | "clear" | "reset" | "stty" | "tty"
+    )
+}
+
 fn sys_stat_chirho(
     pathname_chirho: *const u8,
     statbuf_chirho: *mut StatChirho,
@@ -3028,7 +3066,7 @@ fn sys_stat_chirho(
     }
 
     // Read pathname from user space
-    let path_str_chirho = match crate::uaccess_chirho::read_user_string_chirho(
+    let raw_path_chirho = match crate::uaccess_chirho::read_user_string_chirho(
         pathname_chirho as u64,
         4096,
     ) {
@@ -3036,10 +3074,38 @@ fn sys_stat_chirho(
         Err(_) => return -EFAULT_CHIRHO,
     };
 
+    // Handle relative paths by prepending "/" (CWD is always "/")
+    let path_str_chirho = if !raw_path_chirho.starts_with('/') {
+        let mut full_chirho = alloc::string::String::from("/");
+        full_chirho.push_str(&raw_path_chirho);
+        full_chirho
+    } else {
+        raw_path_chirho
+    };
+
     // Resolve through VFS
     let (inode_arc_chirho, _file_ops_chirho) = match crate::fs_chirho::resolve_path_chirho(&path_str_chirho) {
         Ok(result_chirho) => result_chirho,
-        Err(errno_chirho) => return errno_chirho,
+        Err(errno_chirho) => {
+            // Intercept: if path is a BusyBox applet in /bin or /sbin,
+            // return a fake stat result so ash finds the command.
+            let basename_chirho = path_str_chirho.rsplit('/').next().unwrap_or("");
+            if (path_str_chirho.starts_with("/bin/") || path_str_chirho.starts_with("/sbin/")
+                || path_str_chirho.starts_with("/usr/bin/"))
+                && is_busybox_applet_chirho(basename_chirho)
+            {
+                // Return a fake stat: regular file, executable
+                let mut st_chirho = StatChirho::zeroed_chirho();
+                st_chirho.st_mode_chirho = 0o100755; // S_IFREG | 0755
+                st_chirho.st_size_chirho = 1131168;  // BusyBox size
+                st_chirho.st_nlink_chirho = 1;
+                st_chirho.st_blksize_chirho = 4096;
+                st_chirho.st_blocks_chirho = (1131168 + 511) / 512;
+                unsafe { core::ptr::write(statbuf_chirho, st_chirho); }
+                return 0;
+            }
+            return errno_chirho;
+        }
     };
 
     let mut st_chirho = StatChirho::zeroed_chirho();
@@ -3107,10 +3173,16 @@ fn sys_fstatat_chirho(
         return sys_fstat_chirho(dirfd_chirho as u64, statbuf_chirho);
     }
 
-    // For now, only absolute paths are resolved (ignoring dirfd)
-    let _ = dirfd_chirho;
+    // Handle AT_FDCWD (-100): prepend "/" for relative paths.
+    let resolved_path_chirho = if !path_str_chirho.starts_with('/') && dirfd_chirho == -100 {
+        let mut full_chirho = alloc::string::String::from("/");
+        full_chirho.push_str(&path_str_chirho);
+        full_chirho
+    } else {
+        path_str_chirho
+    };
 
-    let (inode_arc_chirho, _file_ops_chirho) = match crate::fs_chirho::resolve_path_chirho(&path_str_chirho) {
+    let (inode_arc_chirho, _file_ops_chirho) = match crate::fs_chirho::resolve_path_chirho(&resolved_path_chirho) {
         Ok(result_chirho) => result_chirho,
         Err(errno_chirho) => return errno_chirho,
     };

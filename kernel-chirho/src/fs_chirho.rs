@@ -72,7 +72,7 @@ pub fn init_fs_chirho() {
     // 1. Create root tmpfs
     let root_sb_chirho = crate::tmpfs_chirho::mount_tmpfs_chirho();
 
-    // 2. Create /dev, /proc, /tmp directories in the root
+    // 2. Create /dev, /proc, /tmp, /bin, /sbin directories in the root
     {
         let sb_guard_chirho = root_sb_chirho.lock();
         let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
@@ -82,8 +82,24 @@ pub fn init_fs_chirho() {
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "dev", 0o755);
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "proc", 0o555);
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "tmp", 0o1777);
+            // Create /bin and /sbin for BusyBox applet lookups
+            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "bin", 0o755);
+            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "sbin", 0o755);
+            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "usr", 0o755);
         }
     }
+
+    // 2b. Populate /bin with dummy executable entries for all BusyBox applets.
+    //
+    // When ash does stat("/bin/ls"), the VFS will find these entries and
+    // return S_IFREG|0o755 (executable). When ash then does fork+execve
+    // ("/bin/ls"), sys_execve_chirho recognises the applet name and loads
+    // the embedded BusyBox binary with argv[0]="ls".
+    //
+    // We access the real /bin inode (with fs_data) through the tmpfs
+    // directory entry list, since lookup_chirho returns a shallow copy
+    // without fs_data.
+    populate_bin_applets_chirho(&root_sb_chirho);
 
     // 3. Store root fs
     {
@@ -161,7 +177,91 @@ pub fn init_fs_chirho() {
         *fd_table_guard_chirho = Some(fd_table_chirho);
     }
 
-    crate::serial_println_chirho!("[OK] Filesystem layer initialized (root tmpfs + /dev + /proc)");
+    crate::serial_println_chirho!("[OK] Filesystem layer initialized (root tmpfs + /dev + /proc + /bin applets)");
+}
+
+/// Populate `/bin` with dummy executable entries for all BusyBox applets.
+///
+/// Walks the tmpfs root directory entries to find the real `/bin` inode
+/// (with its `fs_data_chirho` intact), then creates regular file entries
+/// with mode 0o755 for each BusyBox applet name.
+fn populate_bin_applets_chirho(root_sb_chirho: &Arc<Mutex<crate::vfs_chirho::SuperblockChirho>>) {
+    use crate::tmpfs_chirho::TmpfsDataChirho;
+
+    // BusyBox applet names — must match the list in process_chirho.rs
+    let applets_chirho: &[&str] = &[
+        "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "chmod",
+        "chown", "ln", "touch", "head", "tail", "wc", "grep", "sed",
+        "awk", "sort", "uniq", "tr", "cut", "find", "xargs", "tee",
+        "du", "df", "mount", "umount", "ps", "kill", "sleep",
+        "date", "uname", "id", "whoami", "hostname", "env",
+        "printenv", "expr", "test", "true", "false", "yes",
+        "sh", "ash", "busybox", "vi", "ping", "wget", "nc",
+        "tar", "gzip", "gunzip", "dd", "hexdump", "od",
+        "dmesg", "free", "uptime", "stat", "readlink",
+        "basename", "dirname", "realpath", "seq", "printf",
+        "echo", "clear", "reset", "stty", "tty",
+    ];
+
+    // Step 1: Get the root inode from the superblock.
+    let sb_guard_chirho = root_sb_chirho.lock();
+    let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
+    let root_inode_arc_chirho = match root_dentry_chirho.inode_chirho {
+        Some(ref arc_chirho) => arc_chirho.clone(),
+        None => return,
+    };
+    drop(root_dentry_chirho);
+    drop(sb_guard_chirho);
+
+    // Step 2: Walk the root directory's tmpfs entries to find the real /bin
+    // inode (the one stored in the entries vector, which has fs_data).
+    let bin_inode_arc_chirho = {
+        let root_locked_chirho = root_inode_arc_chirho.lock();
+        let root_data_chirho = match root_locked_chirho
+            .fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Mutex<TmpfsDataChirho>>())
+        {
+            Some(d_chirho) => d_chirho,
+            None => return,
+        };
+        let data_guard_chirho = root_data_chirho.lock();
+        match &*data_guard_chirho {
+            TmpfsDataChirho::DirChirho(entries_chirho) => {
+                let mut found_chirho: Option<Arc<Mutex<crate::vfs_chirho::InodeChirho>>> = None;
+                for (name_chirho, inode_arc_chirho) in entries_chirho.iter() {
+                    if name_chirho == "bin" {
+                        found_chirho = Some(inode_arc_chirho.clone());
+                        break;
+                    }
+                }
+                match found_chirho {
+                    Some(arc_chirho) => arc_chirho,
+                    None => return,
+                }
+            }
+            _ => return,
+        }
+    };
+
+    // Step 3: Create executable file entries inside /bin.
+    // Lock the /bin inode and call create_chirho on it for each applet.
+    let bin_locked_chirho = bin_inode_arc_chirho.lock();
+    let mut count_chirho: usize = 0;
+    for applet_name_chirho in applets_chirho {
+        if bin_locked_chirho
+            .ops_chirho
+            .create_chirho(&bin_locked_chirho, applet_name_chirho, 0o755)
+            .is_ok()
+        {
+            count_chirho += 1;
+        }
+    }
+
+    crate::serial_println_chirho!(
+        "[FS] Created {} BusyBox applet entries in /bin",
+        count_chirho
+    );
 }
 
 // ============================================================================

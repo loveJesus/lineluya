@@ -92,6 +92,34 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
                 for (entry_name_chirho, inode_chirho) in entries_chirho {
                     if entry_name_chirho == name_chirho {
                         let locked_chirho = inode_chirho.lock();
+                        // Take the fs_data out temporarily, wrap in new Arc.
+                        // We can't clone Box<dyn Any>, so we re-wrap the
+                        // same data pointer via a shared Arc<Mutex<TmpfsData>>.
+                        // For directories, we construct a new fs_data pointing
+                        // to the same underlying TmpfsData.
+                        let fs_data_new_chirho: Option<Box<dyn core::any::Any + Send>> =
+                            if let Some(ref data_chirho) = locked_chirho.fs_data_chirho {
+                                if let Some(tmpfs_mutex_chirho) = data_chirho.downcast_ref::<Mutex<TmpfsDataChirho>>() {
+                                    // Re-read the data and create a new copy
+                                    let inner_chirho = tmpfs_mutex_chirho.lock();
+                                    let cloned_data_chirho = match &*inner_chirho {
+                                        TmpfsDataChirho::DirChirho(entries_inner_chirho) => {
+                                            TmpfsDataChirho::DirChirho(entries_inner_chirho.clone())
+                                        }
+                                        TmpfsDataChirho::FileChirho(content_chirho) => {
+                                            TmpfsDataChirho::FileChirho(content_chirho.clone())
+                                        }
+                                        // No other variants currently
+                                    };
+                                    drop(inner_chirho);
+                                    Some(Box::new(Mutex::new(cloned_data_chirho)) as Box<dyn core::any::Any + Send>)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
                         let cloned_chirho = InodeChirho {
                             ino_chirho: locked_chirho.ino_chirho,
                             mode_chirho: locked_chirho.mode_chirho,
@@ -103,7 +131,7 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
                             mtime_chirho: locked_chirho.mtime_chirho,
                             ctime_chirho: locked_chirho.ctime_chirho,
                             ops_chirho: locked_chirho.ops_chirho,
-                            fs_data_chirho: None,
+                            fs_data_chirho: fs_data_new_chirho,
                         };
                         return Ok(Arc::new(cloned_chirho));
                     }
