@@ -1451,7 +1451,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_FDATASYNC_CHIRHO => 0, // stub: silently succeed
         SYS_TRUNCATE_CHIRHO => 0,  // stub: silently succeed
         SYS_FTRUNCATE_CHIRHO => 0, // stub: silently succeed
-        SYS_GETDENTS_CHIRHO => -EBADF_CHIRHO,
+        SYS_GETDENTS_CHIRHO => sys_getdents_chirho(
+            arg0_chirho,
+            arg1_chirho as *mut u8,
+            arg2_chirho as usize,
+        ),
         SYS_GETCWD_CHIRHO => sys_getcwd_chirho(arg0_chirho as *mut u8, arg1_chirho as usize),
         SYS_CHDIR_CHIRHO => sys_chdir_chirho(arg0_chirho as *const u8),
         SYS_RENAME_CHIRHO => sys_rename_chirho(
@@ -1543,7 +1547,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         ),
         SYS_SET_ROBUST_LIST_CHIRHO => 0,        // silently succeed
         SYS_GET_ROBUST_LIST_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_FACCESSAT_CHIRHO => sys_faccessat_chirho(),
+        SYS_FACCESSAT_CHIRHO => sys_faccessat_real_chirho(
+            arg0_chirho as i32,
+            arg1_chirho,
+            arg2_chirho as u32,
+            arg3_chirho as u32,
+        ),
         SYS_READLINKAT_CHIRHO => sys_readlinkat_chirho(
             arg0_chirho as i32,
             arg1_chirho as *const u8,
@@ -1600,7 +1609,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho as u32,
             arg2_chirho as *mut u8,
         ),
-        SYS_CLOCK_NANOSLEEP_CHIRHO => 0, // stub: instant return
+        SYS_CLOCK_NANOSLEEP_CHIRHO => sys_clock_nanosleep_chirho(
+            arg0_chirho as u32,
+            arg1_chirho as u32,
+            arg2_chirho,
+            arg3_chirho,
+        ),
         SYS_MKNODAT_CHIRHO => 0,  // stub: silently succeed
         SYS_TIMERFD_CREATE_CHIRHO => sys_fake_fd_chirho(),
         SYS_SIGNALFD4_CHIRHO => sys_fake_fd_chirho(),
@@ -1647,7 +1661,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
         // pselect6 / ppoll
         SYS_PSELECT6_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
-        SYS_PPOLL_CHIRHO => sys_poll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho as i32),
+        SYS_PPOLL_CHIRHO => sys_ppoll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho, arg3_chirho, arg4_chirho),
 
         // --- Phase 8+9: sendfile, splice, tee, vmsplice, copy_file_range ---
         SYS_SENDFILE_CHIRHO => -ENOSYS_CHIRHO,
@@ -1735,7 +1749,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // --- Phase 10: Massive syscall coverage ---
 
         // Permission-related: we're root, silently succeed
-        SYS_FCHMOD_CHIRHO | SYS_FCHMODAT_CHIRHO => 0,
+        SYS_FCHMOD_CHIRHO => 0,
+        SYS_FCHMODAT_CHIRHO => sys_fchmodat_chirho(
+            arg0_chirho as i32,
+            arg1_chirho,
+            arg2_chirho as u32,
+            arg3_chirho as u32,
+        ),
         SYS_FCHOWN_CHIRHO | SYS_FCHOWNAT_CHIRHO | SYS_LCHOWN_CHIRHO => 0,
         SYS_UMASK_CHIRHO => {
             // umask returns the previous mask; stub always returns 0o022
@@ -4285,5 +4305,322 @@ fn sys_read_stdin_chirho(buf_addr_chirho: u64, count_chirho: usize) -> i64 {
             return 1;
         }
         core::hint::spin_loop();
+    }
+}
+
+// ============================================================================
+// Phase A1 batch: ppoll, clock_nanosleep, faccessat, getdents,
+//                  fchmodat implementations
+// ============================================================================
+
+/// `ppoll(2)` implementation.
+///
+/// Like poll but accepts a timespec pointer and a signal mask.
+/// Our implementation ignores the sigmask (signals not fully wired yet)
+/// and converts the timespec to a millisecond timeout for the poll stub.
+fn sys_ppoll_chirho(
+    fds_ptr_chirho: u64,
+    nfds_chirho: u32,
+    tmo_ptr_chirho: u64,
+    _sigmask_ptr_chirho: u64,
+    _sigsetsize_chirho: u64,
+) -> i64 {
+    // Convert timespec to a timeout in ms (or -1 for infinite).
+    // If tmo_ptr is NULL, timeout is infinite (blocking).
+    let timeout_ms_chirho: i32 = if tmo_ptr_chirho == 0 {
+        -1 // infinite
+    } else {
+        // Read struct timespec { i64 tv_sec; i64 tv_nsec; } from user
+        let mut ts_buf_chirho = [0u8; 16];
+        if crate::uaccess_chirho::copy_from_user_chirho(
+            &mut ts_buf_chirho,
+            tmo_ptr_chirho,
+            16,
+        ).is_err() {
+            return -EFAULT_CHIRHO;
+        }
+        let sec_chirho = i64::from_ne_bytes(ts_buf_chirho[0..8].try_into().unwrap());
+        let nsec_chirho = i64::from_ne_bytes(ts_buf_chirho[8..16].try_into().unwrap());
+        // Convert to milliseconds, cap at i32::MAX
+        let ms_chirho = sec_chirho.saturating_mul(1000)
+            .saturating_add(nsec_chirho / 1_000_000);
+        if ms_chirho > i32::MAX as i64 { i32::MAX } else { ms_chirho as i32 }
+    };
+
+    // Delegate to the existing poll implementation
+    sys_poll_chirho(fds_ptr_chirho, nfds_chirho, timeout_ms_chirho)
+}
+
+/// `clock_nanosleep(2)` implementation.
+///
+/// Supports CLOCK_REALTIME (0) and CLOCK_MONOTONIC (1).
+/// flag=0 means relative sleep, flag=TIMER_ABSTIME(1) means absolute.
+/// For now we do a busy-spin approximation; a real implementation would
+/// use the HPET/APIC timer to schedule a wakeup.
+fn sys_clock_nanosleep_chirho(
+    clock_id_chirho: u32,
+    flags_chirho: u32,
+    request_ptr_chirho: u64,
+    _remain_ptr_chirho: u64,
+) -> i64 {
+    // Validate clock_id
+    if clock_id_chirho > 1 {
+        // We support CLOCK_REALTIME (0) and CLOCK_MONOTONIC (1)
+        return -EINVAL_CHIRHO;
+    }
+
+    if request_ptr_chirho == 0 {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Read the timespec from user space
+    let mut ts_buf_chirho = [0u8; 16];
+    if crate::uaccess_chirho::copy_from_user_chirho(
+        &mut ts_buf_chirho,
+        request_ptr_chirho,
+        16,
+    ).is_err() {
+        return -EFAULT_CHIRHO;
+    }
+
+    let sec_chirho = i64::from_ne_bytes(ts_buf_chirho[0..8].try_into().unwrap());
+    let nsec_chirho = i64::from_ne_bytes(ts_buf_chirho[8..16].try_into().unwrap());
+
+    // Validate
+    if nsec_chirho < 0 || nsec_chirho >= 1_000_000_000 {
+        return -EINVAL_CHIRHO;
+    }
+
+    let _flags_abstime_chirho = flags_chirho & 1; // TIMER_ABSTIME = 1
+
+    // For now, do a lightweight busy-wait using TSC.
+    // Convert requested sleep to approximate TSC ticks.
+    // Assume ~1 GHz TSC (conservative estimate).
+    let total_ns_chirho = (sec_chirho as u64).saturating_mul(1_000_000_000)
+        .saturating_add(nsec_chirho as u64);
+
+    // For short sleeps (<1ms), busy-spin with hint.
+    // For longer sleeps, yield to scheduler.
+    if total_ns_chirho > 0 {
+        let start_tsc_chirho = rdtsc_chirho();
+        // Rough approximation: 1 billion TSC ticks per second.
+        // The actual TSC frequency varies; this is a reasonable default.
+        let tsc_per_ns_chirho: u64 = 1; // ~1 GHz
+        let target_ticks_chirho = total_ns_chirho.saturating_mul(tsc_per_ns_chirho);
+
+        // Cap the spin to prevent hanging: max 100ms of spinning
+        let max_spin_ticks_chirho: u64 = 100_000_000;
+        let spin_ticks_chirho = target_ticks_chirho.min(max_spin_ticks_chirho);
+
+        while rdtsc_chirho().wrapping_sub(start_tsc_chirho) < spin_ticks_chirho {
+            core::hint::spin_loop();
+        }
+
+        // For remaining time beyond spin limit, yield to scheduler
+        if target_ticks_chirho > max_spin_ticks_chirho {
+            crate::scheduler_chirho::yield_current_chirho();
+        }
+    }
+
+    0 // success
+}
+
+/// `faccessat(2)` real implementation.
+///
+/// Checks if the file at the given path exists and is accessible.
+/// Uses the VFS to resolve the path.  Since we run as root, permission
+/// checks always pass; the main value is detecting ENOENT.
+fn sys_faccessat_real_chirho(
+    dirfd_chirho: i32,
+    pathname_addr_chirho: u64,
+    _mode_chirho: u32,
+    _flags_chirho: u32,
+) -> i64 {
+    if pathname_addr_chirho == 0 {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Read path from user space
+    let pathname_chirho = match crate::uaccess_chirho::read_user_string_chirho(pathname_addr_chirho, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Handle relative paths with AT_FDCWD
+    let full_path_chirho = if !pathname_chirho.starts_with('/') {
+        if dirfd_chirho == -100 { // AT_FDCWD
+            let mut p_chirho = alloc::string::String::from("/");
+            p_chirho.push_str(&pathname_chirho);
+            p_chirho
+        } else {
+            pathname_chirho
+        }
+    } else {
+        pathname_chirho
+    };
+
+    // Try to resolve the path through VFS
+    match crate::fs_chirho::resolve_path_chirho(&full_path_chirho) {
+        Ok(_) => 0, // file exists, access granted (we're root)
+        Err(_) => -ENOENT_CHIRHO,
+    }
+}
+
+/// `getdents(2)` implementation (old-style, syscall nr 78).
+///
+/// Uses the older `linux_dirent` format (not `linux_dirent64`):
+///   - u64 d_ino       (inode number -- we use u64 even in "old" format for x86_64)
+///   - i64 d_off       (offset to next dirent)
+///   - u16 d_reclen    (length of this record)
+///   - char d_name[]   (NUL-terminated filename)
+///   - u8 d_type       (file type, appended after d_name + padding)
+///
+/// On x86_64 Linux, the "old" getdents actually uses the same layout
+/// as getdents64 for compat. We implement the x86_64 ABI.
+fn sys_getdents_chirho(
+    fd_chirho: u64,
+    dirp_chirho: *mut u8,
+    count_chirho: usize,
+) -> i64 {
+    use crate::uaccess_chirho::copy_to_user_chirho;
+
+    if dirp_chirho.is_null() || count_chirho == 0 {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Get the file from the FD table
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.get_chirho(fd_chirho as usize) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
+        }
+    };
+
+    // Collect directory entries -- use the same linux_dirent64 layout
+    // since on x86_64, getdents and getdents64 have identical struct layout.
+    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    let mut bytes_written_chirho: usize = 0;
+    let mut error_chirho: Option<i64> = None;
+
+    {
+        let mut file_guard_chirho = file_arc_chirho.lock();
+        let readdir_result_chirho = file_guard_chirho.ops_chirho.readdir_chirho(
+            &mut file_guard_chirho,
+            &mut |name_chirho: &str, ino_chirho: u64, d_type_chirho: u8| -> bool {
+                // Old linux_dirent on x86_64 layout:
+                //   u64 d_ino     (8)
+                //   u64 d_off     (8)
+                //   u16 d_reclen  (2)
+                //   char d_name[] (variable, NUL-terminated)
+                //   u8 d_type follows after name+padding
+                let name_bytes_chirho = name_chirho.as_bytes();
+                let name_len_chirho = name_bytes_chirho.len() + 1; // +1 NUL
+                // Header: 8 + 8 + 2 = 18, then name, then 1 byte d_type, align to 8
+                let reclen_unaligned_chirho: usize = 18 + name_len_chirho + 1; // +1 for d_type
+                let reclen_chirho = (reclen_unaligned_chirho + 7) & !7;
+
+                if bytes_written_chirho + reclen_chirho > count_chirho {
+                    return false;
+                }
+
+                let off_chirho = bytes_written_chirho;
+                let d_off_chirho = (bytes_written_chirho + reclen_chirho) as u64;
+
+                // d_ino
+                kernel_buf_chirho[off_chirho..off_chirho + 8]
+                    .copy_from_slice(&ino_chirho.to_ne_bytes());
+                // d_off
+                kernel_buf_chirho[off_chirho + 8..off_chirho + 16]
+                    .copy_from_slice(&d_off_chirho.to_ne_bytes());
+                // d_reclen
+                kernel_buf_chirho[off_chirho + 16..off_chirho + 18]
+                    .copy_from_slice(&(reclen_chirho as u16).to_ne_bytes());
+                // d_name
+                kernel_buf_chirho[off_chirho + 18..off_chirho + 18 + name_bytes_chirho.len()]
+                    .copy_from_slice(name_bytes_chirho);
+                kernel_buf_chirho[off_chirho + 18 + name_bytes_chirho.len()] = 0; // NUL
+                // d_type at end (last byte before padding)
+                kernel_buf_chirho[off_chirho + reclen_chirho - 1] = d_type_chirho;
+                // Zero padding
+                for i_chirho in (off_chirho + 18 + name_len_chirho)..(off_chirho + reclen_chirho - 1) {
+                    kernel_buf_chirho[i_chirho] = 0;
+                }
+
+                bytes_written_chirho += reclen_chirho;
+                true
+            },
+        );
+
+        if let Err(errno_chirho) = readdir_result_chirho {
+            error_chirho = Some(errno_chirho);
+        }
+    }
+
+    if let Some(errno_chirho) = error_chirho {
+        return errno_chirho;
+    }
+
+    if bytes_written_chirho > 0 {
+        if copy_to_user_chirho(
+            dirp_chirho as u64,
+            &kernel_buf_chirho[..bytes_written_chirho],
+            bytes_written_chirho,
+        ).is_err() {
+            return -EFAULT_CHIRHO;
+        }
+    }
+
+    bytes_written_chirho as i64
+}
+
+/// `fchmodat(2)` implementation.
+///
+/// Changes the mode of the file at the given path relative to dirfd.
+/// Since we're always root and most filesystems are tmpfs, we update
+/// the inode's mode field directly.
+fn sys_fchmodat_chirho(
+    dirfd_chirho: i32,
+    pathname_addr_chirho: u64,
+    mode_chirho: u32,
+    _flags_chirho: u32,
+) -> i64 {
+    if pathname_addr_chirho == 0 {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Read path from user space
+    let pathname_chirho = match crate::uaccess_chirho::read_user_string_chirho(pathname_addr_chirho, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Handle AT_FDCWD
+    let full_path_chirho = if !pathname_chirho.starts_with('/') {
+        if dirfd_chirho == -100 {
+            let mut p_chirho = alloc::string::String::from("/");
+            p_chirho.push_str(&pathname_chirho);
+            p_chirho
+        } else {
+            pathname_chirho
+        }
+    } else {
+        pathname_chirho
+    };
+
+    // Resolve the path
+    match crate::fs_chirho::resolve_path_chirho(&full_path_chirho) {
+        Ok((inode_arc_chirho, _)) => {
+            // Update the mode bits (preserve file type, update permission bits)
+            let mut inode_chirho = inode_arc_chirho.lock();
+            let file_type_chirho = inode_chirho.mode_chirho & 0o170000; // S_IFMT
+            inode_chirho.mode_chirho = file_type_chirho | (mode_chirho & 0o7777);
+            0
+        }
+        Err(errno_chirho) => errno_chirho,
     }
 }

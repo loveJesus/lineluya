@@ -194,6 +194,20 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         fb_println_chirho!();
         fb_println_chirho!("[OK] Framebuffer console initialized ({}x{}, {}bpp)",
             fb_info_chirho.width, fb_info_chirho.height, fb_info_chirho.bytes_per_pixel * 8);
+
+        // Configure /dev/fb0 device with actual framebuffer parameters
+        // The physical address is derived from the virtual buffer pointer
+        // and the physical memory offset.
+        let fb_virt_addr_chirho = fb_buf_chirho.as_ptr() as u64;
+        let fb_phys_addr_chirho = fb_virt_addr_chirho.wrapping_sub(physical_memory_offset_chirho);
+        fb_device_chirho::set_fb_params_chirho(
+            fb_phys_addr_chirho,
+            fb_info_chirho.width as u32,
+            fb_info_chirho.height as u32,
+            (fb_info_chirho.stride * fb_info_chirho.bytes_per_pixel) as u32,
+            (fb_info_chirho.bytes_per_pixel * 8) as u32,
+            is_bgr_chirho,
+        );
     }
 
     // Initialize the mm subsystem with a second mapper and a frame allocator
@@ -232,6 +246,10 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
 
     fs_chirho::init_fs_chirho();
     fb_println_chirho!("[OK] Filesystem layer initialized");
+
+    // Initialize PTY subsystem (needed for SSH, screen, tmux, xterm)
+    pty_chirho::init_pty_chirho();
+    fb_println_chirho!("[OK] PTY subsystem initialized");
 
     // Phase A4: VirtIO device discovery — scan PCI bus, probe any VirtIO-blk,
     // and attempt to read sector 0 as a smoke test (P2-001 / P2-002).
