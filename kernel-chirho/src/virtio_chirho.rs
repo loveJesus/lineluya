@@ -865,31 +865,21 @@ impl VirtioBlkDeviceChirho {
         let used_ring_bytes_chirho = 4 + (actual_size_chirho as usize) * 8 + 2;
         let total_bytes_chirho = used_ring_offset_chirho + used_ring_bytes_chirho;
 
-        // Allocate vring at a KNOWN physical address using the bootloader's
-        // physical memory direct mapping. This avoids DMA issues with heap
-        // memory that might be in BIOS-reserved regions.
-        // Use physical address 0x200000 (2MB) — well above BIOS area, below kernel.
-        static DMA_ALLOC_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0x100000); // Start at 1MB physical
+        // Allocate vring from kernel heap with page alignment.
+        // Use virt_to_phys to get the real physical address for PFN.
+        let alloc_size_chirho = total_bytes_chirho + VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO;
+        let raw_mem_chirho = vec![0u8; alloc_size_chirho];
+        let raw_ptr_chirho = raw_mem_chirho.as_ptr() as usize;
+        let aligned_ptr_chirho =
+            (raw_ptr_chirho + VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO - 1)
+                & !(VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO - 1);
 
-        let alloc_pages_chirho = (total_bytes_chirho + 4095) / 4096;
-        let phys_base_chirho = DMA_ALLOC_NEXT_CHIRHO.fetch_add(
-            (alloc_pages_chirho * 4096) as u64,
-            core::sync::atomic::Ordering::SeqCst,
-        );
+        // Get physical address via page table walk
+        let phys_base_chirho = crate::pagetable_chirho::virt_to_phys_chirho(aligned_ptr_chirho as u64)
+            .unwrap_or(0);
 
-        // Access via the bootloader's physical memory mapping
-        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let aligned_ptr_chirho = (phys_base_chirho + phys_offset_chirho) as usize;
-
-        // Zero the DMA region
-        unsafe {
-            core::ptr::write_bytes(aligned_ptr_chirho as *mut u8, 0, total_bytes_chirho);
-        }
-
-        // Leak the raw_mem to prevent deallocation (vring must persist)
-        let _raw_mem_chirho = vec![0u8; 1]; // placeholder to keep the leak pattern
-        core::mem::forget(_raw_mem_chirho);
+        // Leak the heap allocation so it persists
+        core::mem::forget(raw_mem_chirho);
 
         crate::serial_println_chirho!(
             "    VirtIO-blk I/O: vq virt={:#x} phys={:#x} size={} total_bytes={}",
@@ -1145,60 +1135,66 @@ impl VirtioBlkDeviceChirho {
         let d1_chirho = vq_chirho.alloc_desc_chirho().ok_or(-12i64)?;
         let d2_chirho = vq_chirho.alloc_desc_chirho().ok_or(-12i64)?;
 
-        // Allocate DMA buffers from known physical memory region.
-        // Stack/heap addresses have unreliable phys translations for DMA.
-        // Layout: [header: 16 bytes][data: 512 bytes][status: 1 byte] at a known phys addr.
-        // Reuse the DMA allocator from probe_io
-        static DMA_IO_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0x110000); // 0x110000 = 1MB+64KB
-        let dma_buf_size_chirho: u64 = 4096; // one page for header + data + status
-        let dma_phys_chirho = DMA_IO_NEXT_CHIRHO.fetch_add(
-            dma_buf_size_chirho,
-            core::sync::atomic::Ordering::SeqCst,
-        );
-        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let dma_virt_chirho = (dma_phys_chirho + phys_offset_chirho) as *mut u8;
+        // Use a SINGLE contiguous block request struct (like Linux/reference impls).
+        // Layout: { type: u32, reserved: u32, sector: u64, data: [u8; 512], status: u8 }
+        // All three descriptors point into this one allocation at different offsets.
+        #[repr(C, packed)]
+        struct BlkReqFullChirho {
+            type_chirho: u32,
+            reserved_chirho: u32,
+            sector_chirho: u64,
+            data_chirho: [u8; 512],
+            status_chirho: u8,
+        }
 
-        // Header at offset 0
-        let header_phys_chirho = dma_phys_chirho;
-        let header_virt_chirho = dma_virt_chirho;
-        // Data at offset 64 (aligned)
-        let data_phys_chirho = dma_phys_chirho + 64;
-        let data_virt_chirho = unsafe { dma_virt_chirho.add(64) };
-        // Status at offset 64 + buf_len
-        let status_phys_chirho = dma_phys_chirho + 64 + buf_chirho.len() as u64;
-        let status_virt_chirho = unsafe { dma_virt_chirho.add(64 + buf_chirho.len()) };
-
-        // Write header to DMA region
-        let req_header_chirho = VirtioBlkReqChirho {
-            type_chirho: if is_write_chirho {
-                VIRTIO_BLK_T_OUT_CHIRHO
-            } else {
-                VIRTIO_BLK_T_IN_CHIRHO
-            },
+        // Allocate on heap, get physical address
+        let req_box_chirho = alloc::boxed::Box::new(BlkReqFullChirho {
+            type_chirho: if is_write_chirho { VIRTIO_BLK_T_OUT_CHIRHO } else { VIRTIO_BLK_T_IN_CHIRHO },
             reserved_chirho: 0,
             sector_chirho,
-        };
-        unsafe {
-            ptr::write_volatile(header_virt_chirho as *mut VirtioBlkReqChirho, req_header_chirho);
-            // Set status to 0xFF (device will overwrite)
-            ptr::write_volatile(status_virt_chirho, 0xFF);
-            // Copy write data if writing
-            if is_write_chirho {
-                ptr::copy_nonoverlapping(buf_chirho.as_ptr(), data_virt_chirho, buf_chirho.len());
+            data_chirho: [0u8; 512],
+            status_chirho: 0xFF,
+        });
+        let req_ptr_chirho = alloc::boxed::Box::into_raw(req_box_chirho);
+        let req_virt_chirho = req_ptr_chirho as u64;
+        let req_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(req_virt_chirho).unwrap_or(0);
+
+        // Copy write data into the request
+        if is_write_chirho {
+            unsafe {
+                ptr::copy_nonoverlapping(buf_chirho.as_ptr(), (*req_ptr_chirho).data_chirho.as_mut_ptr(), buf_chirho.len().min(512));
             }
         }
+
+        // Descriptor addresses: all offsets from req_phys
+        let header_phys_chirho = req_phys_chirho; // type + reserved + sector = 16 bytes
+        let data_phys_chirho = req_phys_chirho + 16; // data starts at offset 16
+        let status_phys_chirho = req_phys_chirho + 16 + 512; // status at offset 528
+
+        // Virtual pointers for reading back results
+        let status_virt_chirho = unsafe { (req_ptr_chirho as *mut u8).add(528) };
+        let data_virt_chirho = unsafe { (req_ptr_chirho as *mut u8).add(16) };
 
         crate::serial_println_chirho!(
             "    [VirtIO-IO] descs: hdr_p={:#x} data_p={:#x} stat_p={:#x} d={}/{}/{}",
             header_phys_chirho, data_phys_chirho, status_phys_chirho, d0_chirho, d1_chirho, d2_chirho
         );
-        // Verify vring memory is writable by reading back what we zero'd
-        let verify_chirho = unsafe { core::ptr::read_volatile(vq_base_chirho as *const u64) };
+        // CRITICAL VERIFY: write magic pattern to vring via heap ptr,
+        // read it back via phys_mem_offset ptr. If they differ, the
+        // two mappings point to different physical pages.
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let vring_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(vq_base_chirho as u64).unwrap_or(0);
+        let vring_via_physmap_chirho = (vring_phys_chirho + phys_offset_chirho) as *mut u64;
+        // Write magic via heap mapping
+        unsafe { core::ptr::write_volatile(vq_base_chirho as *mut u64, 0xDEAD_BEEF_CAFE_BABEu64); }
+        // Read back via phys mapping
+        let readback_chirho = unsafe { core::ptr::read_volatile(vring_via_physmap_chirho) };
         crate::serial_println_chirho!(
-            "    [VirtIO-IO] vring verify: first 8 bytes at virt={:#x} = {:#x} (should be 0 before write)",
-            vq_base_chirho, verify_chirho
+            "    [VirtIO-IO] COHERENCE TEST: wrote 0xDEADBEEFCAFEBABE via heap, read {:#x} via physmap (match={})",
+            readback_chirho, readback_chirho == 0xDEAD_BEEF_CAFE_BABEu64
         );
+        // Restore zero
+        unsafe { core::ptr::write_volatile(vq_base_chirho as *mut u64, 0); }
 
         // Write descriptor 0: request header (device-readable).
         unsafe {
@@ -1279,9 +1275,8 @@ impl VirtioBlkDeviceChirho {
             desc0_chirho.addr_chirho, desc0_chirho.len_chirho, desc0_chirho.flags_chirho, desc0_chirho.next_chirho
         );
 
-        // Memory barrier + cache flush before notify.
+        // Memory barrier before notify.
         fence(Ordering::SeqCst);
-        unsafe { core::arch::asm!("wbinvd", options(nomem, nostack)); }
 
         // Notify the device.
         self.notify_chirho(0);
@@ -1326,12 +1321,15 @@ impl VirtioBlkDeviceChirho {
         // Read the status byte from DMA region (device wrote it via DMA).
         let final_status_chirho = unsafe { ptr::read_volatile(status_virt_chirho) };
 
-        // Copy read data back from DMA region to caller's buffer
+        // Copy read data back from the contiguous request struct
         if !is_write_chirho && final_status_chirho == VIRTIO_BLK_S_OK_CHIRHO {
             unsafe {
-                ptr::copy_nonoverlapping(data_virt_chirho, buf_chirho.as_mut_ptr(), buf_chirho.len());
+                ptr::copy_nonoverlapping(data_virt_chirho, buf_chirho.as_mut_ptr(), buf_chirho.len().min(512));
             }
         }
+
+        // Free the request allocation
+        unsafe { let _ = alloc::boxed::Box::from_raw(req_ptr_chirho); }
 
         // Free descriptors.
         vq_chirho.free_desc_chirho(d0_chirho);
