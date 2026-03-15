@@ -158,6 +158,11 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     // Initialize the filesystem layer (root tmpfs, /dev, /proc, fd table)
     fs_chirho::init_fs_chirho();
 
+    // Enable the Local APIC and configure IOAPIC keyboard routing.
+    // UEFI mode disables the PIC and uses APIC for interrupt delivery.
+    interrupts_chirho::init_local_apic_chirho();
+    interrupts_chirho::init_ioapic_keyboard_chirho();
+
     // Enable interrupts
     x86_64::instructions::interrupts::enable();
     serial_println_chirho!("[OK] Interrupts enabled");

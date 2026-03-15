@@ -143,11 +143,11 @@ pub fn init_pics_chirho() {
     unsafe {
         PICS_CHIRHO.lock().initialize();
 
-        // Explicitly unmask all IRQs on both PICs.
-        // UEFI firmware may have masked them. Port 0x21 = PIC1 data (IRQ 0-7),
-        // Port 0xA1 = PIC2 data (IRQ 8-15). Writing 0x00 unmasks all.
-        x86_64::instructions::port::Port::<u8>::new(0x21).write(0x00);
-        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0x00);
+        // Mask all PIC IRQs — we use the IOAPIC/LAPIC for interrupt delivery.
+        // The PIC is initialized for BIOS compatibility but fully masked so
+        // it doesn't interfere with IOAPIC routing.
+        x86_64::instructions::port::Port::<u8>::new(0x21).write(0xFF);
+        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0xFF);
 
         // Re-enable the PS/2 keyboard controller.
         // UEFI may have disabled it. Send command 0xAE (enable first port)
@@ -257,14 +257,15 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     // Notify the scheduler of a timer tick.
     crate::scheduler_chirho::schedule_tick_chirho();
 
-    // Send End-Of-Interrupt to the PIC so it knows we handled the IRQ.
-    //
-    // SAFETY: We are notifying the PIC that the timer interrupt has been
-    // serviced. The interrupt index is correct for IRQ 0.
+    // Send End-Of-Interrupt to both PIC and LAPIC.
     unsafe {
         PICS_CHIRHO
             .lock()
             .notify_end_of_interrupt(InterruptIndexChirho::TimerChirho.as_u8_chirho());
+        // LAPIC EOI
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let lapic_eoi_chirho = (phys_offset_chirho + 0xFEE0_00B0u64) as *mut u32;
+        core::ptr::write_volatile(lapic_eoi_chirho, 0);
     }
 }
 
@@ -304,13 +305,112 @@ extern "x86-interrupt" fn keyboard_interrupt_handler_chirho(
         }
     }
 
-    // Send End-Of-Interrupt to the PIC.
-    //
-    // SAFETY: We are notifying the PIC that the keyboard interrupt has been
-    // serviced. The interrupt index is correct for IRQ 1.
+    // Send End-Of-Interrupt to both PIC and Local APIC.
+    // PIC EOI is needed for BIOS mode, LAPIC EOI for UEFI/IOAPIC mode.
     unsafe {
         PICS_CHIRHO
             .lock()
             .notify_end_of_interrupt(InterruptIndexChirho::KeyboardChirho.as_u8_chirho());
+
+        // LAPIC EOI: write 0 to the EOI register at LAPIC base + 0xB0
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let lapic_eoi_chirho = (phys_offset_chirho + 0xFEE0_00B0u64) as *mut u32;
+        core::ptr::write_volatile(lapic_eoi_chirho, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IOAPIC keyboard routing (for UEFI mode)
+// ---------------------------------------------------------------------------
+
+/// Initialize the IOAPIC to route IRQ1 (keyboard) to vector 33.
+/// The IOAPIC is at physical address 0xFEC00000 (standard location).
+/// In UEFI mode, the PIC doesn't deliver keyboard interrupts — the
+/// IOAPIC must be programmed to route them.
+pub fn init_local_apic_chirho() {
+    // Enable the Local APIC by setting bit 8 (APIC Software Enable) in the
+    // Spurious Interrupt Vector Register (SVR) at offset 0xF0.
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let lapic_base_chirho = phys_offset_chirho + 0xFEE0_0000u64;
+
+    unsafe {
+        let svr_chirho = (lapic_base_chirho + 0xF0) as *mut u32;
+        let current_chirho = core::ptr::read_volatile(svr_chirho);
+        // Set bit 8 (enable) and set spurious vector to 0xFF
+        core::ptr::write_volatile(svr_chirho, current_chirho | 0x1FF);
+
+        // Set Task Priority Register to 0 (accept all interrupts)
+        let tpr_chirho = (lapic_base_chirho + 0x80) as *mut u32;
+        core::ptr::write_volatile(tpr_chirho, 0);
+
+        crate::serial_println_chirho!(
+            "[LAPIC] Enabled (SVR={:#x})",
+            core::ptr::read_volatile(svr_chirho)
+        );
+    }
+}
+
+pub fn init_ioapic_keyboard_chirho() {
+    // The IOAPIC is memory-mapped. We need to access it via the
+    // physical memory offset provided by the bootloader.
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let ioapic_base_chirho = phys_offset_chirho + 0xFEC0_0000u64;
+
+    unsafe {
+        let ioregsel_chirho = ioapic_base_chirho as *mut u32;
+        let iowin_chirho = (ioapic_base_chirho + 0x10) as *mut u32;
+
+        // Read IOAPIC version to verify it's accessible
+        core::ptr::write_volatile(ioregsel_chirho, 0x01); // IOAPICVER
+        let ver_chirho = core::ptr::read_volatile(iowin_chirho);
+        let max_redir_chirho = ((ver_chirho >> 16) & 0xFF) as u8;
+
+        crate::serial_println_chirho!(
+            "[IOAPIC] Version: {:#x}, max redirections: {}",
+            ver_chirho & 0xFF,
+            max_redir_chirho
+        );
+
+        // Program redirection table entry 1 (IRQ1 = keyboard)
+        // Each entry is 64 bits: low 32 bits at 0x10+2*n, high 32 bits at 0x11+2*n
+        let redir_low_reg_chirho = 0x10 + 2 * 1; // Entry 1, low
+        let redir_high_reg_chirho = 0x10 + 2 * 1 + 1; // Entry 1, high
+
+        // Low 32 bits:
+        //   bits 7:0  = vector (33 = PIC_1_OFFSET + 1)
+        //   bit 8     = delivery mode (0 = Fixed)
+        //   bit 11    = destination mode (0 = physical)
+        //   bit 13    = pin polarity (0 = active high)
+        //   bit 15    = trigger mode (0 = edge)
+        //   bit 16    = mask (0 = enabled)
+        let vector_chirho: u32 = (PIC_1_OFFSET_CHIRHO as u32) + 1; // 33
+        let low_chirho: u32 = vector_chirho; // All other bits 0 = fixed, physical, active-high, edge, unmasked
+
+        // High 32 bits:
+        //   bits 27:24 = destination APIC ID (0 = BSP)
+        let high_chirho: u32 = 0; // Deliver to APIC ID 0 (BSP)
+
+        // Write high first (it's safe, entry is masked until low is written)
+        core::ptr::write_volatile(ioregsel_chirho, redir_high_reg_chirho);
+        core::ptr::write_volatile(iowin_chirho, high_chirho);
+
+        // Write low (this unmasks the entry)
+        core::ptr::write_volatile(ioregsel_chirho, redir_low_reg_chirho);
+        core::ptr::write_volatile(iowin_chirho, low_chirho);
+
+        // Also route IRQ0 (timer) to vector 32 via IOAPIC
+        let timer_low_reg_chirho = 0x10; // Entry 0, low
+        let timer_high_reg_chirho = 0x11; // Entry 0, high
+        let timer_vector_chirho: u32 = PIC_1_OFFSET_CHIRHO as u32; // 32
+        core::ptr::write_volatile(ioregsel_chirho, timer_high_reg_chirho);
+        core::ptr::write_volatile(iowin_chirho, 0u32); // dest APIC 0
+        core::ptr::write_volatile(ioregsel_chirho, timer_low_reg_chirho);
+        core::ptr::write_volatile(iowin_chirho, timer_vector_chirho);
+
+        crate::serial_println_chirho!(
+            "[IOAPIC] IRQ0 (timer) -> vec {}, IRQ1 (keyboard) -> vec {}",
+            timer_vector_chirho,
+            vector_chirho
+        );
     }
 }
