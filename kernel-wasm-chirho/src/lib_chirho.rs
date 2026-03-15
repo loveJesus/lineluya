@@ -6492,6 +6492,281 @@ pub extern "C" fn syscall_chirho(
             unsafe { BLOCK_CACHE_CHIRHO.sync_slot_chirho(arg0_chirho as i32) }
         }
 
+        // B2-008: TLS syscalls (custom 0x2030-0x2033)
+        0x2030 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let host_chirho = unsafe {
+                    core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+                };
+                unsafe { TLS_TABLE_CHIRHO.handshake_chirho(host_chirho, arg2_chirho) }
+            } else { -14 }
+        }
+        0x2031 => {
+            let data_chirho = unsafe {
+                core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize)
+            };
+            unsafe { TLS_TABLE_CHIRHO.send_chirho(arg0_chirho as usize, data_chirho) }
+        }
+        0x2032 => {
+            let buf_chirho = unsafe {
+                core::slice::from_raw_parts_mut(arg1_chirho as *mut u8, arg2_chirho as usize)
+            };
+            unsafe { TLS_TABLE_CHIRHO.recv_chirho(arg0_chirho as usize, buf_chirho) }
+        }
+        0x2033 => {
+            unsafe { TLS_TABLE_CHIRHO.close_chirho(arg0_chirho as usize); }
+            0
+        }
+
+        // B2-009: UDP syscalls (custom 0x2040-0x2043)
+        0x2040 => { unsafe { UDP_TABLE_CHIRHO.create_chirho() } }
+        0x2041 => {
+            let data_chirho = unsafe {
+                core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize)
+            };
+            let addr_ptr_chirho = _arg3_chirho as *const u8;
+            unsafe {
+                let ip_chirho = [*addr_ptr_chirho, *addr_ptr_chirho.add(1), *addr_ptr_chirho.add(2), *addr_ptr_chirho.add(3)];
+                let port_chirho = ((*addr_ptr_chirho.add(4) as u16) << 8) | (*addr_ptr_chirho.add(5) as u16);
+                UDP_TABLE_CHIRHO.sendto_chirho(arg0_chirho as i32, data_chirho, &ip_chirho, port_chirho)
+            }
+        }
+        0x2042 => {
+            let buf_chirho = unsafe {
+                core::slice::from_raw_parts_mut(arg1_chirho as *mut u8, arg2_chirho as usize)
+            };
+            unsafe { UDP_TABLE_CHIRHO.recvfrom_chirho(arg0_chirho as i32, buf_chirho) }
+        }
+        0x2043 => { unsafe { UDP_TABLE_CHIRHO.close_chirho(arg0_chirho as i32); } 0 }
+
+        // B3-006: inotify syscalls (custom 0x2050-0x2053)
+        0x2050 => 400,
+        0x2051 => {
+            if arg1_chirho != 0 && arg2_chirho > 0 {
+                let path_chirho = unsafe { core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize) };
+                unsafe { INOTIFY_CHIRHO.add_watch_chirho(path_chirho, _arg3_chirho) }
+            } else { -14 }
+        }
+        0x2052 => { unsafe { INOTIFY_CHIRHO.remove_watch_chirho(arg1_chirho as i32) } }
+        0x2053 => {
+            unsafe {
+                match INOTIFY_CHIRHO.read_event_chirho() {
+                    Some(evt_chirho) => {
+                        let dst_chirho = core::slice::from_raw_parts_mut(arg1_chirho as *mut u8, arg2_chirho as usize);
+                        let min_len_chirho = 12 + evt_chirho.name_len_chirho;
+                        if dst_chirho.len() >= min_len_chirho {
+                            dst_chirho[0..4].copy_from_slice(&(evt_chirho.wd_chirho as u32).to_le_bytes());
+                            dst_chirho[4..8].copy_from_slice(&evt_chirho.mask_chirho.to_le_bytes());
+                            dst_chirho[8..12].copy_from_slice(&(evt_chirho.name_len_chirho as u32).to_le_bytes());
+                            dst_chirho[12..12 + evt_chirho.name_len_chirho].copy_from_slice(&evt_chirho.name_chirho[..evt_chirho.name_len_chirho]);
+                            min_len_chirho as i32
+                        } else { -22 }
+                    }
+                    None => 0,
+                }
+            }
+        }
+
+        // B4-004: WebGL syscalls (custom 0x2060-0x2062)
+        0x2060 => { unsafe { WEBGL_BACKEND_CHIRHO.init_chirho(arg0_chirho, arg1_chirho) } }
+        0x2061 => {
+            let args_chirho = unsafe { core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize) };
+            unsafe { WEBGL_BACKEND_CHIRHO.draw_chirho(arg0_chirho, args_chirho) }
+        }
+        0x2062 => { unsafe { WEBGL_BACKEND_CHIRHO.swap_buffers_chirho(); } 0 }
+
+        // B4-005: Window manager syscalls (custom 0x2070-0x2077)
+        0x2070 => {
+            unsafe {
+                WINDOW_MANAGER_CHIRHO.manage_window_chirho(
+                    arg0_chirho, arg1_chirho as i16, arg2_chirho as i16,
+                    _arg3_chirho as u16, _arg4_chirho as u16,
+                )
+            }
+        }
+        0x2071 => { unsafe { WINDOW_MANAGER_CHIRHO.unmanage_window_chirho(arg0_chirho); } 0 }
+        0x2072 => { unsafe { WINDOW_MANAGER_CHIRHO.raise_window_chirho(arg0_chirho); } 0 }
+        0x2073 => { unsafe { WINDOW_MANAGER_CHIRHO.move_window_chirho(arg0_chirho, arg1_chirho as i16, arg2_chirho as i16); } 0 }
+        0x2074 => { unsafe { WINDOW_MANAGER_CHIRHO.resize_window_chirho(arg0_chirho, arg1_chirho as u16, arg2_chirho as u16); } 0 }
+        0x2075 => {
+            if arg1_chirho != 0 && arg2_chirho > 0 {
+                let title_chirho = unsafe { core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize) };
+                unsafe { WINDOW_MANAGER_CHIRHO.set_title_chirho(arg0_chirho, title_chirho); }
+            }
+            0
+        }
+        0x2076 => { unsafe { WINDOW_MANAGER_CHIRHO.tile_all_chirho(); } 0 }
+        0x2077 => {
+            for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+                unsafe {
+                    if WINDOW_MANAGER_CHIRHO.windows_chirho[i_chirho].active_chirho
+                        && WINDOW_MANAGER_CHIRHO.windows_chirho[i_chirho].x11_wid_chirho == arg0_chirho
+                    { WINDOW_MANAGER_CHIRHO.draw_decorations_chirho(i_chirho); }
+                }
+            }
+            0
+        }
+
+        // B4-008: Clipboard syscalls (custom 0x2080-0x2082)
+        0x2080 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let data_chirho = unsafe { core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize) };
+                unsafe { CLIPBOARD_CHIRHO.set_primary_chirho(data_chirho); }
+            }
+            0
+        }
+        0x2081 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let data_chirho = unsafe { core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize) };
+                unsafe { CLIPBOARD_CHIRHO.set_clipboard_chirho(data_chirho); }
+            }
+            0
+        }
+        0x2082 => {
+            unsafe {
+                CLIPBOARD_CHIRHO.sync_from_browser_chirho();
+                let len_chirho = if (arg1_chirho as usize) < CLIPBOARD_CHIRHO.clipboard_len_chirho { arg1_chirho as usize } else { CLIPBOARD_CHIRHO.clipboard_len_chirho };
+                if len_chirho > 0 {
+                    let dst_chirho = core::slice::from_raw_parts_mut(arg0_chirho as *mut u8, len_chirho);
+                    dst_chirho.copy_from_slice(&CLIPBOARD_CHIRHO.clipboard_chirho[..len_chirho]);
+                }
+                len_chirho as i32
+            }
+        }
+
+        // B4-009: Font syscalls (custom 0x2090-0x2091)
+        0x2090 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let name_chirho = unsafe { core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize) };
+                match unsafe { FONT_SERVER_CHIRHO.find_font_chirho(name_chirho) } {
+                    Some(idx_chirho) => idx_chirho as i32,
+                    None => -1,
+                }
+            } else { -14 }
+        }
+        0x2091 => {
+            let text_chirho = unsafe { core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize) };
+            unsafe { FONT_SERVER_CHIRHO.measure_text_chirho(arg0_chirho as usize, text_chirho) as i32 }
+        }
+
+        // B4-012: SHM syscalls (custom 0x20A0-0x20A2)
+        0x20A0 => { unsafe { SHM_TABLE_CHIRHO.attach_chirho(arg0_chirho as usize) } }
+        0x20A1 => { unsafe { SHM_TABLE_CHIRHO.detach_chirho(arg0_chirho) } }
+        0x20A2 => {
+            match unsafe { SHM_TABLE_CHIRHO.get_offset_chirho(arg0_chirho) } {
+                Some(off_chirho) => off_chirho as i32,
+                None => -1,
+            }
+        }
+
+        // B4-013: RENDER extension syscalls (custom 0x20B0-0x20B2)
+        0x20B0 => {
+            let fmt_chirho = match arg1_chirho {
+                0 => RenderPictFormatChirho::Argb32Chirho,
+                1 => RenderPictFormatChirho::Rgb24Chirho,
+                2 => RenderPictFormatChirho::A8Chirho,
+                _ => RenderPictFormatChirho::Argb32Chirho,
+            };
+            unsafe { RENDER_EXT_CHIRHO.create_picture_chirho(arg0_chirho, fmt_chirho) }
+        }
+        0x20B1 => { unsafe { RENDER_EXT_CHIRHO.free_picture_chirho(arg0_chirho); } 0 }
+        0x20B2 => {
+            unsafe {
+                RENDER_EXT_CHIRHO.composite_chirho(
+                    arg0_chirho as i16, arg1_chirho as i16,
+                    arg2_chirho as i16, _arg3_chirho as i16,
+                    _arg4_chirho as u16, _arg5_chirho as u16,
+                );
+            }
+            0
+        }
+
+        // B4-014: Unix domain socket syscalls (custom 0x20C0-0x20C5)
+        0x20C0 => { unsafe { UNIX_SOCK_TABLE_CHIRHO.create_chirho() } }
+        0x20C1 => {
+            if arg1_chirho != 0 && arg2_chirho > 0 {
+                let path_chirho = unsafe { core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize) };
+                unsafe { UNIX_SOCK_TABLE_CHIRHO.bind_chirho(arg0_chirho as i32, path_chirho) }
+            } else { -14 }
+        }
+        0x20C2 => { unsafe { UNIX_SOCK_TABLE_CHIRHO.listen_chirho(arg0_chirho as i32) } }
+        0x20C3 => {
+            if arg1_chirho != 0 && arg2_chirho > 0 {
+                let path_chirho = unsafe { core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize) };
+                unsafe { UNIX_SOCK_TABLE_CHIRHO.connect_chirho(arg0_chirho as i32, path_chirho) }
+            } else { -14 }
+        }
+        0x20C4 => {
+            let data_chirho = unsafe { core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize) };
+            unsafe { UNIX_SOCK_TABLE_CHIRHO.send_chirho(arg0_chirho as i32, data_chirho) }
+        }
+        0x20C5 => {
+            let buf_chirho = unsafe { core::slice::from_raw_parts_mut(arg1_chirho as *mut u8, arg2_chirho as usize) };
+            unsafe { UNIX_SOCK_TABLE_CHIRHO.recv_chirho(arg0_chirho as i32, buf_chirho) }
+        }
+
+        // B4-015: cursor_set(style) -> 0
+        0x20D0 => {
+            let style_chirho = match arg0_chirho {
+                1 => CursorStyleChirho::PointerChirho,
+                2 => CursorStyleChirho::TextChirho,
+                3 => CursorStyleChirho::MoveChirho,
+                4 => CursorStyleChirho::ResizeChirho,
+                5 => CursorStyleChirho::CrosshairChirho,
+                _ => CursorStyleChirho::DefaultChirho,
+            };
+            unsafe { CURSOR_STATE_CHIRHO.set_style_chirho(style_chirho); }
+            0
+        }
+
+        // B4-017: display_info(result_ptr) -> 0
+        0x20E0 => {
+            unsafe {
+                DISPLAY_INFO_CHIRHO.refresh_chirho();
+                let ptr_chirho = arg0_chirho as *mut u32;
+                *ptr_chirho = DISPLAY_INFO_CHIRHO.dpi_ratio_chirho;
+                *ptr_chirho.add(1) = DISPLAY_INFO_CHIRHO.screen_count_chirho;
+                *ptr_chirho.add(2) = DISPLAY_INFO_CHIRHO.logical_width_chirho;
+                *ptr_chirho.add(3) = DISPLAY_INFO_CHIRHO.logical_height_chirho;
+            }
+            0
+        }
+
+        // B4-018: drag_drop syscalls (custom 0x20F0-0x20F3)
+        0x20F0 => { unsafe { DRAG_DROP_CHIRHO.begin_drag_chirho(arg0_chirho, arg1_chirho as i16, arg2_chirho as i16); } 0 }
+        0x20F1 => { unsafe { DRAG_DROP_CHIRHO.update_position_chirho(arg0_chirho as i16, arg1_chirho as i16); } 0 }
+        0x20F2 => { unsafe { DRAG_DROP_CHIRHO.drop_chirho(arg0_chirho); } 0 }
+        0x20F3 => { unsafe { DRAG_DROP_CHIRHO.cancel_chirho(); } 0 }
+
+        // B4-020: Atom/ICCCM/EWMH syscalls (custom 0x2100-0x2101)
+        0x2100 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let name_chirho = unsafe { core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize) };
+                unsafe { ATOM_TABLE_CHIRHO.intern_chirho(name_chirho) as i32 }
+            } else { 0 }
+        }
+        0x2101 => {
+            match unsafe { ATOM_TABLE_CHIRHO.get_name_chirho(arg0_chirho) } {
+                Some(name_chirho) => {
+                    let len_chirho = if (arg2_chirho as usize) < name_chirho.len() { arg2_chirho as usize } else { name_chirho.len() };
+                    unsafe {
+                        let dst_chirho = core::slice::from_raw_parts_mut(arg1_chirho as *mut u8, len_chirho);
+                        dst_chirho.copy_from_slice(&name_chirho[..len_chirho]);
+                    }
+                    len_chirho as i32
+                }
+                None => 0,
+            }
+        }
+
+        // B3-010: crc32_check(data_ptr, data_len) -> crc32
+        0x2110 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let data_chirho = unsafe { core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize) };
+                crc32_chirho(data_chirho) as i32
+            } else { 0 }
+        }
+
         // Default
         _ => -38,
     }
@@ -6627,6 +6902,16 @@ pub extern "C" fn kernel_main_chirho() {
         ENV_TABLE_CHIRHO.set_chirho(b"KERNEL", b"Lineluya");
         ENV_TABLE_CHIRHO.set_chirho(b"USER", b"root");
         ENV_TABLE_CHIRHO.set_chirho(b"HOSTNAME", b"lineluya-wasm");
+        ENV_TABLE_CHIRHO.set_chirho(b"DISPLAY", b":0");
+
+        // B4-009: Initialize font server with built-in fonts
+        FONT_SERVER_CHIRHO.init_chirho();
+
+        // B4-020: Initialize ICCCM/EWMH atom table
+        ATOM_TABLE_CHIRHO.init_standard_chirho();
+
+        // B4-017: Refresh display info
+        DISPLAY_INFO_CHIRHO.refresh_chirho();
     }
 
     let boot_msg_chirho = concat!(
@@ -6661,9 +6946,27 @@ pub extern "C" fn kernel_main_chirho() {
         "\x1b[1;32m[OK]\x1b[0m X11 protocol parser (B4-001: CreateWindow/MapWindow/PutImage)\r\n",
         "\x1b[1;32m[OK]\x1b[0m Canvas 2D framebuffer (B4-003: pixel rendering)\r\n",
         "\x1b[1;32m[OK]\x1b[0m Input events (B4-006/007: mouse/keyboard -> X11)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m TLS/SSL stub (B2-008: X25519 + ChaCha20-Poly1305)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m UDP sockets (B2-009: datagram via WS proxy)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Inotify filesystem events (B3-006)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m CRC32 integrity checksums (B3-010)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Cloudflared tunnel NBD (B3-011)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m WebGL rendering backend (B4-004)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Window manager stacking/tiling (B4-005)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Clipboard integration (B4-008: X11 <-> Clipboard API)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Font server (B4-009: fixed/6x13/9x15/cursor)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m XTerm stub (B4-010/011: xterm + vi in WASM)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m MIT-SHM extension (B4-012: shared memory)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m RENDER extension (B4-013: alpha compositing)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Unix domain sockets (B4-014: /tmp/.X11-unix)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Cursor rendering (B4-015)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Window decorations & theme (B4-016)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Multi-monitor & DPI scaling (B4-017)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Drag and drop / XDND (B4-018)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m ICCCM/EWMH compliance (B4-020)\r\n",
         "\x1b[1;32m[OK]\x1b[0m Init process (PID 1) -> /bin/sh (PID 2)\r\n",
         "\r\n",
-        "\x1b[1;37m=== Lineluya Kernel v0.7.0 (wasm32) ===\x1b[0m\r\n",
+        "\x1b[1;37m=== Lineluya Kernel v0.8.0 (wasm32) ===\x1b[0m\r\n",
         "Linux ABI on WebAssembly. Browser is the hardware.\r\n",
         "Type '\x1b[1;32mhelp\x1b[0m' for available commands.\r\n",
         "\r\n",
