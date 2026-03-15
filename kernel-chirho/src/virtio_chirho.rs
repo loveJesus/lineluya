@@ -26,11 +26,17 @@ use crate::pci_chirho::{pci_config_read_u32_chirho, PciDeviceChirho};
 /// Red Hat / VirtIO vendor ID.
 const VIRTIO_VENDOR_ID_CHIRHO: u16 = 0x1AF4;
 
-/// VirtIO-blk transitional PCI device ID (legacy range 0x1000–0x103F).
+/// VirtIO-blk transitional PCI device ID (legacy range 0x1000-0x103F).
 const VIRTIO_BLK_DEVICE_ID_CHIRHO: u16 = 0x1001;
 
 /// VirtIO-blk modern (non-transitional) PCI device ID.
 const VIRTIO_BLK_MODERN_DEVICE_ID_CHIRHO: u16 = 0x1042;
+
+/// VirtIO-net transitional PCI device ID (legacy range).
+const VIRTIO_NET_DEVICE_ID_CHIRHO: u16 = 0x1000;
+
+/// VirtIO-net modern (non-transitional) PCI device ID.
+const VIRTIO_NET_MODERN_DEVICE_ID_CHIRHO: u16 = 0x1041;
 
 /// PCI Subsystem ID for block devices in transitional mode.
 #[allow(dead_code)]
@@ -830,6 +836,15 @@ pub fn is_virtio_blk_chirho(device_chirho: &PciDeviceChirho) -> bool {
             || device_chirho.device_id_chirho == VIRTIO_BLK_MODERN_DEVICE_ID_CHIRHO)
 }
 
+/// Check if a PCI device is a VirtIO-net device (transitional or modern).
+/// P3-001: VirtIO-net detection.
+#[allow(dead_code)]
+pub fn is_virtio_net_chirho(device_chirho: &PciDeviceChirho) -> bool {
+    device_chirho.vendor_id_chirho == VIRTIO_VENDOR_ID_CHIRHO
+        && (device_chirho.device_id_chirho == VIRTIO_NET_DEVICE_ID_CHIRHO
+            || device_chirho.device_id_chirho == VIRTIO_NET_MODERN_DEVICE_ID_CHIRHO)
+}
+
 /// Read a PCI BAR (Base Address Register) for a device.
 ///
 /// `bar_index_chirho` is 0–5.  Returns the raw BAR value (address + type bits).
@@ -875,6 +890,22 @@ pub fn init_virtio_chirho() {
                 crate::serial_println_chirho!("    -> VirtIO-blk device detected");
                 probe_and_test_blk_chirho(dev_chirho);
             }
+            // P3-001: Detect VirtIO-net devices
+            if is_virtio_net_chirho(dev_chirho) {
+                crate::serial_println_chirho!(
+                    "    -> VirtIO-net device detected (PCI {:02x}:{:02x}.{}, device_id={:#06x})",
+                    dev_chirho.bus_chirho,
+                    dev_chirho.device_chirho,
+                    dev_chirho.function_chirho,
+                    dev_chirho.device_id_chirho,
+                );
+                let bar0_chirho = read_pci_bar_chirho(dev_chirho, 0);
+                crate::serial_println_chirho!(
+                    "    VirtIO-net BAR0={:#010x} IRQ={}",
+                    bar0_chirho,
+                    dev_chirho.interrupt_line_chirho,
+                );
+            }
         }
     }
 
@@ -886,6 +917,10 @@ pub fn init_virtio_chirho() {
         "VirtIO: scan complete, {} PCI device(s) found",
         devices_chirho.len()
     );
+
+    // P2-003 / P2-004: After block device registration, try to parse ext4
+    // superblock and mount the filesystem at /mnt.
+    probe_ext4_and_mount_chirho();
 }
 
 /// Try to read BAR0 for a VirtIO-blk PCI device, probe MMIO at that address,
@@ -986,6 +1021,14 @@ fn probe_qemu_mmio_chirho() {
                     crate::serial_println_chirho!("    VirtIO-blk MMIO probe failed");
                 }
             }
+        }
+        // P3-001: Type 1 = network device
+        if dev_id_chirho == 1 {
+            crate::serial_println_chirho!(
+                "    -> VirtIO-net (MMIO transport) at {:#x}, vendor={:#x}",
+                addr_chirho,
+                transport_chirho.vendor_id_chirho()
+            );
         }
     }
 }

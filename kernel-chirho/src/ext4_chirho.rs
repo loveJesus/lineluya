@@ -8,8 +8,11 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 // ---------------------------------------------------------------------------
 // ext4 constants
@@ -1687,4 +1690,324 @@ pub fn mount_root_ext4_chirho(
         device_id_chirho,
         readonly_chirho: false,
     })
+}
+
+// ===========================================================================
+// P2-004: ext4 VFS integration — InodeOps, FileOps, SuperOps for mounting
+// ===========================================================================
+
+/// Filesystem-private data stored in VFS InodeChirho::fs_data_chirho for ext4
+/// inodes. Holds the ext4 inode number and a reference to the mount so we
+/// can read file data / directory entries on demand.
+pub struct Ext4FsDataChirho {
+    /// ext4 inode number on disk.
+    pub ino_chirho: u32,
+    /// Reference to the mount (shared across all ext4 inodes of this mount).
+    pub mount_chirho: Arc<Mutex<Ext4MountChirho>>,
+}
+
+// SAFETY: Ext4FsDataChirho fields are either primitives or Arc-wrapped.
+unsafe impl Send for Ext4FsDataChirho {}
+
+/// ext4 inode operations (read-only for now).
+pub struct Ext4InodeOpsChirho;
+
+impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
+    fn lookup_chirho(
+        &self,
+        parent_chirho: &crate::vfs_chirho::InodeChirho,
+        name_chirho: &str,
+    ) -> Result<Arc<crate::vfs_chirho::InodeChirho>, i64> {
+        let fs_data_chirho = parent_chirho
+            .fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
+            .ok_or(-2i64)?; // ENOENT
+
+        let mount_chirho = fs_data_chirho.mount_chirho.lock();
+        let entry_chirho = mount_chirho
+            .lookup_in_dir_chirho(fs_data_chirho.ino_chirho, name_chirho)
+            .ok_or(-2i64)?; // ENOENT
+
+        let child_ext4_inode_chirho = mount_chirho
+            .read_inode_chirho(entry_chirho.inode_chirho)
+            .ok_or(-5i64)?; // EIO
+
+        let vfs_mode_chirho = child_ext4_inode_chirho.i_mode_chirho as u32;
+        let vfs_size_chirho = child_ext4_inode_chirho.size_chirho();
+
+        let child_inode_chirho = Arc::new(crate::vfs_chirho::InodeChirho {
+            ino_chirho: entry_chirho.inode_chirho as u64,
+            mode_chirho: vfs_mode_chirho,
+            uid_chirho: child_ext4_inode_chirho.i_uid_chirho as u32,
+            gid_chirho: child_ext4_inode_chirho.i_gid_chirho as u32,
+            size_chirho: vfs_size_chirho,
+            nlink_chirho: child_ext4_inode_chirho.i_links_count_chirho as u32,
+            atime_chirho: child_ext4_inode_chirho.i_atime_chirho as u64,
+            mtime_chirho: child_ext4_inode_chirho.i_mtime_chirho as u64,
+            ctime_chirho: child_ext4_inode_chirho.i_ctime_chirho as u64,
+            ops_chirho: &EXT4_INODE_OPS_CHIRHO,
+            fs_data_chirho: Some(Box::new(Ext4FsDataChirho {
+                ino_chirho: entry_chirho.inode_chirho,
+                mount_chirho: fs_data_chirho.mount_chirho.clone(),
+            })),
+        });
+
+        Ok(child_inode_chirho)
+    }
+
+    fn create_chirho(
+        &self,
+        _parent_chirho: &crate::vfs_chirho::InodeChirho,
+        _name_chirho: &str,
+        _mode_chirho: u32,
+    ) -> Result<Arc<crate::vfs_chirho::InodeChirho>, i64> {
+        Err(-30) // EROFS — read-only filesystem
+    }
+
+    fn mkdir_chirho(
+        &self,
+        _parent_chirho: &crate::vfs_chirho::InodeChirho,
+        _name_chirho: &str,
+        _mode_chirho: u32,
+    ) -> Result<Arc<crate::vfs_chirho::InodeChirho>, i64> {
+        Err(-30) // EROFS
+    }
+
+    fn unlink_chirho(
+        &self,
+        _parent_chirho: &crate::vfs_chirho::InodeChirho,
+        _name_chirho: &str,
+    ) -> Result<(), i64> {
+        Err(-30) // EROFS
+    }
+}
+
+/// Static instance of ext4 inode operations.
+pub static EXT4_INODE_OPS_CHIRHO: Ext4InodeOpsChirho = Ext4InodeOpsChirho;
+
+/// ext4 file operations (read-only for now).
+pub struct Ext4FileOpsChirho;
+
+impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
+    fn read_chirho(
+        &self,
+        file_chirho: &mut crate::vfs_chirho::FileChirho,
+        buf_chirho: &mut [u8],
+    ) -> Result<usize, i64> {
+        let inode_guard_chirho = file_chirho.inode_chirho.lock();
+        let fs_data_chirho = inode_guard_chirho
+            .fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
+            .ok_or(-9i64)?; // EBADF
+
+        let mount_chirho = fs_data_chirho.mount_chirho.lock();
+        let ext4_inode_chirho = mount_chirho
+            .read_inode_chirho(fs_data_chirho.ino_chirho)
+            .ok_or(-5i64)?; // EIO
+
+        let file_data_chirho = mount_chirho
+            .read_file_data_chirho(&ext4_inode_chirho)
+            .ok_or(-5i64)?; // EIO
+
+        let pos_chirho = file_chirho.pos_chirho as usize;
+        if pos_chirho >= file_data_chirho.len() {
+            return Ok(0); // EOF
+        }
+
+        let available_chirho = file_data_chirho.len() - pos_chirho;
+        let to_read_chirho = core::cmp::min(buf_chirho.len(), available_chirho);
+        buf_chirho[..to_read_chirho]
+            .copy_from_slice(&file_data_chirho[pos_chirho..pos_chirho + to_read_chirho]);
+        file_chirho.pos_chirho += to_read_chirho as u64;
+
+        Ok(to_read_chirho)
+    }
+
+    fn write_chirho(
+        &self,
+        _file_chirho: &mut crate::vfs_chirho::FileChirho,
+        _buf_chirho: &[u8],
+    ) -> Result<usize, i64> {
+        Err(-30) // EROFS
+    }
+
+    fn seek_chirho(
+        &self,
+        file_chirho: &mut crate::vfs_chirho::FileChirho,
+        offset_chirho: i64,
+        whence_chirho: u32,
+    ) -> Result<u64, i64> {
+        let inode_guard_chirho = file_chirho.inode_chirho.lock();
+        let size_chirho = inode_guard_chirho.size_chirho as i64;
+        drop(inode_guard_chirho);
+
+        let new_pos_chirho = match whence_chirho {
+            0 => offset_chirho,                              // SEEK_SET
+            1 => file_chirho.pos_chirho as i64 + offset_chirho, // SEEK_CUR
+            2 => size_chirho + offset_chirho,                 // SEEK_END
+            _ => return Err(-22),                             // EINVAL
+        };
+
+        if new_pos_chirho < 0 {
+            return Err(-22); // EINVAL
+        }
+
+        file_chirho.pos_chirho = new_pos_chirho as u64;
+        Ok(file_chirho.pos_chirho)
+    }
+
+    fn ioctl_chirho(
+        &self,
+        _file_chirho: &crate::vfs_chirho::FileChirho,
+        _cmd_chirho: u64,
+        _arg_chirho: u64,
+    ) -> Result<i64, i64> {
+        Err(-25) // ENOTTY
+    }
+
+    fn readdir_chirho(
+        &self,
+        file_chirho: &mut crate::vfs_chirho::FileChirho,
+        callback_chirho: &mut dyn FnMut(&str, u64, u8) -> bool,
+    ) -> Result<usize, i64> {
+        let inode_guard_chirho = file_chirho.inode_chirho.lock();
+        let fs_data_chirho = inode_guard_chirho
+            .fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
+            .ok_or(-20i64)?; // ENOTDIR
+
+        let mount_chirho = fs_data_chirho.mount_chirho.lock();
+        let entries_chirho = mount_chirho
+            .read_dir_entries_chirho(fs_data_chirho.ino_chirho)
+            .ok_or(-5i64)?; // EIO
+
+        let mut count_chirho = 0usize;
+        let start_chirho = file_chirho.pos_chirho as usize;
+
+        for (idx_chirho, entry_chirho) in entries_chirho.iter().enumerate() {
+            if idx_chirho < start_chirho {
+                continue;
+            }
+            // Map ext4 file type to DT_* constants
+            let dt_chirho = match entry_chirho.file_type_chirho {
+                FT_REG_FILE_CHIRHO => 8,  // DT_REG
+                FT_DIR_CHIRHO => 4,       // DT_DIR
+                FT_SYMLINK_CHIRHO => 10,  // DT_LNK
+                FT_CHRDEV_CHIRHO => 2,    // DT_CHR
+                FT_BLKDEV_CHIRHO => 6,    // DT_BLK
+                _ => 0,                    // DT_UNKNOWN
+            };
+            if !callback_chirho(
+                &entry_chirho.name_chirho,
+                entry_chirho.inode_chirho as u64,
+                dt_chirho,
+            ) {
+                break;
+            }
+            count_chirho += 1;
+            file_chirho.pos_chirho = (idx_chirho + 1) as u64;
+        }
+
+        Ok(count_chirho)
+    }
+}
+
+/// Static instance of ext4 file operations.
+pub static EXT4_FILE_OPS_CHIRHO: Ext4FileOpsChirho = Ext4FileOpsChirho;
+
+/// ext4 directory operations — same as file ops but with readdir.
+pub static EXT4_DIR_OPS_CHIRHO: Ext4FileOpsChirho = Ext4FileOpsChirho;
+
+/// ext4 superblock operations.
+pub struct Ext4SuperOpsChirho;
+
+impl crate::vfs_chirho::SuperOpsChirho for Ext4SuperOpsChirho {
+    fn alloc_inode_chirho(&self) -> Arc<crate::vfs_chirho::InodeChirho> {
+        // Read-only: should not be called
+        Arc::new(crate::vfs_chirho::InodeChirho {
+            ino_chirho: 0,
+            mode_chirho: 0,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: 0,
+            nlink_chirho: 0,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: &EXT4_INODE_OPS_CHIRHO,
+            fs_data_chirho: None,
+        })
+    }
+
+    fn statfs_chirho(&self) -> Result<crate::vfs_chirho::StatfsChirho, i64> {
+        Ok(crate::vfs_chirho::StatfsChirho {
+            f_type_chirho: 0xEF53,
+            f_bsize_chirho: 4096,
+            f_blocks_chirho: 0,
+            f_bfree_chirho: 0,
+            f_bavail_chirho: 0,
+            f_files_chirho: 0,
+            f_ffree_chirho: 0,
+            f_namelen_chirho: 255,
+        })
+    }
+}
+
+/// Static instance of ext4 super operations.
+static EXT4_SUPER_OPS_CHIRHO: Ext4SuperOpsChirho = Ext4SuperOpsChirho;
+
+/// Mount an ext4 filesystem as a VFS superblock, suitable for registration
+/// in the mount table. The `Ext4MountChirho` is wrapped in `Arc<Mutex<>>`
+/// and shared with every VFS inode created for this mount.
+///
+/// Returns the VFS `SuperblockChirho` (wrapped in `Arc<Mutex<>>`).
+pub fn mount_ext4_vfs_chirho(
+    ext4_mount_chirho: Ext4MountChirho,
+) -> Arc<Mutex<crate::vfs_chirho::SuperblockChirho>> {
+    let mount_arc_chirho = Arc::new(Mutex::new(ext4_mount_chirho));
+
+    // Build the root VFS inode from the ext4 root inode (inode 2).
+    let root_ext4_inode_chirho = {
+        let m_chirho = mount_arc_chirho.lock();
+        m_chirho.read_inode_chirho(EXT4_ROOT_INO_CHIRHO)
+    };
+
+    let (root_mode_chirho, root_size_chirho) = match root_ext4_inode_chirho {
+        Some(ref i_chirho) => (i_chirho.i_mode_chirho as u32, i_chirho.size_chirho()),
+        None => (crate::vfs_chirho::S_IFDIR_CHIRHO | 0o755, 0),
+    };
+
+    let root_inode_chirho = Arc::new(Mutex::new(crate::vfs_chirho::InodeChirho {
+        ino_chirho: EXT4_ROOT_INO_CHIRHO as u64,
+        mode_chirho: root_mode_chirho,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: root_size_chirho,
+        nlink_chirho: 2,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &EXT4_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(Ext4FsDataChirho {
+            ino_chirho: EXT4_ROOT_INO_CHIRHO,
+            mount_chirho: mount_arc_chirho.clone(),
+        })),
+    }));
+
+    let root_dentry_chirho = Arc::new(Mutex::new(crate::vfs_chirho::DentryChirho {
+        name_chirho: String::from("/"),
+        inode_chirho: Some(root_inode_chirho),
+        parent_chirho: None,
+        children_chirho: Vec::new(),
+    }));
+
+    Arc::new(Mutex::new(crate::vfs_chirho::SuperblockChirho {
+        fs_type_chirho: "ext4",
+        root_chirho: root_dentry_chirho,
+        flags_chirho: 1, // MS_RDONLY
+        ops_chirho: &EXT4_SUPER_OPS_CHIRHO,
+    }))
 }
