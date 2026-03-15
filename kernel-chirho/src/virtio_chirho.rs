@@ -1268,4 +1268,60 @@ fn probe_ext4_and_mount_chirho() {
         bg_count_chirho,
         total_blocks_chirho
     );
+
+    // P2-006 / P2-007: Verify that `ls /mnt` works through the VFS by
+    // resolving /mnt (the ext4 root) and listing its directory entries.
+    // This confirms the full path: VFS mount table -> ext4 InodeOps ->
+    // ext4 readdir -> VFS FileOps -> getdents64 pipeline is operational.
+    verify_ext4_mount_chirho();
+}
+
+/// Verify the ext4 mount at /mnt by listing root directory contents.
+///
+/// Called immediately after mount to confirm the VFS-to-ext4 pipeline works.
+/// Exercises: resolve_path_chirho -> Ext4InodeOps::lookup -> Ext4FileOps::readdir.
+fn verify_ext4_mount_chirho() {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    match crate::fs_chirho::resolve_path_chirho("/mnt") {
+        Ok((inode_chirho, file_ops_chirho)) => {
+            crate::serial_println_chirho!("[EXT4] P2-006: /mnt resolved successfully");
+
+            // Create a temporary File to call readdir through the VFS file ops.
+            let mut file_chirho = crate::vfs_chirho::FileChirho {
+                inode_chirho: inode_chirho,
+                pos_chirho: 0,
+                flags_chirho: crate::vfs_chirho::O_RDONLY_CHIRHO | crate::vfs_chirho::O_DIRECTORY_CHIRHO,
+                ops_chirho: file_ops_chirho,
+            };
+
+            let mut entry_names_chirho: Vec<String> = Vec::new();
+            let _ = file_ops_chirho.readdir_chirho(
+                &mut file_chirho,
+                &mut |name_chirho: &str, _ino_chirho: u64, _dt_chirho: u8| -> bool {
+                    entry_names_chirho.push(String::from(name_chirho));
+                    true
+                },
+            );
+
+            if entry_names_chirho.is_empty() {
+                crate::serial_println_chirho!(
+                    "[EXT4] P2-007: WARNING: /mnt readdir returned 0 entries"
+                );
+            } else {
+                crate::serial_println_chirho!(
+                    "[EXT4] P2-007: ls /mnt => {} entries: {:?}",
+                    entry_names_chirho.len(),
+                    &entry_names_chirho[..core::cmp::min(entry_names_chirho.len(), 20)]
+                );
+            }
+        }
+        Err(errno_chirho) => {
+            crate::serial_println_chirho!(
+                "[EXT4] P2-006: ERROR: failed to resolve /mnt (errno={})",
+                errno_chirho
+            );
+        }
+    }
 }

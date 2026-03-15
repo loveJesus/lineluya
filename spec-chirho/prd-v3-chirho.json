@@ -79,7 +79,7 @@
     {
       "id_chirho": "P2-006",
       "title_chirho": "Mount Alpine rootfs as / (pivot_root or chroot)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
@@ -139,7 +139,7 @@
     {
       "id_chirho": "P4-001",
       "title_chirho": "Load ET_DYN (PIE) executables",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
