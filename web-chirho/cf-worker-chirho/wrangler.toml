@@ -8,3 +8,29 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 PROXY_ALLOWED_PORTS_CHIRHO = "22,80,443,8080,8443,3000,5000"
+
+# R2 bucket — serves as /dev/sda block device for the edge kernel (C1-004)
+[[r2_buckets]]
+binding = "R2_ROOTFS_CHIRHO"
+bucket_name = "lineluya-rootfs-chirho"
+
+# KV namespace — serves as /proc/kv filesystem for the edge kernel (C1-005)
+[[kv_namespaces]]
+binding = "KV_PROC_CHIRHO"
+id = "PLACEHOLDER_KV_ID_CHIRHO"
+
+# D1 database — serves as SQLite device for the edge kernel (C1-006)
+[[d1_databases]]
+binding = "D1_SQLITE_CHIRHO"
+database_name = "lineluya-db-chirho"
+database_id = "PLACEHOLDER_D1_ID_CHIRHO"
+
+# Durable Object — persistent kernel state across requests (C1-007)
+[durable_objects]
+bindings = [
+  { name = "KERNEL_STATE_CHIRHO", class_name = "KernelStateDurableObjectChirho" }
+]
+
+[[migrations]]
+tag = "v1_chirho"
+new_classes = ["KernelStateDurableObjectChirho"]

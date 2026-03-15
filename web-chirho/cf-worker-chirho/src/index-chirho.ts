@@ -27,6 +27,10 @@ import { connect } from "cloudflare:sockets";
 /** Environment bindings for the Worker */
 interface EnvChirho {
   PROXY_ALLOWED_PORTS_CHIRHO: string;
+  R2_ROOTFS_CHIRHO: R2Bucket;
+  KV_PROC_CHIRHO: KVNamespace;
+  D1_SQLITE_CHIRHO: D1Database;
+  KERNEL_STATE_CHIRHO: DurableObjectNamespace;
 }
 
 /** A tracked TCP connection bridged from a WebSocket client */
@@ -105,8 +109,13 @@ const BOOT_HTML_CHIRHO = `<!DOCTYPE html>
   that whoever believes in him should not perish but have eternal life. - John 3:16</em></p>
   <div class="status-chirho">
     <p><strong>Status:</strong> Edge worker active</p>
-    <p><strong>WebSocket Proxy:</strong> /ws/proxy-chirho</p>
-    <p><strong>Kernel WASM:</strong> /kernel.wasm</p>
+    <p><strong>WebSocket Proxy:</strong> /ws/proxy-chirho (TCP relay)</p>
+    <p><strong>WebSocket Kernel:</strong> /ws/kernel-chirho (origin relay)</p>
+    <p><strong>Kernel WASM:</strong> /kernel.wasm (from R2)</p>
+    <p><strong>Block Device:</strong> /dev/sda-chirho (R2 rootfs)</p>
+    <p><strong>KV Filesystem:</strong> /proc/kv-chirho (KV namespace)</p>
+    <p><strong>SQLite Device:</strong> /dev/sqlite-chirho (D1 database)</p>
+    <p><strong>Kernel State:</strong> /kernel-state-chirho (Durable Object)</p>
     <p><strong>Health:</strong> /health-chirho</p>
   </div>
   <pre id="log-chirho"></pre>
@@ -349,6 +358,255 @@ async function handleKernelWebSocketChirho(
   });
 }
 
+// ── R2 Block Device: /dev/sda-chirho (C1-004) ─────────────────────────────
+
+/**
+ * R2 as /dev/sda — block-level read/write to rootfs stored in R2.
+ * GET /dev/sda-chirho?offset=0&length=4096 — read block
+ * PUT /dev/sda-chirho?offset=0 — write block (body = raw bytes)
+ * GET /dev/sda-chirho/info-chirho — get rootfs metadata
+ */
+async function handleR2BlockDeviceChirho(
+  requestChirho: Request,
+  envChirho: EnvChirho,
+  pathChirho: string,
+): Promise<Response> {
+  const urlChirho = new URL(requestChirho.url);
+  const r2Chirho = envChirho.R2_ROOTFS_CHIRHO;
+
+  if (pathChirho === "/dev/sda-chirho/info-chirho") {
+    const objChirho = await r2Chirho.head("rootfs-chirho.img");
+    if (!objChirho) {
+      return new Response(JSON.stringify({ error_chirho: "No rootfs image found" }), { status: 404 });
+    }
+    return new Response(JSON.stringify({
+      key_chirho: objChirho.key,
+      size_chirho: objChirho.size,
+      etag_chirho: objChirho.etag,
+      uploaded_chirho: objChirho.uploaded?.toISOString(),
+    }), { headers: { "Content-Type": "application/json" } });
+  }
+
+  if (requestChirho.method === "GET") {
+    const offsetChirho = parseInt(urlChirho.searchParams.get("offset_chirho") || "0", 10);
+    const lengthChirho = parseInt(urlChirho.searchParams.get("length_chirho") || "4096", 10);
+
+    const objChirho = await r2Chirho.get("rootfs-chirho.img", {
+      range: { offset: offsetChirho, length: lengthChirho },
+    });
+    if (!objChirho) {
+      return new Response("rootfs not found", { status: 404 });
+    }
+    return new Response(objChirho.body, {
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Block-Offset-Chirho": String(offsetChirho),
+        "X-Block-Length-Chirho": String(lengthChirho),
+      },
+    });
+  }
+
+  if (requestChirho.method === "PUT") {
+    const offsetChirho = parseInt(urlChirho.searchParams.get("offset_chirho") || "0", 10);
+    const bodyChirho = await requestChirho.arrayBuffer();
+    // R2 doesn't support partial writes natively — use multipart or chunked keys
+    const chunkKeyChirho = `rootfs-chirho/block-${offsetChirho}-chirho`;
+    await r2Chirho.put(chunkKeyChirho, bodyChirho);
+    return new Response(JSON.stringify({
+      written_chirho: bodyChirho.byteLength,
+      offset_chirho: offsetChirho,
+      key_chirho: chunkKeyChirho,
+    }), { headers: { "Content-Type": "application/json" } });
+  }
+
+  return new Response("Method not allowed", { status: 405 });
+}
+
+// ── KV Filesystem: /proc/kv-chirho (C1-005) ───────────────────────────────
+
+/**
+ * KV namespace as /proc/kv — a key-value filesystem for kernel config/state.
+ * GET /proc/kv-chirho/:key — read value
+ * PUT /proc/kv-chirho/:key — write value (body = text)
+ * DELETE /proc/kv-chirho/:key — delete key
+ * GET /proc/kv-chirho — list all keys
+ */
+async function handleKvFilesystemChirho(
+  requestChirho: Request,
+  envChirho: EnvChirho,
+  pathChirho: string,
+): Promise<Response> {
+  const kvChirho = envChirho.KV_PROC_CHIRHO;
+  const keyChirho = pathChirho.replace("/proc/kv-chirho/", "").replace("/proc/kv-chirho", "");
+
+  if (requestChirho.method === "GET" && !keyChirho) {
+    // List all keys
+    const listChirho = await kvChirho.list();
+    const keysChirho = listChirho.keys.map((kChirho) => kChirho.name);
+    return new Response(JSON.stringify({ keys_chirho: keysChirho }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (requestChirho.method === "GET" && keyChirho) {
+    const valueChirho = await kvChirho.get(keyChirho);
+    if (valueChirho === null) {
+      return new Response("key not found", { status: 404 });
+    }
+    return new Response(valueChirho, {
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
+  if (requestChirho.method === "PUT" && keyChirho) {
+    const valueChirho = await requestChirho.text();
+    await kvChirho.put(keyChirho, valueChirho);
+    return new Response(JSON.stringify({ key_chirho: keyChirho, written_chirho: true }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (requestChirho.method === "DELETE" && keyChirho) {
+    await kvChirho.delete(keyChirho);
+    return new Response(JSON.stringify({ key_chirho: keyChirho, deleted_chirho: true }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  return new Response("Method not allowed", { status: 405 });
+}
+
+// ── D1 SQLite Device: /dev/sqlite-chirho (C1-006) ─────────────────────────
+
+/**
+ * D1 as a SQLite device — execute SQL against a persistent D1 database.
+ * POST /dev/sqlite-chirho/exec-chirho — execute SQL (body = { sql_chirho, params_chirho? })
+ * POST /dev/sqlite-chirho/query-chirho — query SQL (body = { sql_chirho, params_chirho? })
+ * GET /dev/sqlite-chirho/tables-chirho — list tables
+ */
+async function handleD1SqliteChirho(
+  requestChirho: Request,
+  envChirho: EnvChirho,
+  pathChirho: string,
+): Promise<Response> {
+  const d1Chirho = envChirho.D1_SQLITE_CHIRHO;
+
+  if (pathChirho === "/dev/sqlite-chirho/tables-chirho" && requestChirho.method === "GET") {
+    const resultChirho = await d1Chirho.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).all();
+    return new Response(JSON.stringify({ tables_chirho: resultChirho.results }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (requestChirho.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+
+  const bodyChirho = await requestChirho.json() as {
+    sql_chirho: string;
+    params_chirho?: unknown[];
+  };
+
+  if (!bodyChirho.sql_chirho) {
+    return new Response(JSON.stringify({ error_chirho: "Missing sql_chirho" }), { status: 400 });
+  }
+
+  try {
+    const stmtChirho = d1Chirho.prepare(bodyChirho.sql_chirho);
+    const boundChirho = bodyChirho.params_chirho
+      ? stmtChirho.bind(...bodyChirho.params_chirho)
+      : stmtChirho;
+
+    if (pathChirho === "/dev/sqlite-chirho/exec-chirho") {
+      const resultChirho = await boundChirho.run();
+      return new Response(JSON.stringify({
+        success_chirho: resultChirho.success,
+        changes_chirho: resultChirho.meta?.changes,
+        duration_chirho: resultChirho.meta?.duration,
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    if (pathChirho === "/dev/sqlite-chirho/query-chirho") {
+      const resultChirho = await boundChirho.all();
+      return new Response(JSON.stringify({
+        results_chirho: resultChirho.results,
+        success_chirho: resultChirho.success,
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+  } catch (errChirho: any) {
+    return new Response(JSON.stringify({ error_chirho: errChirho.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  return new Response("Not found", { status: 404 });
+}
+
+// ── Durable Object: KernelStateDurableObjectChirho (C1-007) ───────────────
+
+/**
+ * Persistent kernel state across Worker requests.
+ * Stores process table, mounted filesystems, open files, environment.
+ */
+export class KernelStateDurableObjectChirho {
+  private stateChirho: DurableObjectState;
+  private envChirho: EnvChirho;
+
+  constructor(stateChirho: DurableObjectState, envChirho: EnvChirho) {
+    this.stateChirho = stateChirho;
+    this.envChirho = envChirho;
+  }
+
+  async fetch(requestChirho: Request): Promise<Response> {
+    const urlChirho = new URL(requestChirho.url);
+    const pathChirho = urlChirho.pathname;
+
+    if (requestChirho.method === "GET" && pathChirho === "/state-chirho") {
+      const allChirho = await this.stateChirho.storage.list();
+      const resultChirho: Record<string, unknown> = {};
+      for (const [keyChirho, valueChirho] of allChirho) {
+        resultChirho[keyChirho] = valueChirho;
+      }
+      return new Response(JSON.stringify(resultChirho), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (requestChirho.method === "PUT" && pathChirho.startsWith("/state-chirho/")) {
+      const keyChirho = pathChirho.replace("/state-chirho/", "");
+      const valueChirho = await requestChirho.json();
+      await this.stateChirho.storage.put(keyChirho, valueChirho);
+      return new Response(JSON.stringify({ key_chirho: keyChirho, saved_chirho: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (requestChirho.method === "DELETE" && pathChirho.startsWith("/state-chirho/")) {
+      const keyChirho = pathChirho.replace("/state-chirho/", "");
+      await this.stateChirho.storage.delete(keyChirho);
+      return new Response(JSON.stringify({ key_chirho: keyChirho, deleted_chirho: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // Boot state: initialize kernel defaults
+    if (requestChirho.method === "POST" && pathChirho === "/boot-chirho") {
+      await this.stateChirho.storage.put("pid_counter_chirho", 1);
+      await this.stateChirho.storage.put("uptime_start_chirho", Date.now());
+      await this.stateChirho.storage.put("boot_count_chirho",
+        ((await this.stateChirho.storage.get("boot_count_chirho") as number) || 0) + 1);
+      return new Response(JSON.stringify({ booted_chirho: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+}
+
 // ── Main Worker export ─────────────────────────────────────────────────────
 
 export default {
@@ -384,16 +642,47 @@ export default {
       });
     }
 
-    // GET /kernel.wasm — Serve WASM kernel binary (placeholder: will serve from R2)
+    // GET /kernel.wasm — Serve WASM kernel binary from R2
     if (pathChirho === "/kernel.wasm" && requestChirho.method === "GET") {
-      // TODO: Serve from R2 bucket or KV when kernel binary is deployed
+      const wasmObjChirho = await envChirho.R2_ROOTFS_CHIRHO.get("kernel-chirho.wasm");
+      if (wasmObjChirho) {
+        return new Response(wasmObjChirho.body, {
+          headers: {
+            "Content-Type": "application/wasm",
+            "Cache-Control": "public, max-age=3600",
+          },
+        });
+      }
       return new Response(
-        "kernel.wasm not yet deployed to edge — build with `make wasm` first\n",
-        {
-          status: 404,
-          headers: { "Content-Type": "text/plain" },
-        },
+        "kernel.wasm not yet deployed to edge — upload to R2 bucket\n",
+        { status: 404, headers: { "Content-Type": "text/plain" } },
       );
+    }
+
+    // ── R2 Block Device routes (C1-004) ──────────────────────────────
+    if (pathChirho.startsWith("/dev/sda-chirho")) {
+      return handleR2BlockDeviceChirho(requestChirho, envChirho, pathChirho);
+    }
+
+    // ── KV Filesystem routes (C1-005) ────────────────────────────────
+    if (pathChirho.startsWith("/proc/kv-chirho")) {
+      return handleKvFilesystemChirho(requestChirho, envChirho, pathChirho);
+    }
+
+    // ── D1 SQLite Device routes (C1-006) ─────────────────────────────
+    if (pathChirho.startsWith("/dev/sqlite-chirho")) {
+      return handleD1SqliteChirho(requestChirho, envChirho, pathChirho);
+    }
+
+    // ── Durable Object Kernel State routes (C1-007) ──────────────────
+    if (pathChirho.startsWith("/kernel-state-chirho")) {
+      const idChirho = envChirho.KERNEL_STATE_CHIRHO.idFromName("default-chirho");
+      const stubChirho = envChirho.KERNEL_STATE_CHIRHO.get(idChirho);
+      const subPathChirho = pathChirho.replace("/kernel-state-chirho", "");
+      return stubChirho.fetch(new Request(
+        new URL(subPathChirho || "/", requestChirho.url).toString(),
+        requestChirho,
+      ));
     }
 
     // Fallback

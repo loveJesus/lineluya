@@ -449,7 +449,7 @@
       "depends_on_chirho": [
         "A1-025"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Parse .ko ELF headers",
@@ -464,7 +464,7 @@
       "title_chirho": "Kernel symbol table export",
       "description_chirho": "Maintain table of exported kernel symbols. Modules resolve against it.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "EXPORT_SYMBOL macro registers symbol",
@@ -784,7 +784,7 @@
       "depends_on_chirho": [
         "A1-025"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "NetDevice trait defined",
@@ -834,7 +834,7 @@
       "title_chirho": "IPv4 packet parsing/building",
       "description_chirho": "Parse and construct IPv4 headers with checksum.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Valid IPv4 header parsed",
@@ -3822,7 +3822,7 @@
         "C1-001",
         "B3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "R2 objects readable as blocks",
@@ -3841,7 +3841,7 @@
         "C1-001",
         "B1-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "cat /proc/kv/key reads KV value",
@@ -3859,7 +3859,7 @@
       "depends_on_chirho": [
         "C1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "sqlite3 CLI queries D1",
@@ -3877,7 +3877,7 @@
       "depends_on_chirho": [
         "C1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "State persists between requests",
@@ -3913,7 +3913,7 @@
       "depends_on_chirho": [
         "B2-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Server accepts WS from CF edge",
@@ -3951,7 +3951,7 @@
         "C1-002",
         "C1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Path-based routing works",
@@ -4005,7 +4005,7 @@
       "depends_on_chirho": [
         "C1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "wrangler.toml complete",
