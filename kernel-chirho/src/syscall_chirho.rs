@@ -1851,22 +1851,17 @@ fn sys_write_chirho(
                 return 0;
             }
 
-            // SAFETY: The caller (user space via SYSCALL) guarantees the buffer
-            // is readable.  In the future, `copy_from_user` will validate
-            // page-table permissions before touching the memory.
-            let slice_chirho = unsafe {
-                core::slice::from_raw_parts(buf_ptr_chirho, count_chirho)
-            };
-
-            // Write each byte to the serial port.
-            for &byte_chirho in slice_chirho {
-                if byte_chirho == b'\n' {
-                    crate::serial_print_chirho!("\n");
-                } else if byte_chirho.is_ascii() {
-                    crate::serial_print_chirho!("{}", byte_chirho as char);
-                } else {
-                    // Non-ASCII bytes: emit as hex escape.
-                    crate::serial_print_chirho!("\\x{:02x}", byte_chirho);
+            // Write bytes directly to serial port WITHOUT acquiring the
+            // serial Mutex. This allows the page fault handler to print
+            // diagnostics if a page fault occurs during the copy.
+            for i_chirho in 0..count_chirho {
+                let byte_chirho: u8 = unsafe {
+                    core::ptr::read_volatile(buf_ptr_chirho.add(i_chirho))
+                };
+                unsafe {
+                    // Wait for transmit buffer empty
+                    while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                    x86_64::instructions::port::Port::<u8>::new(0x3F8).write(byte_chirho);
                 }
             }
 
