@@ -1889,15 +1889,23 @@ fn sys_writev_chirho(
     let mut total_written_chirho: i64 = 0;
 
     for i_chirho in 0..iovcnt_chirho as usize {
-        // SAFETY: Caller guarantees the iovec array is valid.
-        let vec_entry_chirho = unsafe { &*iov_chirho.add(i_chirho) };
-        if vec_entry_chirho.iov_base_chirho.is_null() || vec_entry_chirho.iov_len_chirho == 0 {
+        // Read the iovec entry from user memory safely via copy_from_user.
+        let mut iov_buf_chirho = [0u8; 16]; // IoVecChirho is 16 bytes (ptr + len)
+        let iov_addr_chirho = iov_chirho as u64 + (i_chirho * 16) as u64;
+        if crate::uaccess_chirho::copy_from_user_chirho(
+            &mut iov_buf_chirho, iov_addr_chirho, 16,
+        ).is_err() {
+            return if total_written_chirho > 0 { total_written_chirho } else { -EFAULT_CHIRHO };
+        }
+        let iov_base_chirho = u64::from_ne_bytes(iov_buf_chirho[0..8].try_into().unwrap());
+        let iov_len_chirho = u64::from_ne_bytes(iov_buf_chirho[8..16].try_into().unwrap()) as usize;
+        if iov_base_chirho == 0 || iov_len_chirho == 0 {
             continue;
         }
         let result_chirho = sys_write_chirho(
             fd_chirho,
-            vec_entry_chirho.iov_base_chirho,
-            vec_entry_chirho.iov_len_chirho,
+            iov_base_chirho as *const u8,
+            iov_len_chirho,
         );
         if result_chirho < 0 {
             if total_written_chirho > 0 {
