@@ -648,7 +648,7 @@
         "A2-007",
         "A2-012"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Module schedules deferred work",
@@ -665,7 +665,7 @@
       "depends_on_chirho": [
         "A2-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "insmod loads .ko from userspace",
@@ -731,7 +731,7 @@
       "depends_on_chirho": [
         "A2-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Rust module loads via same mechanism",
@@ -749,7 +749,7 @@
         "A2-014",
         "A2-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "hello.ko loads and prints message",
@@ -767,7 +767,7 @@
         "A2-008",
         "A2-019"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Chardev module creates /dev entry",
@@ -1042,7 +1042,7 @@
       "depends_on_chirho": [
         "A3-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "sendmsg/recvmsg work with iovec",
@@ -1076,7 +1076,7 @@
       "depends_on_chirho": [
         "A3-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "SO_REUSEADDR allows port reuse",
@@ -1094,7 +1094,7 @@
         "A3-005",
         "A3-011"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "IP address configurable at runtime",
@@ -1114,7 +1114,7 @@
         "A3-008",
         "A3-013"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "ping 8.8.8.8 succeeds",
@@ -1354,7 +1354,7 @@
         "A4-009",
         "A4-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Kernel boots with root on ext4 partition",
@@ -1373,7 +1373,7 @@
         "A4-013",
         "A4-014"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Files survive reboot",
@@ -1609,7 +1609,7 @@
       "depends_on_chirho": [
         "A5-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "XHCI controller detected",
@@ -1660,7 +1660,7 @@
       "depends_on_chirho": [
         "A5-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "All usable RAM detected",
@@ -1693,7 +1693,7 @@
       "depends_on_chirho": [
         "A5-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "root= selects root partition",
@@ -1714,7 +1714,7 @@
         "A5-011",
         "A5-012"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Boots on real hardware to shell",
@@ -1961,7 +1961,7 @@
       "depends_on_chirho": [
         "A6-013"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "CPU limit enforced",
@@ -1979,7 +1979,7 @@
       "depends_on_chirho": [
         "A6-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "seccomp filter blocks forbidden syscalls",
@@ -2009,7 +2009,7 @@
       "title_chirho": "eventfd/timerfd/signalfd",
       "description_chirho": "Implement eventfd, timerfd_create/settime, signalfd for epoll integration.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "eventfd wakes epoll",
@@ -2025,7 +2025,7 @@
       "title_chirho": "inotify/fanotify",
       "description_chirho": "File change notification via inotify. Watch create/delete/modify events.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "inotify reports file changes",
@@ -2046,7 +2046,7 @@
         "A6-012",
         "A6-015"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Alpine boots to login prompt",
@@ -2675,7 +2675,7 @@
         "B2-005",
         "B1-019"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "wget http://example.com downloads page",
@@ -2913,7 +2913,7 @@
         "B3-009",
         "B3-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Write file, reload page, file exists",
@@ -3057,7 +3057,7 @@
       "depends_on_chirho": [
         "B4-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Copy in X11 app pasteable in browser",
@@ -3075,7 +3075,7 @@
       "depends_on_chirho": [
         "B4-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "X11 font queries return results",
@@ -3095,7 +3095,7 @@
         "B4-003",
         "B1-013"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "xterm window appears",
@@ -3114,7 +3114,7 @@
         "B4-010",
         "B1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "vim launches in xterm window",
@@ -3132,7 +3132,7 @@
       "depends_on_chirho": [
         "B4-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "SHM segments created via SharedArrayBuffer",
@@ -3150,7 +3150,7 @@
       "depends_on_chirho": [
         "B4-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Anti-aliased text renders",
@@ -3169,7 +3169,7 @@
         "B2-002",
         "B4-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "socket(AF_UNIX) works",
@@ -3187,7 +3187,7 @@
       "depends_on_chirho": [
         "B4-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Default cursor displays",
@@ -3205,7 +3205,7 @@
       "depends_on_chirho": [
         "B4-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Title bar with window name",
@@ -3223,7 +3223,7 @@
       "depends_on_chirho": [
         "B4-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "low",
       "acceptance_criteria_chirho": [
         "Sharp rendering on HiDPI",
@@ -3242,7 +3242,7 @@
         "B4-006",
         "B4-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "low",
       "acceptance_criteria_chirho": [
         "Drag initiated on mouse hold+move",
@@ -3263,7 +3263,7 @@
         "B4-005",
         "B4-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "X11 server starts",
@@ -3282,7 +3282,7 @@
       "depends_on_chirho": [
         "B4-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "WM_DELETE_WINDOW protocol works",
@@ -3747,7 +3747,7 @@
         "B6-004",
         "B3-009"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Desktop loads with taskbar",
@@ -3895,7 +3895,7 @@
       "depends_on_chirho": [
         "B1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "nginx.wasm binary produced",

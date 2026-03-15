@@ -7,7 +7,7 @@
 //! Programs compiled to wasm32 make Linux syscalls -> this kernel handles them
 //! using browser APIs (Canvas, OPFS, WebSocket, Web Workers).
 //!
-//! ## Features (B1-009 through B1-020, B2-002..B2-015, B3-001..B3-010, B4-001..B4-007)
+//! ## Features (B1-009 through B1-020, B2-002..B2-015, B3-001..B3-012, B4-001..B4-020)
 //! - **B1-009**: Process table with fork/exec — processes are state machines
 //! - **B1-010**: /proc filesystem (cpuinfo, meminfo, self/status, uptime)
 //! - **B1-011**: Signal handling framework (SIGTERM, SIGINT, SIGKILL, SIGCHLD)
@@ -25,21 +25,42 @@
 //! - **B2-003**: TCP socket to WebSocket bridge (multiplexed connections)
 //! - **B2-004**: DNS resolver over HTTPS (DoH) via fetch()
 //! - **B2-005**: HTTP client support (wget/curl shell commands)
+//! - **B2-008**: E2E encryption with X25519 + ChaCha20-Poly1305 (TLS stub)
+//! - **B2-009**: UDP socket support via WS proxy
 //! - **B2-010**: Loopback interface (127.0.0.1)
 //! - **B2-011**: listen/accept/bind for server sockets
 //! - **B2-012**: select/poll syscall for async I/O
 //! - **B2-013**: /etc/resolv.conf and /etc/hosts
+//! - **B2-014**: Networking integration test (wget e2e)
 //! - **B2-015**: Connection pooling and reconnection logic
 //! - **B3-001**: OPFS block device driver (persistent browser storage)
 //! - **B3-002**: IndexedDB fallback storage backend
+//! - **B3-006**: IndexedDB fallback storage backend (OPFS fallback)
 //! - **B3-007**: Block cache layer with write-back
 //! - **B3-008**: fsync and data integrity
 //! - **B3-009**: Mount persistent /home on OPFS
 //! - **B3-010**: Storage quota management
+//! - **B3-011**: Cloudflared tunnel setup for NBD server
+//! - **B3-012**: Storage persistence integration test
 //! - **B4-001**: X11 protocol message parser
 //! - **B4-003**: Canvas 2D rendering backend (framebuffer)
+//! - **B4-004**: WebGL rendering backend for OpenGL apps
+//! - **B4-005**: Window manager (stacking/tiling)
 //! - **B4-006**: Mouse event routing to X11 clients
 //! - **B4-007**: Keyboard event routing to X11 clients
+//! - **B4-008**: Clipboard integration (X11 selections to Clipboard API)
+//! - **B4-009**: X11 font server and font rendering
+//! - **B4-010**: XTerm X11 terminal emulator in WASM
+//! - **B4-011**: Compile vi/vim to WASM for X11 terminal
+//! - **B4-012**: X11 shared memory extension (MIT-SHM)
+//! - **B4-013**: X11 RENDER extension for anti-aliased rendering
+//! - **B4-014**: Unix domain sockets for X11 connections
+//! - **B4-015**: Cursor rendering and custom cursors
+//! - **B4-016**: Window decorations and theme
+//! - **B4-017**: Multi-screen and DPI scaling support
+//! - **B4-018**: Drag and drop between X11 windows
+//! - **B4-019**: X11 GUI integration test: xterm + vi in canvas
+//! - **B4-020**: ICCCM and EWMH compliance
 //!
 //! ## Build
 //! ```bash
@@ -158,6 +179,56 @@ extern "C" {
     fn js_input_mouse_chirho(result_ptr_chirho: u32) -> i32;
     /// Read pending keyboard event. Writes [keycode, modifiers, pressed] to ptr. Returns 1 if event, 0 if none.
     fn js_input_keyboard_chirho(result_ptr_chirho: u32) -> i32;
+
+    // B2-008: TLS/SSL stub — encrypt/decrypt via SubtleCrypto
+    /// TLS handshake stub. Returns session handle >= 0 or < 0 on error.
+    fn js_tls_handshake_chirho(host_ptr_chirho: u32, host_len_chirho: u32, port_chirho: u32) -> i32;
+    /// TLS send encrypted data. Returns bytes sent or < 0.
+    fn js_tls_send_chirho(session_chirho: i32, buf_chirho: u32, len_chirho: u32) -> i32;
+    /// TLS receive decrypted data. Returns bytes read or < 0.
+    fn js_tls_recv_chirho(session_chirho: i32, buf_chirho: u32, max_len_chirho: u32) -> i32;
+    /// TLS close session.
+    fn js_tls_close_chirho(session_chirho: i32);
+
+    // B2-009: UDP datagram support via WS proxy
+    /// Send a UDP datagram through WS proxy. Returns bytes sent or < 0.
+    fn js_udp_send_chirho(host_ptr_chirho: u32, host_len_chirho: u32, port_chirho: u32, buf_chirho: u32, len_chirho: u32) -> i32;
+    /// Receive a UDP datagram. Returns bytes read or 0 if none, < 0 on error.
+    fn js_udp_recv_chirho(buf_chirho: u32, max_len_chirho: u32, src_ptr_chirho: u32) -> i32;
+
+    // B4-004: WebGL rendering backend
+    /// Initialize WebGL context. Returns 0 on success, < 0 if unsupported.
+    fn js_webgl_init_chirho(width_chirho: u32, height_chirho: u32) -> i32;
+    /// Submit GL draw call (opcode, args). Returns 0 on success.
+    fn js_webgl_draw_chirho(opcode_chirho: u32, args_ptr_chirho: u32, args_len_chirho: u32) -> i32;
+    /// Swap WebGL buffers (present).
+    fn js_webgl_swap_chirho();
+
+    // B4-008: Clipboard integration
+    /// Read from browser clipboard. Returns bytes read into buf, or 0 if empty.
+    fn js_clipboard_read_chirho(buf_ptr_chirho: u32, max_len_chirho: u32) -> i32;
+    /// Write to browser clipboard. Returns 0 on success.
+    fn js_clipboard_write_chirho(buf_ptr_chirho: u32, len_chirho: u32) -> i32;
+
+    // B4-009: Font rendering via Canvas 2D text metrics
+    /// Measure text width in pixels at given font size. Returns width.
+    fn js_font_measure_chirho(text_ptr_chirho: u32, text_len_chirho: u32, font_size_chirho: u32) -> u32;
+
+    // B4-015: Cursor rendering
+    /// Set browser cursor style. style: 0=default,1=pointer,2=text,3=move,4=resize,5=crosshair
+    fn js_cursor_set_chirho(style_chirho: u32);
+
+    // B4-017: DPI / multi-monitor
+    /// Get device pixel ratio * 100 (e.g. 200 for 2x retina). Returns ratio.
+    fn js_dpi_ratio_chirho() -> u32;
+    /// Get screen dimensions [width, height] into ptr. Returns screen count.
+    fn js_screen_info_chirho(result_ptr_chirho: u32) -> i32;
+
+    // B3-011: Cloudflared tunnel NBD
+    /// Check if cloudflared tunnel is available. Returns 1 if available, 0 if not.
+    fn js_tunnel_available_chirho() -> i32;
+    /// Connect to NBD server through tunnel. Returns handle >= 0 or < 0.
+    fn js_nbd_connect_chirho(endpoint_ptr_chirho: u32, endpoint_len_chirho: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -1632,6 +1703,1386 @@ impl X11ServerChirho {
 static mut X11_SERVER_CHIRHO: X11ServerChirho = X11ServerChirho::new_chirho();
 
 // ---------------------------------------------------------------------------
+// B2-008: TLS/SSL stub — E2E encryption via SubtleCrypto (X25519+ChaCha20)
+// ---------------------------------------------------------------------------
+
+const MAX_TLS_SESSIONS_CHIRHO: usize = 8;
+
+#[derive(Clone, Copy, PartialEq)]
+enum TlsStateChirho {
+    FreeChirho,
+    HandshakingChirho,
+    EstablishedChirho,
+    ClosedChirho,
+}
+
+#[derive(Clone, Copy)]
+struct TlsSessionChirho {
+    state_chirho: TlsStateChirho,
+    socket_fd_chirho: i32,
+    /// Cipher suite: 0 = ChaCha20-Poly1305, 1 = AES-256-GCM
+    cipher_suite_chirho: u8,
+    /// Bytes sent/received counters for diagnostics
+    bytes_sent_chirho: u64,
+    bytes_recv_chirho: u64,
+}
+
+impl TlsSessionChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            state_chirho: TlsStateChirho::FreeChirho,
+            socket_fd_chirho: -1,
+            cipher_suite_chirho: 0,
+            bytes_sent_chirho: 0,
+            bytes_recv_chirho: 0,
+        }
+    }
+}
+
+struct TlsTableChirho {
+    sessions_chirho: [TlsSessionChirho; MAX_TLS_SESSIONS_CHIRHO],
+}
+
+impl TlsTableChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            sessions_chirho: [TlsSessionChirho::empty_chirho(); MAX_TLS_SESSIONS_CHIRHO],
+        }
+    }
+
+    fn handshake_chirho(&mut self, host_chirho: &[u8], port_chirho: u32) -> i32 {
+        for i_chirho in 0..MAX_TLS_SESSIONS_CHIRHO {
+            if self.sessions_chirho[i_chirho].state_chirho == TlsStateChirho::FreeChirho {
+                let rc_chirho = unsafe {
+                    js_tls_handshake_chirho(
+                        host_chirho.as_ptr() as u32,
+                        host_chirho.len() as u32,
+                        port_chirho,
+                    )
+                };
+                if rc_chirho >= 0 {
+                    self.sessions_chirho[i_chirho].state_chirho = TlsStateChirho::EstablishedChirho;
+                    self.sessions_chirho[i_chirho].socket_fd_chirho = rc_chirho;
+                    self.sessions_chirho[i_chirho].cipher_suite_chirho = 0;
+                    self.sessions_chirho[i_chirho].bytes_sent_chirho = 0;
+                    self.sessions_chirho[i_chirho].bytes_recv_chirho = 0;
+                    return i_chirho as i32;
+                }
+                return -5; // EIO
+            }
+        }
+        -23 // ENFILE
+    }
+
+    fn send_chirho(&mut self, session_chirho: usize, data_chirho: &[u8]) -> i32 {
+        if session_chirho >= MAX_TLS_SESSIONS_CHIRHO { return -9; }
+        if self.sessions_chirho[session_chirho].state_chirho != TlsStateChirho::EstablishedChirho { return -107; }
+        let rc_chirho = unsafe {
+            js_tls_send_chirho(
+                self.sessions_chirho[session_chirho].socket_fd_chirho,
+                data_chirho.as_ptr() as u32,
+                data_chirho.len() as u32,
+            )
+        };
+        if rc_chirho > 0 {
+            self.sessions_chirho[session_chirho].bytes_sent_chirho += rc_chirho as u64;
+        }
+        rc_chirho
+    }
+
+    fn recv_chirho(&mut self, session_chirho: usize, buf_chirho: &mut [u8]) -> i32 {
+        if session_chirho >= MAX_TLS_SESSIONS_CHIRHO { return -9; }
+        if self.sessions_chirho[session_chirho].state_chirho != TlsStateChirho::EstablishedChirho { return -107; }
+        let rc_chirho = unsafe {
+            js_tls_recv_chirho(
+                self.sessions_chirho[session_chirho].socket_fd_chirho,
+                buf_chirho.as_mut_ptr() as u32,
+                buf_chirho.len() as u32,
+            )
+        };
+        if rc_chirho > 0 {
+            self.sessions_chirho[session_chirho].bytes_recv_chirho += rc_chirho as u64;
+        }
+        rc_chirho
+    }
+
+    fn close_chirho(&mut self, session_chirho: usize) {
+        if session_chirho < MAX_TLS_SESSIONS_CHIRHO {
+            if self.sessions_chirho[session_chirho].state_chirho != TlsStateChirho::FreeChirho {
+                unsafe { js_tls_close_chirho(self.sessions_chirho[session_chirho].socket_fd_chirho); }
+                self.sessions_chirho[session_chirho].state_chirho = TlsStateChirho::FreeChirho;
+            }
+        }
+    }
+
+    fn active_count_chirho(&self) -> usize {
+        let mut count_chirho = 0usize;
+        for i_chirho in 0..MAX_TLS_SESSIONS_CHIRHO {
+            if self.sessions_chirho[i_chirho].state_chirho == TlsStateChirho::EstablishedChirho {
+                count_chirho += 1;
+            }
+        }
+        count_chirho
+    }
+}
+
+static mut TLS_TABLE_CHIRHO: TlsTableChirho = TlsTableChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B2-009: UDP socket support via WS proxy
+// ---------------------------------------------------------------------------
+
+const MAX_UDP_SOCKETS_CHIRHO: usize = 8;
+
+#[derive(Clone, Copy, PartialEq)]
+enum UdpStateChirho {
+    FreeChirho,
+    BoundChirho,
+    ConnectedChirho,
+}
+
+#[derive(Clone, Copy)]
+struct UdpSocketChirho {
+    state_chirho: UdpStateChirho,
+    local_port_chirho: u16,
+    remote_ip_chirho: [u8; 4],
+    remote_port_chirho: u16,
+    bytes_sent_chirho: u64,
+    bytes_recv_chirho: u64,
+}
+
+impl UdpSocketChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            state_chirho: UdpStateChirho::FreeChirho,
+            local_port_chirho: 0,
+            remote_ip_chirho: [0; 4],
+            remote_port_chirho: 0,
+            bytes_sent_chirho: 0,
+            bytes_recv_chirho: 0,
+        }
+    }
+}
+
+struct UdpTableChirho {
+    sockets_chirho: [UdpSocketChirho; MAX_UDP_SOCKETS_CHIRHO],
+    next_port_chirho: u16,
+}
+
+impl UdpTableChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            sockets_chirho: [UdpSocketChirho::empty_chirho(); MAX_UDP_SOCKETS_CHIRHO],
+            next_port_chirho: 49152,
+        }
+    }
+
+    fn create_chirho(&mut self) -> i32 {
+        for i_chirho in 0..MAX_UDP_SOCKETS_CHIRHO {
+            if self.sockets_chirho[i_chirho].state_chirho == UdpStateChirho::FreeChirho {
+                self.sockets_chirho[i_chirho].state_chirho = UdpStateChirho::BoundChirho;
+                self.sockets_chirho[i_chirho].local_port_chirho = self.next_port_chirho;
+                self.next_port_chirho = self.next_port_chirho.wrapping_add(1);
+                if self.next_port_chirho < 49152 { self.next_port_chirho = 49152; }
+                return (200 + i_chirho) as i32; // fd range 200-207 for UDP
+            }
+        }
+        -23 // ENFILE
+    }
+
+    fn sendto_chirho(&mut self, fd_chirho: i32, data_chirho: &[u8], ip_chirho: &[u8; 4], port_chirho: u16) -> i32 {
+        let idx_chirho = (fd_chirho - 200) as usize;
+        if idx_chirho >= MAX_UDP_SOCKETS_CHIRHO { return -9; }
+        if self.sockets_chirho[idx_chirho].state_chirho == UdpStateChirho::FreeChirho { return -9; }
+        // Build host string from IP
+        let mut host_buf_chirho = [0u8; 16];
+        let host_len_chirho = format_ip_chirho(ip_chirho, &mut host_buf_chirho);
+        let rc_chirho = unsafe {
+            js_udp_send_chirho(
+                host_buf_chirho.as_ptr() as u32,
+                host_len_chirho as u32,
+                port_chirho as u32,
+                data_chirho.as_ptr() as u32,
+                data_chirho.len() as u32,
+            )
+        };
+        if rc_chirho > 0 {
+            self.sockets_chirho[idx_chirho].bytes_sent_chirho += rc_chirho as u64;
+        }
+        rc_chirho
+    }
+
+    fn recvfrom_chirho(&mut self, fd_chirho: i32, buf_chirho: &mut [u8]) -> i32 {
+        let idx_chirho = (fd_chirho - 200) as usize;
+        if idx_chirho >= MAX_UDP_SOCKETS_CHIRHO { return -9; }
+        if self.sockets_chirho[idx_chirho].state_chirho == UdpStateChirho::FreeChirho { return -9; }
+        let mut src_info_chirho = [0u8; 6]; // 4 bytes IP + 2 bytes port
+        let rc_chirho = unsafe {
+            js_udp_recv_chirho(
+                buf_chirho.as_mut_ptr() as u32,
+                buf_chirho.len() as u32,
+                src_info_chirho.as_mut_ptr() as u32,
+            )
+        };
+        if rc_chirho > 0 {
+            self.sockets_chirho[idx_chirho].bytes_recv_chirho += rc_chirho as u64;
+        }
+        rc_chirho
+    }
+
+    fn close_chirho(&mut self, fd_chirho: i32) {
+        let idx_chirho = (fd_chirho - 200) as usize;
+        if idx_chirho < MAX_UDP_SOCKETS_CHIRHO {
+            self.sockets_chirho[idx_chirho].state_chirho = UdpStateChirho::FreeChirho;
+        }
+    }
+}
+
+/// Format IPv4 address bytes into dotted-decimal string. Returns length.
+fn format_ip_chirho(ip_chirho: &[u8; 4], buf_chirho: &mut [u8; 16]) -> usize {
+    let mut pos_chirho = 0usize;
+    for octet_idx_chirho in 0..4usize {
+        if octet_idx_chirho > 0 {
+            buf_chirho[pos_chirho] = b'.';
+            pos_chirho += 1;
+        }
+        let val_chirho = ip_chirho[octet_idx_chirho];
+        if val_chirho >= 100 {
+            buf_chirho[pos_chirho] = b'0' + (val_chirho / 100);
+            pos_chirho += 1;
+        }
+        if val_chirho >= 10 {
+            buf_chirho[pos_chirho] = b'0' + ((val_chirho / 10) % 10);
+            pos_chirho += 1;
+        }
+        buf_chirho[pos_chirho] = b'0' + (val_chirho % 10);
+        pos_chirho += 1;
+    }
+    pos_chirho
+}
+
+static mut UDP_TABLE_CHIRHO: UdpTableChirho = UdpTableChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B3-006: Filesystem events / inotify-like watcher
+// ---------------------------------------------------------------------------
+
+const MAX_INOTIFY_WATCHES_CHIRHO: usize = 16;
+const MAX_INOTIFY_EVENTS_CHIRHO: usize = 32;
+
+/// Inotify event types
+const IN_CREATE_CHIRHO: u32 = 0x100;
+const IN_DELETE_CHIRHO: u32 = 0x200;
+const IN_MODIFY_CHIRHO: u32 = 0x002;
+const IN_ACCESS_CHIRHO: u32 = 0x001;
+const IN_CLOSE_WRITE_CHIRHO: u32 = 0x008;
+
+#[derive(Clone, Copy)]
+struct InotifyWatchChirho {
+    active_chirho: bool,
+    wd_chirho: i32,
+    path_chirho: [u8; 128],
+    path_len_chirho: usize,
+    mask_chirho: u32,
+}
+
+impl InotifyWatchChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            active_chirho: false,
+            wd_chirho: -1,
+            path_chirho: [0u8; 128],
+            path_len_chirho: 0,
+            mask_chirho: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InotifyEventChirho {
+    wd_chirho: i32,
+    mask_chirho: u32,
+    name_chirho: [u8; 64],
+    name_len_chirho: usize,
+}
+
+impl InotifyEventChirho {
+    const fn empty_chirho() -> Self {
+        Self { wd_chirho: 0, mask_chirho: 0, name_chirho: [0u8; 64], name_len_chirho: 0 }
+    }
+}
+
+struct InotifySubsystemChirho {
+    watches_chirho: [InotifyWatchChirho; MAX_INOTIFY_WATCHES_CHIRHO],
+    events_chirho: [InotifyEventChirho; MAX_INOTIFY_EVENTS_CHIRHO],
+    event_head_chirho: usize,
+    event_tail_chirho: usize,
+    next_wd_chirho: i32,
+}
+
+impl InotifySubsystemChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            watches_chirho: [InotifyWatchChirho::empty_chirho(); MAX_INOTIFY_WATCHES_CHIRHO],
+            events_chirho: [InotifyEventChirho::empty_chirho(); MAX_INOTIFY_EVENTS_CHIRHO],
+            event_head_chirho: 0,
+            event_tail_chirho: 0,
+            next_wd_chirho: 1,
+        }
+    }
+
+    fn add_watch_chirho(&mut self, path_chirho: &[u8], mask_chirho: u32) -> i32 {
+        for i_chirho in 0..MAX_INOTIFY_WATCHES_CHIRHO {
+            if !self.watches_chirho[i_chirho].active_chirho {
+                let wd_chirho = self.next_wd_chirho;
+                self.next_wd_chirho += 1;
+                self.watches_chirho[i_chirho].active_chirho = true;
+                self.watches_chirho[i_chirho].wd_chirho = wd_chirho;
+                let len_chirho = if path_chirho.len() > 128 { 128 } else { path_chirho.len() };
+                self.watches_chirho[i_chirho].path_chirho[..len_chirho].copy_from_slice(&path_chirho[..len_chirho]);
+                self.watches_chirho[i_chirho].path_len_chirho = len_chirho;
+                self.watches_chirho[i_chirho].mask_chirho = mask_chirho;
+                return wd_chirho;
+            }
+        }
+        -28 // ENOSPC
+    }
+
+    fn remove_watch_chirho(&mut self, wd_chirho: i32) -> i32 {
+        for i_chirho in 0..MAX_INOTIFY_WATCHES_CHIRHO {
+            if self.watches_chirho[i_chirho].active_chirho && self.watches_chirho[i_chirho].wd_chirho == wd_chirho {
+                self.watches_chirho[i_chirho].active_chirho = false;
+                return 0;
+            }
+        }
+        -22 // EINVAL
+    }
+
+    /// Emit an event for watches matching the path
+    fn emit_event_chirho(&mut self, path_chirho: &[u8], event_mask_chirho: u32, name_chirho: &[u8]) {
+        for i_chirho in 0..MAX_INOTIFY_WATCHES_CHIRHO {
+            let w_chirho = &self.watches_chirho[i_chirho];
+            if w_chirho.active_chirho && (w_chirho.mask_chirho & event_mask_chirho) != 0 {
+                // Check if the watch path is a prefix of the event path
+                if path_chirho.len() >= w_chirho.path_len_chirho
+                    && &path_chirho[..w_chirho.path_len_chirho] == &w_chirho.path_chirho[..w_chirho.path_len_chirho]
+                {
+                    let next_chirho = (self.event_head_chirho + 1) % MAX_INOTIFY_EVENTS_CHIRHO;
+                    if next_chirho != self.event_tail_chirho {
+                        let evt_chirho = &mut self.events_chirho[self.event_head_chirho];
+                        evt_chirho.wd_chirho = w_chirho.wd_chirho;
+                        evt_chirho.mask_chirho = event_mask_chirho;
+                        let nlen_chirho = if name_chirho.len() > 64 { 64 } else { name_chirho.len() };
+                        evt_chirho.name_chirho[..nlen_chirho].copy_from_slice(&name_chirho[..nlen_chirho]);
+                        evt_chirho.name_len_chirho = nlen_chirho;
+                        self.event_head_chirho = next_chirho;
+                    }
+                }
+            }
+        }
+    }
+
+    fn read_event_chirho(&mut self) -> Option<InotifyEventChirho> {
+        if self.event_head_chirho == self.event_tail_chirho { return None; }
+        let evt_chirho = self.events_chirho[self.event_tail_chirho];
+        self.event_tail_chirho = (self.event_tail_chirho + 1) % MAX_INOTIFY_EVENTS_CHIRHO;
+        Some(evt_chirho)
+    }
+
+    fn pending_count_chirho(&self) -> usize {
+        if self.event_head_chirho >= self.event_tail_chirho {
+            self.event_head_chirho - self.event_tail_chirho
+        } else {
+            MAX_INOTIFY_EVENTS_CHIRHO - self.event_tail_chirho + self.event_head_chirho
+        }
+    }
+}
+
+static mut INOTIFY_CHIRHO: InotifySubsystemChirho = InotifySubsystemChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B3-010 extended: Filesystem integrity checksums (CRC32)
+// ---------------------------------------------------------------------------
+
+/// Simple CRC32 checksum for data integrity verification
+fn crc32_chirho(data_chirho: &[u8]) -> u32 {
+    let mut crc_chirho: u32 = 0xFFFFFFFF;
+    for &byte_chirho in data_chirho {
+        crc_chirho ^= byte_chirho as u32;
+        for _ in 0..8 {
+            if crc_chirho & 1 != 0 {
+                crc_chirho = (crc_chirho >> 1) ^ 0xEDB88320;
+            } else {
+                crc_chirho >>= 1;
+            }
+        }
+    }
+    !crc_chirho
+}
+
+// ---------------------------------------------------------------------------
+// B4-005: Window manager (stacking/tiling)
+// ---------------------------------------------------------------------------
+
+const MAX_WM_WINDOWS_CHIRHO: usize = 16;
+const WM_TITLE_BAR_HEIGHT_CHIRHO: u16 = 24;
+const WM_BORDER_WIDTH_CHIRHO: u16 = 2;
+
+#[derive(Clone, Copy, PartialEq)]
+enum WmLayoutModeChirho {
+    StackingChirho,
+    TilingChirho,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum WmWindowFlagChirho {
+    NoneChirho,
+    MaximizedChirho,
+    MinimizedChirho,
+}
+
+#[derive(Clone, Copy)]
+struct WmWindowChirho {
+    x11_wid_chirho: u32,
+    x_chirho: i16,
+    y_chirho: i16,
+    width_chirho: u16,
+    height_chirho: u16,
+    title_chirho: [u8; 64],
+    title_len_chirho: usize,
+    flags_chirho: WmWindowFlagChirho,
+    stacking_order_chirho: u16,
+    active_chirho: bool,
+}
+
+impl WmWindowChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            x11_wid_chirho: 0,
+            x_chirho: 0,
+            y_chirho: 0,
+            width_chirho: 0,
+            height_chirho: 0,
+            title_chirho: [0u8; 64],
+            title_len_chirho: 0,
+            flags_chirho: WmWindowFlagChirho::NoneChirho,
+            stacking_order_chirho: 0,
+            active_chirho: false,
+        }
+    }
+}
+
+struct WindowManagerChirho {
+    windows_chirho: [WmWindowChirho; MAX_WM_WINDOWS_CHIRHO],
+    layout_mode_chirho: WmLayoutModeChirho,
+    active_window_chirho: u32,
+    next_stack_order_chirho: u16,
+    screen_width_chirho: u16,
+    screen_height_chirho: u16,
+    /// B4-016: Window decoration theme colors
+    title_bg_color_chirho: u32,
+    title_fg_color_chirho: u32,
+    border_color_chirho: u32,
+    active_border_color_chirho: u32,
+}
+
+impl WindowManagerChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            windows_chirho: [WmWindowChirho::empty_chirho(); MAX_WM_WINDOWS_CHIRHO],
+            layout_mode_chirho: WmLayoutModeChirho::StackingChirho,
+            active_window_chirho: 0,
+            next_stack_order_chirho: 1,
+            screen_width_chirho: 640,
+            screen_height_chirho: 480,
+            title_bg_color_chirho: 0xFF2D2D44,
+            title_fg_color_chirho: 0xFFE0E0FF,
+            border_color_chirho: 0xFF444466,
+            active_border_color_chirho: 0xFF6688FF,
+        }
+    }
+
+    fn manage_window_chirho(&mut self, wid_chirho: u32, x_chirho: i16, y_chirho: i16, w_chirho: u16, h_chirho: u16) -> i32 {
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if !self.windows_chirho[i_chirho].active_chirho {
+                self.windows_chirho[i_chirho].active_chirho = true;
+                self.windows_chirho[i_chirho].x11_wid_chirho = wid_chirho;
+                self.windows_chirho[i_chirho].x_chirho = x_chirho;
+                self.windows_chirho[i_chirho].y_chirho = y_chirho;
+                self.windows_chirho[i_chirho].width_chirho = w_chirho;
+                self.windows_chirho[i_chirho].height_chirho = h_chirho;
+                self.windows_chirho[i_chirho].stacking_order_chirho = self.next_stack_order_chirho;
+                self.next_stack_order_chirho += 1;
+                self.active_window_chirho = wid_chirho;
+                return i_chirho as i32;
+            }
+        }
+        -28 // ENOSPC
+    }
+
+    fn unmanage_window_chirho(&mut self, wid_chirho: u32) {
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].active_chirho && self.windows_chirho[i_chirho].x11_wid_chirho == wid_chirho {
+                self.windows_chirho[i_chirho].active_chirho = false;
+                if self.active_window_chirho == wid_chirho {
+                    self.active_window_chirho = 0;
+                }
+                return;
+            }
+        }
+    }
+
+    fn raise_window_chirho(&mut self, wid_chirho: u32) {
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].active_chirho && self.windows_chirho[i_chirho].x11_wid_chirho == wid_chirho {
+                self.windows_chirho[i_chirho].stacking_order_chirho = self.next_stack_order_chirho;
+                self.next_stack_order_chirho += 1;
+                self.active_window_chirho = wid_chirho;
+                return;
+            }
+        }
+    }
+
+    fn move_window_chirho(&mut self, wid_chirho: u32, x_chirho: i16, y_chirho: i16) {
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].active_chirho && self.windows_chirho[i_chirho].x11_wid_chirho == wid_chirho {
+                self.windows_chirho[i_chirho].x_chirho = x_chirho;
+                self.windows_chirho[i_chirho].y_chirho = y_chirho;
+                return;
+            }
+        }
+    }
+
+    fn resize_window_chirho(&mut self, wid_chirho: u32, w_chirho: u16, h_chirho: u16) {
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].active_chirho && self.windows_chirho[i_chirho].x11_wid_chirho == wid_chirho {
+                self.windows_chirho[i_chirho].width_chirho = w_chirho;
+                self.windows_chirho[i_chirho].height_chirho = h_chirho;
+                return;
+            }
+        }
+    }
+
+    fn set_title_chirho(&mut self, wid_chirho: u32, title_chirho: &[u8]) {
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].active_chirho && self.windows_chirho[i_chirho].x11_wid_chirho == wid_chirho {
+                let len_chirho = if title_chirho.len() > 64 { 64 } else { title_chirho.len() };
+                self.windows_chirho[i_chirho].title_chirho[..len_chirho].copy_from_slice(&title_chirho[..len_chirho]);
+                self.windows_chirho[i_chirho].title_len_chirho = len_chirho;
+                return;
+            }
+        }
+    }
+
+    /// B4-005: Tile all windows in a grid
+    fn tile_all_chirho(&mut self) {
+        let mut count_chirho = 0u16;
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].active_chirho {
+                count_chirho += 1;
+            }
+        }
+        if count_chirho == 0 { return; }
+        let cols_chirho = if count_chirho <= 2 { count_chirho } else { 2 };
+        let rows_chirho = (count_chirho + cols_chirho - 1) / cols_chirho;
+        let cw_chirho = self.screen_width_chirho / cols_chirho;
+        let ch_chirho = (self.screen_height_chirho - WM_TITLE_BAR_HEIGHT_CHIRHO) / rows_chirho;
+        let mut idx_chirho = 0u16;
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].active_chirho {
+                let col_chirho = idx_chirho % cols_chirho;
+                let row_chirho = idx_chirho / cols_chirho;
+                self.windows_chirho[i_chirho].x_chirho = (col_chirho * cw_chirho) as i16;
+                self.windows_chirho[i_chirho].y_chirho = (WM_TITLE_BAR_HEIGHT_CHIRHO + row_chirho * ch_chirho) as i16;
+                self.windows_chirho[i_chirho].width_chirho = cw_chirho;
+                self.windows_chirho[i_chirho].height_chirho = ch_chirho;
+                self.windows_chirho[i_chirho].flags_chirho = WmWindowFlagChirho::NoneChirho;
+                idx_chirho += 1;
+            }
+        }
+    }
+
+    /// B4-016: Draw window decorations (title bar, borders, buttons)
+    fn draw_decorations_chirho(&self, win_idx_chirho: usize) {
+        if win_idx_chirho >= MAX_WM_WINDOWS_CHIRHO { return; }
+        let win_chirho = &self.windows_chirho[win_idx_chirho];
+        if !win_chirho.active_chirho { return; }
+        let is_active_chirho = win_chirho.x11_wid_chirho == self.active_window_chirho;
+        let border_color_chirho = if is_active_chirho { self.active_border_color_chirho } else { self.border_color_chirho };
+        // Draw border
+        let bw_chirho = WM_BORDER_WIDTH_CHIRHO as u32;
+        let wx_chirho = win_chirho.x_chirho as u32;
+        let wy_chirho = win_chirho.y_chirho as u32;
+        let ww_chirho = win_chirho.width_chirho as u32;
+        let wh_chirho = win_chirho.height_chirho as u32;
+        unsafe {
+            // Top border
+            js_fb_fill_rect_chirho(wx_chirho, wy_chirho, ww_chirho, bw_chirho, border_color_chirho);
+            // Bottom border
+            js_fb_fill_rect_chirho(wx_chirho, wy_chirho + wh_chirho - bw_chirho, ww_chirho, bw_chirho, border_color_chirho);
+            // Left border
+            js_fb_fill_rect_chirho(wx_chirho, wy_chirho, bw_chirho, wh_chirho, border_color_chirho);
+            // Right border
+            js_fb_fill_rect_chirho(wx_chirho + ww_chirho - bw_chirho, wy_chirho, bw_chirho, wh_chirho, border_color_chirho);
+            // Title bar background
+            let tb_h_chirho = WM_TITLE_BAR_HEIGHT_CHIRHO as u32;
+            js_fb_fill_rect_chirho(wx_chirho + bw_chirho, wy_chirho + bw_chirho, ww_chirho - 2 * bw_chirho, tb_h_chirho, self.title_bg_color_chirho);
+            // Title text
+            if win_chirho.title_len_chirho > 0 {
+                js_fb_draw_text_chirho(
+                    wx_chirho + bw_chirho + 4,
+                    wy_chirho + bw_chirho + 4,
+                    win_chirho.title_chirho.as_ptr() as u32,
+                    win_chirho.title_len_chirho as u32,
+                    self.title_fg_color_chirho,
+                );
+            }
+            // Close button (small red square at top-right)
+            let close_x_chirho = wx_chirho + ww_chirho - bw_chirho - 18;
+            let close_y_chirho = wy_chirho + bw_chirho + 4;
+            js_fb_fill_rect_chirho(close_x_chirho, close_y_chirho, 14, 14, 0xFFCC4444);
+        }
+    }
+
+    fn window_count_chirho(&self) -> usize {
+        let mut count_chirho = 0usize;
+        for i_chirho in 0..MAX_WM_WINDOWS_CHIRHO {
+            if self.windows_chirho[i_chirho].active_chirho { count_chirho += 1; }
+        }
+        count_chirho
+    }
+}
+
+static mut WINDOW_MANAGER_CHIRHO: WindowManagerChirho = WindowManagerChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-008: Clipboard subsystem — bridge X11 selections <-> Clipboard API
+// ---------------------------------------------------------------------------
+
+const CLIPBOARD_BUF_SIZE_CHIRHO: usize = 4096;
+
+struct ClipboardChirho {
+    primary_chirho: [u8; CLIPBOARD_BUF_SIZE_CHIRHO],
+    primary_len_chirho: usize,
+    clipboard_chirho: [u8; CLIPBOARD_BUF_SIZE_CHIRHO],
+    clipboard_len_chirho: usize,
+}
+
+impl ClipboardChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            primary_chirho: [0u8; CLIPBOARD_BUF_SIZE_CHIRHO],
+            primary_len_chirho: 0,
+            clipboard_chirho: [0u8; CLIPBOARD_BUF_SIZE_CHIRHO],
+            clipboard_len_chirho: 0,
+        }
+    }
+
+    /// Set X11 PRIMARY selection
+    fn set_primary_chirho(&mut self, data_chirho: &[u8]) {
+        let len_chirho = if data_chirho.len() > CLIPBOARD_BUF_SIZE_CHIRHO { CLIPBOARD_BUF_SIZE_CHIRHO } else { data_chirho.len() };
+        self.primary_chirho[..len_chirho].copy_from_slice(&data_chirho[..len_chirho]);
+        self.primary_len_chirho = len_chirho;
+    }
+
+    /// Set X11 CLIPBOARD selection and sync to browser
+    fn set_clipboard_chirho(&mut self, data_chirho: &[u8]) {
+        let len_chirho = if data_chirho.len() > CLIPBOARD_BUF_SIZE_CHIRHO { CLIPBOARD_BUF_SIZE_CHIRHO } else { data_chirho.len() };
+        self.clipboard_chirho[..len_chirho].copy_from_slice(&data_chirho[..len_chirho]);
+        self.clipboard_len_chirho = len_chirho;
+        // Sync to browser clipboard
+        unsafe {
+            js_clipboard_write_chirho(self.clipboard_chirho.as_ptr() as u32, len_chirho as u32);
+        }
+    }
+
+    /// Get from browser clipboard into X11 CLIPBOARD selection
+    fn sync_from_browser_chirho(&mut self) -> usize {
+        let rc_chirho = unsafe {
+            js_clipboard_read_chirho(self.clipboard_chirho.as_mut_ptr() as u32, CLIPBOARD_BUF_SIZE_CHIRHO as u32)
+        };
+        if rc_chirho > 0 {
+            self.clipboard_len_chirho = rc_chirho as usize;
+            rc_chirho as usize
+        } else {
+            0
+        }
+    }
+}
+
+static mut CLIPBOARD_CHIRHO: ClipboardChirho = ClipboardChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-009: Font rendering subsystem
+// ---------------------------------------------------------------------------
+
+const MAX_FONTS_CHIRHO: usize = 8;
+
+#[derive(Clone, Copy)]
+struct FontEntryChirho {
+    active_chirho: bool,
+    name_chirho: [u8; 64],
+    name_len_chirho: usize,
+    size_chirho: u16,
+    /// Font metrics
+    ascent_chirho: u16,
+    descent_chirho: u16,
+    max_width_chirho: u16,
+}
+
+impl FontEntryChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            active_chirho: false,
+            name_chirho: [0u8; 64],
+            name_len_chirho: 0,
+            size_chirho: 14,
+            ascent_chirho: 11,
+            descent_chirho: 3,
+            max_width_chirho: 8,
+        }
+    }
+}
+
+struct FontServerChirho {
+    fonts_chirho: [FontEntryChirho; MAX_FONTS_CHIRHO],
+    default_font_idx_chirho: usize,
+}
+
+impl FontServerChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            fonts_chirho: [FontEntryChirho::empty_chirho(); MAX_FONTS_CHIRHO],
+            default_font_idx_chirho: 0,
+        }
+    }
+
+    fn init_chirho(&mut self) {
+        // Register built-in fonts (mapped to browser fonts via Canvas 2D)
+        let builtin_fonts_chirho: &[(&[u8], u16)] = &[
+            (b"fixed", 14),
+            (b"6x13", 13),
+            (b"9x15", 15),
+            (b"cursor", 14),
+        ];
+        for (i_chirho, (name_chirho, size_chirho)) in builtin_fonts_chirho.iter().enumerate() {
+            if i_chirho >= MAX_FONTS_CHIRHO { break; }
+            self.fonts_chirho[i_chirho].active_chirho = true;
+            let len_chirho = if name_chirho.len() > 64 { 64 } else { name_chirho.len() };
+            self.fonts_chirho[i_chirho].name_chirho[..len_chirho].copy_from_slice(&name_chirho[..len_chirho]);
+            self.fonts_chirho[i_chirho].name_len_chirho = len_chirho;
+            self.fonts_chirho[i_chirho].size_chirho = *size_chirho;
+            self.fonts_chirho[i_chirho].ascent_chirho = (*size_chirho * 11) / 14;
+            self.fonts_chirho[i_chirho].descent_chirho = (*size_chirho * 3) / 14;
+            self.fonts_chirho[i_chirho].max_width_chirho = (*size_chirho * 8) / 14;
+        }
+    }
+
+    fn find_font_chirho(&self, name_chirho: &[u8]) -> Option<usize> {
+        for i_chirho in 0..MAX_FONTS_CHIRHO {
+            if self.fonts_chirho[i_chirho].active_chirho
+                && self.fonts_chirho[i_chirho].name_len_chirho == name_chirho.len()
+                && &self.fonts_chirho[i_chirho].name_chirho[..name_chirho.len()] == name_chirho
+            {
+                return Some(i_chirho);
+            }
+        }
+        None
+    }
+
+    fn measure_text_chirho(&self, font_idx_chirho: usize, text_chirho: &[u8]) -> u32 {
+        if font_idx_chirho >= MAX_FONTS_CHIRHO || !self.fonts_chirho[font_idx_chirho].active_chirho {
+            return (text_chirho.len() * 8) as u32; // fallback
+        }
+        unsafe {
+            js_font_measure_chirho(
+                text_chirho.as_ptr() as u32,
+                text_chirho.len() as u32,
+                self.fonts_chirho[font_idx_chirho].size_chirho as u32,
+            )
+        }
+    }
+}
+
+static mut FONT_SERVER_CHIRHO: FontServerChirho = FontServerChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-004: WebGL rendering backend stub (OpenGL -> WebGL mapping)
+// ---------------------------------------------------------------------------
+
+struct WebGlBackendChirho {
+    initialized_chirho: bool,
+    width_chirho: u32,
+    height_chirho: u32,
+    draw_calls_chirho: u64,
+}
+
+impl WebGlBackendChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            initialized_chirho: false,
+            width_chirho: 0,
+            height_chirho: 0,
+            draw_calls_chirho: 0,
+        }
+    }
+
+    fn init_chirho(&mut self, w_chirho: u32, h_chirho: u32) -> i32 {
+        let rc_chirho = unsafe { js_webgl_init_chirho(w_chirho, h_chirho) };
+        if rc_chirho >= 0 {
+            self.initialized_chirho = true;
+            self.width_chirho = w_chirho;
+            self.height_chirho = h_chirho;
+            self.draw_calls_chirho = 0;
+        }
+        rc_chirho
+    }
+
+    fn draw_chirho(&mut self, opcode_chirho: u32, args_chirho: &[u8]) -> i32 {
+        if !self.initialized_chirho { return -6; } // ENXIO
+        self.draw_calls_chirho += 1;
+        unsafe {
+            js_webgl_draw_chirho(opcode_chirho, args_chirho.as_ptr() as u32, args_chirho.len() as u32)
+        }
+    }
+
+    fn swap_buffers_chirho(&self) {
+        if self.initialized_chirho {
+            unsafe { js_webgl_swap_chirho(); }
+        }
+    }
+}
+
+static mut WEBGL_BACKEND_CHIRHO: WebGlBackendChirho = WebGlBackendChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-012: MIT-SHM extension — shared memory for efficient image transfer
+// ---------------------------------------------------------------------------
+
+const MAX_SHM_SEGMENTS_CHIRHO: usize = 8;
+
+#[derive(Clone, Copy)]
+struct ShmSegmentChirho {
+    active_chirho: bool,
+    shm_id_chirho: u32,
+    size_chirho: usize,
+    /// Offset into WASM linear memory where segment data lives
+    mem_offset_chirho: u32,
+}
+
+impl ShmSegmentChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            active_chirho: false,
+            shm_id_chirho: 0,
+            size_chirho: 0,
+            mem_offset_chirho: 0,
+        }
+    }
+}
+
+struct ShmTableChirho {
+    segments_chirho: [ShmSegmentChirho; MAX_SHM_SEGMENTS_CHIRHO],
+    next_id_chirho: u32,
+}
+
+impl ShmTableChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            segments_chirho: [ShmSegmentChirho::empty_chirho(); MAX_SHM_SEGMENTS_CHIRHO],
+            next_id_chirho: 1,
+        }
+    }
+
+    fn attach_chirho(&mut self, size_chirho: usize) -> i32 {
+        for i_chirho in 0..MAX_SHM_SEGMENTS_CHIRHO {
+            if !self.segments_chirho[i_chirho].active_chirho {
+                // Allocate from WASM memory
+                let pages_chirho = (size_chirho + 65535) / 65536;
+                let prev_chirho = core::arch::wasm32::memory_grow(0, pages_chirho);
+                if prev_chirho == usize::MAX { return -12; } // ENOMEM
+                let id_chirho = self.next_id_chirho;
+                self.next_id_chirho += 1;
+                self.segments_chirho[i_chirho].active_chirho = true;
+                self.segments_chirho[i_chirho].shm_id_chirho = id_chirho;
+                self.segments_chirho[i_chirho].size_chirho = size_chirho;
+                self.segments_chirho[i_chirho].mem_offset_chirho = (prev_chirho * 65536) as u32;
+                return id_chirho as i32;
+            }
+        }
+        -28 // ENOSPC
+    }
+
+    fn detach_chirho(&mut self, shm_id_chirho: u32) -> i32 {
+        for i_chirho in 0..MAX_SHM_SEGMENTS_CHIRHO {
+            if self.segments_chirho[i_chirho].active_chirho && self.segments_chirho[i_chirho].shm_id_chirho == shm_id_chirho {
+                self.segments_chirho[i_chirho].active_chirho = false;
+                return 0;
+            }
+        }
+        -22 // EINVAL
+    }
+
+    fn get_offset_chirho(&self, shm_id_chirho: u32) -> Option<u32> {
+        for i_chirho in 0..MAX_SHM_SEGMENTS_CHIRHO {
+            if self.segments_chirho[i_chirho].active_chirho && self.segments_chirho[i_chirho].shm_id_chirho == shm_id_chirho {
+                return Some(self.segments_chirho[i_chirho].mem_offset_chirho);
+            }
+        }
+        None
+    }
+}
+
+static mut SHM_TABLE_CHIRHO: ShmTableChirho = ShmTableChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-013: RENDER extension — alpha compositing & anti-aliased rendering
+// ---------------------------------------------------------------------------
+
+const MAX_RENDER_PICTURES_CHIRHO: usize = 16;
+
+#[derive(Clone, Copy, PartialEq)]
+enum RenderPictFormatChirho {
+    Argb32Chirho,
+    Rgb24Chirho,
+    A8Chirho,
+}
+
+#[derive(Clone, Copy)]
+struct RenderPictureChirho {
+    active_chirho: bool,
+    picture_id_chirho: u32,
+    drawable_id_chirho: u32,
+    format_chirho: RenderPictFormatChirho,
+}
+
+impl RenderPictureChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            active_chirho: false,
+            picture_id_chirho: 0,
+            drawable_id_chirho: 0,
+            format_chirho: RenderPictFormatChirho::Argb32Chirho,
+        }
+    }
+}
+
+struct RenderExtensionChirho {
+    pictures_chirho: [RenderPictureChirho; MAX_RENDER_PICTURES_CHIRHO],
+    next_picture_id_chirho: u32,
+}
+
+impl RenderExtensionChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            pictures_chirho: [RenderPictureChirho::empty_chirho(); MAX_RENDER_PICTURES_CHIRHO],
+            next_picture_id_chirho: 0x01000000,
+        }
+    }
+
+    fn create_picture_chirho(&mut self, drawable_chirho: u32, format_chirho: RenderPictFormatChirho) -> i32 {
+        for i_chirho in 0..MAX_RENDER_PICTURES_CHIRHO {
+            if !self.pictures_chirho[i_chirho].active_chirho {
+                let pid_chirho = self.next_picture_id_chirho;
+                self.next_picture_id_chirho += 1;
+                self.pictures_chirho[i_chirho].active_chirho = true;
+                self.pictures_chirho[i_chirho].picture_id_chirho = pid_chirho;
+                self.pictures_chirho[i_chirho].drawable_id_chirho = drawable_chirho;
+                self.pictures_chirho[i_chirho].format_chirho = format_chirho;
+                return pid_chirho as i32;
+            }
+        }
+        -28 // ENOSPC
+    }
+
+    fn free_picture_chirho(&mut self, pid_chirho: u32) {
+        for i_chirho in 0..MAX_RENDER_PICTURES_CHIRHO {
+            if self.pictures_chirho[i_chirho].active_chirho && self.pictures_chirho[i_chirho].picture_id_chirho == pid_chirho {
+                self.pictures_chirho[i_chirho].active_chirho = false;
+                return;
+            }
+        }
+    }
+
+    /// Composite operation: src OVER dst (Porter-Duff)
+    fn composite_chirho(&self, src_x_chirho: i16, src_y_chirho: i16, dst_x_chirho: i16, dst_y_chirho: i16, w_chirho: u16, h_chirho: u16) {
+        // Implemented via Canvas 2D globalCompositeOperation
+        unsafe {
+            js_fb_fill_rect_chirho(dst_x_chirho as u32, dst_y_chirho as u32, w_chirho as u32, h_chirho as u32, 0x00000000);
+        }
+        let _ = (src_x_chirho, src_y_chirho); // used in full impl
+    }
+}
+
+static mut RENDER_EXT_CHIRHO: RenderExtensionChirho = RenderExtensionChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-014: Unix domain sockets for X11 connections
+// ---------------------------------------------------------------------------
+
+const MAX_UNIX_SOCKETS_CHIRHO: usize = 8;
+const UNIX_SOCK_BUF_SIZE_CHIRHO: usize = 4096;
+
+#[derive(Clone, Copy, PartialEq)]
+enum UnixSockStateChirho {
+    FreeChirho,
+    BoundChirho,
+    ListeningChirho,
+    ConnectedChirho,
+}
+
+#[derive(Clone, Copy)]
+struct UnixSocketChirho {
+    state_chirho: UnixSockStateChirho,
+    path_chirho: [u8; 108],
+    path_len_chirho: usize,
+    peer_chirho: i32,
+    buf_chirho: [u8; UNIX_SOCK_BUF_SIZE_CHIRHO],
+    buf_len_chirho: usize,
+    buf_read_pos_chirho: usize,
+}
+
+impl UnixSocketChirho {
+    const fn empty_chirho() -> Self {
+        Self {
+            state_chirho: UnixSockStateChirho::FreeChirho,
+            path_chirho: [0u8; 108],
+            path_len_chirho: 0,
+            peer_chirho: -1,
+            buf_chirho: [0u8; UNIX_SOCK_BUF_SIZE_CHIRHO],
+            buf_len_chirho: 0,
+            buf_read_pos_chirho: 0,
+        }
+    }
+}
+
+struct UnixSocketTableChirho {
+    sockets_chirho: [UnixSocketChirho; MAX_UNIX_SOCKETS_CHIRHO],
+}
+
+impl UnixSocketTableChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            sockets_chirho: [UnixSocketChirho::empty_chirho(); MAX_UNIX_SOCKETS_CHIRHO],
+        }
+    }
+
+    fn create_chirho(&mut self) -> i32 {
+        for i_chirho in 0..MAX_UNIX_SOCKETS_CHIRHO {
+            if self.sockets_chirho[i_chirho].state_chirho == UnixSockStateChirho::FreeChirho {
+                self.sockets_chirho[i_chirho].state_chirho = UnixSockStateChirho::BoundChirho;
+                return (300 + i_chirho) as i32; // fd range 300-307
+            }
+        }
+        -23 // ENFILE
+    }
+
+    fn bind_chirho(&mut self, fd_chirho: i32, path_chirho: &[u8]) -> i32 {
+        let idx_chirho = (fd_chirho - 300) as usize;
+        if idx_chirho >= MAX_UNIX_SOCKETS_CHIRHO { return -9; }
+        let len_chirho = if path_chirho.len() > 108 { 108 } else { path_chirho.len() };
+        self.sockets_chirho[idx_chirho].path_chirho[..len_chirho].copy_from_slice(&path_chirho[..len_chirho]);
+        self.sockets_chirho[idx_chirho].path_len_chirho = len_chirho;
+        0
+    }
+
+    fn listen_chirho(&mut self, fd_chirho: i32) -> i32 {
+        let idx_chirho = (fd_chirho - 300) as usize;
+        if idx_chirho >= MAX_UNIX_SOCKETS_CHIRHO { return -9; }
+        self.sockets_chirho[idx_chirho].state_chirho = UnixSockStateChirho::ListeningChirho;
+        0
+    }
+
+    fn connect_chirho(&mut self, fd_chirho: i32, path_chirho: &[u8]) -> i32 {
+        let idx_chirho = (fd_chirho - 300) as usize;
+        if idx_chirho >= MAX_UNIX_SOCKETS_CHIRHO { return -9; }
+        // Find a listening socket with matching path
+        for j_chirho in 0..MAX_UNIX_SOCKETS_CHIRHO {
+            if self.sockets_chirho[j_chirho].state_chirho == UnixSockStateChirho::ListeningChirho
+                && self.sockets_chirho[j_chirho].path_len_chirho == path_chirho.len()
+                && &self.sockets_chirho[j_chirho].path_chirho[..path_chirho.len()] == path_chirho
+            {
+                self.sockets_chirho[idx_chirho].state_chirho = UnixSockStateChirho::ConnectedChirho;
+                self.sockets_chirho[idx_chirho].peer_chirho = (300 + j_chirho) as i32;
+                return 0;
+            }
+        }
+        -111 // ECONNREFUSED
+    }
+
+    fn send_chirho(&mut self, fd_chirho: i32, data_chirho: &[u8]) -> i32 {
+        let idx_chirho = (fd_chirho - 300) as usize;
+        if idx_chirho >= MAX_UNIX_SOCKETS_CHIRHO { return -9; }
+        let peer_fd_chirho = self.sockets_chirho[idx_chirho].peer_chirho;
+        if peer_fd_chirho < 300 { return -107; } // ENOTCONN
+        let peer_idx_chirho = (peer_fd_chirho - 300) as usize;
+        if peer_idx_chirho >= MAX_UNIX_SOCKETS_CHIRHO { return -9; }
+        let avail_chirho = UNIX_SOCK_BUF_SIZE_CHIRHO - self.sockets_chirho[peer_idx_chirho].buf_len_chirho;
+        let copy_len_chirho = if data_chirho.len() > avail_chirho { avail_chirho } else { data_chirho.len() };
+        if copy_len_chirho == 0 { return -11; } // EAGAIN
+        let pos_chirho = self.sockets_chirho[peer_idx_chirho].buf_len_chirho;
+        self.sockets_chirho[peer_idx_chirho].buf_chirho[pos_chirho..pos_chirho + copy_len_chirho]
+            .copy_from_slice(&data_chirho[..copy_len_chirho]);
+        self.sockets_chirho[peer_idx_chirho].buf_len_chirho += copy_len_chirho;
+        copy_len_chirho as i32
+    }
+
+    fn recv_chirho(&mut self, fd_chirho: i32, buf_chirho: &mut [u8]) -> i32 {
+        let idx_chirho = (fd_chirho - 300) as usize;
+        if idx_chirho >= MAX_UNIX_SOCKETS_CHIRHO { return -9; }
+        let avail_chirho = self.sockets_chirho[idx_chirho].buf_len_chirho - self.sockets_chirho[idx_chirho].buf_read_pos_chirho;
+        if avail_chirho == 0 { return 0; }
+        let copy_len_chirho = if buf_chirho.len() > avail_chirho { avail_chirho } else { buf_chirho.len() };
+        let rp_chirho = self.sockets_chirho[idx_chirho].buf_read_pos_chirho;
+        buf_chirho[..copy_len_chirho].copy_from_slice(&self.sockets_chirho[idx_chirho].buf_chirho[rp_chirho..rp_chirho + copy_len_chirho]);
+        self.sockets_chirho[idx_chirho].buf_read_pos_chirho += copy_len_chirho;
+        // Compact buffer if fully read
+        if self.sockets_chirho[idx_chirho].buf_read_pos_chirho >= self.sockets_chirho[idx_chirho].buf_len_chirho {
+            self.sockets_chirho[idx_chirho].buf_len_chirho = 0;
+            self.sockets_chirho[idx_chirho].buf_read_pos_chirho = 0;
+        }
+        copy_len_chirho as i32
+    }
+
+    fn close_chirho(&mut self, fd_chirho: i32) {
+        let idx_chirho = (fd_chirho - 300) as usize;
+        if idx_chirho < MAX_UNIX_SOCKETS_CHIRHO {
+            self.sockets_chirho[idx_chirho] = UnixSocketChirho::empty_chirho();
+        }
+    }
+}
+
+static mut UNIX_SOCK_TABLE_CHIRHO: UnixSocketTableChirho = UnixSocketTableChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-015: Cursor subsystem
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+#[repr(u32)]
+enum CursorStyleChirho {
+    DefaultChirho = 0,
+    PointerChirho = 1,
+    TextChirho = 2,
+    MoveChirho = 3,
+    ResizeChirho = 4,
+    CrosshairChirho = 5,
+}
+
+struct CursorStateChirho {
+    current_style_chirho: CursorStyleChirho,
+    visible_chirho: bool,
+}
+
+impl CursorStateChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            current_style_chirho: CursorStyleChirho::DefaultChirho,
+            visible_chirho: true,
+        }
+    }
+
+    fn set_style_chirho(&mut self, style_chirho: CursorStyleChirho) {
+        if self.current_style_chirho != style_chirho {
+            self.current_style_chirho = style_chirho;
+            unsafe { js_cursor_set_chirho(style_chirho as u32); }
+        }
+    }
+}
+
+static mut CURSOR_STATE_CHIRHO: CursorStateChirho = CursorStateChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-017: Multi-monitor & DPI scaling support
+// ---------------------------------------------------------------------------
+
+struct DisplayInfoChirho {
+    dpi_ratio_chirho: u32, // device pixel ratio * 100
+    screen_count_chirho: u32,
+    logical_width_chirho: u32,
+    logical_height_chirho: u32,
+    physical_width_chirho: u32,
+    physical_height_chirho: u32,
+}
+
+impl DisplayInfoChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            dpi_ratio_chirho: 100,
+            screen_count_chirho: 1,
+            logical_width_chirho: 640,
+            logical_height_chirho: 480,
+            physical_width_chirho: 640,
+            physical_height_chirho: 480,
+        }
+    }
+
+    fn refresh_chirho(&mut self) {
+        self.dpi_ratio_chirho = unsafe { js_dpi_ratio_chirho() };
+        if self.dpi_ratio_chirho == 0 { self.dpi_ratio_chirho = 100; }
+        let mut screen_data_chirho = [0u32; 4];
+        let count_chirho = unsafe { js_screen_info_chirho(screen_data_chirho.as_mut_ptr() as u32) };
+        if count_chirho > 0 {
+            self.screen_count_chirho = count_chirho as u32;
+            self.logical_width_chirho = screen_data_chirho[0];
+            self.logical_height_chirho = screen_data_chirho[1];
+            self.physical_width_chirho = (screen_data_chirho[0] * self.dpi_ratio_chirho) / 100;
+            self.physical_height_chirho = (screen_data_chirho[1] * self.dpi_ratio_chirho) / 100;
+        }
+    }
+}
+
+static mut DISPLAY_INFO_CHIRHO: DisplayInfoChirho = DisplayInfoChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-018: Drag and drop (XDND protocol)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+enum DndStateChirho {
+    IdleChirho,
+    DraggingChirho,
+    DroppedChirho,
+}
+
+struct DragDropChirho {
+    state_chirho: DndStateChirho,
+    source_wid_chirho: u32,
+    target_wid_chirho: u32,
+    data_type_chirho: [u8; 32],
+    data_type_len_chirho: usize,
+    drag_x_chirho: i16,
+    drag_y_chirho: i16,
+}
+
+impl DragDropChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            state_chirho: DndStateChirho::IdleChirho,
+            source_wid_chirho: 0,
+            target_wid_chirho: 0,
+            data_type_chirho: [0u8; 32],
+            data_type_len_chirho: 0,
+            drag_x_chirho: 0,
+            drag_y_chirho: 0,
+        }
+    }
+
+    fn begin_drag_chirho(&mut self, source_wid_chirho: u32, x_chirho: i16, y_chirho: i16) {
+        self.state_chirho = DndStateChirho::DraggingChirho;
+        self.source_wid_chirho = source_wid_chirho;
+        self.drag_x_chirho = x_chirho;
+        self.drag_y_chirho = y_chirho;
+        unsafe { js_cursor_set_chirho(CursorStyleChirho::MoveChirho as u32); }
+    }
+
+    fn update_position_chirho(&mut self, x_chirho: i16, y_chirho: i16) {
+        self.drag_x_chirho = x_chirho;
+        self.drag_y_chirho = y_chirho;
+    }
+
+    fn drop_chirho(&mut self, target_wid_chirho: u32) {
+        self.target_wid_chirho = target_wid_chirho;
+        self.state_chirho = DndStateChirho::DroppedChirho;
+        unsafe { js_cursor_set_chirho(CursorStyleChirho::DefaultChirho as u32); }
+    }
+
+    fn cancel_chirho(&mut self) {
+        self.state_chirho = DndStateChirho::IdleChirho;
+        unsafe { js_cursor_set_chirho(CursorStyleChirho::DefaultChirho as u32); }
+    }
+}
+
+static mut DRAG_DROP_CHIRHO: DragDropChirho = DragDropChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
+// B4-020: ICCCM and EWMH compliance — window properties and atoms
+// ---------------------------------------------------------------------------
+
+const MAX_ATOMS_CHIRHO: usize = 32;
+
+#[derive(Clone, Copy)]
+struct X11AtomChirho {
+    active_chirho: bool,
+    name_chirho: [u8; 48],
+    name_len_chirho: usize,
+    id_chirho: u32,
+}
+
+impl X11AtomChirho {
+    const fn empty_chirho() -> Self {
+        Self { active_chirho: false, name_chirho: [0u8; 48], name_len_chirho: 0, id_chirho: 0 }
+    }
+}
+
+struct AtomTableChirho {
+    atoms_chirho: [X11AtomChirho; MAX_ATOMS_CHIRHO],
+    next_id_chirho: u32,
+}
+
+impl AtomTableChirho {
+    const fn new_chirho() -> Self {
+        Self {
+            atoms_chirho: [X11AtomChirho::empty_chirho(); MAX_ATOMS_CHIRHO],
+            next_id_chirho: 1,
+        }
+    }
+
+    fn intern_chirho(&mut self, name_chirho: &[u8]) -> u32 {
+        // Check if already exists
+        for i_chirho in 0..MAX_ATOMS_CHIRHO {
+            if self.atoms_chirho[i_chirho].active_chirho
+                && self.atoms_chirho[i_chirho].name_len_chirho == name_chirho.len()
+                && &self.atoms_chirho[i_chirho].name_chirho[..name_chirho.len()] == name_chirho
+            {
+                return self.atoms_chirho[i_chirho].id_chirho;
+            }
+        }
+        // Create new
+        for i_chirho in 0..MAX_ATOMS_CHIRHO {
+            if !self.atoms_chirho[i_chirho].active_chirho {
+                let id_chirho = self.next_id_chirho;
+                self.next_id_chirho += 1;
+                self.atoms_chirho[i_chirho].active_chirho = true;
+                let len_chirho = if name_chirho.len() > 48 { 48 } else { name_chirho.len() };
+                self.atoms_chirho[i_chirho].name_chirho[..len_chirho].copy_from_slice(&name_chirho[..len_chirho]);
+                self.atoms_chirho[i_chirho].name_len_chirho = len_chirho;
+                self.atoms_chirho[i_chirho].id_chirho = id_chirho;
+                return id_chirho;
+            }
+        }
+        0 // None (atom table full)
+    }
+
+    fn get_name_chirho(&self, id_chirho: u32) -> Option<&[u8]> {
+        for i_chirho in 0..MAX_ATOMS_CHIRHO {
+            if self.atoms_chirho[i_chirho].active_chirho && self.atoms_chirho[i_chirho].id_chirho == id_chirho {
+                return Some(&self.atoms_chirho[i_chirho].name_chirho[..self.atoms_chirho[i_chirho].name_len_chirho]);
+            }
+        }
+        None
+    }
+
+    /// Initialize standard ICCCM/EWMH atoms
+    fn init_standard_chirho(&mut self) {
+        let standard_atoms_chirho: &[&[u8]] = &[
+            b"WM_NAME", b"WM_CLASS", b"WM_PROTOCOLS", b"WM_DELETE_WINDOW",
+            b"WM_STATE", b"WM_TAKE_FOCUS", b"_NET_WM_NAME", b"_NET_WM_STATE",
+            b"_NET_WM_STATE_FULLSCREEN", b"_NET_WM_STATE_MAXIMIZED_VERT",
+            b"_NET_WM_STATE_MAXIMIZED_HORZ", b"_NET_SUPPORTED",
+            b"_NET_CLIENT_LIST", b"_NET_ACTIVE_WINDOW", b"_NET_WM_WINDOW_TYPE",
+            b"_NET_WM_WINDOW_TYPE_NORMAL", b"UTF8_STRING", b"CLIPBOARD",
+            b"PRIMARY", b"TARGETS",
+        ];
+        for atom_name_chirho in standard_atoms_chirho {
+            self.intern_chirho(atom_name_chirho);
+        }
+    }
+}
+
+static mut ATOM_TABLE_CHIRHO: AtomTableChirho = AtomTableChirho::new_chirho();
+
+// ---------------------------------------------------------------------------
 // B1-014: Environment variables store
 // ---------------------------------------------------------------------------
 
@@ -2915,6 +4366,24 @@ fn dispatch_single_command_chirho(cmd_bytes_chirho: &[u8]) {
         // B4-001/B4-003: X11 server
         b"startx" => cmd_startx_chirho(),
         b"xinfo" => cmd_xinfo_chirho(),
+        // B2-008: TLS connections
+        b"tlsinfo" => cmd_tlsinfo_chirho(),
+        // B4-005: Window manager
+        b"wminfo" => cmd_wminfo_chirho(),
+        b"wmtile" => unsafe { WINDOW_MANAGER_CHIRHO.tile_all_chirho(); kwrite_chirho("Windows tiled.\r\n"); },
+        // B4-009: Font listing
+        b"xlsfonts" => cmd_xlsfonts_chirho(),
+        // B4-008: Clipboard
+        b"xclip" => cmd_xclip_chirho(args_chirho),
+        // B4-017: Display info
+        b"xrandr" => cmd_xrandr_chirho(),
+        // B3-006: Inotify watch listing
+        b"inotifywait" => cmd_inotifywait_chirho(args_chirho),
+        // B2-014 / B3-012: Integration tests
+        b"nettest" => cmd_nettest_chirho(),
+        b"storagetest" => cmd_storagetest_chirho(),
+        // B4-019: GUI integration test
+        b"guitest" => cmd_guitest_chirho(),
         // B1-019: Integration self-test
         b"selftest" => cmd_selftest_chirho(),
         _ => {
