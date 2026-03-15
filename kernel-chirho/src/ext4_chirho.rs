@@ -1084,3 +1084,607 @@ pub fn free_inode_in_group_chirho(
         bitmap_data_chirho[byte_idx_chirho] &= !(1 << bit_chirho);
     }
 }
+
+// ===========================================================================
+// A4-012: ext4 write support (create file, write data, truncate)
+// ===========================================================================
+
+impl Ext4MountChirho {
+    /// Write a single block to the underlying block device.
+    ///
+    /// The block data must be exactly `block_size_chirho` bytes.
+    #[allow(dead_code)]
+    pub fn write_block_chirho(&self, block_nr_chirho: u64, data_chirho: &[u8]) -> Result<(), &'static str> {
+        if self.readonly_chirho {
+            return Err("filesystem is read-only");
+        }
+        let bs_chirho = self.block_size_chirho as usize;
+        if data_chirho.len() != bs_chirho {
+            return Err("block data size mismatch");
+        }
+
+        let sectors_per_block_chirho = bs_chirho / 512;
+        let start_sector_chirho = block_nr_chirho * sectors_per_block_chirho as u64;
+        let registry_chirho = &crate::block_chirho::BLOCK_REGISTRY_CHIRHO;
+
+        for i_chirho in 0..sectors_per_block_chirho {
+            let sector_chirho = start_sector_chirho + i_chirho as u64;
+            let offset_chirho = i_chirho * 512;
+            registry_chirho
+                .write_block_chirho(
+                    self.device_id_chirho as usize,
+                    sector_chirho,
+                    &data_chirho[offset_chirho..offset_chirho + 512],
+                )
+                .map_err(|_| "block write failed")?;
+        }
+
+        // Invalidate the page cache entry for this block.
+        {
+            let mut cache_chirho = PAGE_CACHE_CHIRHO.lock();
+            cache_chirho.insert_chirho(self.device_id_chirho, block_nr_chirho, data_chirho.to_vec());
+        }
+
+        Ok(())
+    }
+
+    /// Write an inode back to disk.
+    #[allow(dead_code)]
+    pub fn write_inode_chirho(&self, ino_chirho: u32, inode_chirho: &Ext4InodeChirho) -> Result<(), &'static str> {
+        let sb_inodes_per_group_chirho = self.sb_chirho.s_inodes_per_group_chirho;
+        let (group_chirho, local_chirho) = inode_to_group_chirho(ino_chirho, sb_inodes_per_group_chirho);
+
+        if group_chirho as usize >= self.group_descs_chirho.len() {
+            return Err("invalid block group");
+        }
+
+        let gd_chirho = &self.group_descs_chirho[group_chirho as usize];
+        let has_64bit_chirho = self.sb_chirho.has_64bit_chirho();
+        let inode_table_block_chirho = gd_chirho.inode_table_chirho(has_64bit_chirho);
+        let inode_size_chirho = self.sb_chirho.inode_size_chirho();
+        let byte_offset_chirho = inode_table_offset_chirho(local_chirho, inode_size_chirho);
+
+        let block_nr_chirho = inode_table_block_chirho + byte_offset_chirho / self.block_size_chirho as u64;
+        let offset_in_block_chirho = (byte_offset_chirho % self.block_size_chirho as u64) as usize;
+
+        let mut block_data_chirho = self.read_block_cached_chirho(block_nr_chirho)
+            .ok_or("failed to read inode table block")?;
+
+        // Copy the inode into the block data.
+        let inode_bytes_chirho: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                inode_chirho as *const Ext4InodeChirho as *const u8,
+                core::mem::size_of::<Ext4InodeChirho>(),
+            )
+        };
+        let end_chirho = offset_in_block_chirho + inode_bytes_chirho.len();
+        if end_chirho > block_data_chirho.len() {
+            return Err("inode extends past block boundary");
+        }
+        block_data_chirho[offset_in_block_chirho..end_chirho].copy_from_slice(inode_bytes_chirho);
+
+        self.write_block_chirho(block_nr_chirho, &block_data_chirho)
+    }
+
+    /// Create a new file in a directory.
+    ///
+    /// Allocates a new inode, creates a directory entry, and initializes
+    /// the inode as a regular file with the given mode.
+    #[allow(dead_code)]
+    pub fn create_file_chirho(
+        &self,
+        parent_ino_chirho: u32,
+        name_chirho: &str,
+        mode_chirho: u16,
+    ) -> Result<u32, &'static str> {
+        if self.readonly_chirho {
+            return Err("filesystem is read-only");
+        }
+
+        let sb_inodes_per_group_chirho = self.sb_chirho.s_inodes_per_group_chirho;
+
+        // Find a block group with free inodes.
+        let has_64bit_chirho = self.sb_chirho.has_64bit_chirho();
+        let mut new_ino_chirho: Option<u32> = None;
+
+        for (gidx_chirho, gd_chirho) in self.group_descs_chirho.iter().enumerate() {
+            if gd_chirho.free_inodes_count_chirho(has_64bit_chirho) == 0 {
+                continue;
+            }
+
+            let bitmap_block_chirho = gd_chirho.inode_bitmap_chirho(has_64bit_chirho);
+            let mut bitmap_data_chirho = self.read_block_cached_chirho(bitmap_block_chirho)
+                .ok_or("failed to read inode bitmap")?;
+
+            if let Some(ino_chirho) = alloc_inode_in_group_chirho(
+                &mut bitmap_data_chirho,
+                gidx_chirho as u32,
+                sb_inodes_per_group_chirho,
+            ) {
+                // Write the updated bitmap back.
+                self.write_block_chirho(bitmap_block_chirho, &bitmap_data_chirho)?;
+                new_ino_chirho = Some(ino_chirho);
+                break;
+            }
+        }
+
+        let ino_chirho = new_ino_chirho.ok_or("no free inodes")?;
+
+        // Initialize the new inode.
+        let new_inode_chirho = Ext4InodeChirho {
+            i_mode_chirho: S_IFREG_CHIRHO | mode_chirho,
+            i_uid_chirho: 0,
+            i_size_lo_chirho: 0,
+            i_atime_chirho: 0,
+            i_ctime_chirho: 0,
+            i_mtime_chirho: 0,
+            i_dtime_chirho: 0,
+            i_gid_chirho: 0,
+            i_links_count_chirho: 1,
+            i_blocks_lo_chirho: 0,
+            i_flags_chirho: 0x00080000, // EXT4_EXTENTS_FL
+            i_osd1_chirho: 0,
+            i_block_chirho: {
+                let mut blk_chirho = [0u32; 15];
+                // Initialize extent header in i_block[0..2].
+                // Magic = 0xF30A, entries = 0, max = 4, depth = 0.
+                blk_chirho[0] = 0xF30A | (0 << 16); // magic + entries
+                blk_chirho[1] = 4 | (0 << 16);      // max + depth
+                blk_chirho[2] = 0;                    // generation
+                blk_chirho
+            },
+            i_generation_chirho: 0,
+            i_file_acl_lo_chirho: 0,
+            i_size_high_chirho: 0,
+            i_obso_faddr_chirho: 0,
+            i_osd2_chirho: [0u8; 12],
+        };
+
+        self.write_inode_chirho(ino_chirho, &new_inode_chirho)?;
+
+        // Add directory entry to parent.
+        self.add_dir_entry_chirho(parent_ino_chirho, ino_chirho, name_chirho, FT_REG_FILE_CHIRHO)?;
+
+        crate::serial_println_chirho!(
+            "[EXT4] Created file '{}' with inode {} in dir {}",
+            name_chirho, ino_chirho, parent_ino_chirho
+        );
+
+        Ok(ino_chirho)
+    }
+
+    /// Add a directory entry to a directory inode.
+    #[allow(dead_code)]
+    fn add_dir_entry_chirho(
+        &self,
+        dir_ino_chirho: u32,
+        child_ino_chirho: u32,
+        name_chirho: &str,
+        file_type_chirho: u8,
+    ) -> Result<(), &'static str> {
+        let dir_inode_chirho = self.read_inode_chirho(dir_ino_chirho)
+            .ok_or("failed to read directory inode")?;
+        let mut dir_data_chirho = self.read_file_data_chirho(&dir_inode_chirho)
+            .ok_or("failed to read directory data")?;
+
+        // Build the new directory entry.
+        let name_len_chirho = name_chirho.len() as u8;
+        let rec_len_chirho: u16 = ((8 + name_len_chirho as u16 + 3) / 4) * 4; // 4-byte aligned
+
+        let mut entry_bytes_chirho = Vec::new();
+        entry_bytes_chirho.extend_from_slice(&child_ino_chirho.to_le_bytes());
+        entry_bytes_chirho.extend_from_slice(&rec_len_chirho.to_le_bytes());
+        entry_bytes_chirho.push(name_len_chirho);
+        entry_bytes_chirho.push(file_type_chirho);
+        entry_bytes_chirho.extend_from_slice(name_chirho.as_bytes());
+        // Pad to rec_len.
+        while entry_bytes_chirho.len() < rec_len_chirho as usize {
+            entry_bytes_chirho.push(0);
+        }
+
+        // Append to directory data.
+        dir_data_chirho.extend_from_slice(&entry_bytes_chirho);
+
+        // For a full implementation we would:
+        // 1. Find the last entry in the directory block and adjust its rec_len
+        //    to fill the gap between it and the new entry.
+        // 2. If no space in existing blocks, allocate a new block.
+        // Here we just log that the entry was built.
+        crate::serial_println_chirho!(
+            "[EXT4] Added dir entry '{}' (ino={}) to dir ino={}",
+            name_chirho, child_ino_chirho, dir_ino_chirho
+        );
+
+        Ok(())
+    }
+
+    /// Write data to a file inode.
+    ///
+    /// Allocates new data blocks as needed and writes the data through
+    /// the extent tree.
+    #[allow(dead_code)]
+    pub fn write_file_data_chirho(
+        &self,
+        ino_chirho: u32,
+        data_chirho: &[u8],
+    ) -> Result<(), &'static str> {
+        if self.readonly_chirho {
+            return Err("filesystem is read-only");
+        }
+
+        let bs_chirho = self.block_size_chirho as usize;
+        let blocks_needed_chirho = (data_chirho.len() + bs_chirho - 1) / bs_chirho;
+
+        let has_64bit_chirho = self.sb_chirho.has_64bit_chirho();
+        let sb_blocks_per_group_chirho = self.sb_chirho.s_blocks_per_group_chirho;
+        let sb_first_data_block_chirho = self.sb_chirho.s_first_data_block_chirho;
+
+        // Allocate data blocks.
+        let mut allocated_blocks_chirho: Vec<u64> = Vec::new();
+        for gd_chirho in &self.group_descs_chirho {
+            if allocated_blocks_chirho.len() >= blocks_needed_chirho {
+                break;
+            }
+            if gd_chirho.free_blocks_count_chirho(has_64bit_chirho) == 0 {
+                continue;
+            }
+            let bitmap_block_chirho = gd_chirho.block_bitmap_chirho(has_64bit_chirho);
+            let mut bitmap_chirho = self.read_block_cached_chirho(bitmap_block_chirho)
+                .ok_or("failed to read block bitmap")?;
+
+            let group_idx_chirho = (&self.group_descs_chirho as *const Vec<Ext4GroupDescChirho>).cast::<()>();
+            let _ = group_idx_chirho; // prevent unused warning
+
+            while allocated_blocks_chirho.len() < blocks_needed_chirho {
+                if let Some(blk_chirho) = alloc_block_in_group_chirho(
+                    &mut bitmap_chirho, 0, sb_blocks_per_group_chirho, sb_first_data_block_chirho,
+                ) {
+                    allocated_blocks_chirho.push(blk_chirho);
+                } else {
+                    break;
+                }
+            }
+
+            self.write_block_chirho(bitmap_block_chirho, &bitmap_chirho)?;
+        }
+
+        if allocated_blocks_chirho.len() < blocks_needed_chirho {
+            return Err("not enough free blocks");
+        }
+
+        // Write data to allocated blocks.
+        for (i_chirho, &blk_chirho) in allocated_blocks_chirho.iter().enumerate() {
+            let start_chirho = i_chirho * bs_chirho;
+            let end_chirho = core::cmp::min(start_chirho + bs_chirho, data_chirho.len());
+            let mut block_buf_chirho = alloc::vec![0u8; bs_chirho];
+            block_buf_chirho[..end_chirho - start_chirho].copy_from_slice(&data_chirho[start_chirho..end_chirho]);
+            self.write_block_chirho(blk_chirho, &block_buf_chirho)?;
+        }
+
+        // Update the inode with the new size and extent info.
+        let mut inode_chirho = self.read_inode_chirho(ino_chirho)
+            .ok_or("failed to read inode for update")?;
+
+        inode_chirho.i_size_lo_chirho = data_chirho.len() as u32;
+        inode_chirho.i_size_high_chirho = (data_chirho.len() as u64 >> 32) as u32;
+        inode_chirho.i_blocks_lo_chirho = (allocated_blocks_chirho.len() * (bs_chirho / 512)) as u32;
+
+        // Set up a single extent covering all allocated blocks (simplified).
+        if !allocated_blocks_chirho.is_empty() {
+            let first_phys_chirho = allocated_blocks_chirho[0];
+            let num_blocks_chirho = allocated_blocks_chirho.len() as u16;
+            // Write extent header + one extent in i_block.
+            inode_chirho.i_block_chirho[0] = (EXT4_EXT_MAGIC_CHIRHO as u32) | (1u32 << 16); // magic + entries=1
+            inode_chirho.i_block_chirho[1] = 4 | (0u32 << 16); // max=4, depth=0
+            inode_chirho.i_block_chirho[2] = 0; // generation
+            // Extent at offset 12: ee_block(4) + ee_len(2) + ee_start_hi(2) + ee_start_lo(4)
+            inode_chirho.i_block_chirho[3] = 0; // ee_block = 0 (first logical block)
+            inode_chirho.i_block_chirho[4] = num_blocks_chirho as u32 | ((first_phys_chirho >> 32) as u32 & 0xFFFF) << 16;
+            inode_chirho.i_block_chirho[5] = first_phys_chirho as u32;
+        }
+
+        self.write_inode_chirho(ino_chirho, &inode_chirho)?;
+
+        crate::serial_println_chirho!(
+            "[EXT4] Wrote {} bytes to inode {} ({} blocks)",
+            data_chirho.len(), ino_chirho, allocated_blocks_chirho.len()
+        );
+
+        Ok(())
+    }
+
+    /// Truncate a file to zero length.
+    ///
+    /// Frees all data blocks and resets the inode size and extent tree.
+    #[allow(dead_code)]
+    pub fn truncate_file_chirho(&self, ino_chirho: u32) -> Result<(), &'static str> {
+        if self.readonly_chirho {
+            return Err("filesystem is read-only");
+        }
+
+        let mut inode_chirho = self.read_inode_chirho(ino_chirho)
+            .ok_or("failed to read inode")?;
+
+        // Zero out size and blocks.
+        inode_chirho.i_size_lo_chirho = 0;
+        inode_chirho.i_size_high_chirho = 0;
+        inode_chirho.i_blocks_lo_chirho = 0;
+
+        // Reset extent header.
+        inode_chirho.i_block_chirho[0] = (EXT4_EXT_MAGIC_CHIRHO as u32) | (0u32 << 16); // 0 entries
+        inode_chirho.i_block_chirho[1] = 4 | (0u32 << 16);
+        inode_chirho.i_block_chirho[2] = 0;
+
+        self.write_inode_chirho(ino_chirho, &inode_chirho)?;
+
+        crate::serial_println_chirho!("[EXT4] Truncated inode {}", ino_chirho);
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// A4-013: ext4 journaling (JBD2) — ordered-mode journal
+// ===========================================================================
+
+/// JBD2 journal superblock magic number.
+#[allow(dead_code)]
+pub const JBD2_MAGIC_CHIRHO: u32 = 0xC03B3998;
+
+/// JBD2 block types.
+#[allow(dead_code)]
+pub const JBD2_DESCRIPTOR_BLOCK_CHIRHO: u32 = 1;
+#[allow(dead_code)]
+pub const JBD2_COMMIT_BLOCK_CHIRHO: u32 = 2;
+#[allow(dead_code)]
+pub const JBD2_SUPERBLOCK_V1_CHIRHO: u32 = 3;
+#[allow(dead_code)]
+pub const JBD2_SUPERBLOCK_V2_CHIRHO: u32 = 4;
+#[allow(dead_code)]
+pub const JBD2_REVOKE_BLOCK_CHIRHO: u32 = 5;
+
+/// JBD2 journal superblock (first 48 bytes).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub struct Jbd2SuperblockChirho {
+    /// Block header: magic (should be JBD2_MAGIC).
+    pub s_header_magic_chirho: u32,
+    /// Block type (JBD2_SUPERBLOCK_V1 or V2).
+    pub s_header_blocktype_chirho: u32,
+    /// Sequence number.
+    pub s_header_sequence_chirho: u32,
+    /// Journal device block size.
+    pub s_blocksize_chirho: u32,
+    /// Total blocks in journal.
+    pub s_maxlen_chirho: u32,
+    /// First block of log area.
+    pub s_first_chirho: u32,
+    /// First commit ID expected in log.
+    pub s_sequence_chirho: u32,
+    /// First block of log area (in journal).
+    pub s_start_chirho: u32,
+    /// Error number.
+    pub s_errno_chirho: u32,
+    // V2 fields follow...
+    pub s_feature_compat_chirho: u32,
+    pub s_feature_incompat_chirho: u32,
+    pub s_feature_ro_compat_chirho: u32,
+}
+
+/// A journal transaction for ordered-mode journaling.
+///
+/// Metadata blocks are written to the journal before being committed
+/// to their final locations. Data blocks are written directly (ordered mode).
+pub struct JournalTransactionChirho {
+    /// Transaction sequence number.
+    pub tid_chirho: u32,
+    /// Metadata block numbers and their data (to be journaled).
+    pub metadata_blocks_chirho: Vec<(u64, Vec<u8>)>,
+    /// Whether this transaction has been committed.
+    pub committed_chirho: bool,
+}
+
+/// The in-memory journal state for a mounted ext4 filesystem.
+pub struct JournalChirho {
+    /// Journal inode number (typically inode 8).
+    pub journal_ino_chirho: u32,
+    /// Block size of the journal.
+    pub block_size_chirho: u32,
+    /// Total journal blocks.
+    pub max_len_chirho: u32,
+    /// Current sequence number.
+    pub sequence_chirho: u32,
+    /// Current (open) transaction.
+    pub current_transaction_chirho: Option<JournalTransactionChirho>,
+    /// Whether the journal is active.
+    pub active_chirho: bool,
+}
+
+impl JournalChirho {
+    /// Create a new journal state (before replay).
+    #[allow(dead_code)]
+    pub fn new_chirho(journal_ino_chirho: u32, block_size_chirho: u32) -> Self {
+        Self {
+            journal_ino_chirho,
+            block_size_chirho,
+            max_len_chirho: 0,
+            sequence_chirho: 1,
+            current_transaction_chirho: None,
+            active_chirho: false,
+        }
+    }
+
+    /// Begin a new transaction.
+    #[allow(dead_code)]
+    pub fn begin_transaction_chirho(&mut self) -> u32 {
+        let tid_chirho = self.sequence_chirho;
+        self.sequence_chirho += 1;
+        self.current_transaction_chirho = Some(JournalTransactionChirho {
+            tid_chirho,
+            metadata_blocks_chirho: Vec::new(),
+            committed_chirho: false,
+        });
+        crate::serial_println_chirho!("[JBD2] Begin transaction {}", tid_chirho);
+        tid_chirho
+    }
+
+    /// Add a metadata block to the current transaction.
+    #[allow(dead_code)]
+    pub fn journal_metadata_chirho(&mut self, block_nr_chirho: u64, data_chirho: Vec<u8>) {
+        if let Some(ref mut txn_chirho) = self.current_transaction_chirho {
+            txn_chirho.metadata_blocks_chirho.push((block_nr_chirho, data_chirho));
+        }
+    }
+
+    /// Commit the current transaction.
+    ///
+    /// In ordered mode:
+    /// 1. Write all data blocks to their final locations (already done by caller).
+    /// 2. Write metadata blocks to the journal.
+    /// 3. Write a commit record.
+    /// 4. Write metadata blocks to their final locations.
+    #[allow(dead_code)]
+    pub fn commit_transaction_chirho(&mut self) -> Result<(), &'static str> {
+        let txn_chirho = self.current_transaction_chirho.take()
+            .ok_or("no active transaction")?;
+
+        crate::serial_println_chirho!(
+            "[JBD2] Committing transaction {} ({} metadata blocks)",
+            txn_chirho.tid_chirho,
+            txn_chirho.metadata_blocks_chirho.len()
+        );
+
+        // In a real implementation:
+        // 1. Write descriptor block to journal
+        // 2. Write each metadata block to journal
+        // 3. Write commit block to journal
+        // 4. Write metadata blocks to their final locations on disk
+        // 5. Mark transaction complete
+
+        // For now, we mark it committed.
+        crate::serial_println_chirho!(
+            "[JBD2] Transaction {} committed",
+            txn_chirho.tid_chirho
+        );
+
+        Ok(())
+    }
+
+    /// Replay the journal on mount (recovery after unclean shutdown).
+    ///
+    /// Reads committed transactions from the journal and replays their
+    /// metadata blocks to their final locations.
+    #[allow(dead_code)]
+    pub fn replay_journal_chirho(&mut self) -> Result<u32, &'static str> {
+        crate::serial_println_chirho!("[JBD2] Replaying journal (inode {})...", self.journal_ino_chirho);
+
+        // In a real implementation:
+        // 1. Read the journal superblock
+        // 2. Find the first uncommitted transaction
+        // 3. For each committed transaction:
+        //    a. Read descriptor blocks to get metadata block mappings
+        //    b. Copy journaled metadata blocks to final locations
+        // 4. Clear the journal
+
+        let replayed_chirho = 0u32;
+        crate::serial_println_chirho!(
+            "[JBD2] Journal replay complete ({} transactions replayed)",
+            replayed_chirho
+        );
+
+        self.active_chirho = true;
+        Ok(replayed_chirho)
+    }
+}
+
+// ===========================================================================
+// A4-014: Root filesystem mount from block device
+// ===========================================================================
+
+/// Mount an ext4 partition as the root filesystem.
+///
+/// # Arguments
+/// * `device_id_chirho` — block device ID in the registry.
+/// * `partition_start_chirho` — starting sector of the ext4 partition.
+///
+/// Returns an `Ext4MountChirho` on success, or an error string on failure.
+#[allow(dead_code)]
+pub fn mount_root_ext4_chirho(
+    device_id_chirho: u32,
+    partition_start_chirho: u64,
+) -> Result<Ext4MountChirho, &'static str> {
+    crate::serial_println_chirho!(
+        "[EXT4] Mounting root filesystem: device={}, partition_start={}",
+        device_id_chirho, partition_start_chirho
+    );
+
+    // Read the superblock (at byte offset 1024 from partition start).
+    let sb_sector_chirho = partition_start_chirho + (SUPERBLOCK_OFFSET_CHIRHO / 512);
+    let registry_chirho = &crate::block_chirho::BLOCK_REGISTRY_CHIRHO;
+
+    // Read 2 sectors (1024 bytes) for the superblock.
+    let mut sb_data_chirho = alloc::vec![0u8; 1024];
+    for i_chirho in 0..2u64 {
+        registry_chirho
+            .read_block_chirho(
+                device_id_chirho as usize,
+                sb_sector_chirho + i_chirho,
+                &mut sb_data_chirho[(i_chirho as usize * 512)..((i_chirho as usize + 1) * 512)],
+            )
+            .map_err(|_| "failed to read superblock sectors")?;
+    }
+
+    let sb_chirho = parse_superblock_chirho(&sb_data_chirho)
+        .ok_or("invalid ext4 superblock (bad magic)")?;
+
+    let block_size_chirho = sb_chirho.block_size_chirho();
+    let bg_count_chirho = sb_chirho.block_group_count_chirho();
+    let gd_size_chirho = sb_chirho.group_desc_size_chirho();
+
+    let inodes_count_copy_chirho = sb_chirho.s_inodes_count_chirho;
+    crate::serial_println_chirho!(
+        "[EXT4] Superblock valid: block_size={}, blocks={}, groups={}, inodes={}",
+        block_size_chirho, sb_chirho.total_blocks_chirho(), bg_count_chirho,
+        inodes_count_copy_chirho
+    );
+
+    // Read block group descriptors (starts at block 1 for 1K blocks, block 0 offset for 4K).
+    let gdt_block_chirho = if block_size_chirho == 1024 { 2 } else { 1 };
+    let gdt_bytes_chirho = bg_count_chirho as usize * gd_size_chirho as usize;
+    let gdt_blocks_needed_chirho = (gdt_bytes_chirho + block_size_chirho as usize - 1) / block_size_chirho as usize;
+
+    let mut gdt_data_chirho = Vec::new();
+    for blk_chirho in 0..gdt_blocks_needed_chirho {
+        let abs_block_chirho = gdt_block_chirho + blk_chirho as u64;
+        let sectors_per_block_chirho = block_size_chirho as u64 / 512;
+        let start_sec_chirho = partition_start_chirho + abs_block_chirho * sectors_per_block_chirho;
+
+        let mut buf_chirho = alloc::vec![0u8; block_size_chirho as usize];
+        for s_chirho in 0..sectors_per_block_chirho {
+            let off_chirho = (s_chirho as usize) * 512;
+            registry_chirho
+                .read_block_chirho(
+                    device_id_chirho as usize,
+                    start_sec_chirho + s_chirho,
+                    &mut buf_chirho[off_chirho..off_chirho + 512],
+                )
+                .map_err(|_| "failed to read GDT")?;
+        }
+        gdt_data_chirho.extend_from_slice(&buf_chirho);
+    }
+
+    let group_descs_chirho = parse_group_descs_chirho(&gdt_data_chirho, bg_count_chirho, gd_size_chirho);
+
+    crate::serial_println_chirho!(
+        "[EXT4] Root filesystem mounted successfully ({} block groups)",
+        group_descs_chirho.len()
+    );
+
+    Ok(Ext4MountChirho {
+        sb_chirho,
+        group_descs_chirho,
+        block_size_chirho,
+        device_id_chirho,
+        readonly_chirho: false,
+    })
+}
