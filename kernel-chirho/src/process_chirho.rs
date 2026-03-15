@@ -712,21 +712,11 @@ pub fn sys_execve_chirho(
     // Step 4b: Create a fresh page table for this process (execve replaces
     //          the entire address space).
     // -----------------------------------------------------------------------
-    let new_pt_root_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
-    if let Some(pt_root_chirho) = new_pt_root_chirho {
-        // Switch to the new page table so that ELF loading maps into it.
-        unsafe {
-            crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
-        }
-        // Update the current task's page table root.
-        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-            task_arc_chirho.lock().page_table_root_chirho = Some(pt_root_chirho);
-        }
-        crate::serial_println_chirho!(
-            "[PROCESS] execve: created fresh page table PML4={:#x}",
-            pt_root_chirho.as_u64()
-        );
-    }
+    // Skip page table switch for vfork-style execve — reuse the current
+    // page table. Creating a new one and switching CR3 causes a triple fault
+    // because the bootloader's physical memory mapping is complex.
+    // The ELF loader will remap user segments in the existing page table.
+    crate::serial_println_chirho!("[PROCESS] execve: reusing current page table for vfork-execve");
 
     // -----------------------------------------------------------------------
     // Step 5: Parse and load the ELF into memory
@@ -765,6 +755,23 @@ pub fn sys_execve_chirho(
         &effective_argv_chirho,
         &envp_vec_chirho,
     );
+
+    // Debug: verify argv[0] on the user stack
+    unsafe {
+        let argc_val_chirho = core::ptr::read(user_rsp_chirho as *const u64);
+        let argv0_ptr_chirho = core::ptr::read((user_rsp_chirho + 8) as *const u64);
+        let mut argv0_buf_chirho = [0u8; 32];
+        for i_chirho in 0..31usize {
+            let b_chirho = core::ptr::read_volatile((argv0_ptr_chirho + i_chirho as u64) as *const u8);
+            if b_chirho == 0 { break; }
+            argv0_buf_chirho[i_chirho] = b_chirho;
+        }
+        let argv0_str_chirho = core::str::from_utf8(&argv0_buf_chirho).unwrap_or("???");
+        crate::serial_println_chirho!(
+            "[PROCESS] execve: VERIFY stack: argc={}, argv[0]@{:#x}=\"{}\"",
+            argc_val_chirho, argv0_ptr_chirho, argv0_str_chirho.trim_end_matches('\0')
+        );
+    }
 
     crate::serial_println_chirho!(
         "[PROCESS] execve: ready to enter userspace — entry={:#x}, rsp={:#x}",
