@@ -235,6 +235,11 @@ pub struct ElfInfoChirho {
 
     /// Size of a single program header entry (`e_phentsize`).
     pub phdr_size_chirho: u16,
+
+    /// ELF object type (`ET_EXEC` = 2, `ET_DYN` = 3).
+    /// Used by the loader to determine whether a load bias is needed for
+    /// PIE executables.
+    pub e_type_chirho: u16,
 }
 
 /// A single loadable segment extracted from the ELF program headers.
@@ -479,6 +484,7 @@ pub fn parse_elf_chirho(data_chirho: &[u8]) -> Result<ElfInfoChirho, ElfErrorChi
         segments_chirho,
         phdr_addr_chirho,
         phdr_num_chirho: header_chirho.e_phnum_chirho,
+        e_type_chirho: header_chirho.e_type_chirho,
         phdr_size_chirho: header_chirho.e_phentsize_chirho,
     })
 }

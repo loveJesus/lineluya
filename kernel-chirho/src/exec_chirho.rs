@@ -28,6 +28,7 @@ use crate::elf_chirho::{
     self, ElfSegmentChirho, AT_ENTRY_CHIRHO, AT_GID_CHIRHO,
     AT_NULL_CHIRHO, AT_PAGESZ_CHIRHO, AT_PHDR_CHIRHO, AT_PHENT_CHIRHO, AT_PHNUM_CHIRHO,
     AT_RANDOM_CHIRHO, AT_UID_CHIRHO, PF_W_CHIRHO, PF_X_CHIRHO,
+    ET_DYN_CHIRHO,
 };
 use crate::gdt_chirho::{USER_CS_CHIRHO, USER_DS_CHIRHO};
 use crate::mm_chirho::{
@@ -42,6 +43,11 @@ use crate::serial_println_chirho;
 
 /// Page size (4 KiB).
 const PAGE_SIZE_CHIRHO: u64 = 4096;
+
+/// Default base address for PIE (ET_DYN) executables whose first PT_LOAD
+/// segment starts at vaddr 0. This must not collide with the stack or
+/// typical mmap regions.
+const PIE_LOAD_BASE_CHIRHO: u64 = 0x5555_5555_0000;
 
 /// User stack top address. We place the stack just below the canonical user
 /// space ceiling, at a well-known address matching typical Linux layouts.
@@ -123,10 +129,28 @@ pub fn load_elf_into_memory_chirho(
         return Err(ExecErrorChirho::NoSegmentsChirho);
     }
 
+    // P4-001: Determine load bias for ET_DYN (PIE) executables.
+    // ET_DYN binaries have position-independent vaddrs starting at 0; they
+    // must be loaded at a non-zero base. ET_EXEC binaries have fixed vaddrs
+    // and use zero bias.
+    let load_bias_chirho: u64 = if elf_info_chirho.e_type_chirho == ET_DYN_CHIRHO {
+        let first_vaddr_chirho = elf_info_chirho.segments_chirho[0].vaddr_chirho;
+        if first_vaddr_chirho == 0 {
+            PIE_LOAD_BASE_CHIRHO
+        } else {
+            // Rare case: ET_DYN with non-zero first vaddr. No bias needed.
+            0
+        }
+    } else {
+        0
+    };
+
     serial_println_chirho!(
-        "[EXEC] ELF parsed: entry={:#x}, {} PT_LOAD segments",
+        "[EXEC] ELF parsed: type={}, entry={:#x}, {} PT_LOAD segments, load_bias={:#x}",
+        if elf_info_chirho.e_type_chirho == ET_DYN_CHIRHO { "ET_DYN (PIE)" } else { "ET_EXEC" },
         elf_info_chirho.entry_point_chirho,
-        elf_info_chirho.segments_chirho.len()
+        elf_info_chirho.segments_chirho.len(),
+        load_bias_chirho
     );
 
     // Ensure the mm subsystem is initialised.
@@ -134,12 +158,25 @@ pub fn load_elf_into_memory_chirho(
 
     let mut brk_addr_chirho: u64 = 0;
 
-    // Map each PT_LOAD segment.
+    // Map each PT_LOAD segment, applying the load bias to vaddr.
     for seg_chirho in &elf_info_chirho.segments_chirho {
-        load_segment_chirho(elf_data_chirho, seg_chirho, mm_lock_chirho)?;
+        let biased_seg_chirho = if load_bias_chirho != 0 {
+            ElfSegmentChirho {
+                vaddr_chirho: seg_chirho.vaddr_chirho.wrapping_add(load_bias_chirho),
+                memsz_chirho: seg_chirho.memsz_chirho,
+                filesz_chirho: seg_chirho.filesz_chirho,
+                offset_chirho: seg_chirho.offset_chirho,
+                flags_chirho: seg_chirho.flags_chirho,
+                align_chirho: seg_chirho.align_chirho,
+            }
+        } else {
+            seg_chirho.clone()
+        };
+
+        load_segment_chirho(elf_data_chirho, &biased_seg_chirho, mm_lock_chirho)?;
 
         // Track the highest address for brk.
-        let seg_end_chirho = seg_chirho.vaddr_chirho + seg_chirho.memsz_chirho;
+        let seg_end_chirho = biased_seg_chirho.vaddr_chirho + biased_seg_chirho.memsz_chirho;
         if seg_end_chirho > brk_addr_chirho {
             brk_addr_chirho = seg_end_chirho;
         }
@@ -148,14 +185,20 @@ pub fn load_elf_into_memory_chirho(
     // Page-align brk upward.
     brk_addr_chirho = align_up_chirho(brk_addr_chirho, PAGE_SIZE_CHIRHO);
 
+    // Apply load bias to entry point and PHDR address.
+    let biased_entry_chirho = elf_info_chirho.entry_point_chirho.wrapping_add(load_bias_chirho);
+    let biased_phdr_chirho = elf_info_chirho.phdr_addr_chirho.wrapping_add(load_bias_chirho);
+
     serial_println_chirho!(
-        "[EXEC] All segments loaded. brk={:#x}",
+        "[EXEC] All segments loaded. entry={:#x}, phdr={:#x}, brk={:#x}",
+        biased_entry_chirho,
+        biased_phdr_chirho,
         brk_addr_chirho
     );
 
     Ok(LoadedElfChirho {
-        entry_point_chirho: elf_info_chirho.entry_point_chirho,
-        phdr_addr_chirho: elf_info_chirho.phdr_addr_chirho,
+        entry_point_chirho: biased_entry_chirho,
+        phdr_addr_chirho: biased_phdr_chirho,
         phdr_num_chirho: elf_info_chirho.phdr_num_chirho,
         phdr_size_chirho: elf_info_chirho.phdr_size_chirho,
         brk_addr_chirho,
