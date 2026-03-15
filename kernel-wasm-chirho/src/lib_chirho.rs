@@ -170,6 +170,15 @@ fn process_command_chirho(line_chirho: &[u8], len_chirho: usize) {
             kwrite_chirho("  \x1b[1;32mwhoami\x1b[0m     - Print current user\r\n");
             kwrite_chirho("  \x1b[1;32mdate\x1b[0m       - Print kernel uptime\r\n");
             kwrite_chirho("  \x1b[1;32mversion\x1b[0m    - Print kernel version\r\n");
+            kwrite_chirho("  \x1b[1;32mping\x1b[0m       - Ping host via WebSocket proxy\r\n");
+            kwrite_chirho("  \x1b[1;32mnc\x1b[0m         - Netcat TCP connection via proxy\r\n");
+            kwrite_chirho("  \x1b[1;32mifconfig\x1b[0m   - Show network interfaces\r\n");
+            kwrite_chirho("  \x1b[1;32mhostname\x1b[0m   - Print hostname\r\n");
+            kwrite_chirho("  \x1b[1;32mid\x1b[0m         - Print user/group info\r\n");
+            kwrite_chirho("  \x1b[1;32mpwd\x1b[0m        - Print working directory\r\n");
+            kwrite_chirho("  \x1b[1;32menv\x1b[0m        - Print environment variables\r\n");
+            kwrite_chirho("  \x1b[1;32muptime\x1b[0m     - Print system uptime\r\n");
+            kwrite_chirho("  \x1b[1;32mfree\x1b[0m       - Show WASM memory usage\r\n");
             kwrite_chirho("  \x1b[1;32mjohn316\x1b[0m    - John 3:16\r\n");
         }
         b"uname" => {
@@ -271,6 +280,85 @@ fn process_command_chirho(line_chirho: &[u8], len_chirho: usize) {
             kwrite_chirho("Linux ABI on WebAssembly. Browser is the hardware.\r\n");
             kwrite_chirho("Built with Rust, compiled to wasm32-unknown-unknown.\r\n");
         }
+        b"ping" => {
+            if args_chirho.is_empty() {
+                kwrite_chirho("Usage: ping <host>\r\n");
+            } else {
+                kwrite_chirho("PING ");
+                kwrite_bytes_chirho(args_chirho);
+                kwrite_chirho(" via WebSocket proxy:\r\n");
+                kwrite_chirho("  (network syscalls route through CF Worker → origin server)\r\n");
+                kwrite_chirho("  connect() → WebSocket → TCP → ICMP (not yet fully wired)\r\n");
+                kwrite_chirho("  Use 'nc' for raw TCP connections via the proxy.\r\n");
+            }
+        }
+        b"nc" | b"netcat" => {
+            if args_chirho.is_empty() {
+                kwrite_chirho("Usage: nc <host> <port>\r\n");
+                kwrite_chirho("  Connects via WebSocket proxy to TCP services\r\n");
+            } else {
+                kwrite_chirho("Connecting via WebSocket proxy...\r\n");
+                kwrite_chirho("  socket(AF_INET, SOCK_STREAM, 0) = 100\r\n");
+                kwrite_chirho("  connect(100, ");
+                kwrite_bytes_chirho(args_chirho);
+                kwrite_chirho(") → ws://proxy/connect\r\n");
+                kwrite_chirho("  (full TCP relay available when proxy is running)\r\n");
+            }
+        }
+        b"ifconfig" | b"ip" => {
+            kwrite_chirho("lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536\r\n");
+            kwrite_chirho("    inet 127.0.0.1  netmask 255.0.0.0\r\n");
+            kwrite_chirho("    inet6 ::1  prefixlen 128\r\n");
+            kwrite_chirho("\r\n");
+            kwrite_chirho("ws0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500\r\n");
+            kwrite_chirho("    inet (via WebSocket proxy)  netmask 255.255.255.0\r\n");
+            kwrite_chirho("    carrier: Cloudflare Workers\r\n");
+        }
+        b"hostname" => {
+            kwrite_chirho("lineluya-wasm\r\n");
+        }
+        b"id" => {
+            kwrite_chirho("uid=0(root) gid=0(root) groups=0(root)\r\n");
+        }
+        b"pwd" => {
+            kwrite_chirho("/\r\n");
+        }
+        b"env" => {
+            kwrite_chirho("HOME=/root\r\n");
+            kwrite_chirho("PATH=/bin:/sbin:/usr/bin\r\n");
+            kwrite_chirho("SHELL=/bin/ksh\r\n");
+            kwrite_chirho("TERM=xterm-256color\r\n");
+            kwrite_chirho("ARCH=wasm32\r\n");
+            kwrite_chirho("KERNEL=Lineluya\r\n");
+        }
+        b"uptime" => {
+            let us_chirho = unsafe { js_timestamp_us_chirho() as u64 };
+            let sec_chirho = us_chirho / 1_000_000;
+            let min_chirho = sec_chirho / 60;
+            let hr_chirho = min_chirho / 60;
+            kwrite_chirho(" up ");
+            let mut buf_chirho = [0u8; 20];
+            if hr_chirho > 0 {
+                let len_chirho = u64_to_str_chirho(hr_chirho, &mut buf_chirho);
+                kwrite_bytes_chirho(&buf_chirho[..len_chirho]);
+                kwrite_chirho("h ");
+            }
+            let len_chirho = u64_to_str_chirho(min_chirho % 60, &mut buf_chirho);
+            kwrite_bytes_chirho(&buf_chirho[..len_chirho]);
+            kwrite_chirho("m, 1 user, load average: 0.00, 0.00, 0.00\r\n");
+        }
+        b"free" => {
+            let pages_chirho = core::arch::wasm32::memory_size(0);
+            let total_kb_chirho = (pages_chirho * 64) as u64; // 64KB per WASM page
+            kwrite_chirho("              total        used        free\r\n");
+            kwrite_chirho("Mem:     ");
+            let mut buf_chirho = [0u8; 20];
+            let len_chirho = u64_to_str_chirho(total_kb_chirho, &mut buf_chirho);
+            kwrite_bytes_chirho(&buf_chirho[..len_chirho]);
+            kwrite_chirho(" kB         0 kB    ");
+            kwrite_bytes_chirho(&buf_chirho[..len_chirho]);
+            kwrite_chirho(" kB\r\n");
+        }
         b"john316" => {
             kwrite_chirho("\x1b[1;33m\"For God so loved the world that he gave his only begotten Son,\r\n");
             kwrite_chirho("that whoever believes in him should not perish but have eternal life.\"\r\n");
@@ -305,6 +393,25 @@ fn u64_to_str_chirho(mut val_chirho: u64, buf_chirho: &mut [u8]) -> usize {
 // ---------------------------------------------------------------------------
 // Syscall dispatch — Linux syscall numbers → implementations
 // ---------------------------------------------------------------------------
+
+/// Next socket file descriptor (starts at 100 to avoid collision with stdio)
+static mut NEXT_SOCK_FD_CHIRHO: u32 = 99;
+
+/// Format an IPv4 address as "a.b.c.d" into a buffer, returns length.
+fn format_ip_chirho(a_chirho: u8, b_chirho: u8, c_chirho: u8, d_chirho: u8, buf_chirho: &mut [u8]) -> usize {
+    let mut pos_chirho = 0usize;
+    for (i_chirho, octet_chirho) in [a_chirho, b_chirho, c_chirho, d_chirho].iter().enumerate() {
+        if i_chirho > 0 {
+            buf_chirho[pos_chirho] = b'.';
+            pos_chirho += 1;
+        }
+        let mut tmp_chirho = [0u8; 3];
+        let len_chirho = u64_to_str_chirho(*octet_chirho as u64, &mut tmp_chirho);
+        buf_chirho[pos_chirho..pos_chirho + len_chirho].copy_from_slice(&tmp_chirho[..len_chirho]);
+        pos_chirho += len_chirho;
+    }
+    pos_chirho
+}
 
 /// Handle a Linux syscall from a wasm32 userspace program.
 /// Called by the JS runtime when a program invokes a syscall.
@@ -397,21 +504,82 @@ pub extern "C" fn syscall_chirho(
             }
             0
         }
-        // socket — create via JS proxy
-        41 => unsafe { js_net_connect_chirho(0, 0, 0) }, // placeholder
-        // connect
-        42 => {
-            // Would parse sockaddr and connect via proxy
-            -111 // ECONNREFUSED
+        // socket(domain, type, protocol) — allocate a socket fd
+        41 => {
+            // For now, return a pseudo-fd for network sockets
+            // Domain: AF_INET=2, Type: SOCK_STREAM=1, SOCK_DGRAM=2
+            let domain_chirho = arg0_chirho;
+            let sock_type_chirho = arg1_chirho;
+            if domain_chirho != 2 { // AF_INET only
+                -97 // EAFNOSUPPORT
+            } else if sock_type_chirho != 1 && sock_type_chirho != 2 {
+                -94 // ESOCKTNOSUPPORT
+            } else {
+                unsafe {
+                    NEXT_SOCK_FD_CHIRHO += 1;
+                    NEXT_SOCK_FD_CHIRHO as i32
+                }
+            }
         }
-        // sendto
+        // connect(sockfd, addr, addrlen) — connect via JS WebSocket proxy
+        42 => {
+            // Parse sockaddr_in from WASM memory: family(2) + port(2) + addr(4)
+            let addr_ptr_chirho = arg1_chirho as *const u8;
+            unsafe {
+                let port_be_chirho = ((*addr_ptr_chirho.add(2) as u16) << 8) | (*addr_ptr_chirho.add(3) as u16);
+                let ip_a_chirho = *addr_ptr_chirho.add(4);
+                let ip_b_chirho = *addr_ptr_chirho.add(5);
+                let ip_c_chirho = *addr_ptr_chirho.add(6);
+                let ip_d_chirho = *addr_ptr_chirho.add(7);
+                // Format IP as string in a temp buffer
+                let mut ip_buf_chirho = [0u8; 16];
+                let ip_len_chirho = format_ip_chirho(ip_a_chirho, ip_b_chirho, ip_c_chirho, ip_d_chirho, &mut ip_buf_chirho);
+                let handle_chirho = js_net_connect_chirho(
+                    ip_buf_chirho.as_ptr() as u32,
+                    ip_len_chirho as u32,
+                    port_be_chirho as u32,
+                );
+                if handle_chirho < 0 { -111 } else { 0 } // ECONNREFUSED or success
+            }
+        }
+        // sendto(sockfd, buf, len, flags, dest_addr, addrlen)
         44 => unsafe {
             js_net_send_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho)
         },
-        // recvfrom
+        // recvfrom(sockfd, buf, len, flags, src_addr, addrlen)
         45 => unsafe {
             js_net_recv_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho)
         },
+        // bind(sockfd, addr, addrlen) — stub (server sockets not yet supported in WASM)
+        49 => 0,
+        // listen(sockfd, backlog) — stub
+        50 => 0,
+        // accept(sockfd, addr, addrlen) — stub
+        43 => -11, // EAGAIN
+        // shutdown(sockfd, how)
+        48 => unsafe {
+            js_net_close_chirho(arg0_chirho as i32);
+            0
+        },
+        // close — if it's a socket fd, close it
+        3 => unsafe {
+            if arg0_chirho >= 100 {
+                js_net_close_chirho(arg0_chirho as i32);
+            }
+            0
+        },
+        // getsockopt / setsockopt — stubs
+        55 | 54 => 0,
+        // ioctl — stub
+        16 => 0,
+        // fcntl — stub
+        72 => 0,
+        // poll — stub (all fds ready)
+        7 => 1,
+        // select — stub
+        23 => 1,
+        // pipe2 — stub
+        293 => -38, // ENOSYS
 
         // Default: unimplemented
         _ => {

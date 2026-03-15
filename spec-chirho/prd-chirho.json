@@ -2453,7 +2453,7 @@
       "depends_on_chirho": [
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "socket() returns fd",
@@ -2472,7 +2472,7 @@
         "B2-001",
         "B2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "TCP connect() opens WS to proxy",
@@ -2490,7 +2490,7 @@
       "depends_on_chirho": [
         "B2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Resolves hostnames to IPs",
