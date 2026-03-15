@@ -599,7 +599,7 @@
       "depends_on_chirho": [
         "A2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Module probe called for matching PCI device"
@@ -631,7 +631,7 @@
       "depends_on_chirho": [
         "A2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Module uses mutex without deadlock"
@@ -957,7 +957,7 @@
       "depends_on_chirho": [
         "A3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "VirtIO-net device detected",
@@ -974,7 +974,7 @@
       "depends_on_chirho": [
         "A3-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "epoll monitors multiple sockets",
@@ -992,7 +992,7 @@
       "depends_on_chirho": [
         "A3-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Resolves hostname to IP via DNS server"
@@ -1009,7 +1009,7 @@
         "A3-001",
         "A3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "ping 127.0.0.1 works",
@@ -1026,7 +1026,7 @@
       "depends_on_chirho": [
         "A3-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "cat /proc/net/tcp shows open connections"
@@ -1507,7 +1507,7 @@
         "A5-007",
         "A5-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "MSI-X vectors allocated",
@@ -1525,7 +1525,7 @@
         "A5-007",
         "A5-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "NVMe SSD detected and readable",
@@ -1560,7 +1560,7 @@
         "A5-007",
         "A5-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "e1000 NIC detected",
@@ -1577,7 +1577,7 @@
       "depends_on_chirho": [
         "A5-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Keyboard input works on real hardware",
@@ -1830,7 +1830,7 @@
       "depends_on_chirho": [
         "A6-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "BPF program reads/writes maps",
@@ -1847,7 +1847,7 @@
       "depends_on_chirho": [
         "A5-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Framebuffer console via DRM",
@@ -1864,7 +1864,7 @@
       "depends_on_chirho": [
         "A5-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "low",
       "acceptance_criteria_chirho": [
         "ALSA device enumerable",
@@ -1879,7 +1879,7 @@
       "title_chirho": "Full /proc filesystem",
       "description_chirho": "Implement /proc/cpuinfo, /proc/meminfo, /proc/stat, /proc/uptime, /proc/version, /proc/filesystems.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "All listed /proc files return valid data"
@@ -1893,7 +1893,7 @@
       "title_chirho": "Full /sys filesystem",
       "description_chirho": "Implement /sys/class, /sys/bus, /sys/devices hierarchy for device model.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "sysfs hierarchy browsable",
@@ -1910,7 +1910,7 @@
       "depends_on_chirho": [
         "A6-011"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "/dev/sda appears when disk driver loads",
@@ -1927,7 +1927,7 @@
       "depends_on_chirho": [
         "A6-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Process in new PID ns sees PID 1",
@@ -1944,7 +1944,7 @@
       "depends_on_chirho": [
         "A6-013"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Isolated mount tree per namespace",
@@ -2600,7 +2600,7 @@
       "depends_on_chirho": [
         "B2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Connections to 127.0.0.1 route locally",
@@ -2618,7 +2618,7 @@
       "depends_on_chirho": [
         "B2-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "bind() assigns port",
@@ -2637,7 +2637,7 @@
         "B2-002",
         "B1-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "select() blocks until fd ready",
@@ -2656,7 +2656,7 @@
         "B2-004",
         "B1-016"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "/etc/resolv.conf exists",
@@ -2693,7 +2693,7 @@
       "depends_on_chirho": [
         "B2-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Connections reused across requests",
@@ -2802,7 +2802,7 @@
       "depends_on_chirho": [
         "B3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "IndexedDB backend implements same interface",
@@ -2820,7 +2820,7 @@
       "depends_on_chirho": [
         "B3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Repeated reads served from cache",
@@ -2839,7 +2839,7 @@
         "B3-007",
         "B3-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "fsync flushes to OPFS",
@@ -2876,7 +2876,7 @@
       "depends_on_chirho": [
         "B3-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "df command shows available space",
@@ -2984,7 +2984,7 @@
       "depends_on_chirho": [
         "B4-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "GLX context creation works",
@@ -3003,7 +3003,7 @@
         "B4-002",
         "B4-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Windows have title bars",
@@ -3021,7 +3021,7 @@
       "depends_on_chirho": [
         "B4-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Mouse clicks delivered to correct window",
@@ -3039,7 +3039,7 @@
       "depends_on_chirho": [
         "B4-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Key events delivered to focused window",
@@ -3560,7 +3560,7 @@
         "B4-002",
         "B2-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Remote X11 app renders in browser",
@@ -3596,7 +3596,7 @@
       "depends_on_chirho": [
         "B1-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Audio output plays in browser",
@@ -3614,7 +3614,7 @@
       "depends_on_chirho": [
         "B6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "low",
       "acceptance_criteria_chirho": [
         "Notification permission requested",
@@ -3669,7 +3669,7 @@
       "depends_on_chirho": [
         "B6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Settings panel opens",
@@ -3688,7 +3688,7 @@
         "B4-002",
         "B6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Editor opens files",
@@ -3707,7 +3707,7 @@
         "B6-001",
         "B2-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "low",
       "acceptance_criteria_chirho": [
         "Browser app opens",
