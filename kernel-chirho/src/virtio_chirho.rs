@@ -1616,9 +1616,11 @@ pub fn init_virtio_chirho() {
         }
     }
 
-    // Also probe well-known QEMU VirtIO-MMIO addresses (0x1000_1000 .. 0x1000_8000,
-    // step 0x1000) in case the board uses MMIO transport instead of PCI.
-    probe_qemu_mmio_chirho();
+    // Skip QEMU MMIO probe if we already found PCI devices — accessing
+    // unmapped MMIO addresses (0x1000_1000..) causes page faults in UEFI boot.
+    if devices_chirho.is_empty() {
+        probe_qemu_mmio_chirho();
+    }
 
     crate::serial_println_chirho!(
         "VirtIO: scan complete, {} PCI device(s) found",
@@ -1913,6 +1915,7 @@ fn probe_ext4_and_mount_chirho() {
     };
 
     let device_count_chirho = BLOCK_REGISTRY_CHIRHO.count_chirho();
+    crate::serial_println_chirho!("[EXT4] Block device count: {}", device_count_chirho);
     if device_count_chirho == 0 {
         crate::serial_println_chirho!("[EXT4] No block devices registered, skipping ext4 probe");
         return;
