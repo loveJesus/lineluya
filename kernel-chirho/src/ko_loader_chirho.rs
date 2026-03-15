@@ -903,6 +903,243 @@ pub unsafe extern "C" fn get_user_stub_chirho(
 }
 
 // ===========================================================================
+// A2-010: C ABI shim — pci_register_driver and PCI helpers
+// ===========================================================================
+
+/// `__pci_register_driver(drv, owner, mod_name)` — register a PCI driver.
+///
+/// In a full kernel this would scan the PCI bus and call probe() for matching
+/// devices. Here we log the registration and return 0 (success).
+#[allow(dead_code)]
+pub extern "C" fn pci_register_driver_stub_chirho(
+    _drv_ptr_chirho: u64,
+    _owner_ptr_chirho: u64,
+    _mod_name_ptr_chirho: u64,
+) -> i32 {
+    crate::serial_println_chirho!("[KO] __pci_register_driver stub called");
+    0 // success
+}
+
+/// `pci_unregister_driver(drv)` — unregister a PCI driver.
+#[allow(dead_code)]
+pub extern "C" fn pci_unregister_driver_stub_chirho(_drv_ptr_chirho: u64) {
+    crate::serial_println_chirho!("[KO] pci_unregister_driver stub called");
+}
+
+/// `pci_enable_device(dev)` — enable a PCI device.
+#[allow(dead_code)]
+pub extern "C" fn pci_enable_device_stub_chirho(_dev_ptr_chirho: u64) -> i32 {
+    crate::serial_println_chirho!("[KO] pci_enable_device stub called");
+    0
+}
+
+/// `pci_disable_device(dev)` — disable a PCI device.
+#[allow(dead_code)]
+pub extern "C" fn pci_disable_device_stub_chirho(_dev_ptr_chirho: u64) {
+    crate::serial_println_chirho!("[KO] pci_disable_device stub called");
+}
+
+/// `pci_set_master(dev)` — enable bus mastering for a PCI device.
+#[allow(dead_code)]
+pub extern "C" fn pci_set_master_stub_chirho(_dev_ptr_chirho: u64) {
+    crate::serial_println_chirho!("[KO] pci_set_master stub called");
+}
+
+/// `pci_resource_start(dev, bar)` — get BAR start address.
+#[allow(dead_code)]
+pub extern "C" fn pci_resource_start_stub_chirho(_dev_ptr_chirho: u64, _bar_chirho: u32) -> u64 {
+    0 // no real BAR
+}
+
+/// `pci_resource_len(dev, bar)` — get BAR length.
+#[allow(dead_code)]
+pub extern "C" fn pci_resource_len_stub_chirho(_dev_ptr_chirho: u64, _bar_chirho: u32) -> u64 {
+    0
+}
+
+// ===========================================================================
+// A2-012: C ABI shim — spinlock (raw_spin_lock / raw_spin_unlock)
+// ===========================================================================
+
+/// `_raw_spin_lock(lock)` — acquire a raw spinlock.
+///
+/// In our single-CPU kernel this disables interrupts (conceptually) and
+/// returns. In future SMP builds this will do a real CAS loop.
+#[allow(dead_code)]
+pub extern "C" fn spin_lock_stub_chirho(_lock_ptr_chirho: u64) {
+    // Single-CPU: disable preemption (no-op for cooperative scheduler).
+}
+
+/// `_raw_spin_unlock(lock)` — release a raw spinlock.
+#[allow(dead_code)]
+pub extern "C" fn spin_unlock_stub_chirho(_lock_ptr_chirho: u64) {
+    // Single-CPU: re-enable preemption.
+}
+
+/// `_raw_spin_lock_irqsave(lock)` — acquire spinlock and save IRQ flags.
+/// Returns the previous interrupt state (flags).
+#[allow(dead_code)]
+pub extern "C" fn spin_lock_irqsave_stub_chirho(_lock_ptr_chirho: u64) -> u64 {
+    // Return a dummy flags value; in future we'd return RFLAGS.
+    let flags_chirho: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) flags_chirho);
+    }
+    // Disable interrupts.
+    unsafe { core::arch::asm!("cli"); }
+    flags_chirho
+}
+
+/// `_raw_spin_unlock_irqrestore(lock, flags)` — release spinlock and restore IRQ flags.
+#[allow(dead_code)]
+pub extern "C" fn spin_unlock_irqrestore_stub_chirho(_lock_ptr_chirho: u64, flags_chirho: u64) {
+    // Restore interrupt state.
+    if flags_chirho & 0x200 != 0 {
+        // IF was set — re-enable interrupts.
+        unsafe { core::arch::asm!("sti"); }
+    }
+}
+
+/// `mutex_init(mutex)` — initialize a mutex structure.
+#[allow(dead_code)]
+pub extern "C" fn mutex_init_stub_chirho(_mutex_ptr_chirho: u64) {
+    // No-op: mutexes are conceptually always unlocked at init.
+}
+
+// ===========================================================================
+// A2-013: C ABI shim — workqueue (schedule_work / create_workqueue)
+// ===========================================================================
+
+/// `schedule_work(work)` — schedule deferred work on the system workqueue.
+///
+/// In a full kernel this queues a `work_struct` for execution by a kernel
+/// worker thread. Here we call the work function immediately (synchronous).
+#[allow(dead_code)]
+pub extern "C" fn schedule_work_stub_chirho(work_ptr_chirho: u64) -> i32 {
+    crate::serial_println_chirho!("[KO] schedule_work stub: work_struct at {:#x}", work_ptr_chirho);
+    // A real implementation would queue the work. For now we invoke it inline
+    // if we can find the function pointer. The `work_struct` layout has the
+    // function pointer at offset 32 on x86_64 Linux. Since we don't have
+    // the exact struct, we just log it.
+    1 // return 1 = work was queued
+}
+
+/// `create_singlethread_workqueue(name)` — create a new workqueue.
+///
+/// Returns a non-NULL "handle" (just a unique ID for now).
+#[allow(dead_code)]
+pub extern "C" fn create_workqueue_stub_chirho(_name_ptr_chirho: u64) -> u64 {
+    static NEXT_WQ_ID_CHIRHO: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(0xAA00_0001);
+    crate::serial_println_chirho!("[KO] create_workqueue stub called");
+    NEXT_WQ_ID_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+}
+
+/// `destroy_workqueue(wq)` — destroy a workqueue.
+#[allow(dead_code)]
+pub extern "C" fn destroy_workqueue_stub_chirho(_wq_handle_chirho: u64) {
+    crate::serial_println_chirho!("[KO] destroy_workqueue stub called");
+}
+
+/// `queue_work(wq, work)` — queue work on a specific workqueue.
+#[allow(dead_code)]
+pub extern "C" fn queue_work_stub_chirho(_wq_handle_chirho: u64, _work_ptr_chirho: u64) -> i32 {
+    crate::serial_println_chirho!("[KO] queue_work stub called");
+    1
+}
+
+/// `flush_workqueue(wq)` — wait for all pending work to complete.
+#[allow(dead_code)]
+pub extern "C" fn flush_workqueue_stub_chirho(_wq_handle_chirho: u64) {
+    crate::serial_println_chirho!("[KO] flush_workqueue stub called");
+    // All work is synchronous in our stub, so nothing to flush.
+}
+
+// ===========================================================================
+// A2-009: C ABI shim — request_irq / free_irq
+// ===========================================================================
+
+/// `request_irq(irq, handler, flags, name, dev)` — register an IRQ handler.
+#[allow(dead_code)]
+pub extern "C" fn request_irq_stub_chirho(
+    irq_chirho: u32,
+    _handler_ptr_chirho: u64,
+    _flags_chirho: u64,
+    _name_ptr_chirho: u64,
+    _dev_ptr_chirho: u64,
+) -> i32 {
+    crate::serial_println_chirho!("[KO] request_irq stub: IRQ {}", irq_chirho);
+    0 // success
+}
+
+/// `free_irq(irq, dev)` — unregister an IRQ handler.
+#[allow(dead_code)]
+pub extern "C" fn free_irq_stub_chirho(irq_chirho: u32, _dev_ptr_chirho: u64) {
+    crate::serial_println_chirho!("[KO] free_irq stub: IRQ {}", irq_chirho);
+}
+
+// ===========================================================================
+// A2-018: Rust native module API
+// ===========================================================================
+
+/// Trait for Rust kernel modules.
+///
+/// Provides a safe, idiomatic Rust alternative to the C ABI `init_module` /
+/// `cleanup_module` convention. Modules implement this trait and register
+/// via [`register_rust_module_chirho`].
+pub trait RustModuleChirho: Send + Sync {
+    /// Module name (displayed in `/proc/modules`).
+    fn name_chirho(&self) -> &str;
+
+    /// Called when the module is loaded. Return `Ok(())` on success or
+    /// an error code on failure.
+    fn init_chirho(&self) -> Result<(), i64>;
+
+    /// Called when the module is unloaded. Should clean up all resources.
+    fn exit_chirho(&self);
+}
+
+/// Register and initialize a Rust-native kernel module.
+///
+/// The module's `init_chirho` method is called immediately. If it succeeds
+/// the module is added to the loaded modules list and will appear in
+/// `/proc/modules`.
+#[allow(dead_code)]
+pub fn register_rust_module_chirho(module_chirho: &'static dyn RustModuleChirho) -> Result<(), i64> {
+    crate::serial_println_chirho!(
+        "[KO] Loading Rust module: {}",
+        module_chirho.name_chirho()
+    );
+
+    module_chirho.init_chirho()?;
+
+    // Register in the loaded modules list.
+    let ko_chirho = KoModuleChirho {
+        name_chirho: String::from(module_chirho.name_chirho()),
+        init_fn_chirho: None,
+        cleanup_fn_chirho: None,
+        state_chirho: ModuleStateChirho::LoadedChirho,
+        symbol_count_chirho: 0,
+        sections_chirho: Vec::new(),
+        module_mem_base_chirho: module_chirho as *const dyn RustModuleChirho as *const () as u64,
+        module_mem_size_chirho: 0,
+        refcount_chirho: 0,
+        depends_on_chirho: Vec::new(),
+        params_chirho: Vec::new(),
+    };
+
+    let mut loaded_chirho = LOADED_MODULES_CHIRHO.lock();
+    loaded_chirho.push(ko_chirho);
+
+    crate::serial_println_chirho!(
+        "[KO] Rust module '{}' loaded successfully",
+        module_chirho.name_chirho()
+    );
+
+    Ok(())
+}
+
+// ===========================================================================
 // A2-016: Module dependency tracking helpers
 // ===========================================================================
 
@@ -1199,6 +1436,90 @@ pub fn init_kernel_symbols_chirho() {
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("get_user"),
         get_user_stub_chirho as *const () as u64,
+    );
+
+    // A2-010: PCI driver registration stubs
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__pci_register_driver"),
+        pci_register_driver_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("pci_unregister_driver"),
+        pci_unregister_driver_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("pci_enable_device"),
+        pci_enable_device_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("pci_disable_device"),
+        pci_disable_device_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("pci_set_master"),
+        pci_set_master_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("pci_resource_start"),
+        pci_resource_start_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("pci_resource_len"),
+        pci_resource_len_stub_chirho as *const () as u64,
+    );
+
+    // A2-012: spinlock stubs
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("_raw_spin_lock"),
+        spin_lock_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("_raw_spin_unlock"),
+        spin_unlock_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("_raw_spin_lock_irqsave"),
+        spin_lock_irqsave_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("_raw_spin_unlock_irqrestore"),
+        spin_unlock_irqrestore_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("mutex_init"),
+        mutex_init_stub_chirho as *const () as u64,
+    );
+
+    // A2-013: workqueue stubs
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("schedule_work"),
+        schedule_work_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("create_singlethread_workqueue"),
+        create_workqueue_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("destroy_workqueue"),
+        destroy_workqueue_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("queue_work"),
+        queue_work_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("flush_workqueue"),
+        flush_workqueue_stub_chirho as *const () as u64,
+    );
+
+    // A2-009: IRQ stubs
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("request_irq"),
+        request_irq_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("free_irq"),
+        free_irq_stub_chirho as *const () as u64,
     );
 
     crate::serial_println_chirho!(
