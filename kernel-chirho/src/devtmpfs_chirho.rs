@@ -278,24 +278,37 @@ impl FileOpsChirho for DevConsoleOpsChirho {
         }
 
         // Blocking read: poll PS/2 keyboard port directly.
-        // The keyboard interrupt (IRQ1) doesn't reliably fire in all
-        // boot modes, so we poll port 0x60 directly in a spin loop.
+        // Must enable interrupts during polling so timer ticks keep running.
+        // The SYSCALL entry path masks IF, so we re-enable here.
+        x86_64::instructions::interrupts::enable();
+
         loop {
             if tty_chirho.ldisc_chirho.lock().has_data_chirho() {
                 break;
             }
-            // Poll PS/2 status port — bit 0 means data available
-            let status_chirho: u8 = unsafe {
+            // Poll BOTH serial port (0x3F8) AND PS/2 keyboard (0x60).
+            // Serial is more reliable in QEMU — stdin goes to serial.
+            // Check serial port LSR (0x3FD) bit 0 = data ready
+            let serial_status_chirho: u8 = unsafe {
+                x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+            };
+            if serial_status_chirho & 0x01 != 0 {
+                let byte_chirho: u8 = unsafe {
+                    x86_64::instructions::port::Port::<u8>::new(0x3F8).read()
+                };
+                // Feed directly into TTY (serial chars are already decoded)
+                tty_chirho.input_char_chirho(byte_chirho);
+            }
+
+            // Also poll PS/2 keyboard port
+            let ps2_status_chirho: u8 = unsafe {
                 x86_64::instructions::port::Port::<u8>::new(0x64).read()
             };
-            if status_chirho & 0x01 != 0 {
-                // Read the scancode
+            if ps2_status_chirho & 0x01 != 0 {
                 let scancode_chirho: u8 = unsafe {
                     x86_64::instructions::port::Port::<u8>::new(0x60).read()
                 };
-                // Decode using the keyboard state machine
                 use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
-                // Use a local decoder since we can't easily access the global one
                 static POLL_KBD_CHIRHO: spin::Mutex<Option<Keyboard<layouts::Us104Key, ScancodeSet1>>> =
                     spin::Mutex::new(None);
                 let mut kbd_guard_chirho = POLL_KBD_CHIRHO.lock();
