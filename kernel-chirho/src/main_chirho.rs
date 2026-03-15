@@ -77,6 +77,8 @@ mod process_chirho;
 mod waitqueue_chirho;
 mod futex_chirho;
 mod tty_chirho;
+mod pty_chirho;
+mod fb_device_chirho;
 
 // Phase 9: Advanced subsystem stubs
 mod io_uring_chirho;

@@ -278,6 +278,9 @@ fn dev_file_ops_chirho(major_chirho: u32, minor_chirho: u32) -> &'static dyn Fil
         (1, 5) => &DEV_ZERO_OPS_CHIRHO,
         (1, 9) => &DEV_URANDOM_OPS_CHIRHO,
         (5, 0) | (5, 1) => &DEV_CONSOLE_OPS_CHIRHO,
+        (5, 2) => &crate::pty_chirho::PTMX_OPS_CHIRHO,       // /dev/ptmx
+        (136, _) => &crate::pty_chirho::PTY_SLAVE_OPS_CHIRHO, // /dev/pts/N (major 136)
+        (29, 0) => &crate::fb_device_chirho::FB_DEVICE_OPS_CHIRHO, // /dev/fb0
         _ => &TMPFS_FILE_OPS_CHIRHO, // fallback
     }
 }
