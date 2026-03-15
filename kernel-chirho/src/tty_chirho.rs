@@ -182,6 +182,12 @@ impl LineDisciplineChirho {
         !self.ready_chirho.is_empty()
     }
 
+    /// Push a byte directly into the ready queue (bypass line discipline).
+    /// Used for serial input where characters are already decoded.
+    pub fn push_ready_chirho(&mut self, byte_chirho: u8) {
+        self.ready_chirho.push(byte_chirho);
+    }
+
     /// Get a reference to the current termios.
     pub fn termios_chirho(&self) -> &TermiosChirho {
         &self.termios_chirho

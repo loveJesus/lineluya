@@ -296,8 +296,10 @@ impl FileOpsChirho for DevConsoleOpsChirho {
                 let byte_chirho: u8 = unsafe {
                     x86_64::instructions::port::Port::<u8>::new(0x3F8).read()
                 };
-                // Feed directly into TTY (serial chars are already decoded)
-                tty_chirho.input_char_chirho(byte_chirho);
+                // Convert \r to \n and return this byte directly to the caller.
+                let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
+                buf_chirho[0] = ch_chirho;
+                return Ok(1);
             }
 
             // Also poll PS/2 keyboard port
