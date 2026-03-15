@@ -611,8 +611,32 @@ export class KernelStateDurableObjectChirho {
 
 export default {
   async fetch(requestChirho: Request, envChirho: EnvChirho): Promise<Response> {
+    const startTimeChirho = Date.now();
     const urlChirho = new URL(requestChirho.url);
     const pathChirho = urlChirho.pathname;
+
+    // ── Edge Logging (C1-013) ──────────────────────────────────────────
+    const logRequestChirho = (statusChirho: number) => {
+      console.log(JSON.stringify({
+        ts_chirho: new Date().toISOString(),
+        method_chirho: requestChirho.method,
+        path_chirho: pathChirho,
+        status_chirho: statusChirho,
+        duration_ms_chirho: Date.now() - startTimeChirho,
+        cf_chirho: (requestChirho as any).cf?.colo || "unknown",
+      }));
+    };
+
+    // ── Cold Start Optimization (C1-012): Cache headers for static assets
+    const addColdStartHeadersChirho = (responseChirho: Response): Response => {
+      const headersChirho = new Headers(responseChirho.headers);
+      headersChirho.set("X-Lineluya-Duration-Chirho", String(Date.now() - startTimeChirho));
+      headersChirho.set("X-Lineluya-Colo-Chirho", (requestChirho as any).cf?.colo || "unknown");
+      return new Response(responseChirho.body, {
+        status: responseChirho.status,
+        headers: headersChirho,
+      });
+    };
 
     // ── WebSocket upgrade routes ───────────────────────────────────────
     const upgradeHeaderChirho = requestChirho.headers.get("Upgrade");
@@ -635,11 +659,17 @@ export default {
       });
     }
 
-    // GET /health-chirho — Health check
+    // GET /health-chirho — Health check (C1-012: minimal cold start path)
     if (pathChirho === "/health-chirho") {
-      return new Response("Lineluya edge alive - John 3:16\n", {
-        headers: { "Content-Type": "text/plain" },
-      });
+      logRequestChirho(200);
+      return addColdStartHeadersChirho(new Response(JSON.stringify({
+        alive_chirho: true,
+        uptime_ms_chirho: Date.now() - startTimeChirho,
+        colo_chirho: (requestChirho as any).cf?.colo || "unknown",
+        version_chirho: "0.6.0",
+      }), {
+        headers: { "Content-Type": "application/json" },
+      }));
     }
 
     // GET /kernel.wasm — Serve WASM kernel binary from R2

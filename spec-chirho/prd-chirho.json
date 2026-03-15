@@ -3932,7 +3932,7 @@
         "C1-004",
         "C1-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Rootfs image on R2",
@@ -3969,7 +3969,7 @@
       "depends_on_chirho": [
         "C1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Cold start under 50ms",
@@ -3987,7 +3987,7 @@
       "depends_on_chirho": [
         "C1-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Kernel logs captured",
