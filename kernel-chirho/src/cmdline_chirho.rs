@@ -1,10 +1,15 @@
 // For God so loved the world that he gave his only begotten Son,
 // that whoever believes in him should not perish but have eternal life. - John 3:16
 
-//! Kernel command line parsing for the Lineluya kernel (A5-019).
+//! Kernel command line parsing for the Lineluya kernel (E1-014).
 //!
 //! Parses the `key=value` and boolean parameters from the kernel command
 //! line string (passed by the bootloader or embedded in the bzImage).
+//!
+//! Supports wiring the command line from multiple boot protocols:
+//! - `bootloader` crate (Rust bootloader)
+//! - Multiboot2 (GRUB) via tag parsing
+//! - Linux bzImage boot protocol via boot_params
 //!
 //! Common parameters:
 //! - `root=/dev/sda1`  — root filesystem device
@@ -45,6 +50,9 @@ static CMDLINE_RAW_CHIRHO: Mutex<String> = Mutex::new(String::new());
 /// Parsed command line parameters.
 static CMDLINE_PARAMS_CHIRHO: Mutex<Vec<CmdlineParamChirho>> = Mutex::new(Vec::new());
 
+/// Whether the command line has been initialized.
+static CMDLINE_INITIALIZED_CHIRHO: Mutex<bool> = Mutex::new(false);
+
 // ============================================================================
 // Parsing
 // ============================================================================
@@ -53,7 +61,6 @@ static CMDLINE_PARAMS_CHIRHO: Mutex<Vec<CmdlineParamChirho>> = Mutex::new(Vec::n
 ///
 /// Parameters are space-separated. A parameter without `=` is treated
 /// as a boolean flag (value = "").
-#[allow(dead_code)]
 pub fn parse_cmdline_chirho(cmdline_chirho: &str) {
     let mut raw_chirho = CMDLINE_RAW_CHIRHO.lock();
     raw_chirho.clear();
@@ -82,12 +89,99 @@ pub fn parse_cmdline_chirho(cmdline_chirho: &str) {
         });
     }
 
+    let count_chirho = params_chirho.len();
+    drop(params_chirho);
+    drop(raw_chirho);
+
+    let mut init_chirho = CMDLINE_INITIALIZED_CHIRHO.lock();
+    *init_chirho = true;
+    drop(init_chirho);
+
     crate::serial_println_chirho!(
         "[CMDLINE] Parsed {} parameters from: {}",
-        params_chirho.len(),
+        count_chirho,
         cmdline_chirho
     );
 }
+
+/// Initialize command line from the `bootloader` crate's BootInfo.
+///
+/// The `bootloader` crate does not currently pass a command line,
+/// so this sets a default. When Multiboot2 or bzImage provides one,
+/// it will be parsed instead.
+pub fn init_cmdline_from_bootinfo_chirho() {
+    let already_init_chirho = { *CMDLINE_INITIALIZED_CHIRHO.lock() };
+    if already_init_chirho {
+        crate::serial_println_chirho!("[CMDLINE] Already initialized, skipping bootinfo init");
+        return;
+    }
+    // Default command line when no bootloader provides one.
+    parse_cmdline_chirho("console=ttyS0 loglevel=7");
+    crate::serial_println_chirho!("[CMDLINE] Initialized with default command line");
+}
+
+/// Initialize command line from a raw C string pointer.
+///
+/// Used when booting via Linux bzImage protocol — the bootloader places
+/// the command line at the physical address in `boot_params.hdr.cmd_line_ptr`.
+///
+/// # Safety
+/// `ptr_chirho` must point to a valid NUL-terminated C string in mapped memory.
+#[allow(dead_code)]
+pub unsafe fn init_cmdline_from_ptr_chirho(ptr_chirho: *const u8) {
+    if ptr_chirho.is_null() {
+        crate::serial_println_chirho!("[CMDLINE] Null command line pointer, using default");
+        parse_cmdline_chirho("console=ttyS0 loglevel=7");
+        return;
+    }
+
+    // Find the NUL terminator (max 4096 bytes).
+    let mut len_chirho: usize = 0;
+    while len_chirho < 4096 {
+        if unsafe { *ptr_chirho.add(len_chirho) } == 0 {
+            break;
+        }
+        len_chirho += 1;
+    }
+
+    let bytes_chirho = unsafe { core::slice::from_raw_parts(ptr_chirho, len_chirho) };
+    if let Ok(cmdline_str_chirho) = core::str::from_utf8(bytes_chirho) {
+        crate::serial_println_chirho!(
+            "[CMDLINE] From bootloader pointer: \"{}\"",
+            cmdline_str_chirho
+        );
+        parse_cmdline_chirho(cmdline_str_chirho);
+    } else {
+        crate::serial_println_chirho!("[CMDLINE] Invalid UTF-8 in command line, using default");
+        parse_cmdline_chirho("console=ttyS0 loglevel=7");
+    }
+}
+
+/// Initialize command line from a Multiboot2 boot info structure (E1-014).
+///
+/// Parses the Multiboot2 tag list looking for the command line tag (type 1).
+///
+/// # Safety
+/// `mbi_ptr_chirho` must point to a valid Multiboot2 boot information structure.
+#[allow(dead_code)]
+pub unsafe fn init_cmdline_from_multiboot2_chirho(mbi_ptr_chirho: *const u8) {
+    if let Some(cmdline_chirho) =
+        unsafe { crate::multiboot2_header_chirho::parse_mb2_cmdline_chirho(mbi_ptr_chirho) }
+    {
+        crate::serial_println_chirho!(
+            "[CMDLINE] From Multiboot2: \"{}\"",
+            cmdline_chirho
+        );
+        parse_cmdline_chirho(cmdline_chirho);
+    } else {
+        crate::serial_println_chirho!("[CMDLINE] No Multiboot2 command line tag, using default");
+        parse_cmdline_chirho("console=ttyS0 loglevel=7");
+    }
+}
+
+// ============================================================================
+// Query functions
+// ============================================================================
 
 /// Look up a command line parameter by key.
 ///
@@ -140,4 +234,18 @@ pub fn log_level_chirho() -> u8 {
 #[allow(dead_code)]
 pub fn raw_cmdline_chirho() -> String {
     CMDLINE_RAW_CHIRHO.lock().clone()
+}
+
+/// Check if the `quiet` flag is set.
+#[allow(dead_code)]
+pub fn is_quiet_chirho() -> bool {
+    has_flag_chirho("quiet")
+}
+
+/// Get the `panic=` timeout in seconds (0 = no auto-reboot).
+#[allow(dead_code)]
+pub fn panic_timeout_chirho() -> u64 {
+    get_param_chirho("panic")
+        .and_then(|s_chirho| s_chirho.parse::<u64>().ok())
+        .unwrap_or(0)
 }

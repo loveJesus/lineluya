@@ -54,6 +54,10 @@ mod cmdline_chirho;
 mod msi_chirho;
 mod random_chirho;
 
+// Phase E1: Real hardware boot — Multiboot2, dmesg
+mod multiboot2_header_chirho;
+mod dmesg_chirho;
+
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
 mod syscall_entry_chirho;
@@ -163,6 +167,12 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
             mm_chirho::init_mm_chirho(mm_mapper_chirho, mm_frame_alloc_chirho);
         }
     }
+
+    // Initialize kernel command line from bootloader (E1-014).
+    cmdline_chirho::init_cmdline_from_bootinfo_chirho();
+
+    // Initialize dmesg ring buffer (E1-015).
+    dmesg_chirho::init_dmesg_chirho();
 
     // Phase 2: Initialize process management
     task_chirho::init_tasking_chirho();

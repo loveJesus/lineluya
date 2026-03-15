@@ -87,7 +87,19 @@ fn gen_mounts_chirho() -> String {
 }
 
 fn gen_cmdline_chirho() -> String {
-    String::from("lineluya_chirho\n")
+    let raw_chirho = crate::cmdline_chirho::raw_cmdline_chirho();
+    if raw_chirho.is_empty() {
+        String::from("lineluya_chirho\n")
+    } else {
+        let mut result_chirho = raw_chirho;
+        result_chirho.push('\n');
+        result_chirho
+    }
+}
+
+/// Generate `/proc/kmsg` — kernel log ring buffer (E1-015).
+fn gen_kmsg_chirho() -> String {
+    crate::dmesg_chirho::gen_kmsg_chirho()
 }
 
 fn gen_loadavg_chirho() -> String {
@@ -728,6 +740,7 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     let interrupts_inode_chirho = make_proc_file_chirho(gen_interrupts_chirho);
     let diskstats_inode_chirho = make_proc_file_chirho(gen_diskstats_chirho);
     let vmstat_inode_chirho = make_proc_file_chirho(gen_vmstat_chirho);
+    let kmsg_inode_chirho = make_proc_file_chirho(gen_kmsg_chirho);
     let self_inode_chirho = make_proc_symlink_chirho("/proc/1");
 
     // -- /proc/net/ directory (A3-015) --
@@ -883,6 +896,12 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             inode_chirho: vmstat_inode_chirho.clone(),
         },
         ProcEntryChirho {
+            name_chirho: String::from("kmsg"),
+            ino_chirho: kmsg_inode_chirho.ino_chirho,
+            mode_chirho: kmsg_inode_chirho.mode_chirho,
+            inode_chirho: kmsg_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
             name_chirho: String::from("self"),
             ino_chirho: self_inode_chirho.ino_chirho,
             mode_chirho: self_inode_chirho.mode_chirho,
@@ -936,6 +955,7 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
         ("diskstats", diskstats_inode_chirho),
         ("vmstat", vmstat_inode_chirho),
         ("modules", modules_inode_chirho),
+        ("kmsg", kmsg_inode_chirho),
         ("self", self_inode_chirho),
     ];
 
