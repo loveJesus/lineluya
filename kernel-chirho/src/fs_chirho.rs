@@ -446,11 +446,14 @@ pub fn sys_read_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: 
         }
     };
 
-    // Read into a kernel buffer
-    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    // Read into a stack-based kernel buffer (avoid heap allocation
+    // which can trigger page faults in the allocator during syscalls).
+    let capped_count_chirho = core::cmp::min(count_chirho, 4096);
+    let mut kernel_buf_storage_chirho = [0u8; 4096];
+    let kernel_buf_chirho = &mut kernel_buf_storage_chirho[..capped_count_chirho];
     let bytes_read_chirho = {
         let mut file_guard_chirho = file_arc_chirho.lock();
-        match file_guard_chirho.ops_chirho.read_chirho(&mut file_guard_chirho, &mut kernel_buf_chirho) {
+        match file_guard_chirho.ops_chirho.read_chirho(&mut file_guard_chirho, kernel_buf_chirho) {
             Ok(n_chirho) => n_chirho,
             Err(errno_chirho) => return errno_chirho,
         }
@@ -487,10 +490,12 @@ pub fn sys_write_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho:
         }
     };
 
-    // Copy from user space into kernel buffer
-    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    // Copy from user space into stack-based kernel buffer
+    let capped_write_chirho = core::cmp::min(count_chirho, 4096);
+    let mut kernel_buf_storage2_chirho = [0u8; 4096];
+    let kernel_buf_chirho = &mut kernel_buf_storage2_chirho[..capped_write_chirho];
     if let Err(_) =
-        copy_from_user_chirho(&mut kernel_buf_chirho, buf_addr_chirho, count_chirho)
+        copy_from_user_chirho(kernel_buf_chirho, buf_addr_chirho, capped_write_chirho)
     {
         return -EFAULT_CHIRHO;
     }
