@@ -116,6 +116,23 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     serial_println_chirho!("- John 3:16");
     serial_println_chirho!();
 
+    // Enable SSE/SSE2 — required by musl and all modern x86_64 code.
+    // Clear CR0.EM, set CR0.MP, set CR4.OSFXSR + CR4.OSXMMEXCPT.
+    unsafe {
+        core::arch::asm!(
+            "mov rax, cr0",
+            "and ax, 0xFFFB", // clear EM (bit 2)
+            "or ax, 0x2",     // set MP (bit 1)
+            "mov cr0, rax",
+            "mov rax, cr4",
+            "or ax, 0x600",   // set OSFXSR (bit 9) + OSXMMEXCPT (bit 10)
+            "mov cr4, rax",
+            out("rax") _,
+            options(nomem, nostack)
+        );
+    }
+    serial_println_chirho!("[OK] SSE/SSE2 enabled");
+
     // Initialize the Global Descriptor Table
     gdt_chirho::init_chirho();
     serial_println_chirho!("[OK] GDT initialized");

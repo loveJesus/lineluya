@@ -160,6 +160,15 @@ static IDT_CHIRHO: spin::Lazy<InterruptDescriptorTable> = spin::Lazy::new(|| {
     }
     idt_chirho.general_protection_fault.set_handler_fn(general_protection_fault_handler_chirho);
     idt_chirho.segment_not_present.set_handler_fn(segment_not_present_handler_chirho);
+    idt_chirho.invalid_opcode.set_handler_fn(invalid_opcode_handler_chirho);
+    idt_chirho.overflow.set_handler_fn(overflow_handler_chirho);
+    idt_chirho.bound_range_exceeded.set_handler_fn(bound_range_handler_chirho);
+    idt_chirho.device_not_available.set_handler_fn(device_not_available_handler_chirho);
+    idt_chirho.invalid_tss.set_handler_fn(invalid_tss_handler_chirho);
+    idt_chirho.stack_segment_fault.set_handler_fn(stack_segment_handler_chirho);
+    idt_chirho.x87_floating_point.set_handler_fn(x87_fp_handler_chirho);
+    idt_chirho.alignment_check.set_handler_fn(alignment_check_handler_chirho);
+    idt_chirho.simd_floating_point.set_handler_fn(simd_fp_handler_chirho);
 
     // --- Hardware interrupt handlers ---
 
@@ -534,6 +543,67 @@ extern "x86-interrupt" fn segment_not_present_handler_chirho(
     loop {
         x86_64::instructions::hlt();
     }
+}
+
+/// Invalid Opcode (#UD) handler. musl may use instructions not emulated by QEMU/HVF.
+extern "x86-interrupt" fn invalid_opcode_handler_chirho(
+    stack_frame_chirho: InterruptStackFrame,
+) {
+    crate::serial_println_chirho!(
+        "[EXCEPTION] INVALID OPCODE (#UD) at {:#x}\n{:#?}",
+        stack_frame_chirho.instruction_pointer.as_u64(),
+        stack_frame_chirho
+    );
+    loop { x86_64::instructions::hlt(); }
+}
+
+extern "x86-interrupt" fn overflow_handler_chirho(_sf: InterruptStackFrame) {
+    crate::serial_println_chirho!("[EXCEPTION] OVERFLOW");
+}
+
+extern "x86-interrupt" fn bound_range_handler_chirho(_sf: InterruptStackFrame) {
+    crate::serial_println_chirho!("[EXCEPTION] BOUND RANGE");
+    loop { x86_64::instructions::hlt(); }
+}
+
+extern "x86-interrupt" fn device_not_available_handler_chirho(_sf: InterruptStackFrame) {
+    // #NM — FPU/SSE not available. Enable FPU by setting CR0.TS=0.
+    crate::serial_println_chirho!("[EXCEPTION] DEVICE NOT AVAILABLE (#NM) — enabling FPU");
+    unsafe {
+        core::arch::asm!(
+            "mov rax, cr0",
+            "and ax, 0xFFFB", // clear CR0.EM (bit 2)
+            "or ax, 0x2",     // set CR0.MP (bit 1)
+            "mov cr0, rax",
+            "mov rax, cr4",
+            "or ax, 0x600",   // set CR4.OSFXSR + CR4.OSXMMEXCPT
+            "mov cr4, rax",
+            out("rax") _,
+            options(nomem, nostack)
+        );
+    }
+}
+
+extern "x86-interrupt" fn invalid_tss_handler_chirho(_sf: InterruptStackFrame, ec: u64) {
+    crate::serial_println_chirho!("[EXCEPTION] INVALID TSS (error code: {:#x})", ec);
+    loop { x86_64::instructions::hlt(); }
+}
+
+extern "x86-interrupt" fn stack_segment_handler_chirho(_sf: InterruptStackFrame, ec: u64) {
+    crate::serial_println_chirho!("[EXCEPTION] STACK SEGMENT FAULT (error code: {:#x})", ec);
+    loop { x86_64::instructions::hlt(); }
+}
+
+extern "x86-interrupt" fn x87_fp_handler_chirho(_sf: InterruptStackFrame) {
+    crate::serial_println_chirho!("[EXCEPTION] x87 FP EXCEPTION");
+}
+
+extern "x86-interrupt" fn alignment_check_handler_chirho(_sf: InterruptStackFrame, ec: u64) {
+    crate::serial_println_chirho!("[EXCEPTION] ALIGNMENT CHECK (error code: {:#x})", ec);
+}
+
+extern "x86-interrupt" fn simd_fp_handler_chirho(_sf: InterruptStackFrame) {
+    crate::serial_println_chirho!("[EXCEPTION] SIMD FP EXCEPTION");
 }
 
 /// VirtIO PCI interrupt handler (IRQ 11, vector 43).
