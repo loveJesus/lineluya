@@ -841,11 +841,9 @@ impl VirtioBlkDeviceChirho {
         }
 
         // Clamp to our default if device supports more.
-        let actual_size_chirho = if queue_size_chirho > VIRTQUEUE_SIZE_CHIRHO {
-            VIRTQUEUE_SIZE_CHIRHO
-        } else {
-            queue_size_chirho
-        };
+        // Legacy VirtIO: MUST use the device's queue size (it's fixed).
+        // The device expects desc/avail/used tables sized for this many entries.
+        let actual_size_chirho = queue_size_chirho;
 
         // Allocate the legacy virtqueue layout: contiguous physical memory
         // containing descriptors + available ring + used ring, with the used
@@ -865,21 +863,23 @@ impl VirtioBlkDeviceChirho {
         let used_ring_bytes_chirho = 4 + (actual_size_chirho as usize) * 8 + 2;
         let total_bytes_chirho = used_ring_offset_chirho + used_ring_bytes_chirho;
 
-        // Allocate vring from kernel heap with page alignment.
-        // Use virt_to_phys to get the real physical address for PFN.
-        let alloc_size_chirho = total_bytes_chirho + VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO;
-        let raw_mem_chirho = vec![0u8; alloc_size_chirho];
-        let raw_ptr_chirho = raw_mem_chirho.as_ptr() as usize;
-        let aligned_ptr_chirho =
-            (raw_ptr_chirho + VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO - 1)
-                & !(VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO - 1);
+        // Allocate vring from the bootloader's physical memory direct mapping.
+        // This GUARANTEES contiguous physical memory (critical for DMA!).
+        // Heap allocations are virtually contiguous but may span non-contiguous
+        // physical pages — the device expects contiguous physical memory.
+        static VRING_PHYS_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0x800000); // Start at 8MB physical
 
-        // Get physical address via page table walk
-        let phys_base_chirho = crate::pagetable_chirho::virt_to_phys_chirho(aligned_ptr_chirho as u64)
-            .unwrap_or(0);
+        let alloc_pages_chirho = ((total_bytes_chirho + 4095) / 4096) as u64;
+        let phys_base_chirho = VRING_PHYS_NEXT_CHIRHO.fetch_add(
+            alloc_pages_chirho * 4096,
+            core::sync::atomic::Ordering::SeqCst,
+        );
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let aligned_ptr_chirho = (phys_base_chirho + phys_offset_chirho) as usize;
 
-        // Leak the heap allocation so it persists
-        core::mem::forget(raw_mem_chirho);
+        // Zero the physically contiguous DMA region
+        unsafe { core::ptr::write_bytes(aligned_ptr_chirho as *mut u8, 0, total_bytes_chirho); }
 
         crate::serial_println_chirho!(
             "    VirtIO-blk I/O: vq virt={:#x} phys={:#x} size={} total_bytes={}",
@@ -914,9 +914,13 @@ impl VirtioBlkDeviceChirho {
         transport_chirho.write_status_chirho(status_chirho);
 
         let final_status_chirho = transport_chirho.read_status_chirho();
+        // Read back queue address to verify PFN was written
+        transport_chirho.select_queue_chirho(0);
+        let readback_pfn_chirho = unsafe { transport_chirho.read32_chirho(VIRTIO_IO_QUEUE_ADDRESS_CHIRHO) };
+        let readback_size_chirho = transport_chirho.read_queue_size_chirho();
         crate::serial_println_chirho!(
-            "    VirtIO-blk I/O: device status after init = {:#04x}",
-            final_status_chirho
+            "    VirtIO-blk I/O: device status after init = {:#04x}, queue PFN readback = {:#x} (expected {:#x}), qsize = {}",
+            final_status_chirho, readback_pfn_chirho, pfn_chirho, readback_size_chirho
         );
 
         // Step 7: Read capacity from device-specific config.
@@ -1147,17 +1151,22 @@ impl VirtioBlkDeviceChirho {
             status_chirho: u8,
         }
 
-        // Allocate on heap, get physical address
-        let req_box_chirho = alloc::boxed::Box::new(BlkReqFullChirho {
-            type_chirho: if is_write_chirho { VIRTIO_BLK_T_OUT_CHIRHO } else { VIRTIO_BLK_T_IN_CHIRHO },
-            reserved_chirho: 0,
-            sector_chirho,
-            data_chirho: [0u8; 512],
-            status_chirho: 0xFF,
-        });
-        let req_ptr_chirho = alloc::boxed::Box::into_raw(req_box_chirho);
-        let req_virt_chirho = req_ptr_chirho as u64;
-        let req_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(req_virt_chirho).unwrap_or(0);
+        // Allocate from contiguous physical memory (NOT heap — heap pages
+        // may not be physically contiguous, which breaks DMA).
+        static REQ_PHYS_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0x900000); // 9MB physical
+        let req_phys_chirho = REQ_PHYS_NEXT_CHIRHO.fetch_add(4096, core::sync::atomic::Ordering::SeqCst);
+        let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let req_ptr_chirho = (req_phys_chirho + phys_off_chirho) as *mut BlkReqFullChirho;
+        unsafe {
+            ptr::write_volatile(req_ptr_chirho, BlkReqFullChirho {
+                type_chirho: if is_write_chirho { VIRTIO_BLK_T_OUT_CHIRHO } else { VIRTIO_BLK_T_IN_CHIRHO },
+                reserved_chirho: 0,
+                sector_chirho,
+                data_chirho: [0u8; 512],
+                status_chirho: 0xFF,
+            });
+        }
 
         // Copy write data into the request
         if is_write_chirho {
@@ -1275,6 +1284,41 @@ impl VirtioBlkDeviceChirho {
             desc0_chirho.addr_chirho, desc0_chirho.len_chirho, desc0_chirho.flags_chirho, desc0_chirho.next_chirho
         );
 
+        // Dump raw vring bytes at PFN physical address
+        let pfn_phys_chirho = (self.vq_phys_base_chirho - crate::pagetable_chirho::phys_mem_offset_chirho()) as u64;
+        crate::serial_println_chirho!(
+            "    [VirtIO-IO] PFN phys={:#x} vq_base virt={:#x}",
+            pfn_phys_chirho, vq_base_chirho
+        );
+        // Read first 32 bytes of desc[0] at PFN address
+        let pfn_virt_chirho = self.vq_phys_base_chirho as *const u8;
+        let mut hex_chirho = [0u8; 96];
+        let mut hp_chirho = 0;
+        for i_chirho in 0..32usize {
+            let b_chirho = unsafe { ptr::read_volatile(pfn_virt_chirho.add(i_chirho)) };
+            hex_chirho[hp_chirho] = b"0123456789abcdef"[(b_chirho >> 4) as usize];
+            hex_chirho[hp_chirho+1] = b"0123456789abcdef"[(b_chirho & 0xf) as usize];
+            hex_chirho[hp_chirho+2] = b' ';
+            hp_chirho += 3;
+        }
+        if let Ok(s_chirho) = core::str::from_utf8(&hex_chirho[..hp_chirho]) {
+            crate::serial_println_chirho!("    [VirtIO-IO] desc[0-1] raw: {}", s_chirho);
+        }
+        // Read avail ring (at desc_table_bytes offset)
+        let avail_off_chirho = queue_size_chirho * 16;
+        let mut ha_chirho = [0u8; 24];
+        let mut ap_chirho = 0;
+        for i_chirho in 0..8usize {
+            let b_chirho = unsafe { ptr::read_volatile(pfn_virt_chirho.add(avail_off_chirho + i_chirho)) };
+            ha_chirho[ap_chirho] = b"0123456789abcdef"[(b_chirho >> 4) as usize];
+            ha_chirho[ap_chirho+1] = b"0123456789abcdef"[(b_chirho & 0xf) as usize];
+            ha_chirho[ap_chirho+2] = b' ';
+            ap_chirho += 3;
+        }
+        if let Ok(s_chirho) = core::str::from_utf8(&ha_chirho[..ap_chirho]) {
+            crate::serial_println_chirho!("    [VirtIO-IO] avail raw: {}", s_chirho);
+        }
+
         // Memory barrier before notify.
         fence(Ordering::SeqCst);
 
@@ -1328,8 +1372,7 @@ impl VirtioBlkDeviceChirho {
             }
         }
 
-        // Free the request allocation
-        unsafe { let _ = alloc::boxed::Box::from_raw(req_ptr_chirho); }
+        // Request buffer is at a fixed physical address — no heap dealloc needed.
 
         // Free descriptors.
         vq_chirho.free_desc_chirho(d0_chirho);
