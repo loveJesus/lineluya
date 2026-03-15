@@ -277,14 +277,16 @@ impl FileOpsChirho for DevConsoleOpsChirho {
             return Ok(n_chirho);
         }
 
-        // Blocking read: sleep on the TTY wait queue until data is available.
-        // wait_event_chirho re-checks the condition after each wake-up to
-        // guard against spurious wakes.
-        let tty_ref_chirho = tty_chirho.clone();
-        crate::waitqueue_chirho::wait_event_chirho(
-            &tty_chirho.read_wait_chirho,
-            || tty_ref_chirho.ldisc_chirho.lock().has_data_chirho(),
-        );
+        // Blocking read: spin-yield until data is available.
+        // Uses hlt to wait for interrupts (keyboard input).
+        loop {
+            if tty_chirho.ldisc_chirho.lock().has_data_chirho() {
+                break;
+            }
+            // Enable interrupts and halt until next interrupt (keyboard/timer)
+            x86_64::instructions::interrupts::enable();
+            x86_64::instructions::hlt();
+        }
 
         // Data is now available — read it.
         let mut ldisc_chirho = tty_chirho.ldisc_chirho.lock();
