@@ -2407,7 +2407,7 @@ fn get_file_content_chirho(path_chirho: &[u8]) -> &'static [u8] {
                 proc_buf_append_chirho(b"\n");
             }
             b"/proc/version" => {
-                proc_buf_append_chirho(b"Lineluya version 0.6.0 (rustc wasm32-unknown-unknown)\n");
+                proc_buf_append_chirho(b"Lineluya version 0.7.0 (rustc wasm32-unknown-unknown)\n");
             }
             b"/proc/uptime" => {
                 let now_us_chirho = js_timestamp_us_chirho() as u64;
@@ -2795,7 +2795,7 @@ fn dispatch_single_command_chirho(cmd_bytes_chirho: &[u8]) {
         b"whoami" => { kwrite_chirho("root\r\n"); }
         b"date" => cmd_date_chirho(),
         b"version" => {
-            kwrite_chirho("\x1b[1;37mLineluya Kernel v0.6.0 (wasm32)\x1b[0m\r\n");
+            kwrite_chirho("\x1b[1;37mLineluya Kernel v0.7.0 (wasm32)\x1b[0m\r\n");
             kwrite_chirho("Linux ABI on WebAssembly. Browser is the hardware.\r\n");
             kwrite_chirho("Built with Rust, compiled to wasm32-unknown-unknown.\r\n");
             kwrite_chirho("Features: process table, /proc, signals, enhanced builtins\r\n");
@@ -3663,7 +3663,7 @@ fn cmd_cat_chirho(args_chirho: &[u8]) {
         b"/proc/cpuinfo"      => proc_cpuinfo_chirho(),
         b"/proc/meminfo"      => proc_meminfo_chirho(),
         b"/proc/version"      => {
-            kwrite_chirho("Lineluya version 0.6.0 (rustc wasm32-unknown-unknown) ");
+            kwrite_chirho("Lineluya version 0.7.0 (rustc wasm32-unknown-unknown) ");
             kwrite_chirho("(Lineluya Kernel \u{2014} Linux ABI on WebAssembly)\r\n");
         }
         b"/proc/uptime"       => proc_uptime_chirho(),
@@ -4175,47 +4175,73 @@ pub extern "C" fn syscall_chirho(
             }
             0
         }
-        // socket(domain, type, protocol)
+        // B2-002: socket(domain, type, protocol) — via socket table
         41 => {
             let domain_chirho = arg0_chirho;
             let sock_type_chirho = arg1_chirho;
-            if domain_chirho != 2 { -97 }
+            if domain_chirho != 2 && domain_chirho != 1 { -97 } // AF_INET=2, AF_UNIX=1
             else if sock_type_chirho != 1 && sock_type_chirho != 2 { -94 }
-            else { unsafe { NEXT_SOCK_FD_CHIRHO += 1; NEXT_SOCK_FD_CHIRHO as i32 } }
+            else { unsafe { SOCKET_TABLE_CHIRHO.create_chirho(sock_type_chirho as u8) } }
         }
-        // connect
+        // B2-003: connect(fd, addr, addrlen)
         42 => {
             let addr_ptr_chirho = arg1_chirho as *const u8;
             unsafe {
                 let port_be_chirho = ((*addr_ptr_chirho.add(2) as u16) << 8) | (*addr_ptr_chirho.add(3) as u16);
-                let ip_a_chirho = *addr_ptr_chirho.add(4);
-                let ip_b_chirho = *addr_ptr_chirho.add(5);
-                let ip_c_chirho = *addr_ptr_chirho.add(6);
-                let ip_d_chirho = *addr_ptr_chirho.add(7);
-                let mut ip_buf_chirho = [0u8; 16];
-                let ip_len_chirho = format_ip_chirho(ip_a_chirho, ip_b_chirho, ip_c_chirho, ip_d_chirho, &mut ip_buf_chirho);
-                let handle_chirho = js_net_connect_chirho(
-                    ip_buf_chirho.as_ptr() as u32,
-                    ip_len_chirho as u32,
-                    port_be_chirho as u32,
-                );
-                if handle_chirho < 0 { -111 } else { 0 }
+                let addr_chirho = SockAddrChirho {
+                    ip_chirho: [
+                        *addr_ptr_chirho.add(4),
+                        *addr_ptr_chirho.add(5),
+                        *addr_ptr_chirho.add(6),
+                        *addr_ptr_chirho.add(7),
+                    ],
+                    port_chirho: port_be_chirho,
+                };
+                SOCKET_TABLE_CHIRHO.connect_chirho(arg0_chirho as i32, &addr_chirho)
             }
         }
-        // sendto
-        44 => unsafe { js_net_send_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho) },
-        // recvfrom
-        45 => unsafe { js_net_recv_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho) },
-        // bind
-        49 => 0,
-        // listen
-        50 => 0,
-        // accept
-        43 => -11,
-        // shutdown
-        48 => unsafe { js_net_close_chirho(arg0_chirho as i32); 0 },
-        // close
-        3 => unsafe { if arg0_chirho >= 100 { js_net_close_chirho(arg0_chirho as i32); } 0 },
+        // sendto(fd, buf, len, flags, addr, addrlen)
+        44 => {
+            let data_chirho = unsafe {
+                core::slice::from_raw_parts(arg1_chirho as *const u8, arg2_chirho as usize)
+            };
+            unsafe { SOCKET_TABLE_CHIRHO.send_chirho(arg0_chirho as i32, data_chirho) }
+        }
+        // recvfrom(fd, buf, len, flags, addr, addrlen)
+        45 => {
+            let buf_chirho = unsafe {
+                core::slice::from_raw_parts_mut(arg1_chirho as *mut u8, arg2_chirho as usize)
+            };
+            unsafe { SOCKET_TABLE_CHIRHO.recv_chirho(arg0_chirho as i32, buf_chirho) }
+        }
+        // B2-011: bind(fd, addr, addrlen)
+        49 => {
+            let addr_ptr_chirho = arg1_chirho as *const u8;
+            unsafe {
+                let port_be_chirho = ((*addr_ptr_chirho.add(2) as u16) << 8) | (*addr_ptr_chirho.add(3) as u16);
+                let addr_chirho = SockAddrChirho {
+                    ip_chirho: [
+                        *addr_ptr_chirho.add(4), *addr_ptr_chirho.add(5),
+                        *addr_ptr_chirho.add(6), *addr_ptr_chirho.add(7),
+                    ],
+                    port_chirho: port_be_chirho,
+                };
+                SOCKET_TABLE_CHIRHO.bind_chirho(arg0_chirho as i32, &addr_chirho)
+            }
+        }
+        // B2-011: listen(fd, backlog)
+        50 => unsafe { SOCKET_TABLE_CHIRHO.listen_chirho(arg0_chirho as i32, arg1_chirho as u8) },
+        // B2-011: accept(fd, addr, addrlen)
+        43 => unsafe { SOCKET_TABLE_CHIRHO.accept_chirho(arg0_chirho as i32) },
+        // shutdown(fd, how)
+        48 => { unsafe { SOCKET_TABLE_CHIRHO.close_chirho(arg0_chirho as i32); } 0 },
+        // close(fd)
+        3 => {
+            if arg0_chirho >= 100 {
+                unsafe { SOCKET_TABLE_CHIRHO.close_chirho(arg0_chirho as i32); }
+            }
+            0
+        }
         // getsockopt/setsockopt
         55 | 54 => 0,
         // B1-013: ioctl — TTY/PTY support
@@ -4266,16 +4292,18 @@ pub extern "C" fn syscall_chirho(
         7 => 1,
         // select
         23 => 1,
-        // pipe2 — create pipe (returns read fd in [arg0], write fd in [arg0+4])
+        // pipe2 — create pipe using socket table for fd allocation
         293 => unsafe {
             let fds_ptr_chirho = arg0_chirho as *mut i32;
-            // Allocate two virtual fds for the pipe
-            let read_fd_chirho = NEXT_SOCK_FD_CHIRHO + 1;
-            let write_fd_chirho = NEXT_SOCK_FD_CHIRHO + 2;
-            NEXT_SOCK_FD_CHIRHO += 2;
-            *fds_ptr_chirho = read_fd_chirho as i32;
-            *fds_ptr_chirho.add(1) = write_fd_chirho as i32;
-            0
+            // Allocate two virtual fds via socket table
+            let read_fd_chirho = SOCKET_TABLE_CHIRHO.create_chirho(0); // type=0 for pipe
+            let write_fd_chirho = SOCKET_TABLE_CHIRHO.create_chirho(0);
+            if read_fd_chirho < 0 || write_fd_chirho < 0 { -24 } // EMFILE
+            else {
+                *fds_ptr_chirho = read_fd_chirho;
+                *fds_ptr_chirho.add(1) = write_fd_chirho;
+                0
+            }
         },
         // B1-014: nanosleep (syscall 35)
         35 => {
@@ -4383,6 +4411,151 @@ pub extern "C" fn syscall_chirho(
             unsafe { IDB_DRIVER_CHIRHO.close_chirho(arg0_chirho as usize); }
             0
         }
+
+        // B3-008: fsync(fd) — flush cached blocks
+        74 => {
+            unsafe { BLOCK_CACHE_CHIRHO.sync_all_chirho() }
+        }
+        // fdatasync(fd)
+        75 => {
+            unsafe { BLOCK_CACHE_CHIRHO.sync_all_chirho() }
+        }
+
+        // B2-012: poll(fds, nfds, timeout) — enhanced with socket readiness
+        7 => {
+            // Check each fd for readiness
+            let nfds_chirho = arg1_chirho;
+            let mut ready_chirho = 0u32;
+            if nfds_chirho > 0 {
+                let fds_ptr_chirho = arg0_chirho as *mut u8;
+                for i_chirho in 0..nfds_chirho {
+                    let fd_offset_chirho = (i_chirho * 8) as usize;
+                    unsafe {
+                        let fd_chirho = *(fds_ptr_chirho.add(fd_offset_chirho) as *const i32);
+                        if fd_chirho == 0 {
+                            // stdin is always ready if we have input
+                            ready_chirho += 1;
+                        } else if fd_chirho >= 100 {
+                            if SOCKET_TABLE_CHIRHO.is_readable_chirho(fd_chirho) {
+                                ready_chirho += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if ready_chirho > 0 { ready_chirho as i32 } else { 0 }
+        }
+        // B2-012: select(nfds, readfds, writefds, exceptfds, timeout)
+        23 => {
+            // Simplified: return 1 for "something ready"
+            1
+        }
+
+        // B4-001: X11 syscalls (custom range 0x2000-0x200F)
+        // x11_create_window(data_ptr, data_len) -> window_id
+        0x2000 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let data_chirho = unsafe {
+                    core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+                };
+                unsafe {
+                    X11_SERVER_CHIRHO.process_request_chirho(data_chirho);
+                }
+            }
+            0
+        }
+        // x11_poll_event(buf_ptr, buf_len) -> event_size or 0
+        0x2001 => {
+            unsafe {
+                if X11_SERVER_CHIRHO.event_head_chirho != X11_SERVER_CHIRHO.event_tail_chirho {
+                    let evt_chirho = &X11_SERVER_CHIRHO.event_queue_chirho[X11_SERVER_CHIRHO.event_tail_chirho];
+                    let copy_len_chirho = if arg1_chirho > 32 { 32 } else { arg1_chirho as usize };
+                    let dst_chirho = core::slice::from_raw_parts_mut(arg0_chirho as *mut u8, copy_len_chirho);
+                    dst_chirho.copy_from_slice(&evt_chirho[..copy_len_chirho]);
+                    X11_SERVER_CHIRHO.event_tail_chirho = (X11_SERVER_CHIRHO.event_tail_chirho + 1) % 32;
+                    copy_len_chirho as i32
+                } else {
+                    0
+                }
+            }
+        }
+        // x11_fb_fill_rect(x, y, w, h, rgba) — direct framebuffer fill
+        0x2002 => {
+            unsafe {
+                js_fb_fill_rect_chirho(arg0_chirho, arg1_chirho, arg2_chirho, _arg3_chirho, _arg4_chirho);
+            }
+            0
+        }
+        // x11_fb_flush — flush framebuffer to screen
+        0x2003 => {
+            unsafe { js_fb_flush_chirho(); }
+            0
+        }
+
+        // B2-004: DNS resolve syscall (custom 0x2010)
+        // dns_resolve(name_ptr, name_len, result_ptr) -> 0 on success
+        0x2010 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let name_chirho = unsafe {
+                    core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+                };
+                let result_ptr_chirho = arg2_chirho as *mut u8;
+                match dns_resolve_chirho(name_chirho) {
+                    Some(ip_chirho) => {
+                        unsafe {
+                            *result_ptr_chirho = ip_chirho[0];
+                            *result_ptr_chirho.add(1) = ip_chirho[1];
+                            *result_ptr_chirho.add(2) = ip_chirho[2];
+                            *result_ptr_chirho.add(3) = ip_chirho[3];
+                        }
+                        0
+                    }
+                    None => -2, // ENOENT
+                }
+            } else { -14 }
+        }
+
+        // B2-005: HTTP GET syscall (custom 0x2011)
+        // http_get(url_ptr, url_len, buf_ptr, buf_len) -> bytes_read or <0
+        0x2011 => {
+            if arg0_chirho != 0 && arg1_chirho > 0 {
+                let url_chirho = unsafe {
+                    core::slice::from_raw_parts(arg0_chirho as *const u8, arg1_chirho as usize)
+                };
+                let buf_chirho = unsafe {
+                    core::slice::from_raw_parts_mut(arg2_chirho as *mut u8, _arg3_chirho as usize)
+                };
+                http_get_chirho(url_chirho, buf_chirho)
+            } else { -14 }
+        }
+
+        // B3-007: Block cache syscalls (custom 0x2020-0x2022)
+        // cache_read(opfs_slot, block_num, buf_ptr) -> 0 or <0
+        0x2020 => {
+            unsafe {
+                match BLOCK_CACHE_CHIRHO.read_block_chirho(arg0_chirho as i32, arg1_chirho) {
+                    Some(data_chirho) => {
+                        let dst_chirho = core::slice::from_raw_parts_mut(arg2_chirho as *mut u8, BLOCK_SIZE_CHIRHO);
+                        dst_chirho.copy_from_slice(data_chirho);
+                        BLOCK_SIZE_CHIRHO as i32
+                    }
+                    None => -5, // EIO
+                }
+            }
+        }
+        // cache_write(opfs_slot, block_num, data_ptr) -> 0
+        0x2021 => {
+            let data_chirho = unsafe {
+                core::slice::from_raw_parts(arg2_chirho as *const u8, BLOCK_SIZE_CHIRHO)
+            };
+            unsafe { BLOCK_CACHE_CHIRHO.write_block_chirho(arg0_chirho as i32, arg1_chirho, data_chirho); }
+            0
+        }
+        // cache_sync(opfs_slot) -> 0 or <0
+        0x2022 => {
+            unsafe { BLOCK_CACHE_CHIRHO.sync_slot_chirho(arg0_chirho as i32) }
+        }
+
         // Default
         _ => -38,
     }
@@ -4543,9 +4716,18 @@ pub extern "C" fn kernel_main_chirho() {
         "\x1b[1;32m[OK]\x1b[0m OPFS block device driver (persistent storage)\r\n",
         "\x1b[1;32m[OK]\x1b[0m IndexedDB fallback storage\r\n",
         "\x1b[1;32m[OK]\x1b[0m WASI clock/timer/random syscalls\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Socket subsystem (B2: TCP/WS bridge, loopback, server)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m DNS resolver over HTTPS (B2-004: DoH via 1.1.1.1)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m HTTP client (B2-005: wget/curl via fetch())\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Block cache layer (B3-007: write-back, LRU eviction)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m fsync/fdatasync (B3-008: data integrity)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Storage quota management (B3-010)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m X11 protocol parser (B4-001: CreateWindow/MapWindow/PutImage)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Canvas 2D framebuffer (B4-003: pixel rendering)\r\n",
+        "\x1b[1;32m[OK]\x1b[0m Input events (B4-006/007: mouse/keyboard -> X11)\r\n",
         "\x1b[1;32m[OK]\x1b[0m Init process (PID 1) -> /bin/sh (PID 2)\r\n",
         "\r\n",
-        "\x1b[1;37m=== Lineluya Kernel v0.6.0 (wasm32) ===\x1b[0m\r\n",
+        "\x1b[1;37m=== Lineluya Kernel v0.7.0 (wasm32) ===\x1b[0m\r\n",
         "Linux ABI on WebAssembly. Browser is the hardware.\r\n",
         "Type '\x1b[1;32mhelp\x1b[0m' for available commands.\r\n",
         "\r\n",
@@ -4575,6 +4757,9 @@ pub extern "C" fn kernel_tick_chirho() {
                 SHELL_CHIRHO.prompt_shown_chirho = false;
             }
         }
+
+        // B4-006/B4-007: Poll browser input events for X11 server
+        X11_SERVER_CHIRHO.poll_input_events_chirho();
 
         if !SHELL_CHIRHO.prompt_shown_chirho {
             show_prompt_chirho();
