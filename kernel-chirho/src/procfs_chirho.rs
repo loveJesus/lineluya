@@ -57,7 +57,7 @@ struct ProcSymlinkTargetChirho {
 // ---------------------------------------------------------------------------
 
 fn gen_version_chirho() -> String {
-    String::from("Lineluya version 0.2.0 (Rust) John 3:16\n")
+    String::from("Linux version 0.1.0 (lineluya@rust) (gcc) #1 SMP\n")
 }
 
 fn gen_cpuinfo_chirho() -> String {
@@ -627,11 +627,13 @@ impl InodeOpsChirho for NullInodeOpsChirho {
 // ---------------------------------------------------------------------------
 
 /// Holds the list of child entries for a proc directory inode.
+#[derive(Clone)]
 pub struct ProcDirEntriesChirho {
     entries_chirho: Vec<ProcEntryChirho>,
 }
 
 /// One entry in a proc directory.
+#[derive(Clone)]
 struct ProcEntryChirho {
     name_chirho: String,
     ino_chirho: u64,

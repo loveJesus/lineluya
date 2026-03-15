@@ -1,8 +1,8 @@
 {
   "header_chirho": "For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life. - John 3:16",
   "version_chirho": "3.1",
-  "codename_chirho": "Promised Land",
-  "description_chirho": "Get Lineluya to run Alpine Linux with sqlite, gcc, ssh, python, rust, and X11/XTerm",
+  "codename_chirho": "Clearing the Land",
+  "description_chirho": "Clear the land so we can dwell in it \u2014 get Lineluya running Alpine Linux with real programs",
   "implementation_tasks_chirho": [
     {
       "id_chirho": "P1-001",

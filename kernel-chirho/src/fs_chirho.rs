@@ -282,6 +282,54 @@ fn dev_file_ops_chirho(major_chirho: u32, minor_chirho: u32) -> &'static dyn Fil
     }
 }
 
+/// Clone `fs_data_chirho` from an inode, handling all known filesystem types.
+///
+/// Supports: `ProcGeneratorChirho`, `ProcDirEntriesChirho`, `DevNodeDataChirho`,
+/// and `Mutex<TmpfsDataChirho>`.  Returns `None` for unrecognised or absent data.
+fn clone_fs_data_chirho(
+    fs_data_chirho: &Option<Box<dyn core::any::Any + Send>>,
+) -> Option<Box<dyn core::any::Any + Send>> {
+    use crate::procfs_chirho::{ProcGeneratorChirho, ProcDirEntriesChirho};
+    use crate::tmpfs_chirho::TmpfsDataChirho;
+
+    let data_chirho = fs_data_chirho.as_ref()?;
+
+    // ProcGeneratorChirho (proc regular files)
+    if let Some(gen_chirho) = data_chirho.downcast_ref::<ProcGeneratorChirho>() {
+        return Some(Box::new(gen_chirho.clone()) as Box<dyn core::any::Any + Send>);
+    }
+
+    // ProcDirEntriesChirho (proc directories)
+    if let Some(entries_chirho) = data_chirho.downcast_ref::<ProcDirEntriesChirho>() {
+        return Some(Box::new(entries_chirho.clone()) as Box<dyn core::any::Any + Send>);
+    }
+
+    // DevNodeDataChirho (device nodes)
+    if let Some(dev_chirho) = data_chirho.downcast_ref::<DevNodeDataChirho>() {
+        return Some(Box::new(DevNodeDataChirho {
+            major_chirho: dev_chirho.major_chirho,
+            minor_chirho: dev_chirho.minor_chirho,
+        }) as Box<dyn core::any::Any + Send>);
+    }
+
+    // Mutex<TmpfsDataChirho> (tmpfs files/directories)
+    if let Some(tmpfs_mutex_chirho) = data_chirho.downcast_ref::<Mutex<TmpfsDataChirho>>() {
+        let inner_chirho = tmpfs_mutex_chirho.lock();
+        let cloned_chirho = match &*inner_chirho {
+            TmpfsDataChirho::DirChirho(entries_chirho) => {
+                TmpfsDataChirho::DirChirho(entries_chirho.clone())
+            }
+            TmpfsDataChirho::FileChirho(content_chirho) => {
+                TmpfsDataChirho::FileChirho(content_chirho.clone())
+            }
+        };
+        drop(inner_chirho);
+        return Some(Box::new(Mutex::new(cloned_chirho)) as Box<dyn core::any::Any + Send>);
+    }
+
+    None
+}
+
 /// Resolve an absolute path to a `(inode, file_ops)` pair.
 ///
 /// Walks the path component-by-component using `InodeOps::lookup`.
@@ -405,19 +453,10 @@ pub fn resolve_path_chirho(
                             }
                         };
 
-                    // Clone the inode, preserving fs_data for procfs
+                    // Clone the inode, preserving fs_data for procfs/tmpfs
                     let owned_inode_chirho = {
                         let fs_data_clone_chirho: Option<Box<dyn core::any::Any + Send>> =
-                            if let Some(ref data_chirho) = child_inode_chirho.fs_data_chirho {
-                                // Clone ProcGeneratorChirho if present
-                                if let Some(gen_chirho) = data_chirho.downcast_ref::<crate::procfs_chirho::ProcGeneratorChirho>() {
-                                    Some(Box::new(gen_chirho.clone()) as Box<dyn core::any::Any + Send>)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
+                            clone_fs_data_chirho(&child_inode_chirho.fs_data_chirho);
                         InodeChirho {
                             ino_chirho: child_inode_chirho.ino_chirho,
                             mode_chirho: child_inode_chirho.mode_chirho,
@@ -436,7 +475,8 @@ pub fn resolve_path_chirho(
                     return Ok((wrapped_chirho, file_ops_chirho));
                 }
 
-                // Intermediate component: wrap and continue
+                // Intermediate component: wrap and continue, preserving fs_data
+                let intermediate_fs_data_chirho = clone_fs_data_chirho(&child_inode_chirho.fs_data_chirho);
                 current_inode_chirho = Arc::new(Mutex::new(InodeChirho {
                     ino_chirho: child_inode_chirho.ino_chirho,
                     mode_chirho: child_inode_chirho.mode_chirho,
@@ -448,7 +488,7 @@ pub fn resolve_path_chirho(
                     mtime_chirho: child_inode_chirho.mtime_chirho,
                     ctime_chirho: child_inode_chirho.ctime_chirho,
                     ops_chirho: child_inode_chirho.ops_chirho,
-                    fs_data_chirho: None,
+                    fs_data_chirho: intermediate_fs_data_chirho,
                 }));
 
                 // Check if the accumulated path so far matches a mount point
