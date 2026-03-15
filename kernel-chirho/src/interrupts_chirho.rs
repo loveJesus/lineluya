@@ -186,37 +186,58 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
 ) {
     use x86_64::registers::control::Cr2;
 
-    // Check if this is a user-mode fault on an unmapped page.
-    // If so, try to map the page on demand (demand paging).
+    // For user-mode page faults: map the page directly using raw
+    // page table operations. CANNOT use mm_chirho.mmap (would deadlock
+    // if the mm locks are already held by the faulting syscall).
     let is_user_chirho = error_code_chirho.contains(PageFaultErrorCode::USER_MODE);
 
     if is_user_chirho {
-        // Try to map the faulting page for the user process.
         if let Ok(fault_addr_chirho) = Cr2::read() {
-            let page_addr_chirho = fault_addr_chirho.as_u64() & !0xFFF;
-            // Attempt to mmap the faulting page
-            let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
-            let mut guard_chirho = mm_lock_chirho.lock();
-            if let Some(mm_chirho) = guard_chirho.as_mut() {
-                let result_chirho = mm_chirho.mmap_chirho(
-                    page_addr_chirho,
-                    4096,
-                    crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
-                    crate::mm_chirho::MAP_PRIVATE_CHIRHO
-                        | crate::mm_chirho::MAP_ANONYMOUS_CHIRHO
-                        | crate::mm_chirho::MAP_FIXED_CHIRHO,
-                    -1i32,
-                    0,
-                );
-                if result_chirho.is_ok() {
-                    // Page mapped — return to retry the faulting instruction
-                    return;
+            // Map the faulting page directly via the global mapper.
+            // Use try_lock to avoid deadlock — if the lock is held,
+            // we can't map the page and must halt.
+            use x86_64::structures::paging::{
+                FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
+            };
+            use x86_64::VirtAddr;
+
+            let page_chirho: Page<Size4KiB> =
+                Page::containing_address(fault_addr_chirho);
+
+            let flags_chirho = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE;
+
+            // Try to get mapper and allocator without blocking.
+            // If locks are held, we can't map — fall through to halt.
+            if let (Some(mut mg_chirho), Some(mut ag_chirho)) = (
+                crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock(),
+                crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock(),
+            ) {
+                if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+                    if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
+                        let map_result_chirho = unsafe {
+                            mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
+                        };
+                        if let Ok(flush_chirho) = map_result_chirho {
+                            flush_chirho.flush();
+                            // Zero the page
+                            unsafe {
+                                core::ptr::write_bytes(
+                                    (page_chirho.start_address().as_u64()) as *mut u8,
+                                    0,
+                                    4096,
+                                );
+                            }
+                            return; // Retry the faulting instruction
+                        }
+                    }
                 }
             }
         }
     }
 
-    // Fatal — halt
+    // Could not handle the page fault — halt.
     x86_64::instructions::interrupts::disable();
     loop {
         x86_64::instructions::hlt();
