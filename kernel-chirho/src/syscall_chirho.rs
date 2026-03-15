@@ -2007,12 +2007,39 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         pid_chirho
     };
 
-    // Remove from scheduler run queue and context-switch to next task.
+    // Remove from scheduler run queue.
     crate::scheduler_chirho::remove_task_chirho(pid_chirho);
-    crate::scheduler_chirho::schedule_chirho();
 
-    // Should not be reached — the scheduler switched away. Safety halt.
-    loop { x86_64::instructions::hlt(); }
+    // With vfork semantics, the exiting process IS the shell.
+    // Re-exec the shell so the user gets a new prompt.
+    crate::serial_println_chirho!("[SYSCALL] exit: re-launching shell after vfork-child exit");
+
+    // Re-load BusyBox as ash shell
+    let shell_argv_chirho = [
+        alloc::string::String::from("sh"),
+    ];
+    let shell_envp_chirho = [
+        alloc::string::String::from("HOME=/root"),
+        alloc::string::String::from("PATH=/bin:/sbin"),
+        alloc::string::String::from("TERM=linux"),
+        alloc::string::String::from("PS1=lineluya# "),
+    ];
+    let loaded_chirho = crate::exec_chirho::load_elf_into_memory_chirho(
+        crate::exec_chirho::BUSYBOX_ELF_CHIRHO
+    ).expect("Failed to reload shell");
+
+    crate::syscall_chirho::set_brk_chirho(loaded_chirho.brk_addr_chirho);
+
+    let user_rsp_chirho = crate::exec_chirho::setup_user_stack_with_args_chirho(
+        &loaded_chirho,
+        &shell_argv_chirho,
+        &shell_envp_chirho,
+    );
+
+    crate::exec_chirho::jump_to_userspace_chirho(
+        loaded_chirho.entry_point_chirho,
+        user_rsp_chirho,
+    );
 }
 
 /// `exit_group(2)` implementation.
