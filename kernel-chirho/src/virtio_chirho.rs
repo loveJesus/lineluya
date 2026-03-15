@@ -821,7 +821,11 @@ impl VirtioBlkDeviceChirho {
             device_features_chirho
         );
         // Accept no optional features for now (safe baseline).
-        transport_chirho.write_guest_features_chirho(0);
+        // Accept basic features. Feature bit 5 = VIRTIO_RING_F_EVENT_IDX is
+        // commonly expected. Let's accept whatever the device offers except
+        // features we don't support.
+        let accepted_chirho = device_features_chirho & 0x3F; // accept bits 0-5
+        transport_chirho.write_guest_features_chirho(accepted_chirho);
 
         // Step 5: Set up virtqueue 0.
         transport_chirho.select_queue_chirho(0);
@@ -861,26 +865,31 @@ impl VirtioBlkDeviceChirho {
         let used_ring_bytes_chirho = 4 + (actual_size_chirho as usize) * 8 + 2;
         let total_bytes_chirho = used_ring_offset_chirho + used_ring_bytes_chirho;
 
-        // Allocate page-aligned memory.  We use a Vec<u8> with enough extra
-        // to guarantee 4096-byte alignment.
-        let alloc_size_chirho = total_bytes_chirho + VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO;
-        let raw_mem_chirho = vec![0u8; alloc_size_chirho];
-        let raw_ptr_chirho = raw_mem_chirho.as_ptr() as usize;
-        let aligned_ptr_chirho =
-            (raw_ptr_chirho + VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO - 1)
-                & !(VIRTIO_LEGACY_QUEUE_ALIGN_CHIRHO - 1);
+        // Allocate vring at a KNOWN physical address using the bootloader's
+        // physical memory direct mapping. This avoids DMA issues with heap
+        // memory that might be in BIOS-reserved regions.
+        // Use physical address 0x200000 (2MB) — well above BIOS area, below kernel.
+        static DMA_ALLOC_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0x1F000000); // Start at 496MB physical (near top of 512MB RAM)
 
-        // In identity-mapped or offset-mapped kernel, virtual == physical
-        // (with possible offset).  The physical address is what the device
-        // sees for DMA.  In our kernel the bootloader identity-maps low
-        // memory, and the heap allocator returns addresses that are valid
-        // physical addresses (the kernel runs with phys_offset mapping).
-        // For the PFN we need the physical address — walk the page table.
-        let phys_base_chirho = crate::pagetable_chirho::virt_to_phys_chirho(aligned_ptr_chirho as u64)
-            .unwrap_or_else(|| {
-                crate::serial_println_chirho!("    VirtIO-blk I/O: FATAL: virt_to_phys failed for {:#x}", aligned_ptr_chirho as u64);
-                0
-            });
+        let alloc_pages_chirho = (total_bytes_chirho + 4095) / 4096;
+        let phys_base_chirho = DMA_ALLOC_NEXT_CHIRHO.fetch_add(
+            (alloc_pages_chirho * 4096) as u64,
+            core::sync::atomic::Ordering::SeqCst,
+        );
+
+        // Access via the bootloader's physical memory mapping
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let aligned_ptr_chirho = (phys_base_chirho + phys_offset_chirho) as usize;
+
+        // Zero the DMA region
+        unsafe {
+            core::ptr::write_bytes(aligned_ptr_chirho as *mut u8, 0, total_bytes_chirho);
+        }
+
+        // Leak the raw_mem to prevent deallocation (vring must persist)
+        let _raw_mem_chirho = vec![0u8; 1]; // placeholder to keep the leak pattern
+        core::mem::forget(_raw_mem_chirho);
 
         crate::serial_println_chirho!(
             "    VirtIO-blk I/O: vq virt={:#x} phys={:#x} size={} total_bytes={}",
@@ -926,9 +935,7 @@ impl VirtioBlkDeviceChirho {
         // used ring starts at used_ring_offset.
         let vq_chirho = VirtQueueChirho::new_chirho(actual_size_chirho);
 
-        // Keep the raw memory alive forever (device DMA target).
-        // Store it via Box::leak so it is never freed.
-        let _leaked_chirho = Box::leak(raw_mem_chirho.into_boxed_slice());
+        // DMA memory is at a fixed physical address — no heap allocation to leak.
 
         // The VirtQueueChirho struct keeps Vec-based copies for building
         // request chains; submit_and_wait_io copies descriptors into the
@@ -1155,6 +1162,17 @@ impl VirtioBlkDeviceChirho {
             &status_byte_chirho as *const u8 as u64
         ).unwrap_or(0);
 
+        crate::serial_println_chirho!(
+            "    [VirtIO-IO] descs: hdr_p={:#x} data_p={:#x} stat_p={:#x} d={}/{}/{}",
+            header_phys_chirho, data_phys_chirho, status_phys_chirho, d0_chirho, d1_chirho, d2_chirho
+        );
+        // Verify vring memory is writable by reading back what we zero'd
+        let verify_chirho = unsafe { core::ptr::read_volatile(vq_base_chirho as *const u64) };
+        crate::serial_println_chirho!(
+            "    [VirtIO-IO] vring verify: first 8 bytes at virt={:#x} = {:#x} (should be 0 before write)",
+            vq_base_chirho, verify_chirho
+        );
+
         // Write descriptor 0: request header (device-readable).
         unsafe {
             let d0_ptr_chirho = desc_base_chirho.add(d0_chirho as usize);
@@ -1247,6 +1265,16 @@ impl VirtioBlkDeviceChirho {
             core::hint::spin_loop();
             spins_chirho += 1;
             if spins_chirho > 10_000_000 {
+                let used_flags_chirho = unsafe { ptr::read_volatile(used_base_chirho) };
+                let used_idx_final_chirho = unsafe { ptr::read_volatile(used_base_chirho.add(1)) };
+                crate::serial_println_chirho!(
+                    "    [VirtIO-IO] TIMEOUT: last_used={} used_flags={} used_idx={} isr={}",
+                    last_used_chirho, used_flags_chirho, used_idx_final_chirho,
+                    match &self.transport_chirho {
+                        VirtioTransportKindChirho::IoChirho(t) => t.read_isr_chirho(),
+                        _ => 0xFF,
+                    }
+                );
                 // Free descriptors before returning error.
                 vq_chirho.free_desc_chirho(d0_chirho);
                 vq_chirho.free_desc_chirho(d1_chirho);
