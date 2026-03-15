@@ -730,6 +730,9 @@ pub fn exec_init_chirho() {
         loaded_chirho.brk_addr_chirho
     );
 
+    // Set the initial program break from the ELF's highest loaded segment.
+    crate::syscall_chirho::set_brk_chirho(loaded_chirho.brk_addr_chirho);
+
     // Step 2: Set up the user stack with proper argv.
     // BusyBox uses argv[0] to determine which applet to run.
     // Pass "sh" so it launches the ash shell.

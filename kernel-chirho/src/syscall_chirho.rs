@@ -1047,6 +1047,11 @@ const REALTIME_EPOCH_CHIRHO: i64 = 1773532800;
 /// process loader would set this to the end of the BSS/data segment.
 static CURRENT_BRK_CHIRHO: AtomicU64 = AtomicU64::new(0x0060_0000);
 
+/// Set the initial program break (called by exec after loading ELF).
+pub fn set_brk_chirho(addr_chirho: u64) {
+    CURRENT_BRK_CHIRHO.store(addr_chirho, core::sync::atomic::Ordering::SeqCst);
+}
+
 // ============================================================================
 // MSR constants for SYSCALL/SYSRET setup
 // ============================================================================
@@ -1192,6 +1197,14 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let arg3_chirho = frame_chirho.r10_chirho;
     let arg4_chirho = frame_chirho.r8_chirho;
     let _arg5_chirho = frame_chirho.r9_chirho;
+
+    // Trace every syscall for debugging BusyBox boot
+    crate::serial_println_chirho!(
+        "[STRACE] {}({:#x},{:#x},{:#x}) [nr={}]",
+        syscall_name_chirho(syscall_nr_chirho),
+        arg0_chirho, arg1_chirho, arg2_chirho,
+        syscall_nr_chirho
+    );
 
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => crate::fs_chirho::sys_read_real_chirho(
@@ -1765,6 +1778,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         }
     };
 
+    crate::serial_println_chirho!(
+        "[STRACE]   => {}",
+        result_chirho
+    );
+
     // Store the return value so the caller (assembly stub) can put it in rax.
     frame_chirho.rax_chirho = result_chirho as u64;
     result_chirho
@@ -1948,15 +1966,38 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
 /// set the break to `addr_chirho`.  Currently a stub that tracks the value
 /// atomically but does not actually map or unmap any memory.
 fn sys_brk_chirho(addr_chirho: u64) -> i64 {
+    let old_brk_chirho = CURRENT_BRK_CHIRHO.load(Ordering::SeqCst);
+
     if addr_chirho == 0 {
-        // Query: return the current break.
-        return CURRENT_BRK_CHIRHO.load(Ordering::SeqCst) as i64;
+        return old_brk_chirho as i64;
     }
 
-    // For now, accept any break value.  A real implementation would:
-    //   1. Validate the range.
-    //   2. Map/unmap pages as needed.
-    //   3. Return the new break on success, or the old break on failure.
+    // If expanding, map new pages
+    if addr_chirho > old_brk_chirho {
+        let old_page_chirho = (old_brk_chirho + 0xFFF) & !0xFFF; // round up
+        let new_page_chirho = (addr_chirho + 0xFFF) & !0xFFF;
+        if new_page_chirho > old_page_chirho {
+            let size_chirho = new_page_chirho - old_page_chirho;
+            let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
+            let mut guard_chirho = mm_lock_chirho.lock();
+            if let Some(mm_chirho) = guard_chirho.as_mut() {
+                let result_chirho = mm_chirho.mmap_chirho(
+                    old_page_chirho,
+                    size_chirho,
+                    crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
+                    crate::mm_chirho::MAP_PRIVATE_CHIRHO
+                        | crate::mm_chirho::MAP_ANONYMOUS_CHIRHO
+                        | crate::mm_chirho::MAP_FIXED_CHIRHO,
+                    -1i32,
+                    0,
+                );
+                if result_chirho.is_err() {
+                    return old_brk_chirho as i64; // return old brk on failure
+                }
+            }
+        }
+    }
+
     CURRENT_BRK_CHIRHO.store(addr_chirho, Ordering::SeqCst);
     addr_chirho as i64
 }

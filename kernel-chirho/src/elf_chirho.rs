@@ -459,6 +459,21 @@ pub fn parse_elf_chirho(data_chirho: &[u8]) -> Result<ElfInfoChirho, ElfErrorChi
         }
     }
 
+    // If no PT_PHDR segment, compute PHDR address from the first PT_LOAD
+    // segment's base + ELF header's e_phoff. musl's _start needs AT_PHDR
+    // to find program headers — without it, NULL deref on startup.
+    if phdr_addr_chirho == 0 && !segments_chirho.is_empty() {
+        // The program headers are at file offset e_phoff, which maps to
+        // vaddr = first_segment_vaddr + e_phoff (for non-PIE executables
+        // where the first segment starts at the ELF load address).
+        let first_vaddr_chirho = segments_chirho[0].vaddr_chirho;
+        let first_offset_chirho = segments_chirho[0].offset_chirho;
+        if header_chirho.e_phoff_chirho >= first_offset_chirho {
+            phdr_addr_chirho = first_vaddr_chirho
+                + (header_chirho.e_phoff_chirho - first_offset_chirho);
+        }
+    }
+
     Ok(ElfInfoChirho {
         entry_point_chirho: header_chirho.e_entry_chirho,
         segments_chirho,
