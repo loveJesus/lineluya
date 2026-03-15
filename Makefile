@@ -1,7 +1,7 @@
 # For God so loved the world that he gave his only begotten Son,
 # that whoever believes in him should not perish but have eternal life. - John 3:16
 
-.PHONY: build-chirho run-chirho run-uefi-chirho clean-chirho kernel-chirho
+.PHONY: build-chirho run-chirho run-uefi-chirho clean-chirho kernel-chirho test-chirho test-boot-chirho
 
 KERNEL_TARGET_CHIRHO = x86_64-unknown-none
 KERNEL_BINARY_CHIRHO = target/$(KERNEL_TARGET_CHIRHO)/debug/kernel-chirho
@@ -111,3 +111,22 @@ fast-test-chirho: fast-chirho
 # Docker full rebuild (only needed when Cargo.toml or Dockerfile changes)
 docker-chirho:
 	docker build --platform linux/arm64 -t lineluya-builder-chirho -f Dockerfile.build-chirho .
+
+# ---------------------------------------------------------------------------
+# Test targets (D1-001 through D1-010)
+# ---------------------------------------------------------------------------
+
+# Run the full QEMU integration test suite
+test-chirho: kernel-release-chirho
+	@chmod +x scripts-chirho/run-tests-chirho.sh scripts-chirho/tests-chirho/*.sh
+	KERNEL_BINARY_CHIRHO=$(KERNEL_RELEASE_BINARY_CHIRHO) ./scripts-chirho/run-tests-chirho.sh
+
+# Run only boot test (quick smoke test)
+test-boot-chirho: kernel-release-chirho
+	@chmod +x scripts-chirho/run-tests-chirho.sh scripts-chirho/tests-chirho/*.sh
+	KERNEL_BINARY_CHIRHO=$(KERNEL_RELEASE_BINARY_CHIRHO) ./scripts-chirho/run-tests-chirho.sh boot
+
+# Run a specific test suite by name (e.g., make test-one-chirho SUITE_CHIRHO=syscall)
+test-one-chirho: kernel-release-chirho
+	@chmod +x scripts-chirho/run-tests-chirho.sh scripts-chirho/tests-chirho/*.sh
+	KERNEL_BINARY_CHIRHO=$(KERNEL_RELEASE_BINARY_CHIRHO) ./scripts-chirho/run-tests-chirho.sh $(SUITE_CHIRHO)
