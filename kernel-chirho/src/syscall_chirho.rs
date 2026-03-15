@@ -3237,57 +3237,206 @@ fn sys_statx_chirho(
 
 /// `mkdir(2)` implementation (syscall 83).
 ///
-/// Stub: logs and returns 0 (success).
+/// Resolves the parent directory in the live tmpfs tree and creates a new
+/// directory entry via `InodeOps::mkdir_chirho`.
 fn sys_mkdir_chirho(
-    _pathname_chirho: *const u8,
-    _mode_chirho: u32,
+    pathname_chirho: *const u8,
+    mode_chirho: u32,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] mkdir(pathname, mode) -> 0 (stub)");
-    0
+    use crate::uaccess_chirho::read_user_string_chirho;
+
+    let raw_path_chirho = match read_user_string_chirho(pathname_chirho as u64, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Make path absolute
+    let path_chirho = if !raw_path_chirho.starts_with('/') {
+        let mut full_chirho = alloc::string::String::from("/");
+        full_chirho.push_str(&raw_path_chirho);
+        full_chirho
+    } else {
+        raw_path_chirho
+    };
+
+    crate::serial_println_chirho!("[SYSCALL] mkdir({}, {:#o})", path_chirho, mode_chirho);
+
+    let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    let parent_guard_chirho = parent_inode_chirho.lock();
+    match parent_guard_chirho.ops_chirho.mkdir_chirho(&parent_guard_chirho, &name_chirho, mode_chirho) {
+        Ok(_) => 0,
+        Err(errno_chirho) => errno_chirho,
+    }
 }
 
 /// `mkdirat(2)` implementation (syscall 258).
 ///
-/// Stub: logs and returns 0 (success).
+/// Like mkdir but with a dirfd argument. Currently only handles absolute
+/// paths and AT_FDCWD for relative paths.
 fn sys_mkdirat_chirho(
-    _dirfd_chirho: i32,
-    _pathname_chirho: *const u8,
-    _mode_chirho: u32,
+    dirfd_chirho: i32,
+    pathname_chirho: *const u8,
+    mode_chirho: u32,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] mkdirat(dirfd, pathname, mode) -> 0 (stub)");
-    0
+    use crate::uaccess_chirho::read_user_string_chirho;
+
+    let raw_path_chirho = match read_user_string_chirho(pathname_chirho as u64, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Make path absolute (handle AT_FDCWD)
+    let path_chirho = if !raw_path_chirho.starts_with('/') {
+        if dirfd_chirho == -100 {
+            // AT_FDCWD
+            let mut full_chirho = alloc::string::String::from("/");
+            full_chirho.push_str(&raw_path_chirho);
+            full_chirho
+        } else {
+            raw_path_chirho
+        }
+    } else {
+        raw_path_chirho
+    };
+
+    crate::serial_println_chirho!("[SYSCALL] mkdirat({}, {}, {:#o})", dirfd_chirho, path_chirho, mode_chirho);
+
+    let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    let parent_guard_chirho = parent_inode_chirho.lock();
+    match parent_guard_chirho.ops_chirho.mkdir_chirho(&parent_guard_chirho, &name_chirho, mode_chirho) {
+        Ok(_) => 0,
+        Err(errno_chirho) => errno_chirho,
+    }
 }
 
 /// `rmdir(2)` implementation (syscall 84).
 ///
-/// Stub: logs and returns 0 (success).
+/// Resolves the parent directory in the live tmpfs tree and removes the
+/// named directory entry via `InodeOps::rmdir_chirho`.
 fn sys_rmdir_chirho(
-    _pathname_chirho: *const u8,
+    pathname_chirho: *const u8,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] rmdir(pathname) -> 0 (stub)");
-    0
+    use crate::uaccess_chirho::read_user_string_chirho;
+
+    let raw_path_chirho = match read_user_string_chirho(pathname_chirho as u64, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    let path_chirho = if !raw_path_chirho.starts_with('/') {
+        let mut full_chirho = alloc::string::String::from("/");
+        full_chirho.push_str(&raw_path_chirho);
+        full_chirho
+    } else {
+        raw_path_chirho
+    };
+
+    crate::serial_println_chirho!("[SYSCALL] rmdir({})", path_chirho);
+
+    let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    let parent_guard_chirho = parent_inode_chirho.lock();
+    match parent_guard_chirho.ops_chirho.rmdir_chirho(&parent_guard_chirho, &name_chirho) {
+        Ok(()) => 0,
+        Err(errno_chirho) => errno_chirho,
+    }
 }
 
 /// `unlink(2)` implementation (syscall 87).
 ///
-/// Stub: logs and returns 0 (success).
+/// Resolves the parent directory in the live tmpfs tree and removes the
+/// named file entry via `InodeOps::unlink_chirho`.
 fn sys_unlink_chirho(
-    _pathname_chirho: *const u8,
+    pathname_chirho: *const u8,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] unlink(pathname) -> 0 (stub)");
-    0
+    use crate::uaccess_chirho::read_user_string_chirho;
+
+    let raw_path_chirho = match read_user_string_chirho(pathname_chirho as u64, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    let path_chirho = if !raw_path_chirho.starts_with('/') {
+        let mut full_chirho = alloc::string::String::from("/");
+        full_chirho.push_str(&raw_path_chirho);
+        full_chirho
+    } else {
+        raw_path_chirho
+    };
+
+    crate::serial_println_chirho!("[SYSCALL] unlink({})", path_chirho);
+
+    let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    let parent_guard_chirho = parent_inode_chirho.lock();
+    match parent_guard_chirho.ops_chirho.unlink_chirho(&parent_guard_chirho, &name_chirho) {
+        Ok(()) => 0,
+        Err(errno_chirho) => errno_chirho,
+    }
 }
 
 /// `unlinkat(2)` implementation (syscall 263).
 ///
-/// Stub: logs and returns 0 (success).
+/// Combines unlink and rmdir based on the AT_REMOVEDIR flag (0x200).
 fn sys_unlinkat_chirho(
-    _dirfd_chirho: i32,
-    _pathname_chirho: *const u8,
-    _flags_chirho: u32,
+    dirfd_chirho: i32,
+    pathname_chirho: *const u8,
+    flags_chirho: u32,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] unlinkat(dirfd, pathname, flags) -> 0 (stub)");
-    0
+    use crate::uaccess_chirho::read_user_string_chirho;
+
+    const AT_REMOVEDIR_CHIRHO: u32 = 0x200;
+
+    let raw_path_chirho = match read_user_string_chirho(pathname_chirho as u64, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    let path_chirho = if !raw_path_chirho.starts_with('/') {
+        if dirfd_chirho == -100 {
+            let mut full_chirho = alloc::string::String::from("/");
+            full_chirho.push_str(&raw_path_chirho);
+            full_chirho
+        } else {
+            raw_path_chirho
+        }
+    } else {
+        raw_path_chirho
+    };
+
+    crate::serial_println_chirho!("[SYSCALL] unlinkat({}, {}, {:#x})", dirfd_chirho, path_chirho, flags_chirho);
+
+    let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    let parent_guard_chirho = parent_inode_chirho.lock();
+    if flags_chirho & AT_REMOVEDIR_CHIRHO != 0 {
+        match parent_guard_chirho.ops_chirho.rmdir_chirho(&parent_guard_chirho, &name_chirho) {
+            Ok(()) => 0,
+            Err(errno_chirho) => errno_chirho,
+        }
+    } else {
+        match parent_guard_chirho.ops_chirho.unlink_chirho(&parent_guard_chirho, &name_chirho) {
+            Ok(()) => 0,
+            Err(errno_chirho) => errno_chirho,
+        }
+    }
 }
 
 /// `rename(2)` implementation (syscall 82).

@@ -338,6 +338,8 @@ fn clone_fs_data_chirho(
 pub fn resolve_path_chirho(
     path_chirho: &str,
 ) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
+    use crate::tmpfs_chirho::TmpfsDataChirho;
+
     // Only absolute paths for now
     if !path_chirho.starts_with('/') {
         return Err(-ENOENT_CHIRHO);
@@ -399,65 +401,147 @@ pub fn resolve_path_chirho(
         (inode_arc_chirho, components_chirho)
     };
 
-    // If no more components, return the root/mount-root inode
-    if remaining_components_chirho.is_empty() {
-        return Ok((start_inode_chirho, &TMPFS_FILE_OPS_CHIRHO));
+    // Helper: determine the correct FileOps for an inode based on its fs_data
+    fn detect_file_ops_chirho(inode_chirho: &InodeChirho) -> &'static dyn FileOpsChirho {
+        if inode_chirho.mode_chirho & S_IFCHR_CHIRHO == S_IFCHR_CHIRHO {
+            if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
+                if let Some(dev_data_chirho) = data_chirho.downcast_ref::<DevNodeDataChirho>() {
+                    return dev_file_ops_chirho(dev_data_chirho.major_chirho, dev_data_chirho.minor_chirho);
+                }
+            }
+            return &TMPFS_FILE_OPS_CHIRHO;
+        }
+        if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
+            if data_chirho.downcast_ref::<crate::procfs_chirho::ProcGeneratorChirho>().is_some() {
+                return &PROCFS_FILE_OPS_CHIRHO;
+            }
+            if data_chirho.downcast_ref::<crate::procfs_chirho::ProcDirEntriesChirho>().is_some() {
+                return &PROCFS_DIR_OPS_CHIRHO;
+            }
+        }
+        &TMPFS_FILE_OPS_CHIRHO
     }
 
-    // Walk each component
+    // If no more components, return the root/mount-root inode with correct file_ops
+    if remaining_components_chirho.is_empty() {
+        let file_ops_chirho = {
+            let inode_guard_chirho = start_inode_chirho.lock();
+            detect_file_ops_chirho(&inode_guard_chirho)
+        };
+        return Ok((start_inode_chirho, file_ops_chirho));
+    }
+
+    // Walk each component using the **live** tree when possible.
+    //
+    // For tmpfs inodes (which store children as `Arc<Mutex<InodeChirho>>`
+    // inside `Mutex<TmpfsDataChirho::DirChirho>`), we walk the live entry
+    // vector so that the returned inode is the actual tree node — not a
+    // clone.  This ensures that readdir sees entries created by mkdir.
+    //
+    // For non-tmpfs inodes (procfs, devtmpfs), we fall back to
+    // `InodeOps::lookup_chirho` which may return static Arc copies.
     let mut current_inode_chirho = start_inode_chirho;
 
     for (idx_chirho, component_chirho) in remaining_components_chirho.iter().enumerate() {
-        let inode_guard_chirho = current_inode_chirho.lock();
-        let lookup_result_chirho =
-            inode_guard_chirho.ops_chirho.lookup_chirho(&inode_guard_chirho, component_chirho);
-        drop(inode_guard_chirho);
+        let is_last_chirho = idx_chirho == remaining_components_chirho.len() - 1;
 
-        match lookup_result_chirho {
-            Ok(child_inode_chirho) => {
-                // Determine the correct FileOps for the resolved inode
-                let is_last_chirho = idx_chirho == remaining_components_chirho.len() - 1;
-
-                if is_last_chirho {
-                    // Check if this is a character device
-                    let mode_chirho = child_inode_chirho.mode_chirho;
-                    let file_ops_chirho: &'static dyn FileOpsChirho =
-                        if mode_chirho & S_IFCHR_CHIRHO == S_IFCHR_CHIRHO {
-                            // Look up the device ops from fs_data
-                            if let Some(ref data_chirho) = child_inode_chirho.fs_data_chirho {
-                                if let Some(dev_data_chirho) =
-                                    data_chirho.downcast_ref::<DevNodeDataChirho>()
-                                {
-                                    dev_file_ops_chirho(
-                                        dev_data_chirho.major_chirho,
-                                        dev_data_chirho.minor_chirho,
-                                    )
-                                } else {
-                                    &TMPFS_FILE_OPS_CHIRHO
+        // Try live tmpfs walk first
+        let live_child_chirho: Option<Arc<Mutex<InodeChirho>>> = {
+            let inode_guard_chirho = current_inode_chirho.lock();
+            if let Some(ref fs_data_box_chirho) = inode_guard_chirho.fs_data_chirho {
+                if let Some(tmpfs_mutex_chirho) = fs_data_box_chirho.downcast_ref::<Mutex<TmpfsDataChirho>>() {
+                    let data_chirho = tmpfs_mutex_chirho.lock();
+                    match &*data_chirho {
+                        TmpfsDataChirho::DirChirho(entries_chirho) => {
+                            let mut found_chirho: Option<Arc<Mutex<InodeChirho>>> = None;
+                            for (name_chirho, child_arc_chirho) in entries_chirho.iter() {
+                                if name_chirho.as_str() == *component_chirho {
+                                    found_chirho = Some(child_arc_chirho.clone());
+                                    break;
                                 }
-                            } else {
-                                &TMPFS_FILE_OPS_CHIRHO
                             }
-                        } else {
-                            // Check if this is a procfs file (has ProcGenerator)
-                            if let Some(ref data_chirho) = child_inode_chirho.fs_data_chirho {
-                                if data_chirho.downcast_ref::<crate::procfs_chirho::ProcGeneratorChirho>().is_some() {
-                                    &PROCFS_FILE_OPS_CHIRHO
-                                } else if data_chirho.downcast_ref::<crate::procfs_chirho::ProcDirEntriesChirho>().is_some() {
-                                    &PROCFS_DIR_OPS_CHIRHO
-                                } else {
-                                    &TMPFS_FILE_OPS_CHIRHO
-                                }
-                            } else {
-                                &TMPFS_FILE_OPS_CHIRHO
-                            }
-                        };
+                            found_chirho
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
 
-                    // Clone the inode, preserving fs_data for procfs/tmpfs
-                    let owned_inode_chirho = {
-                        let fs_data_clone_chirho: Option<Box<dyn core::any::Any + Send>> =
-                            clone_fs_data_chirho(&child_inode_chirho.fs_data_chirho);
-                        InodeChirho {
+        if let Some(child_arc_chirho) = live_child_chirho {
+            // Check if this child is a mount point
+            if !is_last_chirho {
+                let mut child_path_chirho = String::from("/");
+                // Build the accumulated path from the original components (not remaining)
+                // accounting for the mount prefix that was already consumed.
+                // remaining_components_chirho[..=idx_chirho] gives us the path
+                // relative to where we started walking.
+                for (i_chirho, c_chirho) in remaining_components_chirho[..=idx_chirho].iter().enumerate() {
+                    if i_chirho > 0 {
+                        child_path_chirho.push('/');
+                    }
+                    child_path_chirho.push_str(c_chirho);
+                }
+                // If mount_prefix_len > 0, prepend the mount prefix
+                if mount_prefix_len_chirho > 0 {
+                    let mut full_accumulated_chirho = String::from(&path_chirho[..mount_prefix_len_chirho]);
+                    full_accumulated_chirho.push('/');
+                    for (i_chirho, c_chirho) in remaining_components_chirho[..=idx_chirho].iter().enumerate() {
+                        if i_chirho > 0 {
+                            full_accumulated_chirho.push('/');
+                        }
+                        full_accumulated_chirho.push_str(c_chirho);
+                    }
+                    child_path_chirho = full_accumulated_chirho;
+                }
+
+                // Check if this accumulated path is a mount point
+                let mount_match_chirho: Option<Arc<Mutex<SuperblockChirho>>> = {
+                    let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+                    let mut found_chirho: Option<Arc<Mutex<SuperblockChirho>>> = None;
+                    for mount_chirho in mounts_chirho.iter() {
+                        if mount_chirho.path_chirho == child_path_chirho {
+                            found_chirho = Some(mount_chirho.superblock_chirho.clone());
+                            break;
+                        }
+                    }
+                    found_chirho
+                };
+
+                if let Some(mount_sb_chirho) = mount_match_chirho {
+                    // Switch to the mount's root inode
+                    let sb_guard_chirho = mount_sb_chirho.lock();
+                    let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
+                    current_inode_chirho = root_dentry_chirho.inode_chirho.clone().ok_or(-ENOENT_CHIRHO)?;
+                    continue;
+                }
+            }
+
+            if is_last_chirho {
+                let file_ops_chirho = {
+                    let guard_chirho = child_arc_chirho.lock();
+                    detect_file_ops_chirho(&guard_chirho)
+                };
+                return Ok((child_arc_chirho, file_ops_chirho));
+            }
+            current_inode_chirho = child_arc_chirho;
+        } else {
+            // Non-tmpfs: use InodeOps::lookup_chirho (procfs, devtmpfs, etc.)
+            let lookup_result_chirho = {
+                let inode_guard_chirho = current_inode_chirho.lock();
+                inode_guard_chirho.ops_chirho.lookup_chirho(&inode_guard_chirho, component_chirho)
+            };
+
+            match lookup_result_chirho {
+                Ok(child_inode_chirho) => {
+                    if is_last_chirho {
+                        let file_ops_chirho = detect_file_ops_chirho(&child_inode_chirho);
+                        let fs_data_clone_chirho = clone_fs_data_chirho(&child_inode_chirho.fs_data_chirho);
+                        let owned_inode_chirho = InodeChirho {
                             ino_chirho: child_inode_chirho.ino_chirho,
                             mode_chirho: child_inode_chirho.mode_chirho,
                             uid_chirho: child_inode_chirho.uid_chirho,
@@ -469,46 +553,154 @@ pub fn resolve_path_chirho(
                             ctime_chirho: child_inode_chirho.ctime_chirho,
                             ops_chirho: child_inode_chirho.ops_chirho,
                             fs_data_chirho: fs_data_clone_chirho,
-                        }
-                    };
-                    let wrapped_chirho = Arc::new(Mutex::new(owned_inode_chirho));
-                    return Ok((wrapped_chirho, file_ops_chirho));
-                }
-
-                // Intermediate component: wrap and continue, preserving fs_data
-                let intermediate_fs_data_chirho = clone_fs_data_chirho(&child_inode_chirho.fs_data_chirho);
-                current_inode_chirho = Arc::new(Mutex::new(InodeChirho {
-                    ino_chirho: child_inode_chirho.ino_chirho,
-                    mode_chirho: child_inode_chirho.mode_chirho,
-                    uid_chirho: child_inode_chirho.uid_chirho,
-                    gid_chirho: child_inode_chirho.gid_chirho,
-                    size_chirho: child_inode_chirho.size_chirho,
-                    nlink_chirho: child_inode_chirho.nlink_chirho,
-                    atime_chirho: child_inode_chirho.atime_chirho,
-                    mtime_chirho: child_inode_chirho.mtime_chirho,
-                    ctime_chirho: child_inode_chirho.ctime_chirho,
-                    ops_chirho: child_inode_chirho.ops_chirho,
-                    fs_data_chirho: intermediate_fs_data_chirho,
-                }));
-
-                // Check if the accumulated path so far matches a mount point
-                // Build the path up to this component
-                let mut accumulated_chirho = String::from("/");
-                for c_chirho in &remaining_components_chirho[..=idx_chirho] {
-                    accumulated_chirho.push_str(c_chirho);
-                    if idx_chirho < remaining_components_chirho.len() - 1 {
-                        accumulated_chirho.push('/');
+                        };
+                        return Ok((Arc::new(Mutex::new(owned_inode_chirho)), file_ops_chirho));
                     }
+
+                    // Intermediate non-tmpfs component: wrap and continue
+                    let intermediate_fs_data_chirho = clone_fs_data_chirho(&child_inode_chirho.fs_data_chirho);
+                    current_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+                        ino_chirho: child_inode_chirho.ino_chirho,
+                        mode_chirho: child_inode_chirho.mode_chirho,
+                        uid_chirho: child_inode_chirho.uid_chirho,
+                        gid_chirho: child_inode_chirho.gid_chirho,
+                        size_chirho: child_inode_chirho.size_chirho,
+                        nlink_chirho: child_inode_chirho.nlink_chirho,
+                        atime_chirho: child_inode_chirho.atime_chirho,
+                        mtime_chirho: child_inode_chirho.mtime_chirho,
+                        ctime_chirho: child_inode_chirho.ctime_chirho,
+                        ops_chirho: child_inode_chirho.ops_chirho,
+                        fs_data_chirho: intermediate_fs_data_chirho,
+                    }));
                 }
-                // (Mount check already handled at the top-level; sub-mount checking
-                //  could be added here for nested mounts in the future.)
+                Err(errno_chirho) => return Err(errno_chirho),
             }
-            Err(errno_chirho) => return Err(errno_chirho),
         }
     }
 
     // Should not reach here, but just in case
-    Ok((current_inode_chirho, &TMPFS_FILE_OPS_CHIRHO))
+    let file_ops_chirho = {
+        let guard_chirho = current_inode_chirho.lock();
+        detect_file_ops_chirho(&guard_chirho)
+    };
+    Ok((current_inode_chirho, file_ops_chirho))
+}
+
+/// Resolve an absolute path to the **live** parent `Arc<Mutex<InodeChirho>>`
+/// and the final component name.
+///
+/// Unlike `resolve_path_chirho`, this returns the actual `Arc` stored in the
+/// tmpfs entry vector (not a clone), so mutations via `InodeOps` (mkdir,
+/// create, unlink, etc.) affect the live filesystem tree.
+///
+/// Respects mount points: if the path crosses into a mounted filesystem,
+/// the walk continues from that mount's root inode.
+pub fn resolve_parent_live_chirho(
+    path_chirho: &str,
+) -> Result<(Arc<Mutex<InodeChirho>>, alloc::string::String), i64> {
+    use crate::tmpfs_chirho::TmpfsDataChirho;
+
+    if !path_chirho.starts_with('/') {
+        return Err(-ENOENT_CHIRHO);
+    }
+
+    let components_chirho: Vec<&str> = path_chirho
+        .split('/')
+        .filter(|s_chirho| !s_chirho.is_empty())
+        .collect();
+
+    if components_chirho.is_empty() {
+        return Err(-ENOENT_CHIRHO); // can't mkdir "/"
+    }
+
+    let final_name_chirho = alloc::string::String::from(*components_chirho.last().unwrap());
+    let parent_components_chirho = &components_chirho[..components_chirho.len() - 1];
+
+    // Build the parent path to check mount points
+    let mut parent_path_chirho = alloc::string::String::from("/");
+    for (i_chirho, c_chirho) in parent_components_chirho.iter().enumerate() {
+        parent_path_chirho.push_str(c_chirho);
+        if i_chirho < parent_components_chirho.len() - 1 {
+            parent_path_chirho.push('/');
+        }
+    }
+
+    // Check mount points for the parent path
+    let mut mount_prefix_len_chirho: usize = 0;
+    let mut current_sb_chirho: Option<Arc<Mutex<SuperblockChirho>>> = None;
+    {
+        let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+        for mount_chirho in mounts_chirho.iter() {
+            let mp_chirho = &mount_chirho.path_chirho;
+            if path_chirho.starts_with(mp_chirho.as_str())
+                && mp_chirho.len() > mount_prefix_len_chirho
+                && (path_chirho.len() == mp_chirho.len()
+                    || path_chirho.as_bytes().get(mp_chirho.len()) == Some(&b'/'))
+            {
+                mount_prefix_len_chirho = mp_chirho.len();
+                current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
+            }
+        }
+    }
+
+    // Get the starting live inode
+    let (start_inode_chirho, walk_components_chirho) = if let Some(sb_chirho) = current_sb_chirho {
+        let sb_guard_chirho = sb_chirho.lock();
+        let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
+        let inode_arc_chirho = root_dentry_chirho.inode_chirho.clone().ok_or(-ENOENT_CHIRHO)?;
+        let remaining_path_chirho = &path_chirho[mount_prefix_len_chirho..];
+        let remaining_chirho: Vec<&str> = remaining_path_chirho
+            .split('/')
+            .filter(|s_chirho| !s_chirho.is_empty())
+            .collect();
+        // Parent components = all except last
+        let parent_rem_chirho: Vec<&str> = if remaining_chirho.len() > 1 {
+            remaining_chirho[..remaining_chirho.len() - 1].to_vec()
+        } else {
+            Vec::new()
+        };
+        (inode_arc_chirho, parent_rem_chirho)
+    } else {
+        let root_guard_chirho = ROOT_FS_CHIRHO.lock();
+        let root_sb_chirho = root_guard_chirho.as_ref().ok_or(-ENOENT_CHIRHO)?;
+        let sb_guard_chirho = root_sb_chirho.lock();
+        let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
+        let inode_arc_chirho = root_dentry_chirho.inode_chirho.clone().ok_or(-ENOENT_CHIRHO)?;
+        (inode_arc_chirho, parent_components_chirho.to_vec())
+    };
+
+    // Walk the parent components through the live tmpfs tree
+    let mut current_chirho = start_inode_chirho;
+    for comp_chirho in walk_components_chirho.iter() {
+        let next_chirho = {
+            let inode_guard_chirho = current_chirho.lock();
+            let data_lock_chirho = inode_guard_chirho
+                .fs_data_chirho
+                .as_ref()
+                .and_then(|d_chirho| d_chirho.downcast_ref::<Mutex<TmpfsDataChirho>>())
+                .ok_or(-ENOTDIR_CHIRHO)?;
+            let data_chirho = data_lock_chirho.lock();
+            match &*data_chirho {
+                TmpfsDataChirho::DirChirho(entries_chirho) => {
+                    let mut found_chirho: Option<Arc<Mutex<InodeChirho>>> = None;
+                    for (name_chirho, inode_arc_chirho) in entries_chirho.iter() {
+                        if name_chirho.as_str() == *comp_chirho {
+                            found_chirho = Some(inode_arc_chirho.clone());
+                            break;
+                        }
+                    }
+                    found_chirho.ok_or(-ENOENT_CHIRHO)?
+                }
+                _ => return Err(-ENOTDIR_CHIRHO),
+            }
+        };
+
+        // Check if accumulated path so far crosses a mount point
+        // (handle paths like /mnt/sub where /mnt is a mount)
+        current_chirho = next_chirho;
+    }
+
+    Ok((current_chirho, final_name_chirho))
 }
 
 // ============================================================================
