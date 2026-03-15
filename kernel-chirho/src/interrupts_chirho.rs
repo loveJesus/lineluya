@@ -262,8 +262,6 @@ extern "x86-interrupt" fn keyboard_interrupt_handler_chirho(
     // SAFETY: Port 0x60 is the standard PS/2 keyboard data port. Reading it
     // during the keyboard IRQ is expected and safe.
     let scancode_chirho: u8 = unsafe { Port::new(0x60).read() };
-    unsafe {
-    }
 
     // Decode the scancode into a key event, then into a character.
     let mut keyboard_chirho = KEYBOARD_CHIRHO.lock();

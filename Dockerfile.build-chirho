@@ -25,13 +25,13 @@ COPY rust-toolchain.toml ./
 RUN cd userspace-chirho/hello-chirho && cargo +nightly build --release 2>&1
 
 # Build the kernel (cross-compiles from ARM64 to x86_64 via LLVM)
-RUN cd kernel-chirho && cargo +nightly build 2>&1
+RUN cd kernel-chirho && cargo +nightly build --release 2>&1
 
 # Create a minimal disk image builder
 RUN cat > /build-image-chirho.rs <<'RUST'
 use std::path::PathBuf;
 fn main() {
-    let kernel_chirho = PathBuf::from("/lineluya-chirho/target/x86_64-unknown-none/debug/kernel-chirho");
+    let kernel_chirho = PathBuf::from("/lineluya-chirho/target/x86_64-unknown-none/release/kernel-chirho");
     let out_chirho = PathBuf::from("/lineluya-chirho/output-chirho");
     std::fs::create_dir_all(&out_chirho).unwrap();
 
