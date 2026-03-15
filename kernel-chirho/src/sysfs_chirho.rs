@@ -249,6 +249,12 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     let class_dentry_chirho = make_dir_dentry_chirho("class", Some(Arc::clone(&root_dentry_chirho)));
     let devices_dentry_chirho = make_dir_dentry_chirho("devices", Some(Arc::clone(&root_dentry_chirho)));
     let kernel_dentry_chirho = make_dir_dentry_chirho("kernel", Some(Arc::clone(&root_dentry_chirho)));
+    // A2: /sys/module directory — lists loaded kernel modules.
+    let module_dentry_chirho = make_dir_dentry_chirho("module", Some(Arc::clone(&root_dentry_chirho)));
+    // A2: /sys/bus directory — bus subsystem.
+    let bus_dentry_chirho = make_dir_dentry_chirho("bus", Some(Arc::clone(&root_dentry_chirho)));
+    // /sys/fs directory — filesystem parameters.
+    let fs_dentry_chirho = make_dir_dentry_chirho("fs", Some(Arc::clone(&root_dentry_chirho)));
 
     // Attach children to root
     {
@@ -256,9 +262,12 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
         root_guard_chirho.children_chirho.push(class_dentry_chirho);
         root_guard_chirho.children_chirho.push(devices_dentry_chirho);
         root_guard_chirho.children_chirho.push(kernel_dentry_chirho);
+        root_guard_chirho.children_chirho.push(module_dentry_chirho);
+        root_guard_chirho.children_chirho.push(bus_dentry_chirho);
+        root_guard_chirho.children_chirho.push(fs_dentry_chirho);
     }
 
-    crate::serial_println_chirho!("[SYSFS] Mounted with /sys/class, /sys/devices, /sys/kernel");
+    crate::serial_println_chirho!("[SYSFS] Mounted with /sys/class, /sys/devices, /sys/kernel, /sys/module, /sys/bus, /sys/fs");
 
     Arc::new(Mutex::new(SuperblockChirho {
         fs_type_chirho: "sysfs",
