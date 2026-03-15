@@ -157,7 +157,7 @@
     {
       "id_chirho": "E1-005",
       "title_chirho": "ACPI power off and reboot",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
@@ -217,7 +217,7 @@
     {
       "id_chirho": "E1-015",
       "title_chirho": "dmesg ring buffer and /dev/kmsg",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
@@ -247,13 +247,13 @@
     {
       "id_chirho": "F1-005",
       "title_chirho": "cgroups v2 CPU/memory enforcement",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "F1-006",
       "title_chirho": "seccomp-BPF filter execution",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
