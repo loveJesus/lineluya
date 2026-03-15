@@ -32,7 +32,7 @@ use crate::elf_chirho::{
 };
 use crate::dynlink_chirho::{
     AT_BASE_CHIRHO, find_interp_in_phdrs_chirho, load_elf_at_base_chirho,
-    interp_load_base_chirho,
+    interp_load_base_chirho, parse_dynamic_section_chirho, apply_relative_relocs_chirho,
 };
 use crate::gdt_chirho::{USER_CS_CHIRHO, USER_DS_CHIRHO};
 use crate::mm_chirho::{
@@ -320,6 +320,63 @@ pub fn load_elf_with_interp_chirho(
     // Load the main executable
     let exe_loaded_chirho = load_elf_into_memory_chirho(elf_data_chirho)?;
 
+    // Compute the main binary's load bias (same logic as load_elf_into_memory_chirho).
+    // ET_DYN with first PT_LOAD vaddr == 0 gets PIE_LOAD_BASE_CHIRHO; otherwise 0.
+    let exe_info_chirho = elf_chirho::parse_elf_chirho(elf_data_chirho)
+        .map_err(|_err_chirho| ExecErrorChirho::ElfParseChirho("ELF re-parse failed"))?;
+    let exe_load_bias_chirho: u64 = if exe_info_chirho.e_type_chirho == ET_DYN_CHIRHO {
+        let first_vaddr_chirho = exe_info_chirho.segments_chirho.first()
+            .map(|seg_chirho| seg_chirho.vaddr_chirho)
+            .unwrap_or(0);
+        if first_vaddr_chirho == 0 { PIE_LOAD_BASE_CHIRHO } else { 0 }
+    } else {
+        0
+    };
+
+    // -----------------------------------------------------------------------
+    // Apply R_X86_64_RELATIVE relocations to the main binary (BusyBox PIE).
+    //
+    // Linux's kernel ELF loader does this BEFORE jumping to the interpreter.
+    // The main binary's GOT and internal function pointers reference vaddrs
+    // relative to load address 0; with the PIE load bias they must be patched
+    // so that musl (the interpreter) sees correct addresses when it reads the
+    // main binary's program headers and .dynamic section.
+    // -----------------------------------------------------------------------
+    if exe_load_bias_chirho != 0 {
+        serial_println_chirho!(
+            "[EXEC] Parsing .dynamic for main binary (bias={:#x})",
+            exe_load_bias_chirho
+        );
+        match parse_dynamic_section_chirho(elf_data_chirho, exe_load_bias_chirho) {
+            Ok(dyn_info_chirho) => {
+                serial_println_chirho!(
+                    "[EXEC] Main binary RELA: addr={:#x}, size={:#x}, entsize={:#x}",
+                    dyn_info_chirho.rela_addr_chirho,
+                    dyn_info_chirho.rela_size_chirho,
+                    dyn_info_chirho.relaent_size_chirho
+                );
+                unsafe {
+                    apply_relative_relocs_chirho(
+                        dyn_info_chirho.rela_addr_chirho,
+                        dyn_info_chirho.rela_size_chirho,
+                        dyn_info_chirho.relaent_size_chirho,
+                        exe_load_bias_chirho,
+                    );
+                }
+                serial_println_chirho!(
+                    "[EXEC] R_X86_64_RELATIVE relocations applied to main binary"
+                );
+            }
+            Err(err_chirho) => {
+                // Not all binaries have PT_DYNAMIC (static PIE). Log and continue.
+                serial_println_chirho!(
+                    "[EXEC] Main binary .dynamic parse skipped: {:?}",
+                    err_chirho
+                );
+            }
+        }
+    }
+
     // Check for PT_INTERP
     let interp_path_chirho = find_interp_in_phdrs_chirho(elf_data_chirho);
 
@@ -349,6 +406,48 @@ pub fn load_elf_with_interp_chirho(
                 interp_loaded_chirho.entry_point_chirho,
                 interp_base_chirho
             );
+
+            // ---------------------------------------------------------------
+            // Apply R_X86_64_RELATIVE relocations to the interpreter (musl).
+            //
+            // musl's _dlstart performs self-relocation, but only if it can
+            // find its own RELA table. If the load bias differs from what
+            // musl's embedded relocations assumed (vaddr 0 vs actual base),
+            // the kernel must pre-apply RELATIVE relocs so that musl's own
+            // GOT and data pointers are correct from the very first
+            // instruction.  This mirrors what Linux's load_elf_interp does.
+            // ---------------------------------------------------------------
+            serial_println_chirho!(
+                "[EXEC] Parsing .dynamic for interpreter (bias={:#x})",
+                interp_base_chirho
+            );
+            match parse_dynamic_section_chirho(interp_elf_chirho, interp_base_chirho) {
+                Ok(interp_dyn_info_chirho) => {
+                    serial_println_chirho!(
+                        "[EXEC] Interpreter RELA: addr={:#x}, size={:#x}, entsize={:#x}",
+                        interp_dyn_info_chirho.rela_addr_chirho,
+                        interp_dyn_info_chirho.rela_size_chirho,
+                        interp_dyn_info_chirho.relaent_size_chirho
+                    );
+                    unsafe {
+                        apply_relative_relocs_chirho(
+                            interp_dyn_info_chirho.rela_addr_chirho,
+                            interp_dyn_info_chirho.rela_size_chirho,
+                            interp_dyn_info_chirho.relaent_size_chirho,
+                            interp_base_chirho,
+                        );
+                    }
+                    serial_println_chirho!(
+                        "[EXEC] R_X86_64_RELATIVE relocations applied to interpreter"
+                    );
+                }
+                Err(err_chirho) => {
+                    serial_println_chirho!(
+                        "[EXEC] Interpreter .dynamic parse skipped: {:?}",
+                        err_chirho
+                    );
+                }
+            }
 
             return Ok(LoadedDynElfChirho {
                 exe_chirho: exe_loaded_chirho,
