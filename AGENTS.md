@@ -114,34 +114,64 @@ You can modify the following section
 
 ## Project: Lineluya — Linux Kernel Rewrite in Rust
 
-### Current State (v0.5.1)
-- 17,500+ lines of Rust across 40 kernel modules
-- BusyBox ash shell runs interactively (echo, pwd, set, type, variables)
-- Boots via UEFI in QEMU, serial console I/O
-- 495 syscall dispatch entries, 66 implementations
-- VFS: tmpfs, procfs, devtmpfs, sysfs, pipes
-- Three architecture targets: x86_64 (boots), wasm32 (compiles), edge (planned)
-- v2 PRD with 227 tasks across 3 tracks (A: bare metal, B: browser, C: edge)
+### Current State (v3.1.0 — "Clearing the Land")
+- 50,000+ lines of Rust across 75+ kernel modules
+- **Alpine Linux BusyBox v1.37.0 runs** via musl 1.2.5 dynamic linker
+- Boots via UEFI in QEMU with pixel framebuffer console (1280x800)
+- VirtIO-blk I/O port driver reads 256MB ext4 Alpine disk
+- VFS: tmpfs, procfs, devtmpfs, ext4 (read-only)
+- PIE (ET_DYN) and static (ET_EXEC) ELF loading with kernel-side relocations
+- SSE/SSE2 enabled, full IDT exception handlers
+
+### Verified Working in QEMU (x86_64)
+- BusyBox shell: echo, date, ls, cat, mkdir, hostname, id, pwd, uname
+- Alpine BusyBox: ls /mnt/bin (70+ commands), uname -a, cat /mnt/etc/hostname, id
+- VirtIO-blk: sector read/write, ext4 superblock/inode/extent parsing
+- Framebuffer: boot messages rendered as pixels on UEFI display
+- musl 1.2.5: TLS setup, self-relocation, dynamic symbol resolution
+
+### Code Written But Not Tested End-to-End
+- VirtIO-net: TCP/IP stack, DHCP, DNS, socket syscalls (code exists, net probe crashes)
+- WASM kernel: compiles to 10KB, built-in demo shell (NOT real BusyBox)
+- CF Worker: R2/KV/D1/DO endpoints (code written, not deployed)
+- Namespaces/cgroups/seccomp: structs exist, not enforced in fork/exec
+- ACPI/PCI/AHCI: parsers work, drivers are stubs
+- SMP: structs exist, single-core only
 
 ### Key Architecture
-- kernel-chirho/ — x86_64 bare metal kernel (40 modules)
+- kernel-chirho/ — x86_64 bare metal kernel (75+ modules)
 - kernel-core-chirho/ — shared arch-independent code
-- kernel-wasm-chirho/ — wasm32 browser target
-- web-chirho/ — JS runtime, xterm.js terminal, CF Worker proxy
-- userspace-chirho/ — hello-chirho test binary, busybox static binary
-- spec-chirho/ — PRD, vision, deployment architecture, progress tracking
+- kernel-wasm-chirho/ — wasm32 browser target (demo shell, not real Linux)
+- web-chirho/ — JS runtime, xterm.js, CF Worker (untested)
+- userspace-chirho/ — embedded static BusyBox binary
+- spec-chirho/ — PRDs, progress tracking, Alpine boot docs
 
-### Build Commands
-- `make fast-kernel-chirho` — incremental kernel build (<2s)
-- `make fast-chirho` — kernel + disk images (~1s cached)
-- `make docker-chirho` — full Docker rebuild (~67s)
-- `make wasm-chirho` — build WASM kernel
-- `make serve-chirho` — serve WASM kernel in browser
+### Build & Run
+```bash
+# Build kernel
+cd kernel-chirho && cargo +nightly build --release
+
+# Build bootable disk image
+docker build -f Dockerfile.build-chirho -t lineluya-builder-chirho .
+docker cp $(docker create lineluya-builder-chirho):/lineluya-chirho/output-chirho/ target/disk-images-chirho/
+
+# Create Alpine rootfs disk
+bash scripts-chirho/make-alpine-disk-chirho.sh
+
+# Run in QEMU with Alpine disk
+qemu-system-x86_64 \
+  -drive if=pflash,format=raw,readonly=on,file=/path/to/edk2-x86_64-code.fd \
+  -drive format=raw,file=target/disk-images-chirho/lineluya-uefi-chirho.img \
+  -drive file=target/alpine-virtio-chirho/alpine-virtio-chirho.img,format=raw,if=virtio \
+  -serial mon:stdio -m 512M -display default
+```
 
 ### Known Issues
-- Long BusyBox commands (>7 char args) crash — kernel page fault during read() syscall
-- UEFI keyboard needs USB HID (QEMU UEFI uses USB, not PS/2)
-- fork/exec works (vfork-style) but needs per-process page tables for full support
+- Fork uses vfork semantics (shell re-execs after each command)
+- VirtIO-net I/O port transport not implemented (net probe crashes in UEFI)
+- No real multi-process scheduling (single-threaded kernel)
+- ext4 is read-only (no write support)
+- No PTY subsystem yet (needed for SSH/XTerm)
 
 ### Tags
-v0.1.0 Genesis, v0.2.0 Breath of Life, v0.3.0 Firmament, v0.4.0 All Phases, v0.5.0 Dry Land (BusyBox), v0.5.1 Interactive Shell
+v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath (v1 PRD 100%), v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs
