@@ -293,13 +293,23 @@ impl FileOpsChirho for DevConsoleOpsChirho {
                 x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
             };
             if serial_status_chirho & 0x01 != 0 {
-                let byte_chirho: u8 = unsafe {
-                    x86_64::instructions::port::Port::<u8>::new(0x3F8).read()
-                };
-                // Convert \r to \n and return this byte directly to the caller.
-                let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
-                buf_chirho[0] = ch_chirho;
-                return Ok(1);
+                // Read ALL available serial bytes into the caller's buffer
+                let mut count_chirho = 0usize;
+                while count_chirho < buf_chirho.len() {
+                    let st_chirho: u8 = unsafe {
+                        x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+                    };
+                    if st_chirho & 0x01 == 0 { break; } // no more data
+                    let byte_chirho: u8 = unsafe {
+                        x86_64::instructions::port::Port::<u8>::new(0x3F8).read()
+                    };
+                    let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
+                    buf_chirho[count_chirho] = ch_chirho;
+                    count_chirho += 1;
+                }
+                if count_chirho > 0 {
+                    return Ok(count_chirho);
+                }
             }
 
             // Also poll PS/2 keyboard port
