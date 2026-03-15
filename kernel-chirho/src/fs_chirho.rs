@@ -757,6 +757,53 @@ pub fn sys_openat_chirho(
         raw_pathname_chirho
     };
 
+    // Special case: /dev/pts/N -- PTY slave devices are created dynamically
+    // and don't exist in the VFS tree.  We detect this pattern and create
+    // the slave file directly.
+    if pathname_chirho.starts_with("/dev/pts/") {
+        let num_str_chirho = &pathname_chirho["/dev/pts/".len()..];
+        if let Ok(pty_nr_chirho) = num_str_chirho.parse::<u32>() {
+            if let Some(pair_chirho) = crate::pty_chirho::get_pty_chirho(pty_nr_chirho) {
+                if !pair_chirho.slave_unlocked_chirho.load(core::sync::atomic::Ordering::SeqCst) {
+                    return -crate::syscall_chirho::EACCES_CHIRHO;
+                }
+                let slave_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+                    ino_chirho: pty_nr_chirho as u64,
+                    mode_chirho: S_IFCHR_CHIRHO | 0o666,
+                    uid_chirho: 0,
+                    gid_chirho: 0,
+                    size_chirho: 0,
+                    nlink_chirho: 1,
+                    atime_chirho: 0,
+                    mtime_chirho: 0,
+                    ctime_chirho: 0,
+                    ops_chirho: &crate::tmpfs_chirho::TMPFS_INODE_OPS_CHIRHO,
+                    fs_data_chirho: None,
+                }));
+                let file_chirho = Arc::new(Mutex::new(FileChirho {
+                    inode_chirho: slave_inode_chirho,
+                    pos_chirho: 0,
+                    flags_chirho,
+                    ops_chirho: &crate::pty_chirho::PTY_SLAVE_OPS_CHIRHO,
+                }));
+                let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+                let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+                    Some(t_chirho) => t_chirho,
+                    None => return -EBADF_CHIRHO,
+                };
+                let fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
+                    Ok(fd_chirho) => fd_chirho,
+                    Err(errno_chirho) => return errno_chirho,
+                };
+                fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+                pair_chirho.slave_open_chirho.store(true, core::sync::atomic::Ordering::SeqCst);
+                return fd_chirho as i64;
+            } else {
+                return -crate::syscall_chirho::ENOENT_CHIRHO;
+            }
+        }
+    }
+
     // Resolve the path
     let (inode_chirho, file_ops_chirho) = match resolve_path_chirho(&pathname_chirho) {
         Ok(result_chirho) => result_chirho,
@@ -771,12 +818,57 @@ pub fn sys_openat_chirho(
         }
     }
 
+    // Special handling for /dev/ptmx: allocate a new PTY pair.
+    // The PTY master ops use the inode's ino_chirho field to identify
+    // which PTY pair they belong to.
+    let (final_inode_chirho, final_ops_chirho) = {
+        let is_ptmx_chirho = {
+            let ig_chirho = inode_chirho.lock();
+            if let Some(ref data_chirho) = ig_chirho.fs_data_chirho {
+                if let Some(dev_data_chirho) = data_chirho.downcast_ref::<DevNodeDataChirho>() {
+                    dev_data_chirho.major_chirho == 5 && dev_data_chirho.minor_chirho == 2
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        if is_ptmx_chirho {
+            // Allocate a new PTY pair
+            match crate::pty_chirho::PtmxFileOpsChirho::open_ptmx_chirho() {
+                Ok((pair_chirho, master_ops_chirho)) => {
+                    // Create a fresh inode with ino = pty_nr so the master
+                    // ops can find the pair.
+                    let pty_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+                        ino_chirho: pair_chirho.pty_nr_chirho as u64,
+                        mode_chirho: S_IFCHR_CHIRHO | 0o666,
+                        uid_chirho: 0,
+                        gid_chirho: 0,
+                        size_chirho: 0,
+                        nlink_chirho: 1,
+                        atime_chirho: 0,
+                        mtime_chirho: 0,
+                        ctime_chirho: 0,
+                        ops_chirho: &crate::tmpfs_chirho::TMPFS_INODE_OPS_CHIRHO,
+                        fs_data_chirho: None,
+                    }));
+                    (pty_inode_chirho, master_ops_chirho)
+                }
+                Err(errno_chirho) => return errno_chirho,
+            }
+        } else {
+            (inode_chirho, file_ops_chirho)
+        }
+    };
+
     // Create the FileChirho
     let file_chirho = Arc::new(Mutex::new(FileChirho {
-        inode_chirho: inode_chirho,
+        inode_chirho: final_inode_chirho,
         pos_chirho: 0,
         flags_chirho,
-        ops_chirho: file_ops_chirho,
+        ops_chirho: final_ops_chirho,
     }));
 
     // Allocate an fd
