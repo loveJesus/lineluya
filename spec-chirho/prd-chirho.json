@@ -532,7 +532,7 @@
       "depends_on_chirho": [
         "A2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "C module calling printk produces kernel log output"
@@ -548,7 +548,7 @@
       "depends_on_chirho": [
         "A2-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Module allocates and frees kernel memory via kmalloc/kfree"
@@ -3300,7 +3300,7 @@
       "depends_on_chirho": [
         "B1-009"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Workers spawn on kernel boot",
@@ -3318,7 +3318,7 @@
       "depends_on_chirho": [
         "B5-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "SAB allocated and shared across Workers",
@@ -3336,7 +3336,7 @@
       "depends_on_chirho": [
         "B5-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "futex_wait blocks Worker thread",
@@ -3355,7 +3355,7 @@
         "B5-001",
         "B5-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Processes distributed across Workers",
@@ -3373,7 +3373,7 @@
       "depends_on_chirho": [
         "B5-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Mutex provides exclusive access",
@@ -3391,7 +3391,7 @@
       "depends_on_chirho": [
         "B5-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Long-running process yields periodically",
@@ -3428,7 +3428,7 @@
         "B5-001",
         "B5-002"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Messages delivered reliably",
@@ -3485,7 +3485,7 @@
         "B4-005",
         "B4-016"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Taskbar renders at bottom",
@@ -3503,7 +3503,7 @@
       "depends_on_chirho": [
         "B6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Menu opens on click/key",
@@ -3632,7 +3632,7 @@
       "depends_on_chirho": [
         "B6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "low",
       "acceptance_criteria_chirho": [
         "Wallpaper displays behind windows",
@@ -3651,7 +3651,7 @@
         "B6-001",
         "B6-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Right-click shows context menu",
@@ -3726,7 +3726,7 @@
         "B4-007",
         "B6-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Alt+F4 closes active window",
