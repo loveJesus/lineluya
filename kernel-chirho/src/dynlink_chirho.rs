@@ -582,6 +582,31 @@ pub fn load_elf_at_base_chirho(
                         data_chirho.len(),
                     );
                 }
+                // Verify: check bytes at offset 0x38bc0 in the code segment
+                if seg_chirho.offset_chirho <= 0x38bc0 && seg_chirho.offset_chirho + seg_chirho.filesz_chirho > 0x38bc0 {
+                    let check_off_chirho = (0x38bc0 - seg_chirho.offset_chirho) as usize;
+                    if check_off_chirho + 8 <= data_chirho.len() {
+                        serial_println_chirho!(
+                            "[DYNLINK]   VERIFY file[0x38bc0]: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                            data_chirho[check_off_chirho], data_chirho[check_off_chirho+1],
+                            data_chirho[check_off_chirho+2], data_chirho[check_off_chirho+3],
+                            data_chirho[check_off_chirho+4], data_chirho[check_off_chirho+5],
+                            data_chirho[check_off_chirho+6], data_chirho[check_off_chirho+7]
+                        );
+                        // Also verify what ended up in memory
+                        let mem_ptr_chirho = (biased_vaddr_chirho + check_off_chirho as u64) as *const u8;
+                        let (m0, m1, m2, m3) = unsafe { (
+                            core::ptr::read_volatile(mem_ptr_chirho),
+                            core::ptr::read_volatile(mem_ptr_chirho.add(1)),
+                            core::ptr::read_volatile(mem_ptr_chirho.add(2)),
+                            core::ptr::read_volatile(mem_ptr_chirho.add(3)),
+                        ) };
+                        serial_println_chirho!(
+                            "[DYNLINK]   VERIFY mem[{:#x}]: {:02x} {:02x} {:02x} {:02x}",
+                            biased_vaddr_chirho + check_off_chirho as u64, m0, m1, m2, m3
+                        );
+                    }
+                }
             }
         }
 

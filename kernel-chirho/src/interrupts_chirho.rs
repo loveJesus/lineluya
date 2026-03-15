@@ -545,14 +545,28 @@ extern "x86-interrupt" fn segment_not_present_handler_chirho(
     }
 }
 
-/// Invalid Opcode (#UD) handler. musl may use instructions not emulated by QEMU/HVF.
+/// Invalid Opcode (#UD) handler. Dumps the faulting instruction bytes.
 extern "x86-interrupt" fn invalid_opcode_handler_chirho(
     stack_frame_chirho: InterruptStackFrame,
 ) {
+    let rip_chirho = stack_frame_chirho.instruction_pointer.as_u64();
+    // Dump 16 bytes at the faulting RIP to see what instruction caused #UD
+    let mut bytes_chirho = [0u8; 16];
+    for i_chirho in 0..16usize {
+        bytes_chirho[i_chirho] = unsafe {
+            core::ptr::read_volatile((rip_chirho + i_chirho as u64) as *const u8)
+        };
+    }
     crate::serial_println_chirho!(
-        "[EXCEPTION] INVALID OPCODE (#UD) at {:#x}\n{:#?}",
-        stack_frame_chirho.instruction_pointer.as_u64(),
-        stack_frame_chirho
+        "[EXCEPTION] INVALID OPCODE (#UD) at {:#x}",
+        rip_chirho
+    );
+    crate::serial_println_chirho!(
+        "  bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+        bytes_chirho[0], bytes_chirho[1], bytes_chirho[2], bytes_chirho[3],
+        bytes_chirho[4], bytes_chirho[5], bytes_chirho[6], bytes_chirho[7],
+        bytes_chirho[8], bytes_chirho[9], bytes_chirho[10], bytes_chirho[11],
+        bytes_chirho[12], bytes_chirho[13], bytes_chirho[14], bytes_chirho[15]
     );
     loop { x86_64::instructions::hlt(); }
 }
