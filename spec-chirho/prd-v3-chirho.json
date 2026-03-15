@@ -7,7 +7,7 @@
     {
       "id_chirho": "P1-001",
       "title_chirho": "Fix cat /proc/version (generator returns empty)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
@@ -25,7 +25,7 @@
     {
       "id_chirho": "P1-004",
       "title_chirho": "Fix mkdir (verify creates dirs in tmpfs)",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
@@ -73,7 +73,7 @@
     {
       "id_chirho": "P2-005",
       "title_chirho": "Create Alpine rootfs ext4 disk image",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
