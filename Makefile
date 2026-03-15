@@ -88,3 +88,26 @@ serve-chirho: wasm-chirho
 clean-wasm-chirho:
 	cd kernel-wasm-chirho && cargo clean
 	rm -f $(WASM_DEST_CHIRHO)
+
+# ---------------------------------------------------------------------------
+# Fast build targets (skip full Docker rebuild)
+# ---------------------------------------------------------------------------
+
+# Fast incremental build + disk images (uses cached Docker for image creation)
+fast-chirho:
+	./scripts-chirho/fast-build-chirho.sh
+
+# Just rebuild the kernel (no disk images, <2s)
+fast-kernel-chirho:
+	cd kernel-chirho && cargo +nightly build --release
+
+# Fast UEFI test (build + run)
+fast-test-chirho: fast-chirho
+	timeout 15 qemu-system-x86_64 \
+		-drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+		-drive format=raw,file=target/disk-images-chirho/lineluya-uefi-chirho.img \
+		-serial stdio -display none -m 512M -no-reboot
+
+# Docker full rebuild (only needed when Cargo.toml or Dockerfile changes)
+docker-chirho:
+	docker build --platform linux/arm64 -t lineluya-builder-chirho -f Dockerfile.build-chirho .

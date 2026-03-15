@@ -1,62 +1,56 @@
 # For God so loved the world that he gave his only begotten Son,
 # that whoever believes in him should not perish but have eternal life. - John 3:16
 
-# Build bootable disk images using native ARM64 Linux with cross-compilation.
-# Uses Rust's built-in LLVM cross-compilation — no emulation needed.
+# === Stage 1: Toolchain + bootloader tool (CACHED — rarely changes) ===
+FROM rust:latest AS toolchain-chirho
 
-FROM rust:latest
-
-# Install nightly and cross-compilation components
 RUN rustup default nightly \
     && rustup component add rust-src llvm-tools-preview \
     && rustup target add x86_64-unknown-none
 
+# Pre-build the bootloader disk image tool (this takes ~30s and never changes)
+RUN mkdir -p /image-builder-chirho/src \
+    && printf '[package]\nname = "image-builder-chirho"\nversion = "0.1.0"\nedition = "2021"\n\n[[bin]]\nname = "image-builder-chirho"\npath = "src/main.rs"\n\n[dependencies]\nbootloader = "0.11"\n' > /image-builder-chirho/Cargo.toml \
+    && printf 'use std::path::PathBuf;\nfn main() {\n    let k = PathBuf::from(std::env::args().nth(1).expect("usage: image-builder <kernel>"));\n    let out = PathBuf::from("output-chirho");\n    std::fs::create_dir_all(&out).unwrap();\n    println!("BIOS...");\n    match bootloader::BiosBoot::new(&k).create_disk_image(&out.join("lineluya-bios-chirho.img")) {\n        Ok(()) => println!("BIOS OK"),\n        Err(e) => eprintln!("BIOS failed: {:?}", e),\n    }\n    println!("UEFI...");\n    match bootloader::UefiBoot::new(&k).create_disk_image(&out.join("lineluya-uefi-chirho.img")) {\n        Ok(()) => println!("UEFI OK"),\n        Err(e) => eprintln!("UEFI failed: {:?}", e),\n    }\n}\n' > /image-builder-chirho/src/main.rs \
+    && cd /image-builder-chirho && cargo build --release 2>&1 | tail -3
+
+# === Stage 2: Dependencies (CACHED — changes only when Cargo.toml changes) ===
+FROM toolchain-chirho AS deps-chirho
+
 WORKDIR /lineluya-chirho
 
-# Copy workspace files
-COPY Cargo.toml Cargo.lock ./
-COPY kernel-chirho/ kernel-chirho/
-COPY kernel-core-chirho/ kernel-core-chirho/
-COPY xtask-chirho/ xtask-chirho/
-COPY userspace-chirho/ userspace-chirho/
-COPY rust-toolchain.toml ./
+# Copy ONLY dependency manifests first (cache layer)
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY kernel-chirho/Cargo.toml kernel-chirho/Cargo.toml
+COPY kernel-chirho/.cargo kernel-chirho/.cargo
+COPY kernel-core-chirho/Cargo.toml kernel-core-chirho/Cargo.toml
+COPY xtask-chirho/Cargo.toml xtask-chirho/
 
-# Build the hello world userspace binary first (kernel embeds it via include_bytes!)
-RUN cd userspace-chirho/hello-chirho && cargo +nightly build --release 2>&1
+# Create stub source files so cargo can resolve deps
+RUN mkdir -p kernel-chirho/src kernel-core-chirho/src xtask-chirho/src \
+    && echo '#![no_std]\n#![no_main]\n#[panic_handler]\nfn p(_:&core::panic::PanicInfo)->!{loop{}}' > kernel-chirho/src/main_chirho.rs \
+    && echo '#![no_std]\nextern crate alloc;' > kernel-core-chirho/src/lib.rs \
+    && echo 'fn main(){}' > xtask-chirho/src/main_chirho.rs
 
-# Build the kernel (cross-compiles from ARM64 to x86_64 via LLVM)
-RUN cd kernel-chirho && cargo +nightly build --release 2>&1
+# Build dependencies only (this layer is cached until Cargo.toml changes)
+RUN cd kernel-chirho && cargo +nightly build --release 2>&1 | tail -3 || true
 
-# Create a minimal disk image builder
-RUN cat > /build-image-chirho.rs <<'RUST'
-use std::path::PathBuf;
-fn main() {
-    let kernel_chirho = PathBuf::from("/lineluya-chirho/target/x86_64-unknown-none/release/kernel-chirho");
-    let out_chirho = PathBuf::from("/lineluya-chirho/output-chirho");
-    std::fs::create_dir_all(&out_chirho).unwrap();
+# === Stage 3: Build kernel (only this layer rebuilds on code changes) ===
+FROM deps-chirho AS build-chirho
 
-    let bios_chirho = out_chirho.join("lineluya-bios-chirho.img");
-    let uefi_chirho = out_chirho.join("lineluya-uefi-chirho.img");
+# Copy actual source code (invalidates this layer on code changes)
+COPY kernel-chirho/src kernel-chirho/src
+COPY kernel-core-chirho/src kernel-core-chirho/src
+COPY userspace-chirho userspace-chirho
 
-    println!("Creating BIOS disk image...");
-    match bootloader::BiosBoot::new(&kernel_chirho).create_disk_image(&bios_chirho) {
-        Ok(()) => println!("BIOS image created: {}", bios_chirho.display()),
-        Err(e) => eprintln!("BIOS image failed (non-fatal): {:?}", e),
-    }
+# Build hello-chirho userspace binary
+RUN cd userspace-chirho/hello-chirho && cargo +nightly build --release 2>&1 | tail -3
 
-    println!("Creating UEFI disk image...");
-    match bootloader::UefiBoot::new(&kernel_chirho).create_disk_image(&uefi_chirho) {
-        Ok(()) => println!("UEFI image created: {}", uefi_chirho.display()),
-        Err(e) => eprintln!("UEFI image failed: {:?}", e),
-    }
-}
-RUST
+# Build the kernel
+RUN cd kernel-chirho && cargo +nightly build --release 2>&1 | tail -3
 
-# Create a temp Cargo project for the image builder
-RUN mkdir -p /image-builder-chirho/src \
-    && echo '[package]\nname = "image-builder-chirho"\nversion = "0.1.0"\nedition = "2021"\n\n[[bin]]\nname = "image-builder-chirho"\npath = "src/main.rs"\n\n[dependencies]\nbootloader = "0.11"' > /image-builder-chirho/Cargo.toml \
-    && cp /build-image-chirho.rs /image-builder-chirho/src/main.rs \
-    && cd /image-builder-chirho && cargo build --release 2>&1 && cargo run --release 2>&1
+# Create disk images using the pre-built tool from stage 1
+RUN /image-builder-chirho/target/release/image-builder-chirho \
+    /lineluya-chirho/target/x86_64-unknown-none/release/kernel-chirho
 
-# Copy output images
-CMD ["ls", "-la", "/lineluya-chirho/output-chirho/"]
+CMD ["ls", "-la", "output-chirho/"]
