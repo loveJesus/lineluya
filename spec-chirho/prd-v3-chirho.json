@@ -1,0 +1,137 @@
+{
+  "header_chirho": "John 3:16",
+  "version_chirho": "3.0",
+  "codename_chirho": "Promised Land",
+  "implementation_tasks_chirho": [
+    {
+      "id_chirho": "P1-001",
+      "title_chirho": "Fix ls command hang (openat/fstat/getdents64 VFS path)",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P1-002",
+      "title_chirho": "Fix cat command for /proc files",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P1-003",
+      "title_chirho": "Fix mkdir/rmdir/touch commands",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P1-004",
+      "title_chirho": "Fix cd command (chdir syscall)",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P1-005",
+      "title_chirho": "Fix pipe operator (cmd1 | cmd2)",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P2-001",
+      "title_chirho": "VirtIO-blk QEMU disk read/write working",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P2-002",
+      "title_chirho": "ext4 mount real disk partition in QEMU",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P2-003",
+      "title_chirho": "Alpine rootfs disk image creation",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P2-004",
+      "title_chirho": "Mount Alpine rootfs as / at boot",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P3-001",
+      "title_chirho": "VirtIO-net QEMU NIC driver working",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P3-002",
+      "title_chirho": "DHCP client for IP assignment",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P3-003",
+      "title_chirho": "DNS resolution working",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P3-004",
+      "title_chirho": "TCP connect/send/recv working (wget test)",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P3-005",
+      "title_chirho": "ping localhost and gateway working",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P4-001",
+      "title_chirho": "musl dynamic linker (ld-musl) loads and runs",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P4-002",
+      "title_chirho": "apk package manager runs",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P4-003",
+      "title_chirho": "apk add sqlite3 and run sqlite3",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P4-004",
+      "title_chirho": "apk add gcc and compile hello.c",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P4-005",
+      "title_chirho": "SSH server (dropbear) runs, connect from host",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P4-006",
+      "title_chirho": "Python interpreter runs",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P4-007",
+      "title_chirho": "Rust toolchain runs (cargo build hello)",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P5-001",
+      "title_chirho": "X11 server (Xvfb or Xorg fbdev) runs",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P5-002",
+      "title_chirho": "XTerm launches in X11",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P5-003",
+      "title_chirho": "Framebuffer renders X11 display in QEMU window",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P5-004",
+      "title_chirho": "Mouse and keyboard input to X11 apps",
+      "status_chirho": "todo"
+    },
+    {
+      "id_chirho": "P5-005",
+      "title_chirho": "Basic window manager (twm/openbox) runs",
+      "status_chirho": "todo"
+    }
+  ]
+}
