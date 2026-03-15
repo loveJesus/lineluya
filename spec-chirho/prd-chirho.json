@@ -1059,7 +1059,7 @@
       "depends_on_chirho": [
         "A3-010"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "AF_UNIX stream connect/accept works",
@@ -1319,7 +1319,7 @@
         "A4-009",
         "A4-011"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "echo hello > file creates file on ext4",
@@ -1336,7 +1336,7 @@
       "depends_on_chirho": [
         "A4-012"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Metadata journaled before commit",
@@ -1592,7 +1592,7 @@
       "title_chirho": "VGA text console driver",
       "description_chirho": "Direct VGA text mode output for pre-framebuffer console.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Text visible on real VGA monitor",
@@ -1626,7 +1626,7 @@
       "depends_on_chirho": [
         "A5-014"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "USB keyboard input works",
@@ -1643,7 +1643,7 @@
       "depends_on_chirho": [
         "A5-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "reboot command reboots machine",
@@ -1677,7 +1677,7 @@
       "depends_on_chirho": [
         "A5-013"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Boot messages visible on screen and serial"
@@ -1994,7 +1994,7 @@
       "title_chirho": "Kernel tracing (ftrace/kprobes)",
       "description_chirho": "Implement ftrace function tracing and kprobes for debugging.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "ftrace traces function calls",
@@ -2564,7 +2564,7 @@
       "depends_on_chirho": [
         "B2-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "Key exchange completes on WS open",
@@ -2582,7 +2582,7 @@
       "depends_on_chirho": [
         "B2-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "UDP socket() creates datagram socket",
@@ -2858,7 +2858,7 @@
         "B3-002",
         "B1-008"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "/home mounted from OPFS",
@@ -2894,7 +2894,7 @@
       "depends_on_chirho": [
         "B3-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "medium",
       "acceptance_criteria_chirho": [
         "Tunnel established via cloudflared",
