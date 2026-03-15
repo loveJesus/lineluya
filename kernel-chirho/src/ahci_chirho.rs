@@ -537,7 +537,7 @@ pub unsafe fn probe_ports_chirho(hba_chirho: &HbaMemChirho) {
         if pi_chirho & (1 << i_chirho) == 0 {
             continue;
         }
-        let port_chirho = unsafe { &hba_chirho.ports_chirho[i_chirho as usize] };
+        let port_chirho = &hba_chirho.ports_chirho[i_chirho as usize];
         if unsafe { port_has_device_chirho(port_chirho) } {
             let dev_type_chirho = unsafe { port_device_type_chirho(port_chirho) };
             let sig_chirho = unsafe { ptr::read_volatile(&port_chirho.sig_chirho) };

@@ -285,6 +285,25 @@ pub struct KoModuleChirho {
     pub module_mem_base_chirho: u64,
     /// Total size of the allocated module memory region.
     pub module_mem_size_chirho: usize,
+    /// A2-016: Reference count — incremented when other modules depend on us.
+    pub refcount_chirho: u32,
+    /// A2-016: Names of modules that this module depends on (imported symbols from).
+    pub depends_on_chirho: Vec<String>,
+    /// A2-017: Module parameters parsed from insmod command line.
+    pub params_chirho: Vec<ModuleParamChirho>,
+}
+
+// ---------------------------------------------------------------------------
+// A2-017: Module parameter (parsed from "key=value" pairs on insmod cmdline)
+// ---------------------------------------------------------------------------
+
+/// A parsed module parameter (key=value from insmod command line).
+#[derive(Debug, Clone)]
+pub struct ModuleParamChirho {
+    /// Parameter name.
+    pub key_chirho: String,
+    /// Parameter value (string representation).
+    pub value_chirho: String,
 }
 
 /// Metadata for a single section inside the .ko.
@@ -813,6 +832,189 @@ pub extern "C" fn unregister_chrdev_stub_chirho(_major_chirho: u32, _name_ptr_ch
     crate::serial_println_chirho!("[KO] unregister_chrdev stub called");
 }
 
+// ===========================================================================
+// A2-011: C ABI shim — copy_to_user / copy_from_user
+// ===========================================================================
+
+/// `copy_to_user(to, from, n)` — C-callable wrapper over
+/// [`crate::uaccess_chirho::copy_to_user_chirho`].
+///
+/// Returns the number of bytes that could **not** be copied (0 on success,
+/// `n` on failure), matching the Linux kernel convention.
+#[allow(dead_code)]
+pub unsafe extern "C" fn copy_to_user_stub_chirho(
+    to_chirho: u64,
+    from_chirho: *const u8,
+    n_chirho: usize,
+) -> usize {
+    if from_chirho.is_null() || n_chirho == 0 {
+        return n_chirho;
+    }
+    let src_slice_chirho = unsafe { core::slice::from_raw_parts(from_chirho, n_chirho) };
+    match uaccess_chirho::copy_to_user_chirho(to_chirho, src_slice_chirho, n_chirho) {
+        Ok(()) => 0,
+        Err(_) => n_chirho,
+    }
+}
+
+/// `copy_from_user(to, from, n)` — C-callable wrapper over
+/// [`crate::uaccess_chirho::copy_from_user_chirho`].
+///
+/// Returns the number of bytes that could **not** be copied (0 on success).
+#[allow(dead_code)]
+pub unsafe extern "C" fn copy_from_user_stub_chirho(
+    to_chirho: *mut u8,
+    from_chirho: u64,
+    n_chirho: usize,
+) -> usize {
+    if to_chirho.is_null() || n_chirho == 0 {
+        return n_chirho;
+    }
+    let dst_slice_chirho = unsafe { core::slice::from_raw_parts_mut(to_chirho, n_chirho) };
+    match uaccess_chirho::copy_from_user_chirho(dst_slice_chirho, from_chirho, n_chirho) {
+        Ok(()) => 0,
+        Err(_) => n_chirho,
+    }
+}
+
+/// `put_user(x, ptr)` emulation — write a u64 to user space.
+/// Returns 0 on success, -EFAULT on failure.
+#[allow(dead_code)]
+pub unsafe extern "C" fn put_user_stub_chirho(
+    val_chirho: u64,
+    user_ptr_chirho: u64,
+) -> i64 {
+    match uaccess_chirho::write_user_u64_chirho(user_ptr_chirho, val_chirho) {
+        Ok(()) => 0,
+        Err(_) => -14, // EFAULT
+    }
+}
+
+/// `get_user(ptr)` emulation — read a u64 from user space.
+/// Returns the value on success, 0 on failure (Linux convention is via pointer).
+#[allow(dead_code)]
+pub unsafe extern "C" fn get_user_stub_chirho(
+    user_ptr_chirho: u64,
+) -> u64 {
+    match uaccess_chirho::read_user_u64_chirho(user_ptr_chirho) {
+        Ok(val_chirho) => val_chirho,
+        Err(_) => 0,
+    }
+}
+
+// ===========================================================================
+// A2-016: Module dependency tracking helpers
+// ===========================================================================
+
+/// Check whether a module can be safely unloaded (no dependents).
+/// Returns `true` if the module's refcount is 0.
+#[allow(dead_code)]
+pub fn can_unload_module_chirho(name_chirho: &str) -> bool {
+    let loaded_chirho = LOADED_MODULES_CHIRHO.lock();
+    for module_chirho in loaded_chirho.iter() {
+        if module_chirho.name_chirho == name_chirho {
+            return module_chirho.refcount_chirho == 0;
+        }
+    }
+    true // not found => no dependents
+}
+
+/// Increment refcount of a module by name (called when another module depends on it).
+#[allow(dead_code)]
+pub fn inc_module_refcount_chirho(name_chirho: &str) {
+    let mut loaded_chirho = LOADED_MODULES_CHIRHO.lock();
+    for module_chirho in loaded_chirho.iter_mut() {
+        if module_chirho.name_chirho == name_chirho {
+            module_chirho.refcount_chirho += 1;
+            return;
+        }
+    }
+}
+
+/// Decrement refcount of a module by name (called when a dependent is unloaded).
+#[allow(dead_code)]
+pub fn dec_module_refcount_chirho(name_chirho: &str) {
+    let mut loaded_chirho = LOADED_MODULES_CHIRHO.lock();
+    for module_chirho in loaded_chirho.iter_mut() {
+        if module_chirho.name_chirho == name_chirho {
+            if module_chirho.refcount_chirho > 0 {
+                module_chirho.refcount_chirho -= 1;
+            }
+            return;
+        }
+    }
+}
+
+// ===========================================================================
+// A2-017: Module parameter parsing
+// ===========================================================================
+
+/// Parse module parameters from a "key1=val1 key2=val2" string.
+///
+/// Parameters are space-separated `key=value` pairs. Values may be quoted
+/// (future extension). Returns a vector of [`ModuleParamChirho`].
+#[allow(dead_code)]
+pub fn parse_module_params_chirho(params_str_chirho: &str) -> Vec<ModuleParamChirho> {
+    let mut result_chirho = Vec::new();
+    for token_chirho in params_str_chirho.split_whitespace() {
+        if let Some(eq_pos_chirho) = token_chirho.find('=') {
+            let key_chirho = &token_chirho[..eq_pos_chirho];
+            let value_chirho = &token_chirho[eq_pos_chirho + 1..];
+            if !key_chirho.is_empty() {
+                result_chirho.push(ModuleParamChirho {
+                    key_chirho: String::from(key_chirho),
+                    value_chirho: String::from(value_chirho),
+                });
+            }
+        }
+    }
+    result_chirho
+}
+
+// ===========================================================================
+// A2-015: /proc/modules content generator
+// ===========================================================================
+
+/// Generate the content for `/proc/modules`.
+///
+/// Format matches Linux: `name size refcount [dep1,dep2,] state address`
+#[allow(dead_code)]
+pub fn gen_proc_modules_chirho() -> String {
+    use core::fmt::Write;
+    let loaded_chirho = LOADED_MODULES_CHIRHO.lock();
+    let mut output_chirho = String::new();
+    for module_chirho in loaded_chirho.iter() {
+        let state_str_chirho = match module_chirho.state_chirho {
+            ModuleStateChirho::LoadedChirho => "Live",
+            ModuleStateChirho::UnloadedChirho => "Unloaded",
+        };
+        let deps_str_chirho = if module_chirho.depends_on_chirho.is_empty() {
+            String::from("-")
+        } else {
+            let mut d_chirho = String::new();
+            for (i_chirho, dep_chirho) in module_chirho.depends_on_chirho.iter().enumerate() {
+                if i_chirho > 0 {
+                    d_chirho.push(',');
+                }
+                d_chirho.push_str(dep_chirho);
+            }
+            d_chirho.push(',');
+            d_chirho
+        };
+        let _ = write!(
+            output_chirho,
+            "{} {} {} {} {} {:#x}\n",
+            module_chirho.name_chirho,
+            module_chirho.module_mem_size_chirho,
+            module_chirho.refcount_chirho,
+            deps_str_chirho,
+            state_str_chirho,
+            module_chirho.module_mem_base_chirho,
+        );
+    }
+    output_chirho
+}
+
 /// Static table of built-in kernel symbol addresses.
 ///
 /// Entries with `addr_chirho == 0` will be resolved lazily through the dynamic
@@ -971,6 +1173,32 @@ pub fn init_kernel_symbols_chirho() {
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("__unregister_chrdev"),
         unregister_chrdev_stub_chirho as *const () as u64,
+    );
+
+    // A2-011: copy_to_user / copy_from_user family
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("_copy_to_user"),
+        copy_to_user_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("copy_to_user"),
+        copy_to_user_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("_copy_from_user"),
+        copy_from_user_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("copy_from_user"),
+        copy_from_user_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("put_user"),
+        put_user_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("get_user"),
+        get_user_stub_chirho as *const () as u64,
     );
 
     crate::serial_println_chirho!(
@@ -1609,6 +1837,9 @@ pub fn parse_ko_elf_chirho(data_chirho: &[u8]) -> Result<KoModuleChirho, KoError
         sections_chirho: sections_info_chirho,
         module_mem_base_chirho: 0,
         module_mem_size_chirho: 0,
+        refcount_chirho: 0,
+        depends_on_chirho: Vec::new(),
+        params_chirho: Vec::new(),
     })
 }
 
@@ -1771,6 +2002,9 @@ fn load_and_init_module_chirho(
             sections_chirho: sections_info_chirho,
             module_mem_base_chirho: 0,
             module_mem_size_chirho: 0,
+            refcount_chirho: 0,
+            depends_on_chirho: Vec::new(),
+            params_chirho: Vec::new(),
         });
     }
 
@@ -1946,6 +2180,9 @@ fn load_and_init_module_chirho(
         sections_chirho: sections_info_chirho,
         module_mem_base_chirho: mem_ptr_chirho as u64,
         module_mem_size_chirho: mem_cap_chirho,
+        refcount_chirho: 0,
+        depends_on_chirho: Vec::new(),
+        params_chirho: Vec::new(),
     })
 }
 
@@ -2093,6 +2330,26 @@ pub fn sys_delete_module_impl_chirho(name_ptr_chirho: u64, _flags_chirho: u64) -
             return -ENOENT_CHIRHO;
         }
     };
+
+    // A2-016: Check refcount — cannot unload if other modules depend on us.
+    if loaded_chirho[idx_chirho].refcount_chirho > 0 {
+        crate::serial_println_chirho!(
+            "[KO] sys_delete_module: module '{}' still has {} dependents",
+            name_chirho,
+            loaded_chirho[idx_chirho].refcount_chirho
+        );
+        return -EBUSY_CHIRHO;
+    }
+
+    // A2-016: Decrement refcounts of modules this one depends on.
+    let deps_chirho = loaded_chirho[idx_chirho].depends_on_chirho.clone();
+    for dep_name_chirho in &deps_chirho {
+        for other_chirho in loaded_chirho.iter_mut() {
+            if other_chirho.name_chirho == *dep_name_chirho && other_chirho.refcount_chirho > 0 {
+                other_chirho.refcount_chirho -= 1;
+            }
+        }
+    }
 
     // A2-005: Call cleanup_module if present.
     if let Some(cleanup_addr_chirho) = loaded_chirho[idx_chirho].cleanup_fn_chirho {

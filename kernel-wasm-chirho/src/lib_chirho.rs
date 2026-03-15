@@ -7,7 +7,7 @@
 //! Programs compiled to wasm32 make Linux syscalls -> this kernel handles them
 //! using browser APIs (Canvas, OPFS, WebSocket, Web Workers).
 //!
-//! ## Features (B1-009 through B1-020, B3-001, B3-002)
+//! ## Features (B1-009 through B1-020, B2-002..B2-015, B3-001..B3-010, B4-001..B4-007)
 //! - **B1-009**: Process table with fork/exec — processes are state machines
 //! - **B1-010**: /proc filesystem (cpuinfo, meminfo, self/status, uptime)
 //! - **B1-011**: Signal handling framework (SIGTERM, SIGINT, SIGKILL, SIGCHLD)
@@ -21,8 +21,25 @@
 //! - **B1-018**: I/O redirection (>, >>, <, 2>)
 //! - **B1-019**: Shell integration self-test
 //! - **B1-020**: Kernel boot sequence with init process
+//! - **B2-002**: Socket syscall interface (socket, connect, send, recv, close)
+//! - **B2-003**: TCP socket to WebSocket bridge (multiplexed connections)
+//! - **B2-004**: DNS resolver over HTTPS (DoH) via fetch()
+//! - **B2-005**: HTTP client support (wget/curl shell commands)
+//! - **B2-010**: Loopback interface (127.0.0.1)
+//! - **B2-011**: listen/accept/bind for server sockets
+//! - **B2-012**: select/poll syscall for async I/O
+//! - **B2-013**: /etc/resolv.conf and /etc/hosts
+//! - **B2-015**: Connection pooling and reconnection logic
 //! - **B3-001**: OPFS block device driver (persistent browser storage)
 //! - **B3-002**: IndexedDB fallback storage backend
+//! - **B3-007**: Block cache layer with write-back
+//! - **B3-008**: fsync and data integrity
+//! - **B3-009**: Mount persistent /home on OPFS
+//! - **B3-010**: Storage quota management
+//! - **B4-001**: X11 protocol message parser
+//! - **B4-003**: Canvas 2D rendering backend (framebuffer)
+//! - **B4-006**: Mouse event routing to X11 clients
+//! - **B4-007**: Keyboard event routing to X11 clients
 //!
 //! ## Build
 //! ```bash
@@ -102,6 +119,45 @@ extern "C" {
     fn js_idb_list_chirho(handle_chirho: i32, buf_ptr_chirho: u32, buf_len_chirho: u32) -> i32;
     /// Close an IndexedDB store handle.
     fn js_idb_close_chirho(handle_chirho: i32);
+
+    // B2-004: DNS resolver over HTTPS (DoH) via fetch()
+    /// Resolve hostname via DoH. Writes IPv4 addr (4 bytes) to buf. Returns 0 on success.
+    fn js_dns_resolve_chirho(name_ptr_chirho: u32, name_len_chirho: u32, result_ptr_chirho: u32) -> i32;
+
+    // B2-003: WebSocket-TCP bridge — multiplexed connection management
+    /// Open a multiplexed TCP connection through the WebSocket proxy.
+    /// Returns connection ID >= 0, or < 0 on error.
+    fn js_ws_bridge_connect_chirho(host_ptr_chirho: u32, host_len_chirho: u32, port_chirho: u32) -> i32;
+    /// Send data on a bridged connection. Returns bytes sent or < 0.
+    fn js_ws_bridge_send_chirho(conn_id_chirho: i32, buf_ptr_chirho: u32, len_chirho: u32) -> i32;
+    /// Receive data from a bridged connection. Returns bytes read, 0 if nothing, < 0 on error.
+    fn js_ws_bridge_recv_chirho(conn_id_chirho: i32, buf_ptr_chirho: u32, max_len_chirho: u32) -> i32;
+    /// Close a bridged connection.
+    fn js_ws_bridge_close_chirho(conn_id_chirho: i32);
+    /// Check connection status: 0=connecting, 1=open, 2=closed, <0=error.
+    fn js_ws_bridge_status_chirho(conn_id_chirho: i32) -> i32;
+
+    // B2-005: HTTP client — fetch() wrapper for wget/curl
+    /// Issue HTTP GET via fetch(). Writes response body to buf. Returns bytes written or <0.
+    fn js_http_get_chirho(url_ptr_chirho: u32, url_len_chirho: u32, buf_ptr_chirho: u32, buf_len_chirho: u32) -> i32;
+
+    // B3-010: Storage quota management
+    /// Query storage quota. Writes [used_bytes_lo, used_bytes_hi, quota_lo, quota_hi] to ptr.
+    fn js_storage_quota_chirho(result_ptr_chirho: u32) -> i32;
+
+    // B4-003: Canvas 2D framebuffer — pixel-level rendering
+    /// Write a rectangle of RGBA pixels to the canvas framebuffer.
+    fn js_fb_put_rect_chirho(x_chirho: u32, y_chirho: u32, w_chirho: u32, h_chirho: u32, data_ptr_chirho: u32);
+    /// Fill a rectangle with a single RGBA color.
+    fn js_fb_fill_rect_chirho(x_chirho: u32, y_chirho: u32, w_chirho: u32, h_chirho: u32, rgba_chirho: u32);
+    /// Draw text on the canvas at (x,y) with given color. Returns width of rendered text.
+    fn js_fb_draw_text_chirho(x_chirho: u32, y_chirho: u32, text_ptr_chirho: u32, text_len_chirho: u32, rgba_chirho: u32) -> u32;
+
+    // B4-006/B4-007: Input events — mouse and keyboard from browser
+    /// Read pending mouse event. Writes [x, y, buttons, event_type] to ptr. Returns 1 if event, 0 if none.
+    fn js_input_mouse_chirho(result_ptr_chirho: u32) -> i32;
+    /// Read pending keyboard event. Writes [keycode, modifiers, pressed] to ptr. Returns 1 if event, 0 if none.
+    fn js_input_keyboard_chirho(result_ptr_chirho: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,7 +1141,7 @@ static mut PROC_TABLE_CHIRHO: ProcessTableChirho = ProcessTableChirho::new_chirh
 // B1-010: /proc filesystem + in-memory VFS for /tmp etc.
 // ---------------------------------------------------------------------------
 
-const MAX_FS_ENTRIES_CHIRHO: usize = 64;
+const MAX_FS_ENTRIES_CHIRHO: usize = 128;
 const MAX_PATH_LEN_CHIRHO: usize = 128;
 const MAX_FILE_DATA_CHIRHO: usize = 256;
 

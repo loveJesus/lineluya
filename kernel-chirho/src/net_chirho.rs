@@ -2872,3 +2872,558 @@ pub fn sys_socketpair_chirho(
 ) -> i64 {
     -ENOSYS_CHIRHO
 }
+
+// ============================================================================
+// A3-009: TCP retransmission and flow control
+// ============================================================================
+
+/// Retransmission timer state for a TCP connection.
+#[derive(Debug, Clone)]
+pub struct TcpRetransmitChirho {
+    /// Retransmission timeout in ticks (starts at ~1s = 100 ticks).
+    pub rto_ticks_chirho: u64,
+    /// Timer countdown: ticks remaining until retransmit.
+    pub timer_remaining_chirho: u64,
+    /// Number of retransmission attempts for the current segment.
+    pub retransmit_count_chirho: u32,
+    /// Maximum retransmissions before connection abort.
+    pub max_retransmits_chirho: u32,
+    /// Smoothed RTT estimate in ticks (SRTT, RFC 6298).
+    pub srtt_chirho: u64,
+    /// RTT variation (RTTVAR, RFC 6298).
+    pub rttvar_chirho: u64,
+    /// Last unacknowledged segment bytes (for retransmission).
+    pub unacked_data_chirho: Vec<u8>,
+    /// Sequence number of the unacked data start.
+    pub unacked_seq_chirho: u32,
+    /// Congestion window (cwnd) in bytes.
+    pub cwnd_chirho: u32,
+    /// Slow-start threshold (ssthresh) in bytes.
+    pub ssthresh_chirho: u32,
+    /// Whether retransmit timer is armed.
+    pub timer_active_chirho: bool,
+}
+
+impl TcpRetransmitChirho {
+    /// Create a new retransmission state with default values.
+    pub fn new_chirho() -> Self {
+        Self {
+            rto_ticks_chirho: 100,       // 1 second at 100 Hz
+            timer_remaining_chirho: 0,
+            retransmit_count_chirho: 0,
+            max_retransmits_chirho: 15,   // Linux default
+            srtt_chirho: 0,
+            rttvar_chirho: 50,            // initial variance ~500ms
+            unacked_data_chirho: Vec::new(),
+            unacked_seq_chirho: 0,
+            cwnd_chirho: TCP_DEFAULT_MSS_CHIRHO as u32 * 10, // IW=10 per RFC 6928
+            ssthresh_chirho: 65535,
+            timer_active_chirho: false,
+        }
+    }
+
+    /// Update SRTT/RTTVAR from a new RTT measurement (RFC 6298).
+    pub fn update_rtt_chirho(&mut self, rtt_ticks_chirho: u64) {
+        if self.srtt_chirho == 0 {
+            // First measurement
+            self.srtt_chirho = rtt_ticks_chirho;
+            self.rttvar_chirho = rtt_ticks_chirho / 2;
+        } else {
+            // RTTVAR = (1 - beta) * RTTVAR + beta * |SRTT - R'|
+            let diff_chirho = if self.srtt_chirho > rtt_ticks_chirho {
+                self.srtt_chirho - rtt_ticks_chirho
+            } else {
+                rtt_ticks_chirho - self.srtt_chirho
+            };
+            self.rttvar_chirho = (3 * self.rttvar_chirho + diff_chirho) / 4;
+            // SRTT = (1 - alpha) * SRTT + alpha * R'
+            self.srtt_chirho = (7 * self.srtt_chirho + rtt_ticks_chirho) / 8;
+        }
+        // RTO = SRTT + max(G, K*RTTVAR) where K=4, G=1 tick
+        self.rto_ticks_chirho = self.srtt_chirho + core::cmp::max(1, 4 * self.rttvar_chirho);
+        // Clamp RTO between 200ms (20 ticks) and 120s (12000 ticks)
+        self.rto_ticks_chirho = core::cmp::max(20, core::cmp::min(self.rto_ticks_chirho, 12000));
+    }
+
+    /// Arm the retransmit timer.
+    pub fn arm_timer_chirho(&mut self) {
+        self.timer_remaining_chirho = self.rto_ticks_chirho;
+        self.timer_active_chirho = true;
+    }
+
+    /// Disarm the retransmit timer (e.g., on ACK of all outstanding data).
+    pub fn disarm_timer_chirho(&mut self) {
+        self.timer_active_chirho = false;
+        self.timer_remaining_chirho = 0;
+        self.retransmit_count_chirho = 0;
+    }
+
+    /// Called on each timer tick. Returns true if a retransmission is needed.
+    pub fn tick_chirho(&mut self) -> bool {
+        if !self.timer_active_chirho {
+            return false;
+        }
+        if self.timer_remaining_chirho > 0 {
+            self.timer_remaining_chirho -= 1;
+        }
+        if self.timer_remaining_chirho == 0 {
+            self.retransmit_count_chirho += 1;
+            // Exponential backoff: double RTO
+            self.rto_ticks_chirho = core::cmp::min(self.rto_ticks_chirho * 2, 12000);
+            self.timer_remaining_chirho = self.rto_ticks_chirho;
+            // Congestion response: set ssthresh = cwnd/2, cwnd = MSS
+            self.ssthresh_chirho = core::cmp::max(self.cwnd_chirho / 2, TCP_DEFAULT_MSS_CHIRHO as u32 * 2);
+            self.cwnd_chirho = TCP_DEFAULT_MSS_CHIRHO as u32;
+            return true;
+        }
+        false
+    }
+
+    /// Called when new data is ACKed. Grows cwnd per slow-start / congestion avoidance.
+    pub fn on_ack_chirho(&mut self, bytes_acked_chirho: u32) {
+        if self.cwnd_chirho < self.ssthresh_chirho {
+            // Slow start: cwnd += min(bytes_acked, MSS)
+            self.cwnd_chirho += core::cmp::min(bytes_acked_chirho, TCP_DEFAULT_MSS_CHIRHO as u32);
+        } else {
+            // Congestion avoidance: cwnd += MSS * MSS / cwnd
+            let increment_chirho = (TCP_DEFAULT_MSS_CHIRHO as u32)
+                .saturating_mul(TCP_DEFAULT_MSS_CHIRHO as u32)
+                / core::cmp::max(self.cwnd_chirho, 1);
+            self.cwnd_chirho += core::cmp::max(increment_chirho, 1);
+        }
+    }
+
+    /// Effective send window = min(cwnd, peer's receive window).
+    pub fn effective_window_chirho(&self, peer_wnd_chirho: u16) -> u32 {
+        core::cmp::min(self.cwnd_chirho, peer_wnd_chirho as u32)
+    }
+}
+
+// ============================================================================
+// A3-013: DNS Resolver (UDP stub resolver)
+// ============================================================================
+
+/// DNS query types.
+#[allow(dead_code)]
+pub const DNS_TYPE_A_CHIRHO: u16 = 1;       // A record (IPv4)
+#[allow(dead_code)]
+pub const DNS_TYPE_AAAA_CHIRHO: u16 = 28;   // AAAA record (IPv6)
+#[allow(dead_code)]
+pub const DNS_TYPE_CNAME_CHIRHO: u16 = 5;   // CNAME
+#[allow(dead_code)]
+pub const DNS_CLASS_IN_CHIRHO: u16 = 1;     // Internet class
+
+/// Default DNS server (Google Public DNS).
+#[allow(dead_code)]
+pub const DNS_SERVER_CHIRHO: u32 = 0x08080808; // 8.8.8.8
+/// DNS port.
+pub const DNS_PORT_CHIRHO: u16 = 53;
+
+/// Atomic counter for DNS transaction IDs.
+static DNS_TXID_CHIRHO: AtomicU64 = AtomicU64::new(0x1234);
+
+/// DNS header (12 bytes per RFC 1035).
+#[derive(Debug, Clone)]
+pub struct DnsHeaderChirho {
+    /// Transaction ID.
+    pub id_chirho: u16,
+    /// Flags (QR, Opcode, AA, TC, RD, RA, Z, RCODE).
+    pub flags_chirho: u16,
+    /// Number of questions.
+    pub qdcount_chirho: u16,
+    /// Number of answers.
+    pub ancount_chirho: u16,
+    /// Number of authority records.
+    pub nscount_chirho: u16,
+    /// Number of additional records.
+    pub arcount_chirho: u16,
+}
+
+impl DnsHeaderChirho {
+    /// Parse a DNS header from raw bytes.
+    pub fn parse_chirho(data_chirho: &[u8]) -> Option<Self> {
+        if data_chirho.len() < 12 {
+            return None;
+        }
+        Some(Self {
+            id_chirho: u16::from_be_bytes([data_chirho[0], data_chirho[1]]),
+            flags_chirho: u16::from_be_bytes([data_chirho[2], data_chirho[3]]),
+            qdcount_chirho: u16::from_be_bytes([data_chirho[4], data_chirho[5]]),
+            ancount_chirho: u16::from_be_bytes([data_chirho[6], data_chirho[7]]),
+            nscount_chirho: u16::from_be_bytes([data_chirho[8], data_chirho[9]]),
+            arcount_chirho: u16::from_be_bytes([data_chirho[10], data_chirho[11]]),
+        })
+    }
+
+    /// Build the DNS header into bytes.
+    pub fn build_chirho(&self) -> Vec<u8> {
+        let mut buf_chirho = Vec::with_capacity(12);
+        buf_chirho.extend_from_slice(&self.id_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.flags_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.qdcount_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.ancount_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.nscount_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.arcount_chirho.to_be_bytes());
+        buf_chirho
+    }
+}
+
+/// Encode a hostname into DNS wire format (length-prefixed labels).
+///
+/// E.g., "www.example.com" -> [3, 'w', 'w', 'w', 7, 'e', 'x', ...., 0]
+pub fn dns_encode_name_chirho(name_chirho: &str) -> Vec<u8> {
+    let mut buf_chirho = Vec::new();
+    for label_chirho in name_chirho.split('.') {
+        if label_chirho.is_empty() {
+            continue;
+        }
+        buf_chirho.push(label_chirho.len() as u8);
+        buf_chirho.extend_from_slice(label_chirho.as_bytes());
+    }
+    buf_chirho.push(0); // root label
+    buf_chirho
+}
+
+/// Build a DNS A-record query packet for the given hostname.
+///
+/// Returns the full UDP payload (DNS header + question section).
+pub fn build_dns_query_chirho(hostname_chirho: &str) -> Vec<u8> {
+    let txid_chirho = DNS_TXID_CHIRHO.fetch_add(1, Ordering::Relaxed) as u16;
+
+    let header_chirho = DnsHeaderChirho {
+        id_chirho: txid_chirho,
+        flags_chirho: 0x0100, // standard query, RD=1 (recursion desired)
+        qdcount_chirho: 1,
+        ancount_chirho: 0,
+        nscount_chirho: 0,
+        arcount_chirho: 0,
+    };
+
+    let mut packet_chirho = header_chirho.build_chirho();
+    // Question section: QNAME + QTYPE + QCLASS
+    packet_chirho.extend_from_slice(&dns_encode_name_chirho(hostname_chirho));
+    packet_chirho.extend_from_slice(&DNS_TYPE_A_CHIRHO.to_be_bytes());
+    packet_chirho.extend_from_slice(&DNS_CLASS_IN_CHIRHO.to_be_bytes());
+    packet_chirho
+}
+
+/// A resolved DNS A record result.
+#[derive(Debug, Clone)]
+pub struct DnsAnswerChirho {
+    /// The resolved IPv4 address.
+    pub addr_chirho: u32,
+    /// TTL in seconds.
+    pub ttl_chirho: u32,
+}
+
+/// Parse a DNS response and extract A record answers.
+///
+/// Returns a vector of resolved IPv4 addresses.
+pub fn parse_dns_response_chirho(data_chirho: &[u8]) -> Vec<DnsAnswerChirho> {
+    let mut results_chirho = Vec::new();
+
+    let header_chirho = match DnsHeaderChirho::parse_chirho(data_chirho) {
+        Some(h_chirho) => h_chirho,
+        None => return results_chirho,
+    };
+
+    // Check QR bit (response) and RCODE == 0 (no error)
+    if (header_chirho.flags_chirho & 0x8000) == 0 {
+        return results_chirho; // Not a response
+    }
+    if (header_chirho.flags_chirho & 0x000F) != 0 {
+        return results_chirho; // Error RCODE
+    }
+
+    let mut offset_chirho: usize = 12; // skip header
+
+    // Skip question section
+    for _ in 0..header_chirho.qdcount_chirho {
+        // Skip QNAME
+        while offset_chirho < data_chirho.len() {
+            let len_chirho = data_chirho[offset_chirho] as usize;
+            offset_chirho += 1;
+            if len_chirho == 0 {
+                break;
+            }
+            if (len_chirho & 0xC0) == 0xC0 {
+                offset_chirho += 1; // pointer: 2 bytes total
+                break;
+            }
+            offset_chirho += len_chirho;
+        }
+        offset_chirho += 4; // QTYPE + QCLASS
+    }
+
+    // Parse answer section
+    for _ in 0..header_chirho.ancount_chirho {
+        if offset_chirho >= data_chirho.len() {
+            break;
+        }
+        // Skip NAME (may be pointer or labels)
+        let first_byte_chirho = data_chirho[offset_chirho];
+        if (first_byte_chirho & 0xC0) == 0xC0 {
+            offset_chirho += 2; // compressed pointer
+        } else {
+            while offset_chirho < data_chirho.len() {
+                let len_chirho = data_chirho[offset_chirho] as usize;
+                offset_chirho += 1;
+                if len_chirho == 0 {
+                    break;
+                }
+                offset_chirho += len_chirho;
+            }
+        }
+
+        if offset_chirho + 10 > data_chirho.len() {
+            break;
+        }
+
+        let rtype_chirho = u16::from_be_bytes([data_chirho[offset_chirho], data_chirho[offset_chirho + 1]]);
+        let _rclass_chirho = u16::from_be_bytes([data_chirho[offset_chirho + 2], data_chirho[offset_chirho + 3]]);
+        let ttl_chirho = u32::from_be_bytes([
+            data_chirho[offset_chirho + 4], data_chirho[offset_chirho + 5],
+            data_chirho[offset_chirho + 6], data_chirho[offset_chirho + 7],
+        ]);
+        let rdlength_chirho = u16::from_be_bytes([data_chirho[offset_chirho + 8], data_chirho[offset_chirho + 9]]) as usize;
+        offset_chirho += 10;
+
+        if offset_chirho + rdlength_chirho > data_chirho.len() {
+            break;
+        }
+
+        if rtype_chirho == DNS_TYPE_A_CHIRHO && rdlength_chirho == 4 {
+            let addr_chirho = u32::from_be_bytes([
+                data_chirho[offset_chirho], data_chirho[offset_chirho + 1],
+                data_chirho[offset_chirho + 2], data_chirho[offset_chirho + 3],
+            ]);
+            results_chirho.push(DnsAnswerChirho { addr_chirho, ttl_chirho });
+        }
+
+        offset_chirho += rdlength_chirho;
+    }
+
+    results_chirho
+}
+
+/// Resolve a hostname to an IPv4 address using the DNS subsystem.
+///
+/// Builds a DNS query, sends it via UDP to the configured DNS server,
+/// and returns the first A record address. Returns `None` if resolution fails.
+///
+/// NOTE: This is a synchronous stub. In a real kernel with actual network I/O,
+/// this would send the packet and wait for a response.
+pub fn resolve_hostname_chirho(hostname_chirho: &str) -> Option<u32> {
+    let query_chirho = build_dns_query_chirho(hostname_chirho);
+
+    crate::serial_println_chirho!(
+        "[DNS] Resolving '{}' via {}.{}.{}.{} ({} bytes query)",
+        hostname_chirho,
+        (DNS_SERVER_CHIRHO >> 24) & 0xFF,
+        (DNS_SERVER_CHIRHO >> 16) & 0xFF,
+        (DNS_SERVER_CHIRHO >> 8) & 0xFF,
+        DNS_SERVER_CHIRHO & 0xFF,
+        query_chirho.len(),
+    );
+
+    // Build the full UDP/IP packet for the DNS query
+    let src_ip_chirho = ip4_chirho(10, 0, 2, 15); // QEMU default guest IP
+    let _packet_chirho = build_udp_packet_chirho(
+        src_ip_chirho,
+        DNS_SERVER_CHIRHO,
+        alloc_ephemeral_port_chirho(),
+        DNS_PORT_CHIRHO,
+        &query_chirho,
+    );
+
+    // In a real implementation, _packet_chirho would be sent via the network
+    // device and we would wait for a response. For now, log and return None.
+    crate::serial_println_chirho!(
+        "[DNS] Query built for '{}' (awaiting network driver for actual resolution)",
+        hostname_chirho,
+    );
+
+    None
+}
+
+// ============================================================================
+// A3-014: Loopback device with 127.0.0.1 integration
+// ============================================================================
+
+/// IP address assigned to the loopback interface.
+pub const LOOPBACK_IP_CHIRHO: u32 = 0x7F000001; // 127.0.0.1
+
+/// Send a packet through the loopback device and process it locally.
+///
+/// This simulates the Linux `lo` interface behavior where packets sent
+/// to 127.0.0.1 are immediately received back through the local IP stack.
+pub fn loopback_send_and_receive_chirho(data_chirho: &[u8]) -> Option<Vec<u8>> {
+    // Enqueue to loopback device
+    {
+        let mut devices_chirho = NET_DEVICES_CHIRHO.lock();
+        if let Some(lo_dev_chirho) = devices_chirho.get_mut(0) {
+            lo_dev_chirho.send_packet_chirho(data_chirho);
+        }
+    }
+
+    // Immediately receive and process
+    let received_chirho = {
+        let mut devices_chirho = NET_DEVICES_CHIRHO.lock();
+        if let Some(lo_dev_chirho) = devices_chirho.get_mut(0) {
+            lo_dev_chirho.recv_packet_chirho()
+        } else {
+            None
+        }
+    };
+
+    if let Some(pkt_chirho) = received_chirho {
+        // Process as IPv4 if it starts with version 4
+        if !pkt_chirho.is_empty() && (pkt_chirho[0] >> 4) == 4 {
+            return process_ipv4_packet_chirho(&pkt_chirho);
+        }
+    }
+
+    None
+}
+
+/// Send a ping to 127.0.0.1 and process the response through the loopback path.
+///
+/// Returns the echo reply packet if successful.
+pub fn ping_loopback_chirho() -> Option<Vec<u8>> {
+    let echo_packet_chirho = send_icmp_echo_request_chirho(
+        LOOPBACK_IP_CHIRHO,
+        LOOPBACK_IP_CHIRHO,
+        b"lineluya-ping-chirho",
+    )?;
+
+    crate::serial_println_chirho!("[LOOPBACK] Sending ping to 127.0.0.1");
+    loopback_send_and_receive_chirho(&echo_packet_chirho)
+}
+
+/// Check whether a destination IP is a loopback address (127.0.0.0/8).
+pub fn is_loopback_addr_chirho(addr_chirho: u32) -> bool {
+    (addr_chirho >> 24) == 127
+}
+
+// ============================================================================
+// A3-015: /proc/net/tcp and /proc/net/udp content generators
+// ============================================================================
+
+/// Generate content for `/proc/net/tcp` — lists all TCP socket connections.
+///
+/// Format matches Linux's `/proc/net/tcp`:
+/// ```text
+///   sl  local_address rem_address   st tx_queue rx_queue ...
+///    0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 ...
+/// ```
+pub fn gen_proc_net_tcp_chirho() -> alloc::string::String {
+    use core::fmt::Write;
+    let mut output_chirho = alloc::string::String::new();
+    let _ = write!(
+        output_chirho,
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+    );
+
+    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    let mut slot_num_chirho: u32 = 0;
+    for (idx_chirho, slot_chirho) in table_chirho.iter().enumerate() {
+        if let Some(ref sock_chirho) = slot_chirho {
+            let base_type_chirho = sock_chirho.sock_type_chirho & 0xF;
+            if base_type_chirho != 1 {
+                continue; // Only SOCK_STREAM
+            }
+            let local_addr_chirho = sock_chirho.local_addr_chirho.unwrap_or(SockAddrInChirho { port_chirho: 0, addr_chirho: 0 });
+            let remote_addr_chirho = sock_chirho.remote_addr_chirho.unwrap_or(SockAddrInChirho { port_chirho: 0, addr_chirho: 0 });
+
+            // Convert addr to little-endian hex (Linux format)
+            let local_ip_le_chirho = local_addr_chirho.addr_chirho.swap_bytes();
+            let remote_ip_le_chirho = remote_addr_chirho.addr_chirho.swap_bytes();
+
+            // TCP state code (matches Linux /proc/net/tcp st values)
+            let st_chirho: u8 = match sock_chirho.tcb_chirho.state_chirho {
+                TcpStateChirho::EstablishedChirho => 0x01,
+                TcpStateChirho::SynSentChirho => 0x02,
+                TcpStateChirho::SynReceivedChirho => 0x03,
+                TcpStateChirho::FinWait1Chirho => 0x04,
+                TcpStateChirho::FinWait2Chirho => 0x05,
+                TcpStateChirho::TimeWaitChirho => 0x06,
+                TcpStateChirho::CloseWaitChirho => 0x08,
+                TcpStateChirho::LastAckChirho => 0x09,
+                TcpStateChirho::ListenChirho => 0x0A,
+                TcpStateChirho::ClosingChirho => 0x0B,
+                TcpStateChirho::ClosedChirho => 0x07,
+            };
+
+            let rx_queue_chirho = sock_chirho.recv_buf_chirho.len() as u32;
+            let idx_val_chirho = idx_chirho; // copy to local to avoid packed struct issues
+
+            let _ = write!(
+                output_chirho,
+                "{:4}: {:08X}:{:04X} {:08X}:{:04X} {:02X} {:08X}:{:08X} 00:00000000 00000000     0        0 {} 1\n",
+                slot_num_chirho,
+                local_ip_le_chirho,
+                local_addr_chirho.port_chirho,
+                remote_ip_le_chirho,
+                remote_addr_chirho.port_chirho,
+                st_chirho,
+                0u32, // tx_queue
+                rx_queue_chirho,
+                idx_val_chirho,
+            );
+            slot_num_chirho += 1;
+        }
+    }
+
+    output_chirho
+}
+
+/// Generate content for `/proc/net/udp` — lists all UDP sockets.
+///
+/// Format matches Linux's `/proc/net/udp`.
+pub fn gen_proc_net_udp_chirho() -> alloc::string::String {
+    use core::fmt::Write;
+    let mut output_chirho = alloc::string::String::new();
+    let _ = write!(
+        output_chirho,
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n"
+    );
+
+    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    let mut slot_num_chirho: u32 = 0;
+    for (idx_chirho, slot_chirho) in table_chirho.iter().enumerate() {
+        if let Some(ref sock_chirho) = slot_chirho {
+            let base_type_chirho = sock_chirho.sock_type_chirho & 0xF;
+            if base_type_chirho != 2 {
+                continue; // Only SOCK_DGRAM
+            }
+            let local_addr_chirho = sock_chirho.local_addr_chirho.unwrap_or(SockAddrInChirho { port_chirho: 0, addr_chirho: 0 });
+            let remote_addr_chirho = sock_chirho.remote_addr_chirho.unwrap_or(SockAddrInChirho { port_chirho: 0, addr_chirho: 0 });
+
+            let local_ip_le_chirho = local_addr_chirho.addr_chirho.swap_bytes();
+            let remote_ip_le_chirho = remote_addr_chirho.addr_chirho.swap_bytes();
+
+            // UDP state: 7 = established/connected, 7 = unconnected (Linux uses 7 for all)
+            let st_chirho: u8 = 0x07;
+
+            let rx_queue_chirho = sock_chirho.recv_buf_chirho.len() as u32;
+            let idx_val_chirho = idx_chirho;
+
+            let _ = write!(
+                output_chirho,
+                "{:4}: {:08X}:{:04X} {:08X}:{:04X} {:02X} {:08X}:{:08X} 00:00000000 00000000     0        0 {} 2 0 0\n",
+                slot_num_chirho,
+                local_ip_le_chirho,
+                local_addr_chirho.port_chirho,
+                remote_ip_le_chirho,
+                remote_addr_chirho.port_chirho,
+                st_chirho,
+                0u32, // tx_queue
+                rx_queue_chirho,
+                idx_val_chirho,
+            );
+            slot_num_chirho += 1;
+        }
+    }
+
+    output_chirho
+}

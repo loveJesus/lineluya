@@ -355,9 +355,10 @@ impl BootParamsChirho {
     #[allow(dead_code)]
     pub fn dump_chirho(&self) {
         crate::serial_println_chirho!("=== Boot Parameters (bzImage protocol) ===");
+        let hdr_magic_copy_chirho = { self.hdr_chirho.header_chirho };
         crate::serial_println_chirho!(
             "  Header magic: {:#010x} (valid={})",
-            self.hdr_chirho.header_chirho,
+            hdr_magic_copy_chirho,
             self.validate_header_chirho()
         );
         crate::serial_println_chirho!(
@@ -382,12 +383,15 @@ impl BootParamsChirho {
             self.e820_count_chirho()
         );
         for (idx_chirho, entry_chirho) in self.e820_iter_chirho().iter().enumerate() {
+            let e820_addr_copy_chirho = { entry_chirho.addr_chirho };
+            let e820_size_copy_chirho = { entry_chirho.size_chirho };
+            let e820_type_copy_chirho = { entry_chirho.type_chirho };
             crate::serial_println_chirho!(
                 "    E820[{}]: addr={:#018x} size={:#018x} type={}",
                 idx_chirho,
-                entry_chirho.addr_chirho,
-                entry_chirho.size_chirho,
-                entry_chirho.type_chirho
+                e820_addr_copy_chirho,
+                e820_size_copy_chirho,
+                e820_type_copy_chirho
             );
         }
     }
@@ -408,9 +412,10 @@ pub unsafe fn parse_boot_params_chirho(
     let params_chirho = BootParamsChirho::from_ptr_chirho(boot_params_phys_chirho);
 
     if !params_chirho.validate_header_chirho() {
+        let hdr_magic_copy2_chirho = { params_chirho.hdr_chirho.header_chirho };
         crate::serial_println_chirho!(
             "boot_protocol: invalid header magic {:#010x}",
-            params_chirho.hdr_chirho.header_chirho
+            hdr_magic_copy2_chirho
         );
         return None;
     }

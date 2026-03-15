@@ -94,6 +94,21 @@ fn gen_loadavg_chirho() -> String {
     String::from("0.00 0.00 0.00 1/1 1\n")
 }
 
+/// A2-015: Generate `/proc/modules` — list of loaded kernel modules.
+fn gen_modules_chirho() -> String {
+    crate::ko_loader_chirho::gen_proc_modules_chirho()
+}
+
+/// Generate `/proc/net/tcp` — delegates to the networking subsystem.
+fn gen_net_tcp_chirho() -> String {
+    crate::net_chirho::gen_proc_net_tcp_chirho()
+}
+
+/// Generate `/proc/net/udp` — delegates to the networking subsystem.
+fn gen_net_udp_chirho() -> String {
+    crate::net_chirho::gen_proc_net_udp_chirho()
+}
+
 /// Generate `/proc/<pid>/maps` output — the virtual memory layout of the
 /// current process, matching the Linux `/proc/PID/maps` format:
 ///
@@ -678,7 +693,44 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     let mounts_inode_chirho = make_proc_file_chirho(gen_mounts_chirho);
     let cmdline_inode_chirho = make_proc_file_chirho(gen_cmdline_chirho);
     let loadavg_inode_chirho = make_proc_file_chirho(gen_loadavg_chirho);
+    let modules_inode_chirho = make_proc_file_chirho(gen_modules_chirho);
     let self_inode_chirho = make_proc_symlink_chirho("/proc/1");
+
+    // -- /proc/net/ directory (A3-015) --
+    let net_tcp_inode_chirho = make_proc_file_chirho(gen_net_tcp_chirho);
+    let net_udp_inode_chirho = make_proc_file_chirho(gen_net_udp_chirho);
+
+    let net_entries_chirho = alloc::vec![
+        ProcEntryChirho {
+            name_chirho: String::from("tcp"),
+            ino_chirho: net_tcp_inode_chirho.ino_chirho,
+            mode_chirho: net_tcp_inode_chirho.mode_chirho,
+            inode_chirho: net_tcp_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("udp"),
+            ino_chirho: net_udp_inode_chirho.ino_chirho,
+            mode_chirho: net_udp_inode_chirho.mode_chirho,
+            inode_chirho: net_udp_inode_chirho.clone(),
+        },
+    ];
+
+    let net_dir_ino_chirho = alloc_ino_chirho();
+    let net_dir_inode_chirho = Arc::new(InodeChirho {
+        ino_chirho: net_dir_ino_chirho,
+        mode_chirho: S_IFDIR_CHIRHO | 0o555,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: 0,
+        nlink_chirho: 2,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(ProcDirEntriesChirho {
+            entries_chirho: net_entries_chirho,
+        })),
+    });
 
     // -- /proc/1/ directory (PID 1 process directory) --
     // Contains: maps, status (future), etc.
@@ -767,10 +819,22 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             inode_chirho: loadavg_inode_chirho.clone(),
         },
         ProcEntryChirho {
+            name_chirho: String::from("modules"),
+            ino_chirho: modules_inode_chirho.ino_chirho,
+            mode_chirho: modules_inode_chirho.mode_chirho,
+            inode_chirho: modules_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
             name_chirho: String::from("self"),
             ino_chirho: self_inode_chirho.ino_chirho,
             mode_chirho: self_inode_chirho.mode_chirho,
             inode_chirho: self_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("net"),
+            ino_chirho: net_dir_inode_chirho.ino_chirho,
+            mode_chirho: net_dir_inode_chirho.mode_chirho,
+            inode_chirho: net_dir_inode_chirho.clone(),
         },
         ProcEntryChirho {
             name_chirho: String::from("1"),
@@ -809,6 +873,7 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
         ("mounts", mounts_inode_chirho),
         ("cmdline", cmdline_inode_chirho),
         ("loadavg", loadavg_inode_chirho),
+        ("modules", modules_inode_chirho),
         ("self", self_inode_chirho),
     ];
 

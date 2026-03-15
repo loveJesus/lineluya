@@ -42,6 +42,10 @@ mod acpi_chirho;
 mod pci_chirho;
 mod smp_chirho;
 
+// Phase A5: Real hardware boot — bzImage protocol, AHCI/SATA
+mod boot_protocol_chirho;
+mod ahci_chirho;
+
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
 mod syscall_entry_chirho;
