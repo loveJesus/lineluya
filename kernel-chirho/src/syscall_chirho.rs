@@ -1317,8 +1317,23 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho,
             arg2_chirho,
         ),
-        SYS_PREAD64_CHIRHO | SYS_PWRITE64_CHIRHO => -EBADF_CHIRHO,
-        SYS_READV_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_PREAD64_CHIRHO => sys_pread64_chirho(
+            arg0_chirho,
+            arg1_chirho,
+            arg2_chirho as usize,
+            arg3_chirho as i64,
+        ),
+        SYS_PWRITE64_CHIRHO => sys_pwrite64_chirho(
+            arg0_chirho,
+            arg1_chirho,
+            arg2_chirho as usize,
+            arg3_chirho as i64,
+        ),
+        SYS_READV_CHIRHO => sys_readv_chirho(
+            arg0_chirho,
+            arg1_chirho as *const IoVecChirho,
+            arg2_chirho as i32,
+        ),
         SYS_WRITEV_CHIRHO => sys_writev_chirho(
             arg0_chirho,
             arg1_chirho as *const IoVecChirho,
@@ -1917,9 +1932,6 @@ fn sys_writev_chirho(
     iov_chirho: *const IoVecChirho,
     iovcnt_chirho: i32,
 ) -> i64 {
-    if fd_chirho != 1 && fd_chirho != 2 {
-        return -EBADF_CHIRHO;
-    }
     if iov_chirho.is_null() || iovcnt_chirho <= 0 {
         return -EINVAL_CHIRHO;
     }
@@ -1940,11 +1952,16 @@ fn sys_writev_chirho(
         if iov_base_chirho == 0 || iov_len_chirho == 0 {
             continue;
         }
-        let result_chirho = sys_write_chirho(
-            fd_chirho,
-            iov_base_chirho as *const u8,
-            iov_len_chirho,
-        );
+        // Route through direct serial for stdout/stderr, VFS for others
+        let result_chirho = if fd_chirho == 1 || fd_chirho == 2 {
+            sys_write_chirho(
+                fd_chirho,
+                iov_base_chirho as *const u8,
+                iov_len_chirho,
+            )
+        } else {
+            crate::fs_chirho::sys_write_real_chirho(fd_chirho, iov_base_chirho, iov_len_chirho)
+        };
         if result_chirho < 0 {
             if total_written_chirho > 0 {
                 return total_written_chirho;
@@ -1955,6 +1972,187 @@ fn sys_writev_chirho(
     }
 
     total_written_chirho
+}
+
+/// `pread64(2)` — read at a given offset without changing file position.
+///
+/// Like `read(2)` but reads from position `offset_chirho` in the file
+/// without modifying the file's current offset (pos_chirho). This is the
+/// #1 missing syscall needed by musl libc and Alpine programs.
+fn sys_pread64_chirho(
+    fd_chirho: u64,
+    buf_addr_chirho: u64,
+    count_chirho: usize,
+    offset_chirho: i64,
+) -> i64 {
+    if count_chirho == 0 {
+        return 0;
+    }
+    if offset_chirho < 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    // Get the file from the fd table
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.get_chirho(fd_chirho as usize) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
+        }
+    };
+
+    // Read at the specified offset without changing the file position.
+    // Save the current position, seek to offset, read, then restore.
+    let capped_count_chirho = core::cmp::min(count_chirho, 4096);
+    let mut kernel_buf_chirho = [0u8; 4096];
+    let buf_slice_chirho = &mut kernel_buf_chirho[..capped_count_chirho];
+
+    let bytes_read_chirho = {
+        let mut file_guard_chirho = file_arc_chirho.lock();
+        let saved_pos_chirho = file_guard_chirho.pos_chirho;
+        file_guard_chirho.pos_chirho = offset_chirho as u64;
+        let result_chirho = file_guard_chirho.ops_chirho.read_chirho(
+            &mut file_guard_chirho,
+            buf_slice_chirho,
+        );
+        // Restore position regardless of result
+        file_guard_chirho.pos_chirho = saved_pos_chirho;
+        match result_chirho {
+            Ok(n_chirho) => n_chirho,
+            Err(errno_chirho) => return errno_chirho,
+        }
+    };
+
+    // Copy to user space
+    if bytes_read_chirho > 0 {
+        if crate::uaccess_chirho::copy_to_user_chirho(
+            buf_addr_chirho,
+            &kernel_buf_chirho[..bytes_read_chirho],
+            bytes_read_chirho,
+        ).is_err() {
+            return -EFAULT_CHIRHO;
+        }
+    }
+
+    bytes_read_chirho as i64
+}
+
+/// `pwrite64(2)` — write at a given offset without changing file position.
+///
+/// Like `write(2)` but writes at position `offset_chirho` in the file
+/// without modifying the file's current offset (pos_chirho).
+fn sys_pwrite64_chirho(
+    fd_chirho: u64,
+    buf_addr_chirho: u64,
+    count_chirho: usize,
+    offset_chirho: i64,
+) -> i64 {
+    if count_chirho == 0 {
+        return 0;
+    }
+    if offset_chirho < 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    // Get the file from the fd table
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.get_chirho(fd_chirho as usize) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
+        }
+    };
+
+    // Copy from user space into kernel buffer
+    let capped_count_chirho = core::cmp::min(count_chirho, 4096);
+    let mut kernel_buf_chirho = [0u8; 4096];
+    let buf_slice_chirho = &mut kernel_buf_chirho[..capped_count_chirho];
+    if crate::uaccess_chirho::copy_from_user_chirho(
+        buf_slice_chirho,
+        buf_addr_chirho,
+        capped_count_chirho,
+    ).is_err() {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Write at the specified offset without changing the file position.
+    let bytes_written_chirho = {
+        let mut file_guard_chirho = file_arc_chirho.lock();
+        let saved_pos_chirho = file_guard_chirho.pos_chirho;
+        file_guard_chirho.pos_chirho = offset_chirho as u64;
+        let result_chirho = file_guard_chirho.ops_chirho.write_chirho(
+            &mut file_guard_chirho,
+            buf_slice_chirho,
+        );
+        // Restore position regardless of result
+        file_guard_chirho.pos_chirho = saved_pos_chirho;
+        match result_chirho {
+            Ok(n_chirho) => n_chirho,
+            Err(errno_chirho) => return errno_chirho,
+        }
+    };
+
+    bytes_written_chirho as i64
+}
+
+/// `readv(2)` — scatter read into multiple buffers.
+///
+/// Reads data from file descriptor `fd_chirho` into the iovec array.
+/// Handles all fds through the VFS (stdin via serial poll for fd 0).
+fn sys_readv_chirho(
+    fd_chirho: u64,
+    iov_chirho: *const IoVecChirho,
+    iovcnt_chirho: i32,
+) -> i64 {
+    if iov_chirho.is_null() || iovcnt_chirho <= 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    let mut total_read_chirho: i64 = 0;
+
+    for i_chirho in 0..iovcnt_chirho as usize {
+        // Read the iovec entry from user memory
+        let mut iov_buf_chirho = [0u8; 16]; // IoVecChirho is 16 bytes (ptr + len)
+        let iov_addr_chirho = iov_chirho as u64 + (i_chirho * 16) as u64;
+        if crate::uaccess_chirho::copy_from_user_chirho(
+            &mut iov_buf_chirho, iov_addr_chirho, 16,
+        ).is_err() {
+            return if total_read_chirho > 0 { total_read_chirho } else { -EFAULT_CHIRHO };
+        }
+        let iov_base_chirho = u64::from_ne_bytes(iov_buf_chirho[0..8].try_into().unwrap());
+        let iov_len_chirho = u64::from_ne_bytes(iov_buf_chirho[8..16].try_into().unwrap()) as usize;
+        if iov_base_chirho == 0 || iov_len_chirho == 0 {
+            continue;
+        }
+
+        // Route read through VFS (fd 0 stdin handled by dispatch)
+        let result_chirho = if fd_chirho == 0 {
+            sys_read_stdin_chirho(iov_base_chirho, iov_len_chirho)
+        } else {
+            crate::fs_chirho::sys_read_real_chirho(fd_chirho, iov_base_chirho, iov_len_chirho)
+        };
+        if result_chirho < 0 {
+            if total_read_chirho > 0 {
+                return total_read_chirho;
+            }
+            return result_chirho;
+        }
+        total_read_chirho += result_chirho;
+        // Short read: don't continue to next iovec
+        if (result_chirho as usize) < iov_len_chirho {
+            break;
+        }
+    }
+
+    total_read_chirho
 }
 
 /// `close(2)` stub.
@@ -3726,69 +3924,9 @@ fn sys_prctl_chirho(
 // Phase 8+9 syscall implementations
 // ============================================================================
 
-/// `pread64(2)` -- read at a given offset.
-///
-/// Forwards to the VFS read. For now, stubs with -EBADF for unknown fds.
-fn sys_pread64_chirho(
-    fd_chirho: u64,
-    buf_chirho: u64,
-    count_chirho: usize,
-    _offset_chirho: i64,
-) -> i64 {
-    // Delegate to the VFS read; offset handling is stubbed.
-    crate::fs_chirho::sys_read_real_chirho(fd_chirho, buf_chirho, count_chirho)
-}
-
-/// `pwrite64(2)` -- write at a given offset.
-///
-/// Forwards to the VFS write. For now, stubs with -EBADF for unknown fds.
-fn sys_pwrite64_chirho(
-    fd_chirho: u64,
-    buf_chirho: u64,
-    count_chirho: usize,
-    _offset_chirho: i64,
-) -> i64 {
-    crate::fs_chirho::sys_write_real_chirho(fd_chirho, buf_chirho, count_chirho)
-}
-
-/// `readv(2)` -- scatter/gather read.
-///
-/// Reads from multiple buffers via iovec.
-fn sys_readv_chirho(
-    fd_chirho: u64,
-    iov_chirho: *const IoVecChirho,
-    iovcnt_chirho: i32,
-) -> i64 {
-    if iov_chirho.is_null() || iovcnt_chirho <= 0 {
-        return -EINVAL_CHIRHO;
-    }
-
-    let mut total_read_chirho: i64 = 0;
-
-    for i_chirho in 0..iovcnt_chirho as usize {
-        let vec_entry_chirho = unsafe { &*iov_chirho.add(i_chirho) };
-        if vec_entry_chirho.iov_base_chirho.is_null() || vec_entry_chirho.iov_len_chirho == 0 {
-            continue;
-        }
-        let result_chirho = crate::fs_chirho::sys_read_real_chirho(
-            fd_chirho,
-            vec_entry_chirho.iov_base_chirho as u64,
-            vec_entry_chirho.iov_len_chirho,
-        );
-        if result_chirho < 0 {
-            if total_read_chirho > 0 {
-                return total_read_chirho;
-            }
-            return result_chirho;
-        }
-        total_read_chirho += result_chirho;
-        if (result_chirho as usize) < vec_entry_chirho.iov_len_chirho {
-            break; // short read
-        }
-    }
-
-    total_read_chirho
-}
+// pread64, pwrite64, readv implementations moved to the main syscall
+// implementation section above (near sys_writev_chirho) with proper
+// offset handling and VFS integration for musl compat.
 
 /// `sched_getparam(2)` -- write zeroed sched_param to user buf.
 ///
