@@ -175,7 +175,7 @@
       "title_chirho": "getdents64 syscall",
       "description_chirho": "Implement getdents64 to read directory entries from VFS.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "ls-like program lists files in directory",
@@ -190,7 +190,7 @@
       "title_chirho": "stat/fstat/lstat syscalls",
       "description_chirho": "Return file metadata (size, mode, uid, gid, timestamps) from VFS inodes.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "stat returns correct size/mode",
@@ -223,7 +223,7 @@
       "title_chirho": "dup/dup2 syscalls",
       "description_chirho": "Duplicate file descriptors for shell I/O redirection.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "dup2 replaces target fd",
@@ -242,7 +242,7 @@
         "A1-012",
         "A1-013"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "echo hello | cat works",
@@ -360,7 +360,7 @@
       "title_chirho": "fcntl basics (F_GETFL, F_SETFL, F_DUPFD)",
       "description_chirho": "Implement essential fcntl operations for shell and pipe usage.",
       "depends_on_chirho": [],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "high",
       "acceptance_criteria_chirho": [
         "F_GETFL returns flags",
@@ -430,7 +430,7 @@
         "A1-020",
         "A1-024"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "BusyBox ash shell starts and accepts input",
