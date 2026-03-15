@@ -657,6 +657,20 @@ pub const EADDRINUSE_CHIRHO: i64 = 98;
 pub const ENOTSOCK_CHIRHO: i64 = 88;
 /// Connection refused.
 pub const ECONNREFUSED_CHIRHO: i64 = 111;
+/// Address family not supported.
+pub const EAFNOSUPPORT_CHIRHO: i64 = 97;
+/// Operation not supported on socket.
+pub const EOPNOTSUPP_CHIRHO: i64 = 95;
+/// Transport endpoint is not connected.
+pub const ENOTCONN_CHIRHO: i64 = 107;
+/// Transport endpoint is already connected.
+pub const EISCONN_CHIRHO: i64 = 106;
+/// Operation now in progress.
+pub const EINPROGRESS_CHIRHO: i64 = 115;
+/// Connection reset by peer.
+pub const ECONNRESET_CHIRHO: i64 = 104;
+/// Software caused connection abort.
+pub const ECONNABORTED_CHIRHO: i64 = 103;
 
 // ============================================================================
 // arch_prctl sub-command constants

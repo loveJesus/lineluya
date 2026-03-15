@@ -8,8 +8,75 @@
 //! 8259 PIC. Keyboard scancodes are decoded using the `pc_keyboard` crate.
 
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use pic8259::ChainedPics;
 use spin::Mutex;
+
+// ---------------------------------------------------------------------------
+// Inline PIC 8259 implementation (replaces pic8259 crate to avoid x86_64 version conflicts)
+// ---------------------------------------------------------------------------
+
+/// A pair of chained 8259 PICs (master + slave).
+pub struct ChainedPicsChirho {
+    master_cmd_chirho: u16,
+    master_data_chirho: u16,
+    slave_cmd_chirho: u16,
+    slave_data_chirho: u16,
+    offset1_chirho: u8,
+    offset2_chirho: u8,
+}
+
+impl ChainedPicsChirho {
+    pub const unsafe fn new(offset1_chirho: u8, offset2_chirho: u8) -> Self {
+        Self {
+            master_cmd_chirho: 0x20,
+            master_data_chirho: 0x21,
+            slave_cmd_chirho: 0xA0,
+            slave_data_chirho: 0xA1,
+            offset1_chirho,
+            offset2_chirho,
+        }
+    }
+
+    pub unsafe fn initialize(&mut self) {
+        let wait_chirho = || { core::arch::asm!("nop"); };
+
+        // Save masks
+        let mask1_chirho: u8;
+        let mask2_chirho: u8;
+        core::arch::asm!("in al, dx", out("al") mask1_chirho, in("dx") self.master_data_chirho);
+        core::arch::asm!("in al, dx", out("al") mask2_chirho, in("dx") self.slave_data_chirho);
+
+        // ICW1: start init sequence, cascade mode
+        Self::outb_chirho(self.master_cmd_chirho, 0x11); wait_chirho();
+        Self::outb_chirho(self.slave_cmd_chirho, 0x11); wait_chirho();
+
+        // ICW2: set vector offsets
+        Self::outb_chirho(self.master_data_chirho, self.offset1_chirho); wait_chirho();
+        Self::outb_chirho(self.slave_data_chirho, self.offset2_chirho); wait_chirho();
+
+        // ICW3: master has slave on IRQ2, slave has cascade identity 2
+        Self::outb_chirho(self.master_data_chirho, 4); wait_chirho();
+        Self::outb_chirho(self.slave_data_chirho, 2); wait_chirho();
+
+        // ICW4: 8086/88 mode
+        Self::outb_chirho(self.master_data_chirho, 0x01); wait_chirho();
+        Self::outb_chirho(self.slave_data_chirho, 0x01); wait_chirho();
+
+        // Restore masks
+        Self::outb_chirho(self.master_data_chirho, mask1_chirho);
+        Self::outb_chirho(self.slave_data_chirho, mask2_chirho);
+    }
+
+    pub unsafe fn notify_end_of_interrupt(&mut self, irq_chirho: u8) {
+        if irq_chirho >= self.offset2_chirho {
+            Self::outb_chirho(self.slave_cmd_chirho, 0x20);
+        }
+        Self::outb_chirho(self.master_cmd_chirho, 0x20);
+    }
+
+    unsafe fn outb_chirho(port_chirho: u16, val_chirho: u8) {
+        core::arch::asm!("out dx, al", in("dx") port_chirho, in("al") val_chirho);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PIC configuration constants
@@ -58,8 +125,8 @@ impl InterruptIndexChirho {
 /// # Safety
 /// The PIC offsets must not overlap with CPU exception vectors (0..31).
 /// We use offsets 32 and 40 which are safe.
-pub static PICS_CHIRHO: Mutex<ChainedPics> =
-    Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET_CHIRHO, PIC_2_OFFSET_CHIRHO) });
+pub static PICS_CHIRHO: Mutex<ChainedPicsChirho> =
+    Mutex::new(unsafe { ChainedPicsChirho::new(PIC_1_OFFSET_CHIRHO, PIC_2_OFFSET_CHIRHO) });
 
 // ---------------------------------------------------------------------------
 // Interrupt Descriptor Table (lazily initialized)

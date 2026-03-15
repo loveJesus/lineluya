@@ -7,13 +7,25 @@
 //! system, resolves symbols against the kernel symbol table, and manages the
 //! lifecycle of loaded modules (init / cleanup).
 //!
-//! This is the Phase A2 foundation — parsing, symbol lookup, and module
-//! bookkeeping.  Actual relocation patching and code execution will land in a
-//! follow-up phase.
+//! ## Phase A2 milestones implemented
+//!
+//! - **A2-003**: x86_64 ELF relocation engine — handles `R_X86_64_64`,
+//!   `R_X86_64_PC32`, `R_X86_64_32`, `R_X86_64_32S`, `R_X86_64_PLT32`, and
+//!   `R_X86_64_GOTPCREL` relocations.  Parses `SHT_RELA` sections and applies
+//!   patches to loaded module memory.
+//! - **A2-004**: Kernel symbol export table — a runtime registry of kernel
+//!   symbols that modules can resolve against.  Includes the
+//!   [`EXPORT_SYMBOL_CHIRHO!`] macro and is pre-populated with key kernel
+//!   functions (`printk` / `serial_println`, `kmalloc` / `kfree`,
+//!   `register_chrdev`, `schedule`, `mutex_lock`, `mutex_unlock`).
+//! - **A2-005**: Module init / cleanup execution — after relocation, locates
+//!   `init_module` and `cleanup_module` symbols and calls them via function
+//!   pointers.
 
 extern crate alloc;
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;
 use spin::Mutex;
@@ -58,30 +70,35 @@ const ET_REL_CHIRHO: u16 = 1;
 const SHT_NULL_CHIRHO: u32 = 0;
 
 /// Program data.
+#[allow(dead_code)]
 const SHT_PROGBITS_CHIRHO: u32 = 1;
 
 /// Symbol table.
 const SHT_SYMTAB_CHIRHO: u32 = 2;
 
 /// String table.
+#[allow(dead_code)]
 const SHT_STRTAB_CHIRHO: u32 = 3;
 
 /// Relocation entries with explicit addends.
-#[allow(dead_code)]
 const SHT_RELA_CHIRHO: u32 = 4;
 
 /// Section contains no data (BSS).
+#[allow(dead_code)]
 const SHT_NOBITS_CHIRHO: u32 = 8;
 
 // -- Section header flags ---------------------------------------------------
 
 /// Section contains writable data.
+#[allow(dead_code)]
 const SHF_WRITE_CHIRHO: u64 = 0x1;
 
 /// Section occupies memory during execution.
+#[allow(dead_code)]
 const SHF_ALLOC_CHIRHO: u64 = 0x2;
 
 /// Section contains executable instructions.
+#[allow(dead_code)]
 const SHF_EXECINSTR_CHIRHO: u64 = 0x4;
 
 // -- Symbol binding / type --------------------------------------------------
@@ -111,10 +128,39 @@ const STT_FUNC_CHIRHO: u8 = 2;
 const STT_OBJECT_CHIRHO: u8 = 1;
 
 /// Symbol type: no type specified.
+#[allow(dead_code)]
 const STT_NOTYPE_CHIRHO: u8 = 0;
 
 /// Undefined section index.
 const SHN_UNDEF_CHIRHO: u16 = 0;
+
+// ===========================================================================
+// A2-003: x86_64 relocation type constants
+// ===========================================================================
+
+/// `R_X86_64_64` — Direct 64-bit absolute address.
+const R_X86_64_64_CHIRHO: u32 = 1;
+
+/// `R_X86_64_PC32` — PC-relative 32-bit signed offset.
+const R_X86_64_PC32_CHIRHO: u32 = 2;
+
+/// `R_X86_64_32` — Direct 32-bit zero-extended address.
+const R_X86_64_32_CHIRHO: u32 = 10;
+
+/// `R_X86_64_32S` — Direct 32-bit sign-extended address.
+const R_X86_64_32S_CHIRHO: u32 = 11;
+
+/// `R_X86_64_PLT32` — 32-bit PLT relative (treated like PC32 for static link).
+const R_X86_64_PLT32_CHIRHO: u32 = 4;
+
+/// `R_X86_64_GOTPCREL` — 32-bit GOT-relative PC offset.
+/// For kernel modules we resolve this to a direct PC-relative reference
+/// to the symbol (no GOT indirection needed in a monolithic kernel image).
+const R_X86_64_GOTPCREL_CHIRHO: u32 = 9;
+
+/// `R_X86_64_NONE` — no relocation.
+#[allow(dead_code)]
+const R_X86_64_NONE_CHIRHO: u32 = 0;
 
 // ---------------------------------------------------------------------------
 // ELF Section Header (64-bit)
@@ -168,6 +214,34 @@ struct Elf64SymChirho {
     st_size_chirho: u64,
 }
 
+// ===========================================================================
+// A2-003: ELF Rela entry (64-bit)
+// ===========================================================================
+
+/// 64-bit ELF relocation entry with explicit addend, `Elf64_Rela`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct Elf64RelaChirho {
+    /// Offset within the section where the relocation applies.
+    r_offset_chirho: u64,
+    /// Relocation type + symbol index packed together.
+    r_info_chirho: u64,
+    /// Explicit addend.
+    r_addend_chirho: i64,
+}
+
+impl Elf64RelaChirho {
+    /// Extract the symbol table index from `r_info`.
+    const fn sym_chirho(&self) -> u32 {
+        (self.r_info_chirho >> 32) as u32
+    }
+
+    /// Extract the relocation type from `r_info`.
+    const fn type_chirho(&self) -> u32 {
+        (self.r_info_chirho & 0xffff_ffff) as u32
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
@@ -200,6 +274,10 @@ pub struct KoModuleChirho {
     pub symbol_count_chirho: usize,
     /// Parsed section info for later relocation / unload.
     pub sections_chirho: Vec<KoSectionInfoChirho>,
+    /// Base address of the allocated module memory region (for deallocation).
+    pub module_mem_base_chirho: u64,
+    /// Total size of the allocated module memory region.
+    pub module_mem_size_chirho: usize,
 }
 
 /// Metadata for a single section inside the .ko.
@@ -263,6 +341,12 @@ pub enum KoErrorChirho {
     OutOfMemoryChirho,
     /// Section data extends beyond file image.
     SectionOutOfBoundsChirho,
+    /// Relocation references an undefined symbol that cannot be resolved.
+    UnresolvedSymbolChirho,
+    /// Unsupported relocation type encountered.
+    UnsupportedRelocationChirho,
+    /// A relocation value overflows the target field width.
+    RelocationOverflowChirho,
 }
 
 impl KoErrorChirho {
@@ -278,16 +362,19 @@ impl KoErrorChirho {
             | KoErrorChirho::InvalidSectionHeadersChirho
             | KoErrorChirho::NoSymtabChirho
             | KoErrorChirho::InvalidStrtabChirho
-            | KoErrorChirho::SectionOutOfBoundsChirho => -ENOEXEC_CHIRHO,
-            KoErrorChirho::NoInitSymbolChirho => -EINVAL_CHIRHO,
+            | KoErrorChirho::SectionOutOfBoundsChirho
+            | KoErrorChirho::UnsupportedRelocationChirho
+            | KoErrorChirho::RelocationOverflowChirho => -ENOEXEC_CHIRHO,
+            KoErrorChirho::NoInitSymbolChirho
+            | KoErrorChirho::UnresolvedSymbolChirho => -EINVAL_CHIRHO,
             KoErrorChirho::OutOfMemoryChirho => -ENOMEM_CHIRHO,
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Kernel Symbol Table — maps C names to kernel addresses
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// A2-004: Kernel Symbol Export Table
+// ===========================================================================
 
 /// A single exported kernel symbol.
 struct KernelSymbolEntryChirho {
@@ -297,11 +384,142 @@ struct KernelSymbolEntryChirho {
     addr_chirho: u64,
 }
 
-/// Placeholder addresses for kernel symbols.  In a real implementation these
-/// would be filled in by the linker or at boot time.  For now they point to
-/// the serial_println stub (printk) and the allocator wrappers.
+/// Macro to export a kernel symbol so that `.ko` modules can resolve it.
 ///
-/// We use function pointers cast to u64.
+/// Usage:
+/// ```ignore
+/// EXPORT_SYMBOL_CHIRHO!(serial_println_stub_chirho, "printk");
+/// ```
+///
+/// This registers the Rust function `serial_println_stub_chirho` under the C
+/// name `"printk"` in the dynamic kernel symbol table.
+#[macro_export]
+macro_rules! EXPORT_SYMBOL_CHIRHO {
+    ($func_chirho:ident, $cname_chirho:expr) => {
+        $crate::ko_loader_chirho::KernelSymbolTableChirho::register_symbol_chirho(
+            alloc::string::String::from($cname_chirho),
+            $func_chirho as u64,
+        )
+    };
+}
+
+/// Stub functions that kernel modules can call via the symbol table.  These are
+/// thin wrappers around actual kernel routines, presented with C-compatible
+/// signatures so that module code compiled by GCC / Clang can invoke them.
+
+/// `printk` stub — writes a NUL-terminated string to the serial console.
+///
+/// # Safety
+///
+/// `msg_ptr_chirho` must point to a valid, NUL-terminated C string in kernel
+/// address space.
+#[allow(dead_code)]
+pub unsafe extern "C" fn printk_stub_chirho(msg_ptr_chirho: *const u8) -> i32 {
+    if msg_ptr_chirho.is_null() {
+        return -1;
+    }
+    // Walk the string to find length.
+    let mut len_chirho: usize = 0;
+    unsafe {
+        while *msg_ptr_chirho.add(len_chirho) != 0 {
+            len_chirho += 1;
+            if len_chirho > 4096 {
+                break; // safety cap
+            }
+        }
+        let slice_chirho = core::slice::from_raw_parts(msg_ptr_chirho, len_chirho);
+        if let Ok(s_chirho) = core::str::from_utf8(slice_chirho) {
+            crate::serial_println_chirho!("{}", s_chirho);
+        }
+    }
+    0
+}
+
+/// `kmalloc` stub — allocate `size_chirho` bytes from the kernel heap.
+///
+/// Returns a pointer to allocated memory, or null on failure.
+///
+/// # Safety
+///
+/// Caller must ensure the returned pointer is eventually freed with
+/// `kfree_stub_chirho`.
+#[allow(dead_code)]
+pub unsafe extern "C" fn kmalloc_stub_chirho(size_chirho: usize) -> *mut u8 {
+    use alloc::alloc::{alloc, Layout};
+    if size_chirho == 0 {
+        return core::ptr::null_mut();
+    }
+    let layout_chirho = match Layout::from_size_align(size_chirho, 8) {
+        Ok(l_chirho) => l_chirho,
+        Err(_) => return core::ptr::null_mut(),
+    };
+    unsafe { alloc(layout_chirho) }
+}
+
+/// `kfree` stub — free memory previously allocated by `kmalloc_stub_chirho`.
+///
+/// # Safety
+///
+/// `ptr_chirho` must have been returned by `kmalloc_stub_chirho` with the same
+/// `size_chirho`.  Double-free is undefined behaviour.
+#[allow(dead_code)]
+pub unsafe extern "C" fn kfree_stub_chirho(ptr_chirho: *mut u8, size_chirho: usize) {
+    use alloc::alloc::{dealloc, Layout};
+    if ptr_chirho.is_null() || size_chirho == 0 {
+        return;
+    }
+    let layout_chirho = match Layout::from_size_align(size_chirho, 8) {
+        Ok(l_chirho) => l_chirho,
+        Err(_) => return,
+    };
+    unsafe { dealloc(ptr_chirho, layout_chirho) };
+}
+
+/// `schedule` stub — yield the current task.
+///
+/// In the current kernel this is a no-op placeholder; a future scheduler
+/// integration will make it preempt properly.
+#[allow(dead_code)]
+pub extern "C" fn schedule_stub_chirho() {
+    // Intentional no-op for now.
+}
+
+/// `mutex_lock` stub — placeholder for kernel mutex acquisition.
+#[allow(dead_code)]
+pub extern "C" fn mutex_lock_stub_chirho(_lock_ptr_chirho: u64) {
+    // No-op: spinlocks are used internally; this satisfies the ABI.
+}
+
+/// `mutex_unlock` stub — placeholder for kernel mutex release.
+#[allow(dead_code)]
+pub extern "C" fn mutex_unlock_stub_chirho(_lock_ptr_chirho: u64) {
+    // No-op placeholder.
+}
+
+/// `register_chrdev` stub — placeholder for character device registration.
+///
+/// Returns 0 (success) unconditionally; actual device registration will be
+/// wired up in a later phase.
+#[allow(dead_code)]
+pub extern "C" fn register_chrdev_stub_chirho(
+    _major_chirho: u32,
+    _name_ptr_chirho: u64,
+    _fops_ptr_chirho: u64,
+) -> i32 {
+    crate::serial_println_chirho!("[KO] register_chrdev stub called");
+    0
+}
+
+/// `unregister_chrdev` stub.
+#[allow(dead_code)]
+pub extern "C" fn unregister_chrdev_stub_chirho(_major_chirho: u32, _name_ptr_chirho: u64) {
+    crate::serial_println_chirho!("[KO] unregister_chrdev stub called");
+}
+
+/// Static table of built-in kernel symbol addresses.
+///
+/// Entries with `addr_chirho == 0` will be resolved lazily through the dynamic
+/// table (populated by [`init_kernel_symbols_chirho`]).
 static KERNEL_SYMBOLS_CHIRHO: &[KernelSymbolEntryChirho] = &[
     KernelSymbolEntryChirho {
         name_chirho: "printk",
@@ -313,6 +531,26 @@ static KERNEL_SYMBOLS_CHIRHO: &[KernelSymbolEntryChirho] = &[
     },
     KernelSymbolEntryChirho {
         name_chirho: "kfree",
+        addr_chirho: 0,
+    },
+    KernelSymbolEntryChirho {
+        name_chirho: "schedule",
+        addr_chirho: 0,
+    },
+    KernelSymbolEntryChirho {
+        name_chirho: "mutex_lock",
+        addr_chirho: 0,
+    },
+    KernelSymbolEntryChirho {
+        name_chirho: "mutex_unlock",
+        addr_chirho: 0,
+    },
+    KernelSymbolEntryChirho {
+        name_chirho: "__register_chrdev",
+        addr_chirho: 0,
+    },
+    KernelSymbolEntryChirho {
+        name_chirho: "__unregister_chrdev",
         addr_chirho: 0,
     },
 ];
@@ -359,10 +597,61 @@ impl KernelSymbolTableChirho {
         }
         dynamic_chirho.push((name_chirho, addr_chirho));
     }
+
+    /// Return the total number of exported symbols (static + dynamic).
+    pub fn symbol_count_chirho() -> usize {
+        let dynamic_chirho = DYNAMIC_SYMBOLS_CHIRHO.lock();
+        KERNEL_SYMBOLS_CHIRHO.len() + dynamic_chirho.len()
+    }
 }
 
 /// Dynamically registered kernel symbols (populated at runtime).
 static DYNAMIC_SYMBOLS_CHIRHO: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+
+/// Populate the dynamic symbol table with the addresses of kernel stubs.
+///
+/// Must be called once during kernel boot (after the heap is available).
+pub fn init_kernel_symbols_chirho() {
+    crate::serial_println_chirho!("[KO] Populating kernel symbol table...");
+
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("printk"),
+        printk_stub_chirho as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("kmalloc"),
+        kmalloc_stub_chirho as usize as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("kfree"),
+        kfree_stub_chirho as usize as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("schedule"),
+        schedule_stub_chirho as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("mutex_lock"),
+        mutex_lock_stub_chirho as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("mutex_unlock"),
+        mutex_unlock_stub_chirho as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__register_chrdev"),
+        register_chrdev_stub_chirho as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__unregister_chrdev"),
+        unregister_chrdev_stub_chirho as u64,
+    );
+
+    crate::serial_println_chirho!(
+        "[KO] Kernel symbol table ready ({} symbols)",
+        KernelSymbolTableChirho::symbol_count_chirho()
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Global loaded-module list
@@ -370,6 +659,360 @@ static DYNAMIC_SYMBOLS_CHIRHO: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new()
 
 /// List of all currently loaded kernel modules.
 pub static LOADED_MODULES_CHIRHO: Mutex<Vec<KoModuleChirho>> = Mutex::new(Vec::new());
+
+// ===========================================================================
+// A2-003: x86_64 ELF relocation engine
+// ===========================================================================
+
+/// Per-section runtime address mapping used during relocation.
+///
+/// After allocating a contiguous module memory region we record each section's
+/// runtime base address so that relocation entries referencing section indices
+/// can be resolved to absolute virtual addresses.
+struct SectionAddrMapChirho {
+    /// Runtime base virtual address for each section (indexed by section
+    /// index).  Sections that were not loaded (e.g. `SHT_NULL`) have
+    /// address 0.
+    addrs_chirho: Vec<u64>,
+}
+
+/// Apply all `SHT_RELA` relocations in the loaded module.
+///
+/// # Arguments
+///
+/// * `module_mem_chirho` — mutable slice covering the entire loaded module
+///   memory region.
+/// * `section_addrs_chirho` — runtime base address for each section.
+/// * `shdrs_chirho` — parsed section headers from the ELF image.
+/// * `data_chirho` — the original ELF image (for reading rela / symtab data).
+/// * `symtab_idx_chirho` — index of the `SHT_SYMTAB` section.
+/// * `strtab_chirho` — symbol string table bytes.
+///
+/// Returns `Ok(())` if all relocations were applied, or an error variant if
+/// an undefined external symbol could not be resolved or an unsupported
+/// relocation type was encountered.
+fn apply_relocations_chirho(
+    module_mem_chirho: &mut [u8],
+    section_addrs_chirho: &SectionAddrMapChirho,
+    shdrs_chirho: &[Elf64ShdrChirho],
+    data_chirho: &[u8],
+    symtab_idx_chirho: usize,
+    strtab_chirho: &[u8],
+) -> Result<(), KoErrorChirho> {
+    let symtab_shdr_chirho = &shdrs_chirho[symtab_idx_chirho];
+    let sym_entsize_chirho = if symtab_shdr_chirho.sh_entsize_chirho > 0 {
+        symtab_shdr_chirho.sh_entsize_chirho as usize
+    } else {
+        mem::size_of::<Elf64SymChirho>()
+    };
+    let symtab_off_chirho = symtab_shdr_chirho.sh_offset_chirho as usize;
+    let num_syms_chirho =
+        symtab_shdr_chirho.sh_size_chirho as usize / sym_entsize_chirho;
+
+    let rela_entsize_chirho = mem::size_of::<Elf64RelaChirho>();
+
+    for (sec_idx_chirho, shdr_chirho) in shdrs_chirho.iter().enumerate() {
+        if shdr_chirho.sh_type_chirho != SHT_RELA_CHIRHO {
+            continue;
+        }
+
+        // The target section that this RELA applies to is in sh_info.
+        let target_sec_idx_chirho = shdr_chirho.sh_info_chirho as usize;
+        if target_sec_idx_chirho >= section_addrs_chirho.addrs_chirho.len() {
+            crate::serial_println_chirho!(
+                "[KO] RELA section {} targets invalid section {}",
+                sec_idx_chirho,
+                target_sec_idx_chirho
+            );
+            continue;
+        }
+
+        let target_sec_base_chirho =
+            section_addrs_chirho.addrs_chirho[target_sec_idx_chirho];
+        if target_sec_base_chirho == 0 {
+            // Target section was not loaded (e.g. debug info) — skip.
+            continue;
+        }
+
+        // The associated symtab is in sh_link (should match symtab_idx).
+        let rela_off_chirho = shdr_chirho.sh_offset_chirho as usize;
+        let rela_size_chirho = shdr_chirho.sh_size_chirho as usize;
+        let rela_end_chirho = rela_off_chirho + rela_size_chirho;
+
+        if rela_end_chirho > data_chirho.len() {
+            return Err(KoErrorChirho::SectionOutOfBoundsChirho);
+        }
+
+        let num_relas_chirho = rela_size_chirho / rela_entsize_chirho;
+
+        crate::serial_println_chirho!(
+            "[KO] Processing {} relocations for section {}",
+            num_relas_chirho,
+            target_sec_idx_chirho
+        );
+
+        for rela_idx_chirho in 0..num_relas_chirho {
+            let entry_off_chirho =
+                rela_off_chirho + rela_idx_chirho * rela_entsize_chirho;
+            let rela_chirho: Elf64RelaChirho = unsafe {
+                core::ptr::read_unaligned(
+                    data_chirho.as_ptr().add(entry_off_chirho)
+                        as *const Elf64RelaChirho,
+                )
+            };
+
+            let sym_idx_chirho = rela_chirho.sym_chirho() as usize;
+            let rela_type_chirho = rela_chirho.type_chirho();
+
+            if rela_type_chirho == R_X86_64_NONE_CHIRHO {
+                continue;
+            }
+
+            // Resolve the symbol value.
+            let sym_val_chirho = resolve_symbol_value_chirho(
+                sym_idx_chirho,
+                data_chirho,
+                symtab_off_chirho,
+                sym_entsize_chirho,
+                num_syms_chirho,
+                strtab_chirho,
+                section_addrs_chirho,
+            )?;
+
+            // S + A
+            let s_plus_a_chirho =
+                (sym_val_chirho as i64).wrapping_add(rela_chirho.r_addend_chirho)
+                    as u64;
+
+            // P = address of the relocation target in the loaded image.
+            let p_chirho = target_sec_base_chirho + rela_chirho.r_offset_chirho;
+
+            // Offset within module_mem where we write the patched value.
+            let module_mem_base_chirho =
+                section_addrs_chirho.addrs_chirho.iter().copied()
+                    .filter(|a_chirho| *a_chirho != 0)
+                    .min()
+                    .unwrap_or(0);
+            let patch_offset_chirho =
+                (p_chirho - module_mem_base_chirho) as usize;
+
+            apply_single_relocation_chirho(
+                module_mem_chirho,
+                patch_offset_chirho,
+                rela_type_chirho,
+                s_plus_a_chirho,
+                p_chirho,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve the absolute runtime address of a symbol given its index.
+fn resolve_symbol_value_chirho(
+    sym_idx_chirho: usize,
+    data_chirho: &[u8],
+    symtab_off_chirho: usize,
+    sym_entsize_chirho: usize,
+    num_syms_chirho: usize,
+    strtab_chirho: &[u8],
+    section_addrs_chirho: &SectionAddrMapChirho,
+) -> Result<u64, KoErrorChirho> {
+    if sym_idx_chirho >= num_syms_chirho {
+        return Err(KoErrorChirho::UnresolvedSymbolChirho);
+    }
+
+    let sym_off_chirho = symtab_off_chirho + sym_idx_chirho * sym_entsize_chirho;
+    let sym_chirho: Elf64SymChirho = unsafe {
+        core::ptr::read_unaligned(
+            data_chirho.as_ptr().add(sym_off_chirho) as *const Elf64SymChirho,
+        )
+    };
+
+    if sym_chirho.st_shndx_chirho == SHN_UNDEF_CHIRHO {
+        // External symbol — look up in the kernel symbol table.
+        let name_chirho =
+            read_str_chirho(strtab_chirho, sym_chirho.st_name_chirho as usize)
+                .unwrap_or("<unknown>");
+
+        match KernelSymbolTableChirho::lookup_symbol_chirho(name_chirho) {
+            Some(addr_chirho) => Ok(addr_chirho),
+            None => {
+                crate::serial_println_chirho!(
+                    "[KO] Unresolved symbol: '{}'",
+                    name_chirho
+                );
+                // For weak symbols, resolve to 0 instead of failing.
+                let binding_chirho =
+                    elf64_st_bind_chirho(sym_chirho.st_info_chirho);
+                if binding_chirho == STB_WEAK_CHIRHO {
+                    Ok(0)
+                } else {
+                    Err(KoErrorChirho::UnresolvedSymbolChirho)
+                }
+            }
+        }
+    } else {
+        // Defined within the module — section base + symbol value.
+        let sec_idx_chirho = sym_chirho.st_shndx_chirho as usize;
+        if sec_idx_chirho >= section_addrs_chirho.addrs_chirho.len() {
+            return Err(KoErrorChirho::InvalidSectionHeadersChirho);
+        }
+        let sec_base_chirho = section_addrs_chirho.addrs_chirho[sec_idx_chirho];
+        Ok(sec_base_chirho + sym_chirho.st_value_chirho)
+    }
+}
+
+/// Apply a single relocation to the loaded module memory.
+///
+/// Handles the six x86_64 relocation types required by A2-003.
+fn apply_single_relocation_chirho(
+    mem_chirho: &mut [u8],
+    offset_chirho: usize,
+    rela_type_chirho: u32,
+    s_plus_a_chirho: u64,
+    p_chirho: u64,
+) -> Result<(), KoErrorChirho> {
+    match rela_type_chirho {
+        // ---------------------------------------------------------------
+        // R_X86_64_64: S + A (absolute 64-bit)
+        // ---------------------------------------------------------------
+        R_X86_64_64_CHIRHO => {
+            if offset_chirho + 8 > mem_chirho.len() {
+                return Err(KoErrorChirho::RelocationOverflowChirho);
+            }
+            let val_chirho = s_plus_a_chirho;
+            mem_chirho[offset_chirho..offset_chirho + 8]
+                .copy_from_slice(&val_chirho.to_le_bytes());
+        }
+
+        // ---------------------------------------------------------------
+        // R_X86_64_PC32 / R_X86_64_PLT32: S + A - P (PC-relative 32)
+        // ---------------------------------------------------------------
+        R_X86_64_PC32_CHIRHO | R_X86_64_PLT32_CHIRHO => {
+            if offset_chirho + 4 > mem_chirho.len() {
+                return Err(KoErrorChirho::RelocationOverflowChirho);
+            }
+            let val_chirho =
+                (s_plus_a_chirho as i64).wrapping_sub(p_chirho as i64) as i32;
+            mem_chirho[offset_chirho..offset_chirho + 4]
+                .copy_from_slice(&val_chirho.to_le_bytes());
+        }
+
+        // ---------------------------------------------------------------
+        // R_X86_64_32: S + A (zero-extended 32-bit)
+        // ---------------------------------------------------------------
+        R_X86_64_32_CHIRHO => {
+            if offset_chirho + 4 > mem_chirho.len() {
+                return Err(KoErrorChirho::RelocationOverflowChirho);
+            }
+            let val_chirho = s_plus_a_chirho;
+            if val_chirho > u32::MAX as u64 {
+                crate::serial_println_chirho!(
+                    "[KO] R_X86_64_32 overflow: value={:#x}",
+                    val_chirho
+                );
+                return Err(KoErrorChirho::RelocationOverflowChirho);
+            }
+            mem_chirho[offset_chirho..offset_chirho + 4]
+                .copy_from_slice(&(val_chirho as u32).to_le_bytes());
+        }
+
+        // ---------------------------------------------------------------
+        // R_X86_64_32S: S + A (sign-extended 32-bit)
+        // ---------------------------------------------------------------
+        R_X86_64_32S_CHIRHO => {
+            if offset_chirho + 4 > mem_chirho.len() {
+                return Err(KoErrorChirho::RelocationOverflowChirho);
+            }
+            let val_chirho = s_plus_a_chirho as i64;
+            if val_chirho > i32::MAX as i64 || val_chirho < i32::MIN as i64 {
+                crate::serial_println_chirho!(
+                    "[KO] R_X86_64_32S overflow: value={:#x}",
+                    val_chirho
+                );
+                return Err(KoErrorChirho::RelocationOverflowChirho);
+            }
+            mem_chirho[offset_chirho..offset_chirho + 4]
+                .copy_from_slice(&(val_chirho as i32).to_le_bytes());
+        }
+
+        // ---------------------------------------------------------------
+        // R_X86_64_GOTPCREL: S + A - P (treat as PC-relative, no GOT)
+        //
+        // In a monolithic kernel there is no GOT; we resolve directly to
+        // the symbol address using the same formula as PC32.
+        // ---------------------------------------------------------------
+        R_X86_64_GOTPCREL_CHIRHO => {
+            if offset_chirho + 4 > mem_chirho.len() {
+                return Err(KoErrorChirho::RelocationOverflowChirho);
+            }
+            let val_chirho =
+                (s_plus_a_chirho as i64).wrapping_sub(p_chirho as i64) as i32;
+            mem_chirho[offset_chirho..offset_chirho + 4]
+                .copy_from_slice(&val_chirho.to_le_bytes());
+        }
+
+        _ => {
+            crate::serial_println_chirho!(
+                "[KO] Unsupported relocation type: {}",
+                rela_type_chirho
+            );
+            return Err(KoErrorChirho::UnsupportedRelocationChirho);
+        }
+    }
+
+    Ok(())
+}
+
+// ===========================================================================
+// A2-005: Module init / cleanup execution
+// ===========================================================================
+
+/// Module init function signature: `int init_module(void)`.
+type InitModuleFnChirho = unsafe extern "C" fn() -> i32;
+
+/// Module cleanup function signature: `void cleanup_module(void)`.
+type CleanupModuleFnChirho = unsafe extern "C" fn();
+
+/// Call a module's `init_module` entry point.
+///
+/// # Safety
+///
+/// The address must point to a valid, relocated `init_module` function in
+/// executable module memory.
+unsafe fn call_init_module_chirho(addr_chirho: u64) -> i32 {
+    crate::serial_println_chirho!(
+        "[KO] Calling init_module at {:#x}",
+        addr_chirho
+    );
+    let init_fn_chirho: InitModuleFnChirho =
+        unsafe { core::mem::transmute(addr_chirho) };
+    let ret_chirho = unsafe { init_fn_chirho() };
+    crate::serial_println_chirho!(
+        "[KO] init_module returned {}",
+        ret_chirho
+    );
+    ret_chirho
+}
+
+/// Call a module's `cleanup_module` entry point.
+///
+/// # Safety
+///
+/// The address must point to a valid, relocated `cleanup_module` function in
+/// executable module memory.
+unsafe fn call_cleanup_module_chirho(addr_chirho: u64) {
+    crate::serial_println_chirho!(
+        "[KO] Calling cleanup_module at {:#x}",
+        addr_chirho
+    );
+    let cleanup_fn_chirho: CleanupModuleFnChirho =
+        unsafe { core::mem::transmute(addr_chirho) };
+    unsafe { cleanup_fn_chirho() };
+    crate::serial_println_chirho!("[KO] cleanup_module returned");
+}
 
 // ---------------------------------------------------------------------------
 // ELF .ko parser
@@ -638,6 +1281,345 @@ pub fn parse_ko_elf_chirho(data_chirho: &[u8]) -> Result<KoModuleChirho, KoError
         state_chirho: ModuleStateChirho::UnloadedChirho,
         symbol_count_chirho,
         sections_chirho: sections_info_chirho,
+        module_mem_base_chirho: 0,
+        module_mem_size_chirho: 0,
+    })
+}
+
+// ===========================================================================
+// Full module loading pipeline (parse -> allocate -> relocate -> init)
+// ===========================================================================
+
+/// Load a `.ko` module: parse the ELF, allocate memory, copy+relocate
+/// sections, and call `init_module`.
+///
+/// This is the complete A2-003 / A2-005 pipeline invoked by
+/// `sys_init_module_impl_chirho`.
+fn load_and_init_module_chirho(
+    data_chirho: &[u8],
+) -> Result<KoModuleChirho, KoErrorChirho> {
+    // -----------------------------------------------------------------------
+    // 1. Parse the ELF header & sections (reuses parse_ko_elf_chirho logic
+    //    but we also need the raw shdrs for relocation, so we duplicate the
+    //    lightweight parsing inline).
+    // -----------------------------------------------------------------------
+    let header_size_chirho = mem::size_of::<Elf64HeaderChirho>();
+    if data_chirho.len() < header_size_chirho {
+        return Err(KoErrorChirho::TooShortChirho);
+    }
+
+    let header_chirho: Elf64HeaderChirho = unsafe {
+        core::ptr::read_unaligned(data_chirho.as_ptr() as *const Elf64HeaderChirho)
+    };
+
+    if header_chirho.e_ident_chirho[0..4] != ELF_MAGIC_CHIRHO {
+        return Err(KoErrorChirho::InvalidMagicChirho);
+    }
+    if header_chirho.e_ident_chirho[4] != ELFCLASS64_CHIRHO {
+        return Err(KoErrorChirho::UnsupportedClassChirho);
+    }
+    if header_chirho.e_ident_chirho[5] != ELFDATA2LSB_CHIRHO {
+        return Err(KoErrorChirho::UnsupportedEndianChirho);
+    }
+    if header_chirho.e_machine_chirho != EM_X86_64_CHIRHO {
+        return Err(KoErrorChirho::UnsupportedMachineChirho);
+    }
+    if header_chirho.e_type_chirho != ET_REL_CHIRHO {
+        return Err(KoErrorChirho::NotRelocatableChirho);
+    }
+
+    let shoff_chirho = header_chirho.e_shoff_chirho as usize;
+    let shentsize_chirho = header_chirho.e_shentsize_chirho as usize;
+    let shnum_chirho = header_chirho.e_shnum_chirho as usize;
+    let shstrndx_chirho = header_chirho.e_shstrndx_chirho as usize;
+
+    if shentsize_chirho < mem::size_of::<Elf64ShdrChirho>() {
+        return Err(KoErrorChirho::InvalidSectionHeadersChirho);
+    }
+
+    let sh_table_end_chirho = shoff_chirho
+        .checked_add(
+            shentsize_chirho
+                .checked_mul(shnum_chirho)
+                .ok_or(KoErrorChirho::InvalidSectionHeadersChirho)?,
+        )
+        .ok_or(KoErrorChirho::InvalidSectionHeadersChirho)?;
+
+    if sh_table_end_chirho > data_chirho.len() || shnum_chirho == 0 {
+        return Err(KoErrorChirho::InvalidSectionHeadersChirho);
+    }
+
+    let mut shdrs_chirho: Vec<Elf64ShdrChirho> = Vec::with_capacity(shnum_chirho);
+    for idx_chirho in 0..shnum_chirho {
+        let off_chirho = shoff_chirho + idx_chirho * shentsize_chirho;
+        let shdr_chirho: Elf64ShdrChirho = unsafe {
+            core::ptr::read_unaligned(
+                data_chirho.as_ptr().add(off_chirho) as *const Elf64ShdrChirho,
+            )
+        };
+        shdrs_chirho.push(shdr_chirho);
+    }
+
+    // shstrtab
+    if shstrndx_chirho >= shnum_chirho {
+        return Err(KoErrorChirho::InvalidStrtabChirho);
+    }
+    let shstrtab_shdr_chirho = &shdrs_chirho[shstrndx_chirho];
+    let shstrtab_off_chirho = shstrtab_shdr_chirho.sh_offset_chirho as usize;
+    let shstrtab_size_chirho = shstrtab_shdr_chirho.sh_size_chirho as usize;
+    if shstrtab_off_chirho + shstrtab_size_chirho > data_chirho.len() {
+        return Err(KoErrorChirho::InvalidStrtabChirho);
+    }
+    let shstrtab_chirho =
+        &data_chirho[shstrtab_off_chirho..shstrtab_off_chirho + shstrtab_size_chirho];
+
+    // Find symtab
+    let mut symtab_idx_chirho: Option<usize> = None;
+    let mut sections_info_chirho: Vec<KoSectionInfoChirho> = Vec::new();
+
+    for (idx_chirho, shdr_chirho) in shdrs_chirho.iter().enumerate() {
+        let sec_name_chirho =
+            read_str_chirho(shstrtab_chirho, shdr_chirho.sh_name_chirho as usize)
+                .unwrap_or("<invalid>");
+        sections_info_chirho.push(KoSectionInfoChirho {
+            name_chirho: String::from(sec_name_chirho),
+            type_chirho: shdr_chirho.sh_type_chirho,
+            flags_chirho: shdr_chirho.sh_flags_chirho,
+            offset_chirho: shdr_chirho.sh_offset_chirho,
+            size_chirho: shdr_chirho.sh_size_chirho,
+        });
+        if shdr_chirho.sh_type_chirho == SHT_SYMTAB_CHIRHO && symtab_idx_chirho.is_none() {
+            symtab_idx_chirho = Some(idx_chirho);
+        }
+    }
+
+    let symtab_idx_chirho = symtab_idx_chirho.ok_or(KoErrorChirho::NoSymtabChirho)?;
+    let symtab_shdr_chirho = &shdrs_chirho[symtab_idx_chirho];
+
+    let strtab_idx_chirho = symtab_shdr_chirho.sh_link_chirho as usize;
+    if strtab_idx_chirho >= shnum_chirho {
+        return Err(KoErrorChirho::InvalidStrtabChirho);
+    }
+    let strtab_shdr_chirho = &shdrs_chirho[strtab_idx_chirho];
+    let strtab_off_chirho = strtab_shdr_chirho.sh_offset_chirho as usize;
+    let strtab_size_chirho = strtab_shdr_chirho.sh_size_chirho as usize;
+    if strtab_off_chirho + strtab_size_chirho > data_chirho.len() {
+        return Err(KoErrorChirho::InvalidStrtabChirho);
+    }
+    let strtab_chirho = &data_chirho[strtab_off_chirho..strtab_off_chirho + strtab_size_chirho];
+
+    // -----------------------------------------------------------------------
+    // 2. Calculate total allocation size for SHF_ALLOC sections and allocate.
+    // -----------------------------------------------------------------------
+    let mut total_size_chirho: usize = 0;
+    let alignment_chirho: usize = 16; // 16-byte alignment for sections
+
+    // Pre-calculate offsets for each section within the allocation.
+    let mut section_offsets_chirho: Vec<usize> = Vec::with_capacity(shnum_chirho);
+    for shdr_chirho in shdrs_chirho.iter() {
+        if shdr_chirho.sh_flags_chirho & SHF_ALLOC_CHIRHO != 0 {
+            // Align up.
+            let align_chirho = if shdr_chirho.sh_addralign_chirho > 1 {
+                shdr_chirho.sh_addralign_chirho as usize
+            } else {
+                alignment_chirho
+            };
+            total_size_chirho =
+                (total_size_chirho + align_chirho - 1) & !(align_chirho - 1);
+            section_offsets_chirho.push(total_size_chirho);
+            total_size_chirho += shdr_chirho.sh_size_chirho as usize;
+        } else {
+            section_offsets_chirho.push(0);
+        }
+    }
+
+    if total_size_chirho == 0 {
+        crate::serial_println_chirho!("[KO] No SHF_ALLOC sections — nothing to load");
+        // Still return a valid module struct (no code to run).
+        return Ok(KoModuleChirho {
+            name_chirho: String::from("empty"),
+            init_fn_chirho: None,
+            cleanup_fn_chirho: None,
+            state_chirho: ModuleStateChirho::UnloadedChirho,
+            symbol_count_chirho: 0,
+            sections_chirho: sections_info_chirho,
+            module_mem_base_chirho: 0,
+            module_mem_size_chirho: 0,
+        });
+    }
+
+    // Allocate a contiguous block from the kernel heap.
+    let mut module_mem_chirho: Vec<u8> = Vec::new();
+    module_mem_chirho
+        .try_reserve(total_size_chirho)
+        .map_err(|_| KoErrorChirho::OutOfMemoryChirho)?;
+    module_mem_chirho.resize(total_size_chirho, 0u8);
+
+    let mem_base_chirho = module_mem_chirho.as_ptr() as u64;
+
+    crate::serial_println_chirho!(
+        "[KO] Allocated {} bytes for module at {:#x}",
+        total_size_chirho,
+        mem_base_chirho
+    );
+
+    // -----------------------------------------------------------------------
+    // 3. Copy section data and build runtime address map.
+    // -----------------------------------------------------------------------
+    let mut section_addrs_chirho = SectionAddrMapChirho {
+        addrs_chirho: vec![0u64; shnum_chirho],
+    };
+
+    for (idx_chirho, shdr_chirho) in shdrs_chirho.iter().enumerate() {
+        if shdr_chirho.sh_flags_chirho & SHF_ALLOC_CHIRHO == 0 {
+            continue;
+        }
+        let dest_off_chirho = section_offsets_chirho[idx_chirho];
+        let runtime_addr_chirho = mem_base_chirho + dest_off_chirho as u64;
+        section_addrs_chirho.addrs_chirho[idx_chirho] = runtime_addr_chirho;
+
+        if shdr_chirho.sh_type_chirho != SHT_NOBITS_CHIRHO {
+            let src_off_chirho = shdr_chirho.sh_offset_chirho as usize;
+            let size_chirho = shdr_chirho.sh_size_chirho as usize;
+            if src_off_chirho + size_chirho > data_chirho.len() {
+                return Err(KoErrorChirho::SectionOutOfBoundsChirho);
+            }
+            module_mem_chirho[dest_off_chirho..dest_off_chirho + size_chirho]
+                .copy_from_slice(&data_chirho[src_off_chirho..src_off_chirho + size_chirho]);
+        }
+        // SHT_NOBITS (.bss) is already zeroed.
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Apply relocations (A2-003).
+    // -----------------------------------------------------------------------
+    apply_relocations_chirho(
+        &mut module_mem_chirho,
+        &section_addrs_chirho,
+        &shdrs_chirho,
+        data_chirho,
+        symtab_idx_chirho,
+        strtab_chirho,
+    )?;
+
+    crate::serial_println_chirho!("[KO] Relocations applied successfully");
+
+    // -----------------------------------------------------------------------
+    // 5. Find init_module / cleanup_module runtime addresses (A2-005).
+    // -----------------------------------------------------------------------
+    let sym_entsize_chirho = if symtab_shdr_chirho.sh_entsize_chirho > 0 {
+        symtab_shdr_chirho.sh_entsize_chirho as usize
+    } else {
+        mem::size_of::<Elf64SymChirho>()
+    };
+    let symtab_off_chirho = symtab_shdr_chirho.sh_offset_chirho as usize;
+    let num_syms_chirho =
+        symtab_shdr_chirho.sh_size_chirho as usize / sym_entsize_chirho;
+
+    let mut init_addr_chirho: Option<u64> = None;
+    let mut cleanup_addr_chirho: Option<u64> = None;
+    let mut symbol_count_chirho: usize = 0;
+    let mut module_name_chirho = String::from("unknown");
+
+    for sym_i_chirho in 0..num_syms_chirho {
+        let off_chirho = symtab_off_chirho + sym_i_chirho * sym_entsize_chirho;
+        let sym_chirho: Elf64SymChirho = unsafe {
+            core::ptr::read_unaligned(
+                data_chirho.as_ptr().add(off_chirho) as *const Elf64SymChirho,
+            )
+        };
+        if sym_chirho.st_name_chirho == 0 {
+            continue;
+        }
+        let name_chirho =
+            read_str_chirho(strtab_chirho, sym_chirho.st_name_chirho as usize)
+                .unwrap_or("<invalid>");
+
+        let binding_chirho = elf64_st_bind_chirho(sym_chirho.st_info_chirho);
+        let sym_type_chirho = elf64_st_type_chirho(sym_chirho.st_info_chirho);
+
+        if sym_chirho.st_shndx_chirho != SHN_UNDEF_CHIRHO
+            && (binding_chirho == STB_GLOBAL_CHIRHO || binding_chirho == STB_WEAK_CHIRHO)
+        {
+            symbol_count_chirho += 1;
+        }
+
+        // Compute runtime address for defined symbols.
+        if sym_chirho.st_shndx_chirho != SHN_UNDEF_CHIRHO {
+            let sec_idx_chirho = sym_chirho.st_shndx_chirho as usize;
+            let runtime_val_chirho = if sec_idx_chirho < section_addrs_chirho.addrs_chirho.len() {
+                section_addrs_chirho.addrs_chirho[sec_idx_chirho] + sym_chirho.st_value_chirho
+            } else {
+                sym_chirho.st_value_chirho
+            };
+
+            if name_chirho == "init_module" {
+                init_addr_chirho = Some(runtime_val_chirho);
+                crate::serial_println_chirho!(
+                    "[KO] init_module runtime addr = {:#x}",
+                    runtime_val_chirho
+                );
+            }
+            if name_chirho == "cleanup_module" {
+                cleanup_addr_chirho = Some(runtime_val_chirho);
+                crate::serial_println_chirho!(
+                    "[KO] cleanup_module runtime addr = {:#x}",
+                    runtime_val_chirho
+                );
+            }
+
+            if module_name_chirho == "unknown"
+                && binding_chirho == STB_GLOBAL_CHIRHO
+                && sym_type_chirho == STT_FUNC_CHIRHO
+            {
+                module_name_chirho = String::from(name_chirho);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Call init_module (A2-005).
+    // -----------------------------------------------------------------------
+    if let Some(init_chirho) = init_addr_chirho {
+        let ret_chirho = unsafe { call_init_module_chirho(init_chirho) };
+        if ret_chirho != 0 {
+            crate::serial_println_chirho!(
+                "[KO] init_module failed with code {}, module NOT loaded",
+                ret_chirho
+            );
+            // Module init failed — do not add to loaded list.
+            // Call cleanup if available.
+            if let Some(cleanup_chirho) = cleanup_addr_chirho {
+                unsafe { call_cleanup_module_chirho(cleanup_chirho) };
+            }
+            return Err(KoErrorChirho::NoInitSymbolChirho);
+        }
+    }
+
+    // Leak the Vec so that the module memory stays alive.  We store the
+    // base + size so it can be reclaimed on unload.
+    let mem_ptr_chirho = module_mem_chirho.as_mut_ptr();
+    let mem_len_chirho = module_mem_chirho.len();
+    let mem_cap_chirho = module_mem_chirho.capacity();
+    mem::forget(module_mem_chirho);
+
+    crate::serial_println_chirho!(
+        "[KO] Module '{}' loaded: {} symbols, mem={:#x}+{:#x}",
+        module_name_chirho,
+        symbol_count_chirho,
+        mem_ptr_chirho as u64,
+        mem_len_chirho
+    );
+
+    Ok(KoModuleChirho {
+        name_chirho: module_name_chirho,
+        init_fn_chirho: init_addr_chirho,
+        cleanup_fn_chirho: cleanup_addr_chirho,
+        state_chirho: ModuleStateChirho::LoadedChirho,
+        symbol_count_chirho,
+        sections_chirho: sections_info_chirho,
+        module_mem_base_chirho: mem_ptr_chirho as u64,
+        module_mem_size_chirho: mem_cap_chirho,
     })
 }
 
@@ -697,12 +1679,12 @@ pub fn sys_init_module_impl_chirho(
         }
     }
 
-    // Parse the ELF relocatable object.
-    let module_chirho = match parse_ko_elf_chirho(&buf_chirho) {
+    // Full loading pipeline: parse -> allocate -> relocate -> init.
+    let module_chirho = match load_and_init_module_chirho(&buf_chirho) {
         Ok(m_chirho) => m_chirho,
         Err(err_chirho) => {
             crate::serial_println_chirho!(
-                "[KO] sys_init_module: parse failed: {:?}",
+                "[KO] sys_init_module: load failed: {:?}",
                 err_chirho
             );
             return err_chirho.to_errno_chirho();
@@ -710,13 +1692,11 @@ pub fn sys_init_module_impl_chirho(
     };
 
     crate::serial_println_chirho!(
-        "[KO] Module '{}' parsed successfully ({} symbols)",
+        "[KO] Module '{}' loaded successfully ({} symbols)",
         module_chirho.name_chirho,
         module_chirho.symbol_count_chirho
     );
 
-    // TODO (Phase A3): Perform relocations, allocate module memory, call init_fn.
-    // For now, record the module as loaded.
     let mut loaded_chirho = LOADED_MODULES_CHIRHO.lock();
 
     // Check for duplicate module names.
@@ -732,8 +1712,6 @@ pub fn sys_init_module_impl_chirho(
         }
     }
 
-    let mut module_chirho = module_chirho;
-    module_chirho.state_chirho = ModuleStateChirho::LoadedChirho;
     loaded_chirho.push(module_chirho);
 
     crate::serial_println_chirho!(
@@ -790,14 +1768,38 @@ pub fn sys_delete_module_impl_chirho(name_ptr_chirho: u64, _flags_chirho: u64) -
         }
     };
 
-    // TODO (Phase A3): Call cleanup_fn if present, free module memory.
-    // For now, just mark as unloaded.
+    // A2-005: Call cleanup_module if present.
+    if let Some(cleanup_addr_chirho) = loaded_chirho[idx_chirho].cleanup_fn_chirho {
+        unsafe {
+            call_cleanup_module_chirho(cleanup_addr_chirho);
+        }
+    }
+
+    // Reclaim module memory.
+    let mem_base_chirho = loaded_chirho[idx_chirho].module_mem_base_chirho;
+    let mem_size_chirho = loaded_chirho[idx_chirho].module_mem_size_chirho;
+    if mem_base_chirho != 0 && mem_size_chirho > 0 {
+        // SAFETY: We allocated this Vec in load_and_init_module_chirho and
+        // called mem::forget on it.  Reconstruct and drop to free.
+        unsafe {
+            let _ = Vec::from_raw_parts(
+                mem_base_chirho as *mut u8,
+                mem_size_chirho,
+                mem_size_chirho,
+            );
+        }
+        crate::serial_println_chirho!(
+            "[KO] Freed {} bytes of module memory at {:#x}",
+            mem_size_chirho,
+            mem_base_chirho
+        );
+    }
+
     loaded_chirho[idx_chirho].state_chirho = ModuleStateChirho::UnloadedChirho;
 
     crate::serial_println_chirho!(
-        "[KO] Module '{}' unloaded (cleanup_fn present: {})",
-        name_chirho,
-        loaded_chirho[idx_chirho].cleanup_fn_chirho.is_some()
+        "[KO] Module '{}' unloaded",
+        name_chirho
     );
 
     0 // Success

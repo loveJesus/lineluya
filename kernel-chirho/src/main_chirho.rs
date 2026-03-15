@@ -26,6 +26,10 @@ mod fs_chirho;
 
 // Phase 5: Block I/O layer
 mod block_chirho;
+mod bio_chirho;
+
+// Phase A4: VirtIO device drivers
+mod virtio_chirho;
 
 // Phase 6: Networking socket stubs
 mod net_chirho;
