@@ -1100,6 +1100,10 @@ impl VirtioBlkDeviceChirho {
             return Err(-19); // ENODEV
         }
 
+        crate::serial_println_chirho!(
+            "    [VirtIO-IO] submit: sector={}, len={}, write={}, vq_base={:#x}",
+            sector_chirho, buf_chirho.len(), is_write_chirho, vq_base_chirho
+        );
         let mut vq_chirho = self.vq_chirho.lock();
         let queue_size_chirho = vq_chirho.size_chirho as usize;
 
