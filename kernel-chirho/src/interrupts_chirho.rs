@@ -138,6 +138,12 @@ pub fn init_pics_chirho() {
     // disabled. The offsets (32, 40) do not conflict with CPU exception vectors.
     unsafe {
         PICS_CHIRHO.lock().initialize();
+
+        // Explicitly unmask all IRQs on both PICs.
+        // UEFI firmware may have masked them. Port 0x21 = PIC1 data (IRQ 0-7),
+        // Port 0xA1 = PIC2 data (IRQ 8-15). Writing 0x00 unmasks all.
+        x86_64::instructions::port::Port::<u8>::new(0x21).write(0x00);
+        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0x00);
     }
 }
 
