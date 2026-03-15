@@ -20,6 +20,7 @@ use crate::vfs_chirho::{
     S_IFCHR_CHIRHO, S_IFDIR_CHIRHO, SEEK_CUR_CHIRHO, SEEK_END_CHIRHO, SEEK_SET_CHIRHO,
     StatfsChirho, SuperOpsChirho, SuperblockChirho,
 };
+use crate::pty_chirho::PTS_DIR_OPS_CHIRHO;
 use crate::syscall_chirho::{
     EINVAL_CHIRHO, ENOSYS_CHIRHO, PRNG_STATE_CHIRHO, xorshift64_chirho,
 };
@@ -482,6 +483,18 @@ static DEV_NODES_CHIRHO: &[DevNodeChirho] = &[
         minor_chirho: 0,
         ops_chirho: &DEV_CONSOLE_OPS_CHIRHO, // same behaviour as console for now
     },
+    DevNodeChirho {
+        name_chirho: "ptmx",
+        major_chirho: 5,
+        minor_chirho: 2,
+        ops_chirho: &crate::pty_chirho::PTMX_OPS_CHIRHO,
+    },
+    DevNodeChirho {
+        name_chirho: "fb0",
+        major_chirho: 29,
+        minor_chirho: 0,
+        ops_chirho: &crate::fb_device_chirho::FB_DEVICE_OPS_CHIRHO,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -529,6 +542,24 @@ pub fn mount_devtmpfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
 
         entries_chirho.push((String::from(node_chirho.name_chirho), inode_chirho));
     }
+
+    // Create /dev/pts directory inode
+    let pts_dir_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+        ino_chirho: alloc_dev_ino_chirho(),
+        mode_chirho: S_IFDIR_CHIRHO | 0o755,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: 0,
+        nlink_chirho: 2,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(Mutex::new(
+            TmpfsDataChirho::DirChirho(Vec::new()),
+        ))),
+    }));
+    entries_chirho.push((String::from("pts"), pts_dir_inode_chirho));
 
     let root_inode_chirho = Arc::new(Mutex::new(InodeChirho {
         ino_chirho: alloc_dev_ino_chirho(),
