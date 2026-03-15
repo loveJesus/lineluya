@@ -43,8 +43,9 @@ pub static mut USER_RSP_SCRATCH_CHIRHO: u64 = 0;
 // Syscall stack size
 // ============================================================================
 
-/// Size of the dedicated kernel stack used during SYSCALL handling (16 KiB).
-const SYSCALL_STACK_SIZE_CHIRHO: usize = 16 * 1024;
+/// Size of the dedicated kernel stack used during SYSCALL handling (128 KiB).
+/// BusyBox's syscall paths have deep Rust call chains that need more stack.
+const SYSCALL_STACK_SIZE_CHIRHO: usize = 128 * 1024;
 
 // ============================================================================
 // Assembly trampoline

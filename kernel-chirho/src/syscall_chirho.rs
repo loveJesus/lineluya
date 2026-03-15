@@ -1052,6 +1052,9 @@ const REALTIME_EPOCH_CHIRHO: i64 = 1773532800;
 static CURRENT_BRK_CHIRHO: AtomicU64 = AtomicU64::new(0x0060_0000);
 
 /// Set the initial program break (called by exec after loading ELF).
+/// Last syscall number for post-mortem debugging.
+pub static LAST_SYSCALL_NR_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 pub fn set_brk_chirho(addr_chirho: u64) {
     CURRENT_BRK_CHIRHO.store(addr_chirho, core::sync::atomic::Ordering::SeqCst);
 }
@@ -1202,13 +1205,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let arg4_chirho = frame_chirho.r8_chirho;
     let _arg5_chirho = frame_chirho.r9_chirho;
 
-    // Trace every syscall for debugging BusyBox boot
-    crate::serial_println_chirho!(
-        "[STRACE] {}({:#x},{:#x},{:#x}) [nr={}]",
-        syscall_name_chirho(syscall_nr_chirho),
-        arg0_chirho, arg1_chirho, arg2_chirho,
-        syscall_nr_chirho
-    );
+    // Track last syscall for post-mortem debugging (no serial output here
+    // to avoid deadlocks with the page fault handler's serial writes).
+    LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
 
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => crate::fs_chirho::sys_read_real_chirho(
@@ -1781,11 +1780,6 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             -ENOSYS_CHIRHO
         }
     };
-
-    crate::serial_println_chirho!(
-        "[STRACE]   => {}",
-        result_chirho
-    );
 
     // Store the return value so the caller (assembly stub) can put it in rax.
     frame_chirho.rax_chirho = result_chirho as u64;
