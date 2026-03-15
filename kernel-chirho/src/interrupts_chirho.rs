@@ -86,11 +86,7 @@ static IDT_CHIRHO: spin::Lazy<InterruptDescriptorTable> = spin::Lazy::new(|| {
             .set_stack_index(crate::gdt_chirho::DOUBLE_FAULT_IST_INDEX_CHIRHO);
     }
 
-    unsafe {
-        idt_chirho.page_fault
-            .set_handler_fn(page_fault_handler_chirho)
-            .set_stack_index(crate::gdt_chirho::PAGE_FAULT_IST_INDEX_CHIRHO);
-    }
+    idt_chirho.page_fault.set_handler_fn(page_fault_handler_chirho);
     idt_chirho.general_protection_fault.set_handler_fn(general_protection_fault_handler_chirho);
 
     // --- Hardware interrupt handlers ---
@@ -185,31 +181,42 @@ extern "x86-interrupt" fn double_fault_handler_chirho(
 /// Page-fault handler. Checks for COW faults first; if the fault is not
 /// COW-resolvable, prints the faulting address and error code, then halts.
 extern "x86-interrupt" fn page_fault_handler_chirho(
-    stack_frame_chirho: InterruptStackFrame,
+    _stack_frame_chirho: InterruptStackFrame,
     error_code_chirho: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
 
-    let faulting_address_chirho = Cr2::read();
+    // Check if this is a user-mode fault on an unmapped page.
+    // If so, try to map the page on demand (demand paging).
+    let is_user_chirho = error_code_chirho.contains(PageFaultErrorCode::USER_MODE);
 
-    // Check if this is a write fault (bit 1 of error code = CAUSED_BY_WRITE).
-    // If so, attempt to resolve it as a COW (copy-on-write) fault.
-    let is_write_fault_chirho = error_code_chirho.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
-    let is_present_chirho = error_code_chirho.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
-
-    if is_write_fault_chirho && is_present_chirho {
-        // The page is present but not writable — could be COW.
-        if let Ok(faulting_virt_chirho) = faulting_address_chirho {
-            if crate::pagetable_chirho::handle_cow_fault_chirho(faulting_virt_chirho) {
-                // COW fault resolved — return to the faulting instruction
-                // which will now succeed with the writable page.
-                return;
+    if is_user_chirho {
+        // Try to map the faulting page for the user process.
+        if let Ok(fault_addr_chirho) = Cr2::read() {
+            let page_addr_chirho = fault_addr_chirho.as_u64() & !0xFFF;
+            // Attempt to mmap the faulting page
+            let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
+            let mut guard_chirho = mm_lock_chirho.lock();
+            if let Some(mm_chirho) = guard_chirho.as_mut() {
+                let result_chirho = mm_chirho.mmap_chirho(
+                    page_addr_chirho,
+                    4096,
+                    crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
+                    crate::mm_chirho::MAP_PRIVATE_CHIRHO
+                        | crate::mm_chirho::MAP_ANONYMOUS_CHIRHO
+                        | crate::mm_chirho::MAP_FIXED_CHIRHO,
+                    -1i32,
+                    0,
+                );
+                if result_chirho.is_ok() {
+                    // Page mapped — return to retry the faulting instruction
+                    return;
+                }
             }
         }
     }
 
-    // Minimal page fault handler — just halt to avoid double fault.
-    // No serial output, no locks, nothing that could fault.
+    // Fatal — halt
     x86_64::instructions::interrupts::disable();
     loop {
         x86_64::instructions::hlt();

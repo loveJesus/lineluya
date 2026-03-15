@@ -138,7 +138,9 @@ static TSS_CHIRHO: Lazy<TaskStateSegment> = Lazy::new(|| {
         page_fault_stack_end_chirho;
 
     // -- Privilege stack for ring 0 --
-    // SAFETY: Same reasoning as above — module-private, single init via `Lazy`.
+    // Used by the CPU when transitioning from ring 3 to ring 0 on exceptions.
+    // This MUST be in mapped memory — if it's not, page faults from user mode
+    // escalate directly to double faults.
     let privilege_stack_end_chirho = {
         static mut PRIVILEGE_STACK_CHIRHO: [u8; STACK_SIZE_CHIRHO] = [0; STACK_SIZE_CHIRHO];
         #[allow(static_mut_refs)]
