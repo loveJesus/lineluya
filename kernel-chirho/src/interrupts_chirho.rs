@@ -148,6 +148,19 @@ pub fn init_pics_chirho() {
         // Port 0xA1 = PIC2 data (IRQ 8-15). Writing 0x00 unmasks all.
         x86_64::instructions::port::Port::<u8>::new(0x21).write(0x00);
         x86_64::instructions::port::Port::<u8>::new(0xA1).write(0x00);
+
+        // Re-enable the PS/2 keyboard controller.
+        // UEFI may have disabled it. Send command 0xAE (enable first port)
+        // to the PS/2 controller command port (0x64).
+        // Wait for input buffer to be clear (bit 1 of status port 0x64)
+        while x86_64::instructions::port::Port::<u8>::new(0x64).read() & 0x02 != 0 {}
+        x86_64::instructions::port::Port::<u8>::new(0x64).write(0xAE); // Enable first PS/2 port
+        // Also enable keyboard scanning
+        while x86_64::instructions::port::Port::<u8>::new(0x64).read() & 0x02 != 0 {}
+        x86_64::instructions::port::Port::<u8>::new(0x60).write(0xF4); // Enable scanning
+        // Read and discard the ACK byte
+        while x86_64::instructions::port::Port::<u8>::new(0x64).read() & 0x01 == 0 {}
+        let _ack_chirho = x86_64::instructions::port::Port::<u8>::new(0x60).read();
     }
 }
 
