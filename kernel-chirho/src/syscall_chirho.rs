@@ -1216,21 +1216,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho as usize,
         ),
         SYS_WRITE_CHIRHO => {
-            // Try the VFS fd table first; fall back to serial console for fd 1/2
-            let vfs_result_chirho = crate::fs_chirho::sys_write_real_chirho(
-                arg0_chirho,
-                arg1_chirho,
-                arg2_chirho as usize,
-            );
-            if vfs_result_chirho == -EBADF_CHIRHO && (arg0_chirho == 1 || arg0_chirho == 2) {
-                // Serial console fallback for stdout/stderr
-                sys_write_chirho(
-                    arg0_chirho,
-                    arg1_chirho as *const u8,
-                    arg2_chirho as usize,
-                )
+            if arg0_chirho == 1 || arg0_chirho == 2 {
+                // stdout/stderr → direct serial write (no VFS, no heap, no locks)
+                sys_write_chirho(arg0_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
             } else {
-                vfs_result_chirho
+                // Other fds → VFS path
+                crate::fs_chirho::sys_write_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
             }
         },
         SYS_OPEN_CHIRHO => crate::fs_chirho::sys_open_chirho(
