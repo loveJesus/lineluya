@@ -85,13 +85,13 @@
     {
       "id_chirho": "P2-007",
       "title_chirho": "ls on ext4 directories works",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
       "id_chirho": "P2-008",
       "title_chirho": "cat on ext4 files works",
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical"
     },
     {
