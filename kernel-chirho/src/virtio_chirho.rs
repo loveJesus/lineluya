@@ -870,7 +870,7 @@ impl VirtioBlkDeviceChirho {
         // memory that might be in BIOS-reserved regions.
         // Use physical address 0x200000 (2MB) — well above BIOS area, below kernel.
         static DMA_ALLOC_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0x1F000000); // Start at 496MB physical (near top of 512MB RAM)
+            core::sync::atomic::AtomicU64::new(0x100000); // Start at 1MB physical
 
         let alloc_pages_chirho = (total_bytes_chirho + 4095) / 4096;
         let phys_base_chirho = DMA_ALLOC_NEXT_CHIRHO.fetch_add(
@@ -910,8 +910,17 @@ impl VirtioBlkDeviceChirho {
             pfn_chirho as u64 * 4096
         );
 
+        // Step 5b: Set FEATURES_OK (VirtIO 1.0 transitional devices may need this)
+        status_chirho |= 8; // FEATURES_OK
+        transport_chirho.write_status_chirho(status_chirho);
+        // Verify FEATURES_OK is still set (device may clear it if unhappy)
+        let verify_status_chirho = transport_chirho.read_status_chirho();
+        if verify_status_chirho & 8 == 0 {
+            crate::serial_println_chirho!("    VirtIO-blk I/O: WARNING: FEATURES_OK not accepted");
+        }
+
         // Step 6: Driver OK — device is live.
-        status_chirho |= VIRTIO_STATUS_DRIVER_OK_CHIRHO as u8;
+        status_chirho = verify_status_chirho | VIRTIO_STATUS_DRIVER_OK_CHIRHO as u8;
         transport_chirho.write_status_chirho(status_chirho);
 
         let final_status_chirho = transport_chirho.read_status_chirho();
@@ -1136,8 +1145,31 @@ impl VirtioBlkDeviceChirho {
         let d1_chirho = vq_chirho.alloc_desc_chirho().ok_or(-12i64)?;
         let d2_chirho = vq_chirho.alloc_desc_chirho().ok_or(-12i64)?;
 
-        // Build request header on the stack.  The device reads this via DMA
-        // so it must remain live until completion.
+        // Allocate DMA buffers from known physical memory region.
+        // Stack/heap addresses have unreliable phys translations for DMA.
+        // Layout: [header: 16 bytes][data: 512 bytes][status: 1 byte] at a known phys addr.
+        // Reuse the DMA allocator from probe_io
+        static DMA_IO_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0x110000); // 0x110000 = 1MB+64KB
+        let dma_buf_size_chirho: u64 = 4096; // one page for header + data + status
+        let dma_phys_chirho = DMA_IO_NEXT_CHIRHO.fetch_add(
+            dma_buf_size_chirho,
+            core::sync::atomic::Ordering::SeqCst,
+        );
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let dma_virt_chirho = (dma_phys_chirho + phys_offset_chirho) as *mut u8;
+
+        // Header at offset 0
+        let header_phys_chirho = dma_phys_chirho;
+        let header_virt_chirho = dma_virt_chirho;
+        // Data at offset 64 (aligned)
+        let data_phys_chirho = dma_phys_chirho + 64;
+        let data_virt_chirho = unsafe { dma_virt_chirho.add(64) };
+        // Status at offset 64 + buf_len
+        let status_phys_chirho = dma_phys_chirho + 64 + buf_chirho.len() as u64;
+        let status_virt_chirho = unsafe { dma_virt_chirho.add(64 + buf_chirho.len()) };
+
+        // Write header to DMA region
         let req_header_chirho = VirtioBlkReqChirho {
             type_chirho: if is_write_chirho {
                 VIRTIO_BLK_T_OUT_CHIRHO
@@ -1147,20 +1179,15 @@ impl VirtioBlkDeviceChirho {
             reserved_chirho: 0,
             sector_chirho,
         };
-
-        // Status byte for the device to write.
-        let mut status_byte_chirho: u8 = 0xFF;
-
-        // Convert virtual addresses to physical via page table walk.
-        let header_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(
-            &req_header_chirho as *const VirtioBlkReqChirho as u64
-        ).unwrap_or(0);
-        let data_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(
-            buf_chirho.as_ptr() as u64
-        ).unwrap_or(0);
-        let status_phys_chirho = crate::pagetable_chirho::virt_to_phys_chirho(
-            &status_byte_chirho as *const u8 as u64
-        ).unwrap_or(0);
+        unsafe {
+            ptr::write_volatile(header_virt_chirho as *mut VirtioBlkReqChirho, req_header_chirho);
+            // Set status to 0xFF (device will overwrite)
+            ptr::write_volatile(status_virt_chirho, 0xFF);
+            // Copy write data if writing
+            if is_write_chirho {
+                ptr::copy_nonoverlapping(buf_chirho.as_ptr(), data_virt_chirho, buf_chirho.len());
+            }
+        }
 
         crate::serial_println_chirho!(
             "    [VirtIO-IO] descs: hdr_p={:#x} data_p={:#x} stat_p={:#x} d={}/{}/{}",
@@ -1277,7 +1304,7 @@ impl VirtioBlkDeviceChirho {
 
             core::hint::spin_loop();
             spins_chirho += 1;
-            if spins_chirho > 10_000_000 {
+            if spins_chirho > 1_000_000 {
                 let used_flags_chirho = unsafe { ptr::read_volatile(used_base_chirho) };
                 let used_idx_final_chirho = unsafe { ptr::read_volatile(used_base_chirho.add(1)) };
                 crate::serial_println_chirho!(
@@ -1296,8 +1323,15 @@ impl VirtioBlkDeviceChirho {
             }
         }
 
-        // Read the status byte (device wrote it via DMA).
-        let final_status_chirho = unsafe { ptr::read_volatile(&status_byte_chirho as *const u8) };
+        // Read the status byte from DMA region (device wrote it via DMA).
+        let final_status_chirho = unsafe { ptr::read_volatile(status_virt_chirho) };
+
+        // Copy read data back from DMA region to caller's buffer
+        if !is_write_chirho && final_status_chirho == VIRTIO_BLK_S_OK_CHIRHO {
+            unsafe {
+                ptr::copy_nonoverlapping(data_virt_chirho, buf_chirho.as_mut_ptr(), buf_chirho.len());
+            }
+        }
 
         // Free descriptors.
         vq_chirho.free_desc_chirho(d0_chirho);
