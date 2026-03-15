@@ -21,6 +21,13 @@
 //! - **A2-005**: Module init / cleanup execution — after relocation, locates
 //!   `init_module` and `cleanup_module` symbols and calls them via function
 //!   pointers.
+//! - **A2-006**: C ABI shim: `printk` — fully C-callable `printk` that parses
+//!   Linux log-level prefixes (`<0>`..`<7>`), forwards messages to serial, and
+//!   stores them in a 256-entry kernel log ring buffer
+//!   ([`KLOG_RING_CHIRHO`]).  Also provides `vprintk` and `printk_emit`.
+//! - **A2-007**: C ABI shim: `kmalloc` / `kfree` — C-callable `kmalloc(size,
+//!   gfp_flags)` and `kfree(ptr)` with internal allocation tracking.  Also
+//!   provides `kzalloc`, `krealloc`, and `ksize`.
 
 extern crate alloc;
 
@@ -407,13 +414,128 @@ macro_rules! EXPORT_SYMBOL_CHIRHO {
 /// thin wrappers around actual kernel routines, presented with C-compatible
 /// signatures so that module code compiled by GCC / Clang can invoke them.
 
-/// `printk` stub — writes a NUL-terminated string to the serial console.
+// ===========================================================================
+// A2-006: C ABI shim — printk (kernel log ring buffer)
+// ===========================================================================
+
+/// Maximum number of entries in the kernel log ring buffer.
+const KLOG_RING_SIZE_CHIRHO: usize = 256;
+
+/// Maximum length of a single kernel log message.
+const KLOG_MSG_MAX_LEN_CHIRHO: usize = 256;
+
+/// Single entry in the kernel log ring buffer.
+#[derive(Clone)]
+pub struct KlogEntryChirho {
+    /// Log level (0-7, matching Linux KERN_EMERG..KERN_DEBUG).
+    pub level_chirho: u8,
+    /// Monotonic timestamp (tick counter at log time).
+    pub timestamp_chirho: u64,
+    /// The log message bytes (UTF-8, NUL-terminated C string origin).
+    pub message_chirho: [u8; KLOG_MSG_MAX_LEN_CHIRHO],
+    /// Actual length of the message (excluding NUL).
+    pub len_chirho: usize,
+}
+
+impl KlogEntryChirho {
+    /// Create a zeroed log entry.
+    const fn zeroed_chirho() -> Self {
+        Self {
+            level_chirho: 7, // KERN_DEBUG
+            timestamp_chirho: 0,
+            message_chirho: [0u8; KLOG_MSG_MAX_LEN_CHIRHO],
+            len_chirho: 0,
+        }
+    }
+}
+
+/// Kernel log ring buffer — stores the last `KLOG_RING_SIZE_CHIRHO` messages.
+pub struct KlogRingChirho {
+    /// Ring buffer storage.
+    entries_chirho: [KlogEntryChirho; KLOG_RING_SIZE_CHIRHO],
+    /// Write index (wraps around).
+    write_idx_chirho: usize,
+    /// Total number of messages logged (never wraps).
+    total_count_chirho: u64,
+}
+
+impl KlogRingChirho {
+    /// Create a new empty ring buffer.
+    const fn new_chirho() -> Self {
+        const EMPTY_ENTRY_CHIRHO: KlogEntryChirho = KlogEntryChirho::zeroed_chirho();
+        Self {
+            entries_chirho: [EMPTY_ENTRY_CHIRHO; KLOG_RING_SIZE_CHIRHO],
+            write_idx_chirho: 0,
+            total_count_chirho: 0,
+        }
+    }
+
+    /// Append a log message to the ring buffer.
+    fn log_chirho(&mut self, level_chirho: u8, msg_chirho: &[u8]) {
+        let entry_chirho = &mut self.entries_chirho[self.write_idx_chirho];
+        entry_chirho.level_chirho = level_chirho;
+        entry_chirho.timestamp_chirho = self.total_count_chirho;
+        let copy_len_chirho = core::cmp::min(msg_chirho.len(), KLOG_MSG_MAX_LEN_CHIRHO);
+        entry_chirho.message_chirho[..copy_len_chirho]
+            .copy_from_slice(&msg_chirho[..copy_len_chirho]);
+        entry_chirho.len_chirho = copy_len_chirho;
+        self.write_idx_chirho = (self.write_idx_chirho + 1) % KLOG_RING_SIZE_CHIRHO;
+        self.total_count_chirho += 1;
+    }
+
+    /// Return the total number of messages ever logged.
+    pub fn total_count_chirho(&self) -> u64 {
+        self.total_count_chirho
+    }
+
+    /// Iterate over the most recent messages (oldest to newest).
+    pub fn recent_entries_chirho(&self) -> impl Iterator<Item = &KlogEntryChirho> {
+        let count_chirho = core::cmp::min(
+            self.total_count_chirho as usize,
+            KLOG_RING_SIZE_CHIRHO,
+        );
+        let start_chirho = if self.total_count_chirho as usize >= KLOG_RING_SIZE_CHIRHO {
+            self.write_idx_chirho
+        } else {
+            0
+        };
+        (0..count_chirho).map(move |i_chirho| {
+            &self.entries_chirho[(start_chirho + i_chirho) % KLOG_RING_SIZE_CHIRHO]
+        })
+    }
+}
+
+/// Global kernel log ring buffer, protected by a spin mutex.
+pub static KLOG_RING_CHIRHO: Mutex<KlogRingChirho> =
+    Mutex::new(KlogRingChirho::new_chirho());
+
+/// Parse a Linux-style log level prefix like `<N>` from the start of a message.
+/// Returns `(level, offset_past_prefix)`.  If no prefix is found, returns
+/// `(KERN_DEFAULT=4, 0)`.
+fn parse_klog_level_chirho(msg_chirho: &[u8]) -> (u8, usize) {
+    if msg_chirho.len() >= 3
+        && msg_chirho[0] == b'<'
+        && msg_chirho[2] == b'>'
+        && msg_chirho[1].is_ascii_digit()
+    {
+        (msg_chirho[1] - b'0', 3)
+    } else {
+        (4, 0) // KERN_WARNING default
+    }
+}
+
+/// `printk` C ABI shim — writes a NUL-terminated string to the serial console
+/// and the kernel log ring buffer.
+///
+/// Supports Linux log-level prefixes: `<0>` through `<7>`.
+/// This is the A2-006 implementation: C module calling printk produces kernel
+/// log output that is stored in the ring buffer and forwarded to serial.
 ///
 /// # Safety
 ///
 /// `msg_ptr_chirho` must point to a valid, NUL-terminated C string in kernel
 /// address space.
-#[allow(dead_code)]
+#[no_mangle]
 pub unsafe extern "C" fn printk_stub_chirho(msg_ptr_chirho: *const u8) -> i32 {
     if msg_ptr_chirho.is_null() {
         return -1;
@@ -428,51 +550,226 @@ pub unsafe extern "C" fn printk_stub_chirho(msg_ptr_chirho: *const u8) -> i32 {
             }
         }
         let slice_chirho = core::slice::from_raw_parts(msg_ptr_chirho, len_chirho);
-        if let Ok(s_chirho) = core::str::from_utf8(slice_chirho) {
-            crate::serial_println_chirho!("{}", s_chirho);
+
+        // Parse optional log-level prefix.
+        let (level_chirho, offset_chirho) = parse_klog_level_chirho(slice_chirho);
+        let body_chirho = &slice_chirho[offset_chirho..];
+
+        // Write to kernel log ring buffer.
+        {
+            let mut ring_chirho = KLOG_RING_CHIRHO.lock();
+            ring_chirho.log_chirho(level_chirho, body_chirho);
+        }
+
+        // Forward to serial console.
+        if let Ok(s_chirho) = core::str::from_utf8(body_chirho) {
+            crate::serial_println_chirho!("[printk/{}] {}", level_chirho, s_chirho);
         }
     }
     0
 }
 
-/// `kmalloc` stub — allocate `size_chirho` bytes from the kernel heap.
+/// `vprintk` C ABI shim — same as printk but can be used as a redirect for
+/// variadic printk calls where va_list is pre-formatted.
+#[no_mangle]
+pub unsafe extern "C" fn vprintk_stub_chirho(msg_ptr_chirho: *const u8) -> i32 {
+    unsafe { printk_stub_chirho(msg_ptr_chirho) }
+}
+
+/// `printk_emit` C ABI shim — emits to ring buffer with explicit facility/level.
+#[no_mangle]
+#[allow(dead_code)]
+pub unsafe extern "C" fn printk_emit_stub_chirho(
+    _facility_chirho: i32,
+    level_chirho: i32,
+    msg_ptr_chirho: *const u8,
+    _len_chirho: usize,
+) -> i32 {
+    if msg_ptr_chirho.is_null() {
+        return -1;
+    }
+    let mut msg_len_chirho: usize = 0;
+    unsafe {
+        while *msg_ptr_chirho.add(msg_len_chirho) != 0 {
+            msg_len_chirho += 1;
+            if msg_len_chirho > 4096 {
+                break;
+            }
+        }
+        let slice_chirho = core::slice::from_raw_parts(msg_ptr_chirho, msg_len_chirho);
+        let lvl_chirho = core::cmp::min(level_chirho as u8, 7);
+        {
+            let mut ring_chirho = KLOG_RING_CHIRHO.lock();
+            ring_chirho.log_chirho(lvl_chirho, slice_chirho);
+        }
+        if let Ok(s_chirho) = core::str::from_utf8(slice_chirho) {
+            crate::serial_println_chirho!("[printk/{}] {}", lvl_chirho, s_chirho);
+        }
+    }
+    0
+}
+
+// ===========================================================================
+// A2-007: C ABI shim — kmalloc / kfree
+// ===========================================================================
+
+/// GFP flags (Linux kernel memory allocation flags).
+/// We accept them but ignore the specifics — all allocations come from the
+/// kernel heap.
+#[allow(dead_code)]
+pub const GFP_KERNEL_CHIRHO: u32 = 0xCC0;
+#[allow(dead_code)]
+pub const GFP_ATOMIC_CHIRHO: u32 = 0xA20;
+
+/// Internal tracking for kmalloc allocations so kfree does not need the size.
 ///
+/// We store (ptr, layout) pairs. This is a simple approach; a real kernel
+/// would use slab caches.
+static KMALLOC_TRACKER_CHIRHO: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+/// `kmalloc` C ABI shim — allocate `size_chirho` bytes from the kernel heap.
+///
+/// Matches the Linux signature: `void *kmalloc(size_t size, gfp_t flags)`.
 /// Returns a pointer to allocated memory, or null on failure.
+///
+/// The allocation is tracked internally so that `kfree` can free it without
+/// needing the size.
 ///
 /// # Safety
 ///
 /// Caller must ensure the returned pointer is eventually freed with
 /// `kfree_stub_chirho`.
-#[allow(dead_code)]
-pub unsafe extern "C" fn kmalloc_stub_chirho(size_chirho: usize) -> *mut u8 {
+#[no_mangle]
+pub unsafe extern "C" fn kmalloc_stub_chirho(
+    size_chirho: usize,
+    _flags_chirho: u32,
+) -> *mut u8 {
     use alloc::alloc::{alloc, Layout};
     if size_chirho == 0 {
         return core::ptr::null_mut();
     }
-    let layout_chirho = match Layout::from_size_align(size_chirho, 8) {
+    // Round up to power-of-two alignment (min 8).
+    let align_chirho = 8usize;
+    let layout_chirho = match Layout::from_size_align(size_chirho, align_chirho) {
         Ok(l_chirho) => l_chirho,
         Err(_) => return core::ptr::null_mut(),
     };
-    unsafe { alloc(layout_chirho) }
+    let ptr_chirho = unsafe { alloc(layout_chirho) };
+    if !ptr_chirho.is_null() {
+        let mut tracker_chirho = KMALLOC_TRACKER_CHIRHO.lock();
+        tracker_chirho.push((ptr_chirho as usize, size_chirho));
+    }
+    ptr_chirho
 }
 
-/// `kfree` stub — free memory previously allocated by `kmalloc_stub_chirho`.
+/// `kzalloc` C ABI shim — like kmalloc but zeroes the memory.
+#[no_mangle]
+pub unsafe extern "C" fn kzalloc_stub_chirho(
+    size_chirho: usize,
+    flags_chirho: u32,
+) -> *mut u8 {
+    let ptr_chirho = unsafe { kmalloc_stub_chirho(size_chirho, flags_chirho) };
+    if !ptr_chirho.is_null() && size_chirho > 0 {
+        unsafe {
+            core::ptr::write_bytes(ptr_chirho, 0, size_chirho);
+        }
+    }
+    ptr_chirho
+}
+
+/// `krealloc` C ABI shim — resize a previous kmalloc allocation.
+#[no_mangle]
+pub unsafe extern "C" fn krealloc_stub_chirho(
+    old_ptr_chirho: *mut u8,
+    new_size_chirho: usize,
+    flags_chirho: u32,
+) -> *mut u8 {
+    if old_ptr_chirho.is_null() {
+        return unsafe { kmalloc_stub_chirho(new_size_chirho, flags_chirho) };
+    }
+    if new_size_chirho == 0 {
+        unsafe { kfree_stub_chirho(old_ptr_chirho) };
+        return core::ptr::null_mut();
+    }
+
+    // Find old size from tracker.
+    let old_size_chirho = {
+        let tracker_chirho = KMALLOC_TRACKER_CHIRHO.lock();
+        tracker_chirho
+            .iter()
+            .find(|(addr_chirho, _)| *addr_chirho == old_ptr_chirho as usize)
+            .map(|(_, sz_chirho)| *sz_chirho)
+            .unwrap_or(0)
+    };
+
+    let new_ptr_chirho = unsafe { kmalloc_stub_chirho(new_size_chirho, flags_chirho) };
+    if !new_ptr_chirho.is_null() && old_size_chirho > 0 {
+        let copy_len_chirho = core::cmp::min(old_size_chirho, new_size_chirho);
+        unsafe {
+            core::ptr::copy_nonoverlapping(old_ptr_chirho, new_ptr_chirho, copy_len_chirho);
+        }
+        unsafe { kfree_stub_chirho(old_ptr_chirho) };
+    }
+    new_ptr_chirho
+}
+
+/// `kfree` C ABI shim — free memory previously allocated by `kmalloc_stub_chirho`.
+///
+/// Matches the Linux signature: `void kfree(const void *ptr)`.
+/// Looks up the allocation size from the internal tracker.
 ///
 /// # Safety
 ///
-/// `ptr_chirho` must have been returned by `kmalloc_stub_chirho` with the same
-/// `size_chirho`.  Double-free is undefined behaviour.
-#[allow(dead_code)]
-pub unsafe extern "C" fn kfree_stub_chirho(ptr_chirho: *mut u8, size_chirho: usize) {
+/// `ptr_chirho` must have been returned by `kmalloc_stub_chirho`.
+/// Double-free is undefined behaviour.
+#[no_mangle]
+pub unsafe extern "C" fn kfree_stub_chirho(ptr_chirho: *mut u8) {
     use alloc::alloc::{dealloc, Layout};
-    if ptr_chirho.is_null() || size_chirho == 0 {
+    if ptr_chirho.is_null() {
         return;
     }
+
+    // Find and remove from tracker.
+    let size_chirho = {
+        let mut tracker_chirho = KMALLOC_TRACKER_CHIRHO.lock();
+        let pos_chirho = tracker_chirho
+            .iter()
+            .position(|(addr_chirho, _)| *addr_chirho == ptr_chirho as usize);
+        match pos_chirho {
+            Some(idx_chirho) => {
+                let (_, sz_chirho) = tracker_chirho.remove(idx_chirho);
+                sz_chirho
+            }
+            None => {
+                crate::serial_println_chirho!(
+                    "[KO] kfree: unknown pointer {:#x}, ignoring",
+                    ptr_chirho as usize
+                );
+                return;
+            }
+        }
+    };
+
     let layout_chirho = match Layout::from_size_align(size_chirho, 8) {
         Ok(l_chirho) => l_chirho,
         Err(_) => return,
     };
     unsafe { dealloc(ptr_chirho, layout_chirho) };
+}
+
+/// `ksize` C ABI shim — return the usable size of a kmalloc allocation.
+#[no_mangle]
+#[allow(dead_code)]
+pub unsafe extern "C" fn ksize_stub_chirho(ptr_chirho: *const u8) -> usize {
+    if ptr_chirho.is_null() {
+        return 0;
+    }
+    let tracker_chirho = KMALLOC_TRACKER_CHIRHO.lock();
+    tracker_chirho
+        .iter()
+        .find(|(addr_chirho, _)| *addr_chirho == ptr_chirho as usize)
+        .map(|(_, sz_chirho)| *sz_chirho)
+        .unwrap_or(0)
 }
 
 /// `schedule` stub — yield the current task.
@@ -611,40 +908,69 @@ static DYNAMIC_SYMBOLS_CHIRHO: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new()
 /// Populate the dynamic symbol table with the addresses of kernel stubs.
 ///
 /// Must be called once during kernel boot (after the heap is available).
+/// Registers all A2-006 (printk) and A2-007 (kmalloc/kfree) C ABI shims
+/// along with other kernel function stubs.
 pub fn init_kernel_symbols_chirho() {
-    crate::serial_println_chirho!("[KO] Populating kernel symbol table...");
+    crate::serial_println_chirho!("[KO] Populating kernel symbol table (A2-006/A2-007 shims)...");
 
+    // A2-006: printk family
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("printk"),
-        printk_stub_chirho as u64,
+        printk_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("vprintk"),
+        vprintk_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("printk_emit"),
+        printk_emit_stub_chirho as *const () as u64,
+    );
+
+    // A2-007: kmalloc / kfree family
+    KernelSymbolTableChirho::register_symbol_chirho(
         String::from("kmalloc"),
-        kmalloc_stub_chirho as usize as u64,
+        kmalloc_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("kzalloc"),
+        kzalloc_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("krealloc"),
+        krealloc_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("kfree"),
-        kfree_stub_chirho as usize as u64,
+        kfree_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("ksize"),
+        ksize_stub_chirho as *const () as u64,
+    );
+
+    // Scheduling / synchronisation stubs
+    KernelSymbolTableChirho::register_symbol_chirho(
         String::from("schedule"),
-        schedule_stub_chirho as u64,
+        schedule_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("mutex_lock"),
-        mutex_lock_stub_chirho as u64,
+        mutex_lock_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("mutex_unlock"),
-        mutex_unlock_stub_chirho as u64,
+        mutex_unlock_stub_chirho as *const () as u64,
     );
+
+    // Character device stubs
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("__register_chrdev"),
-        register_chrdev_stub_chirho as u64,
+        register_chrdev_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("__unregister_chrdev"),
-        unregister_chrdev_stub_chirho as u64,
+        unregister_chrdev_stub_chirho as *const () as u64,
     );
 
     crate::serial_println_chirho!(

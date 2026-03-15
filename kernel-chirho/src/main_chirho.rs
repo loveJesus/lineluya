@@ -28,8 +28,10 @@ mod fs_chirho;
 mod block_chirho;
 mod bio_chirho;
 
-// Phase A4: VirtIO device drivers
+// Phase A4: VirtIO device drivers, GPT, ext4
 mod virtio_chirho;
+mod gpt_chirho;
+mod ext4_chirho;
 
 // Phase 6: Networking socket stubs
 mod net_chirho;

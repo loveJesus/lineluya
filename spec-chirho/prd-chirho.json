@@ -1165,7 +1165,7 @@
       "depends_on_chirho": [
         "A4-001"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "GPT partitions enumerated",
@@ -1182,7 +1182,7 @@
       "depends_on_chirho": [
         "A4-003"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Superblock parsed correctly",
@@ -1199,7 +1199,7 @@
       "depends_on_chirho": [
         "A4-004"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Block groups enumerated",
@@ -1216,7 +1216,7 @@
       "depends_on_chirho": [
         "A4-005"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Inode metadata correct",
@@ -1233,7 +1233,7 @@
       "depends_on_chirho": [
         "A4-006"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "File data blocks located via extents",
@@ -1250,7 +1250,7 @@
       "depends_on_chirho": [
         "A4-007"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "Directory listing works",
@@ -4026,7 +4026,7 @@
         "C1-003",
         "C1-011"
       ],
-      "status_chirho": "todo",
+      "status_chirho": "done",
       "priority_chirho": "critical",
       "acceptance_criteria_chirho": [
         "nginx serves HTTP 200 response",
