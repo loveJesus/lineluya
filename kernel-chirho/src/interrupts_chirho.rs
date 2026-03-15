@@ -173,6 +173,10 @@ static IDT_CHIRHO: spin::Lazy<InterruptDescriptorTable> = spin::Lazy::new(|| {
     idt_chirho[(PIC_1_OFFSET_CHIRHO + 4)]
         .set_handler_fn(serial_interrupt_handler_chirho);
 
+    // IRQ 11 (vector 43) — VirtIO PCI interrupt. Just ACK and return.
+    idt_chirho[(PIC_1_OFFSET_CHIRHO + 11)]
+        .set_handler_fn(virtio_interrupt_handler_chirho);
+
     idt_chirho
 });
 
@@ -529,6 +533,21 @@ extern "x86-interrupt" fn segment_not_present_handler_chirho(
     );
     loop {
         x86_64::instructions::hlt();
+    }
+}
+
+/// VirtIO PCI interrupt handler (IRQ 11, vector 43).
+/// Just acknowledge — we use polling for VirtIO I/O.
+extern "x86-interrupt" fn virtio_interrupt_handler_chirho(
+    _stack_frame_chirho: InterruptStackFrame,
+) {
+    unsafe {
+        PICS_CHIRHO
+            .lock()
+            .notify_end_of_interrupt((PIC_1_OFFSET_CHIRHO + 11) as u8);
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let lapic_eoi_chirho = (phys_offset_chirho + 0xFEE0_00B0u64) as *mut u32;
+        core::ptr::write_volatile(lapic_eoi_chirho, 0);
     }
 }
 
