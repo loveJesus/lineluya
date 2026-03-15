@@ -58,6 +58,7 @@ mod io_uring_chirho;
 mod bpf_chirho;
 mod vdso_chirho;
 mod module_chirho;
+mod ko_loader_chirho;
 mod power_chirho;
 mod trace_chirho;
 
@@ -157,6 +158,9 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
 
     // Initialize the filesystem layer (root tmpfs, /dev, /proc, fd table)
     fs_chirho::init_fs_chirho();
+
+    // Phase A3: Initialize the networking subsystem (loopback device, device registry)
+    net_chirho::init_networking_chirho();
 
     // Enable the Local APIC and configure IOAPIC keyboard routing.
     // Note: In BIOS mode with bootloader crate, IOAPIC init may conflict

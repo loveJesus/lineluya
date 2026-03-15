@@ -1,15 +1,525 @@
 // For God so loved the world that he gave his only begotten Son,
 // that whoever believes in him should not perish but have eternal life. - John 3:16
 
-//! Network socket stubs for the Lineluya kernel (Phase 6).
+//! Network subsystem for the Lineluya kernel (Phase A3).
 //!
-//! Provides stub implementations for the Linux socket API.  All functions
-//! return minimal plausible values so that userspace libraries that probe
-//! for socket support do not crash the kernel.
+//! Provides:
+//! - `NetDeviceChirho` trait for network device abstraction
+//! - `LoopbackDeviceChirho` — loopback device (packets sent are received back)
+//! - `EthernetFrameChirho` — Ethernet II frame parsing/building
+//! - `Ipv4HeaderChirho` — IPv4 header parsing/building with checksum
+//! - `ArpPacketChirho` — ARP request/reply packets
+//! - `IcmpPacketChirho` — ICMP echo (ping) packets
+//! - `ipv4_checksum_chirho` — ones-complement checksum
+//! - Global device registry with loopback pre-registered
+//! - Socket syscall stubs (carried forward from Phase 6)
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use alloc::collections::VecDeque;
+use core::sync::atomic::{AtomicU64, Ordering};
+use spin::Mutex;
 
 use crate::syscall_chirho::{
     EAGAIN_CHIRHO, ECONNREFUSED_CHIRHO, ENOSYS_CHIRHO, ENOTSOCK_CHIRHO,
 };
+
+// ============================================================================
+// Ethertype constants
+// ============================================================================
+
+/// Ethertype for IPv4.
+#[allow(dead_code)]
+pub const ETHERTYPE_IPV4_CHIRHO: u16 = 0x0800;
+/// Ethertype for ARP.
+#[allow(dead_code)]
+pub const ETHERTYPE_ARP_CHIRHO: u16 = 0x0806;
+/// Ethertype for IPv6.
+#[allow(dead_code)]
+pub const ETHERTYPE_IPV6_CHIRHO: u16 = 0x86DD;
+
+// ============================================================================
+// IP protocol numbers
+// ============================================================================
+
+/// IP protocol number for ICMP.
+#[allow(dead_code)]
+pub const IP_PROTO_ICMP_CHIRHO: u8 = 1;
+/// IP protocol number for TCP.
+#[allow(dead_code)]
+pub const IP_PROTO_TCP_CHIRHO: u8 = 6;
+/// IP protocol number for UDP.
+#[allow(dead_code)]
+pub const IP_PROTO_UDP_CHIRHO: u8 = 17;
+
+// ============================================================================
+// ARP constants
+// ============================================================================
+
+/// ARP hardware type: Ethernet.
+#[allow(dead_code)]
+pub const ARP_HTYPE_ETHERNET_CHIRHO: u16 = 1;
+/// ARP operation: request.
+#[allow(dead_code)]
+pub const ARP_OP_REQUEST_CHIRHO: u16 = 1;
+/// ARP operation: reply.
+#[allow(dead_code)]
+pub const ARP_OP_REPLY_CHIRHO: u16 = 2;
+
+// ============================================================================
+// ICMP type constants
+// ============================================================================
+
+/// ICMP type: echo reply.
+#[allow(dead_code)]
+pub const ICMP_ECHO_REPLY_CHIRHO: u8 = 0;
+/// ICMP type: echo request (ping).
+#[allow(dead_code)]
+pub const ICMP_ECHO_REQUEST_CHIRHO: u8 = 8;
+
+// ============================================================================
+// NetDeviceChirho trait
+// ============================================================================
+
+/// Trait for network device abstraction.
+///
+/// Each network device (loopback, Ethernet NIC, etc.) implements this trait
+/// to provide a uniform interface for sending and receiving packets.
+pub trait NetDeviceChirho: Send {
+    /// Send a packet through this device.
+    fn send_packet_chirho(&mut self, data_chirho: &[u8]);
+
+    /// Try to receive a packet from this device.
+    /// Returns `None` if no packet is currently available.
+    fn recv_packet_chirho(&mut self) -> Option<Vec<u8>>;
+
+    /// Return the MAC address of this device (6 bytes).
+    fn mac_address_chirho(&self) -> [u8; 6];
+
+    /// Return the Maximum Transmission Unit for this device.
+    fn mtu_chirho(&self) -> usize;
+}
+
+// ============================================================================
+// LoopbackDeviceChirho
+// ============================================================================
+
+/// Loopback network device — packets sent are received back.
+///
+/// This mimics Linux's `lo` interface. Any packet transmitted is queued
+/// internally and returned on the next `recv_packet_chirho()` call.
+pub struct LoopbackDeviceChirho {
+    /// Internal packet queue: sent packets are enqueued here.
+    queue_chirho: VecDeque<Vec<u8>>,
+}
+
+impl LoopbackDeviceChirho {
+    /// Create a new loopback device.
+    pub fn new_chirho() -> Self {
+        Self {
+            queue_chirho: VecDeque::new(),
+        }
+    }
+}
+
+impl NetDeviceChirho for LoopbackDeviceChirho {
+    fn send_packet_chirho(&mut self, data_chirho: &[u8]) {
+        // Loopback: the packet is immediately available for receiving.
+        self.queue_chirho.push_back(data_chirho.to_vec());
+    }
+
+    fn recv_packet_chirho(&mut self) -> Option<Vec<u8>> {
+        self.queue_chirho.pop_front()
+    }
+
+    fn mac_address_chirho(&self) -> [u8; 6] {
+        // Loopback has all-zero MAC (like Linux lo).
+        [0x00; 6]
+    }
+
+    fn mtu_chirho(&self) -> usize {
+        // Linux loopback MTU is 65536.
+        65536
+    }
+}
+
+// ============================================================================
+// EthernetFrameChirho
+// ============================================================================
+
+/// Represents an Ethernet II frame.
+#[derive(Debug, Clone)]
+pub struct EthernetFrameChirho {
+    /// Destination MAC address (6 bytes).
+    pub dst_mac_chirho: [u8; 6],
+    /// Source MAC address (6 bytes).
+    pub src_mac_chirho: [u8; 6],
+    /// Ethertype (e.g., 0x0800 for IPv4, 0x0806 for ARP).
+    pub ethertype_chirho: u16,
+    /// Frame payload.
+    pub payload_chirho: Vec<u8>,
+}
+
+impl EthernetFrameChirho {
+    /// Parse an Ethernet frame from raw bytes.
+    /// Returns `None` if the data is too short (minimum 14 bytes header).
+    pub fn parse_chirho(data_chirho: &[u8]) -> Option<Self> {
+        if data_chirho.len() < 14 {
+            return None;
+        }
+        let mut dst_mac_chirho = [0u8; 6];
+        let mut src_mac_chirho = [0u8; 6];
+        dst_mac_chirho.copy_from_slice(&data_chirho[0..6]);
+        src_mac_chirho.copy_from_slice(&data_chirho[6..12]);
+        let ethertype_chirho = u16::from_be_bytes([data_chirho[12], data_chirho[13]]);
+        let payload_chirho = data_chirho[14..].to_vec();
+        Some(Self {
+            dst_mac_chirho,
+            src_mac_chirho,
+            ethertype_chirho,
+            payload_chirho,
+        })
+    }
+
+    /// Build the Ethernet frame into a byte vector.
+    pub fn build_chirho(&self) -> Vec<u8> {
+        let mut buf_chirho = Vec::with_capacity(14 + self.payload_chirho.len());
+        buf_chirho.extend_from_slice(&self.dst_mac_chirho);
+        buf_chirho.extend_from_slice(&self.src_mac_chirho);
+        buf_chirho.extend_from_slice(&self.ethertype_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.payload_chirho);
+        buf_chirho
+    }
+}
+
+// ============================================================================
+// Ipv4HeaderChirho
+// ============================================================================
+
+/// Represents an IPv4 header (RFC 791).
+#[derive(Debug, Clone)]
+pub struct Ipv4HeaderChirho {
+    /// IP version (always 4).
+    pub version_chirho: u8,
+    /// Internet Header Length in 32-bit words (typically 5).
+    pub ihl_chirho: u8,
+    /// Type of Service / DSCP + ECN.
+    pub tos_chirho: u8,
+    /// Total length of the IP datagram (header + payload) in bytes.
+    pub total_length_chirho: u16,
+    /// Identification field for fragmentation reassembly.
+    pub id_chirho: u16,
+    /// Flags (3 bits: reserved, DF, MF).
+    pub flags_chirho: u8,
+    /// Fragment offset (13 bits, in 8-byte units).
+    pub fragment_offset_chirho: u16,
+    /// Time to live.
+    pub ttl_chirho: u8,
+    /// Protocol (e.g., 1=ICMP, 6=TCP, 17=UDP).
+    pub protocol_chirho: u8,
+    /// Header checksum.
+    pub checksum_chirho: u16,
+    /// Source IP address (network byte order stored as u32).
+    pub src_ip_chirho: u32,
+    /// Destination IP address (network byte order stored as u32).
+    pub dst_ip_chirho: u32,
+}
+
+impl Ipv4HeaderChirho {
+    /// Parse an IPv4 header from raw bytes.
+    /// Returns `None` if the data is too short or the version is not 4.
+    pub fn parse_chirho(data_chirho: &[u8]) -> Option<Self> {
+        if data_chirho.len() < 20 {
+            return None;
+        }
+        let version_chirho = (data_chirho[0] >> 4) & 0xF;
+        if version_chirho != 4 {
+            return None;
+        }
+        let ihl_chirho = data_chirho[0] & 0xF;
+        let tos_chirho = data_chirho[1];
+        let total_length_chirho = u16::from_be_bytes([data_chirho[2], data_chirho[3]]);
+        let id_chirho = u16::from_be_bytes([data_chirho[4], data_chirho[5]]);
+        let flags_and_frag_chirho = u16::from_be_bytes([data_chirho[6], data_chirho[7]]);
+        let flags_chirho = ((flags_and_frag_chirho >> 13) & 0x7) as u8;
+        let fragment_offset_chirho = flags_and_frag_chirho & 0x1FFF;
+        let ttl_chirho = data_chirho[8];
+        let protocol_chirho = data_chirho[9];
+        let checksum_chirho = u16::from_be_bytes([data_chirho[10], data_chirho[11]]);
+        let src_ip_chirho = u32::from_be_bytes([
+            data_chirho[12],
+            data_chirho[13],
+            data_chirho[14],
+            data_chirho[15],
+        ]);
+        let dst_ip_chirho = u32::from_be_bytes([
+            data_chirho[16],
+            data_chirho[17],
+            data_chirho[18],
+            data_chirho[19],
+        ]);
+
+        Some(Self {
+            version_chirho,
+            ihl_chirho,
+            tos_chirho,
+            total_length_chirho,
+            id_chirho,
+            flags_chirho,
+            fragment_offset_chirho,
+            ttl_chirho,
+            protocol_chirho,
+            checksum_chirho,
+            src_ip_chirho,
+            dst_ip_chirho,
+        })
+    }
+
+    /// Build the IPv4 header into a byte vector (20 bytes, no options).
+    /// The checksum field is computed automatically.
+    pub fn build_chirho(&self) -> Vec<u8> {
+        let mut buf_chirho = Vec::with_capacity(20);
+        // Byte 0: version (4 bits) | IHL (4 bits)
+        buf_chirho.push((self.version_chirho << 4) | (self.ihl_chirho & 0xF));
+        // Byte 1: TOS
+        buf_chirho.push(self.tos_chirho);
+        // Bytes 2-3: total length
+        buf_chirho.extend_from_slice(&self.total_length_chirho.to_be_bytes());
+        // Bytes 4-5: identification
+        buf_chirho.extend_from_slice(&self.id_chirho.to_be_bytes());
+        // Bytes 6-7: flags (3 bits) | fragment offset (13 bits)
+        let flags_and_frag_chirho =
+            ((self.flags_chirho as u16 & 0x7) << 13) | (self.fragment_offset_chirho & 0x1FFF);
+        buf_chirho.extend_from_slice(&flags_and_frag_chirho.to_be_bytes());
+        // Byte 8: TTL
+        buf_chirho.push(self.ttl_chirho);
+        // Byte 9: protocol
+        buf_chirho.push(self.protocol_chirho);
+        // Bytes 10-11: checksum — temporarily zero for computation
+        buf_chirho.extend_from_slice(&[0u8; 2]);
+        // Bytes 12-15: source IP
+        buf_chirho.extend_from_slice(&self.src_ip_chirho.to_be_bytes());
+        // Bytes 16-19: destination IP
+        buf_chirho.extend_from_slice(&self.dst_ip_chirho.to_be_bytes());
+
+        // Compute and fill in the checksum
+        let cksum_chirho = ipv4_checksum_chirho(&buf_chirho);
+        buf_chirho[10] = (cksum_chirho >> 8) as u8;
+        buf_chirho[11] = (cksum_chirho & 0xFF) as u8;
+
+        buf_chirho
+    }
+}
+
+// ============================================================================
+// ArpPacketChirho
+// ============================================================================
+
+/// Represents an ARP packet (for IPv4 over Ethernet).
+#[derive(Debug, Clone)]
+pub struct ArpPacketChirho {
+    /// Hardware type (1 = Ethernet).
+    pub htype_chirho: u16,
+    /// Protocol type (0x0800 = IPv4).
+    pub ptype_chirho: u16,
+    /// Hardware address length (6 for Ethernet).
+    pub hlen_chirho: u8,
+    /// Protocol address length (4 for IPv4).
+    pub plen_chirho: u8,
+    /// Operation: 1 = request, 2 = reply.
+    pub operation_chirho: u16,
+    /// Sender hardware address (MAC).
+    pub sender_ha_chirho: [u8; 6],
+    /// Sender protocol address (IPv4, big-endian u32).
+    pub sender_pa_chirho: u32,
+    /// Target hardware address (MAC).
+    pub target_ha_chirho: [u8; 6],
+    /// Target protocol address (IPv4, big-endian u32).
+    pub target_pa_chirho: u32,
+}
+
+impl ArpPacketChirho {
+    /// Parse an ARP packet from raw bytes.
+    /// Returns `None` if the data is too short (minimum 28 bytes for IPv4/Ethernet ARP).
+    pub fn parse_chirho(data_chirho: &[u8]) -> Option<Self> {
+        if data_chirho.len() < 28 {
+            return None;
+        }
+        let htype_chirho = u16::from_be_bytes([data_chirho[0], data_chirho[1]]);
+        let ptype_chirho = u16::from_be_bytes([data_chirho[2], data_chirho[3]]);
+        let hlen_chirho = data_chirho[4];
+        let plen_chirho = data_chirho[5];
+        let operation_chirho = u16::from_be_bytes([data_chirho[6], data_chirho[7]]);
+
+        let mut sender_ha_chirho = [0u8; 6];
+        sender_ha_chirho.copy_from_slice(&data_chirho[8..14]);
+        let sender_pa_chirho = u32::from_be_bytes([
+            data_chirho[14],
+            data_chirho[15],
+            data_chirho[16],
+            data_chirho[17],
+        ]);
+        let mut target_ha_chirho = [0u8; 6];
+        target_ha_chirho.copy_from_slice(&data_chirho[18..24]);
+        let target_pa_chirho = u32::from_be_bytes([
+            data_chirho[24],
+            data_chirho[25],
+            data_chirho[26],
+            data_chirho[27],
+        ]);
+
+        Some(Self {
+            htype_chirho,
+            ptype_chirho,
+            hlen_chirho,
+            plen_chirho,
+            operation_chirho,
+            sender_ha_chirho,
+            sender_pa_chirho,
+            target_ha_chirho,
+            target_pa_chirho,
+        })
+    }
+
+    /// Build the ARP packet into a byte vector (28 bytes for IPv4/Ethernet).
+    pub fn build_chirho(&self) -> Vec<u8> {
+        let mut buf_chirho = Vec::with_capacity(28);
+        buf_chirho.extend_from_slice(&self.htype_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.ptype_chirho.to_be_bytes());
+        buf_chirho.push(self.hlen_chirho);
+        buf_chirho.push(self.plen_chirho);
+        buf_chirho.extend_from_slice(&self.operation_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.sender_ha_chirho);
+        buf_chirho.extend_from_slice(&self.sender_pa_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.target_ha_chirho);
+        buf_chirho.extend_from_slice(&self.target_pa_chirho.to_be_bytes());
+        buf_chirho
+    }
+}
+
+// ============================================================================
+// IcmpPacketChirho
+// ============================================================================
+
+/// Represents an ICMP echo request/reply packet.
+#[derive(Debug, Clone)]
+pub struct IcmpPacketChirho {
+    /// ICMP type (8 = echo request, 0 = echo reply).
+    pub type_chirho: u8,
+    /// ICMP code (usually 0 for echo).
+    pub code_chirho: u8,
+    /// ICMP checksum over the entire ICMP message.
+    pub checksum_chirho: u16,
+    /// Identifier (used to match requests and replies).
+    pub id_chirho: u16,
+    /// Sequence number.
+    pub sequence_chirho: u16,
+    /// Optional payload data.
+    pub data_chirho: Vec<u8>,
+}
+
+impl IcmpPacketChirho {
+    /// Parse an ICMP packet from raw bytes.
+    /// Returns `None` if the data is too short (minimum 8 bytes).
+    pub fn parse_chirho(data_chirho: &[u8]) -> Option<Self> {
+        if data_chirho.len() < 8 {
+            return None;
+        }
+        let type_chirho = data_chirho[0];
+        let code_chirho = data_chirho[1];
+        let checksum_chirho = u16::from_be_bytes([data_chirho[2], data_chirho[3]]);
+        let id_chirho = u16::from_be_bytes([data_chirho[4], data_chirho[5]]);
+        let sequence_chirho = u16::from_be_bytes([data_chirho[6], data_chirho[7]]);
+        let payload_data_chirho = data_chirho[8..].to_vec();
+
+        Some(Self {
+            type_chirho,
+            code_chirho,
+            checksum_chirho,
+            id_chirho,
+            sequence_chirho,
+            data_chirho: payload_data_chirho,
+        })
+    }
+
+    /// Build the ICMP packet into a byte vector.
+    /// The checksum is computed automatically.
+    pub fn build_chirho(&self) -> Vec<u8> {
+        let mut buf_chirho = Vec::with_capacity(8 + self.data_chirho.len());
+        buf_chirho.push(self.type_chirho);
+        buf_chirho.push(self.code_chirho);
+        // Checksum placeholder
+        buf_chirho.extend_from_slice(&[0u8; 2]);
+        buf_chirho.extend_from_slice(&self.id_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.sequence_chirho.to_be_bytes());
+        buf_chirho.extend_from_slice(&self.data_chirho);
+
+        // Compute checksum over the entire ICMP message
+        let cksum_chirho = ipv4_checksum_chirho(&buf_chirho);
+        buf_chirho[2] = (cksum_chirho >> 8) as u8;
+        buf_chirho[3] = (cksum_chirho & 0xFF) as u8;
+
+        buf_chirho
+    }
+}
+
+// ============================================================================
+// ipv4_checksum_chirho — ones-complement checksum (RFC 1071)
+// ============================================================================
+
+/// Compute the Internet checksum (ones-complement sum) over the given data.
+///
+/// This is used for IPv4 headers and ICMP packets. The algorithm treats the
+/// data as a sequence of 16-bit big-endian words, sums them with ones-complement
+/// arithmetic, and returns the bitwise NOT of the result.
+pub fn ipv4_checksum_chirho(data_chirho: &[u8]) -> u16 {
+    let mut sum_chirho: u32 = 0;
+    let len_chirho = data_chirho.len();
+    let mut i_chirho: usize = 0;
+
+    // Sum 16-bit words
+    while i_chirho + 1 < len_chirho {
+        let word_chirho =
+            ((data_chirho[i_chirho] as u32) << 8) | (data_chirho[i_chirho + 1] as u32);
+        sum_chirho += word_chirho;
+        i_chirho += 2;
+    }
+
+    // If odd number of bytes, pad the last byte with zero
+    if i_chirho < len_chirho {
+        sum_chirho += (data_chirho[i_chirho] as u32) << 8;
+    }
+
+    // Fold 32-bit sum into 16 bits
+    while (sum_chirho >> 16) != 0 {
+        sum_chirho = (sum_chirho & 0xFFFF) + (sum_chirho >> 16);
+    }
+
+    // Return ones-complement
+    !(sum_chirho as u16)
+}
+
+// ============================================================================
+// Global network device registry
+// ============================================================================
+
+/// Global registry of network devices, protected by a spin mutex.
+/// The loopback device is pre-registered at index 0 by `init_networking_chirho`.
+pub static NET_DEVICES_CHIRHO: Mutex<Vec<Box<dyn NetDeviceChirho>>> = Mutex::new(Vec::new());
+
+// ============================================================================
+// init_networking_chirho — initialize the networking subsystem
+// ============================================================================
+
+/// Initialize the networking subsystem.
+///
+/// Creates the loopback device and registers it in the global device list.
+pub fn init_networking_chirho() {
+    let loopback_chirho = LoopbackDeviceChirho::new_chirho();
+    let mut devices_chirho = NET_DEVICES_CHIRHO.lock();
+    devices_chirho.push(Box::new(loopback_chirho));
+    crate::serial_println_chirho!("[OK] Networking initialized — loopback device registered (lo, MTU=65536)");
+}
 
 // ============================================================================
 // Address family constants
@@ -145,8 +655,6 @@ impl SocketChirho {
 // ============================================================================
 // Fake fd counter for socket stubs
 // ============================================================================
-
-use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Next fake file descriptor for sockets (starts above typical fd range).
 static NEXT_SOCK_FD_CHIRHO: AtomicU64 = AtomicU64::new(100);
