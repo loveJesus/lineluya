@@ -174,7 +174,8 @@ extern "x86-interrupt" fn double_fault_handler_chirho(
     _error_code_chirho: u64,
 ) -> ! {
     crate::serial_println_chirho!(
-        "[EXCEPTION] DOUBLE FAULT\n{:#?}",
+        "[EXCEPTION] DOUBLE FAULT (last syscall={})\n{:#?}",
+        crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO.load(core::sync::atomic::Ordering::Relaxed),
         stack_frame_chirho
     );
     loop {
