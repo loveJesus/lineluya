@@ -148,11 +148,31 @@ pub fn copy_from_user_chirho(
 
     validate_user_range_chirho(user_src_chirho, len_chirho)?;
 
-    // SAFETY: We have validated that `user_src_chirho` through
-    // `user_src_chirho + len_chirho - 1` falls within user space.  The
-    // actual physical mapping is assumed to be present (page-fault fixup is
-    // not yet implemented).  `kernel_dst_chirho` is a valid mutable slice
-    // with at least `len_chirho` bytes.
+    // Ensure all pages in the range are mapped before accessing.
+    // If a page isn't mapped, map it on demand to avoid kernel page faults.
+    {
+        let start_page_chirho = user_src_chirho & !0xFFF;
+        let end_page_chirho = (user_src_chirho + len_chirho as u64 + 0xFFF) & !0xFFF;
+        let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
+        let mut guard_chirho = mm_lock_chirho.lock();
+        if let Some(mm_chirho) = guard_chirho.as_mut() {
+            let mut page_chirho = start_page_chirho;
+            while page_chirho < end_page_chirho {
+                // Try to map each page — mmap with MAP_FIXED will either
+                // succeed (page wasn't mapped) or silently update flags (already mapped).
+                let _ = mm_chirho.mmap_chirho(
+                    page_chirho, 4096,
+                    crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
+                    crate::mm_chirho::MAP_PRIVATE_CHIRHO
+                        | crate::mm_chirho::MAP_ANONYMOUS_CHIRHO
+                        | crate::mm_chirho::MAP_FIXED_CHIRHO,
+                    -1i32, 0,
+                );
+                page_chirho += 4096;
+            }
+        }
+    }
+
     unsafe {
         core::ptr::copy_nonoverlapping(
             user_src_chirho as *const u8,
@@ -186,9 +206,28 @@ pub fn copy_to_user_chirho(
 
     validate_user_range_chirho(user_dst_chirho, len_chirho)?;
 
-    // SAFETY: Address range has been validated.  The kernel source slice is
-    // guaranteed valid by Rust's type system.  Physical mapping presence is
-    // assumed (see `copy_from_user_chirho` for the same caveat).
+    // Ensure all destination pages are mapped before writing.
+    {
+        let start_page_chirho = user_dst_chirho & !0xFFF;
+        let end_page_chirho = (user_dst_chirho + len_chirho as u64 + 0xFFF) & !0xFFF;
+        let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
+        let mut guard_chirho = mm_lock_chirho.lock();
+        if let Some(mm_chirho) = guard_chirho.as_mut() {
+            let mut page_chirho = start_page_chirho;
+            while page_chirho < end_page_chirho {
+                let _ = mm_chirho.mmap_chirho(
+                    page_chirho, 4096,
+                    crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
+                    crate::mm_chirho::MAP_PRIVATE_CHIRHO
+                        | crate::mm_chirho::MAP_ANONYMOUS_CHIRHO
+                        | crate::mm_chirho::MAP_FIXED_CHIRHO,
+                    -1i32, 0,
+                );
+                page_chirho += 4096;
+            }
+        }
+    }
+
     unsafe {
         core::ptr::copy_nonoverlapping(
             kernel_src_chirho.as_ptr(),
