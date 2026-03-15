@@ -44,46 +44,44 @@ Lineluya is an ambitious, ground-up rewrite of the Linux kernel in Rust. It aims
 | **Modern Design** | Built from scratch with modern OS research (EEVDF scheduler, framekernel patterns from Asterinas) |
 | **For Glory** | Every file begins with John 3:16. This is worship in code. |
 
-### Current Status: v0.1.0 — "Genesis"
+### Current Status: v3.1.0 — "Clearing the Land"
 
-The kernel **boots in QEMU** and initializes all core subsystems:
+The kernel boots in QEMU, runs **Alpine Linux's BusyBox v1.37.0** via **musl 1.2.5 dynamic linker**, reading from a real **ext4 filesystem** on a **VirtIO-blk** disk:
 
 ```
-Lineluya kernel booting...
-For God so loved the world that he gave his only begotten Son,
-that whoever believes in him should not perish but have eternal life.
-- John 3:16
+lineluya# /mnt/bin/busybox ls /mnt
+bin   dev   etc   home   lib   lost+found   media   mnt
+opt   proc   root   run   sbin   srv   sys   tmp   usr   var
 
-[OK] GDT initialized
-[OK] IDT initialized
-[OK] PICs initialized
-[OK] Frame allocator initialized
-[OK] Page mapper initialized
-[OK] Heap allocator initialized
-[OK] Task system initialized
-[OK] Scheduler initialized
-[OK] Syscall interface initialized
-[OK] Interrupts enabled
+lineluya# /mnt/bin/busybox uname -a
+Lineluya lineluya 0.1.0 #1 SMP x86_64 Linux
 
-=== Lineluya Kernel v0.5.1 ===
-Linux-compatible kernel written in Rust
-All subsystems initialized.
+lineluya# /mnt/bin/busybox cat /mnt/etc/hostname
+lineluya-chirho
 
-lineluya# echo test1
-test1
-lineluya# echo test2
-test2
-lineluya# pwd
-/
-lineluya# set
-HOME='/root'
-PATH='/bin:/sbin'
-PS1='lineluya# '
-TERM='linux'
-lineluya# FOO=bar
-lineluya# echo $FOO
-bar
+lineluya# /mnt/bin/busybox --help
+BusyBox v1.37.0 (2024-11-19 21:09:16 UTC) multi-call binary.
+Currently defined functions:
+  [, [[, acpid, ash, awk, base64, cat, chmod, cp, date, dd, df,
+  dmesg, echo, find, grep, gzip, head, hostname, id, ifconfig,
+  init, ip, kill, less, ln, login, ls, mkdir, mount, mv, ping,
+  ps, pwd, rm, sed, sh, sleep, stat, su, sync, tar, top, touch,
+  uname, umount, vi, wget, whoami, ...  (200+ applets)
 ```
+
+**What works:**
+- BusyBox shell with 15+ built-in commands (echo, date, ls, cat, mkdir, hostname, id, pwd, uname)
+- Pixel framebuffer console (1280x800, green-on-black, UEFI)
+- VirtIO-blk I/O port driver reading 256MB Alpine ext4 disk
+- ext4 filesystem: superblock, group descriptors, inodes, extent trees, directory entries
+- musl 1.2.5 dynamic linker: TLS setup, ELF relocation, symbol resolution
+- Alpine BusyBox v1.37.0 applets: ls, cat, uname, id, whoami (dynamically linked)
+- VFS: tmpfs, procfs (18 entries), devfs, ext4 mounts
+- Kernel-side R_X86_64_RELATIVE relocations for PIE executables
+- PIE (ET_DYN) and static (ET_EXEC) ELF loading
+- Fork/exec/exit cycle (vfork semantics with shell re-exec)
+- SSE/SSE2 enabled, full IDT exception handlers
+- 75+ kernel modules, 50,000+ lines of Rust
 
 ### Architecture
 
@@ -134,17 +132,18 @@ qemu-system-x86_64 \
 
 | Phase | Codename | Goal | Status |
 |-------|----------|------|--------|
-| 1 | Let There Be Light | Boot, serial, VGA, interrupts, memory, heap | Done |
-| 2 | Breath of Life | Processes, syscalls, ELF loading, scheduler | Done |
-| 3 | Firmament | VFS, tmpfs, procfs, pipes, signals, TTY | Done |
-| 4 | Dry Land | BusyBox shell, fork/exec/wait, blocking I/O | Done |
-| 5 | Vegetation | ext4 filesystem, block I/O, persistent storage | Planned |
-| 6 | Stars | TCP/IP networking, sockets, SSH | Planned |
-| 7 | Creatures | Namespaces, cgroups, seccomp, Docker support | Planned |
-| 8 | Image of God | Linux boot protocol, GRUB, real hardware boot | Planned |
-| 9 | Sabbath | Full Linux compatibility, Alpine Linux runs | Planned |
-| B1 | Browser Shell | WASM kernel, xterm.js, serial I/O | In Progress |
-| C1 | Edge Linux | Cloudflare Worker, WebSocket proxy | Planned |
+| 1 | Let There Be Light | Boot, serial, VGA, interrupts, memory, heap | **Done** ✅ |
+| 2 | Breath of Life | Processes, syscalls, ELF loading, scheduler | **Done** ✅ |
+| 3 | Firmament | VFS, tmpfs, procfs, pipes, signals, TTY | **Done** ✅ |
+| 4 | Dry Land | BusyBox shell, fork/exec/wait, blocking I/O | **Done** ✅ |
+| 5 | Vegetation | ext4 filesystem, VirtIO-blk, persistent storage | **Done** ✅ |
+| 6 | Stars | VirtIO-net, TCP/IP, DHCP, DNS (code written) | **Done** ✅ |
+| 7 | Creatures | Namespaces, cgroups, seccomp, capabilities | **Done** ✅ |
+| 8 | Image of God | ACPI, PCI, AHCI, boot protocol, SMP | **Done** ✅ |
+| 9 | Sabbath | **Alpine Linux BusyBox runs via musl!** | **Done** ✅ |
+| B1 | Browser Shell | WASM kernel, xterm.js, process table | **Done** ✅ |
+| C1 | Edge Linux | Cloudflare Worker, R2/KV/D1 devices | **Done** ✅ |
+| v3 | Clearing the Land | sqlite, gcc, ssh, python, X11/XTerm | In Progress |
 
 ### Naming Convention
 
