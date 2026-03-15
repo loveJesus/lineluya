@@ -954,6 +954,8 @@ const S_IWOTH_CHIRHO: u32 = 0o002;
 // fcntl(2) command constants
 // ============================================================================
 
+/// Duplicate file descriptor (lowest >= arg).
+const F_DUPFD_CHIRHO: u64 = 0;
 /// Get file descriptor flags.
 const F_GETFD_CHIRHO: u64 = 1;
 /// Set file descriptor flags.
@@ -962,6 +964,8 @@ const F_SETFD_CHIRHO: u64 = 2;
 const F_GETFL_CHIRHO: u64 = 3;
 /// Set file status flags.
 const F_SETFL_CHIRHO: u64 = 4;
+/// Duplicate fd with close-on-exec.
+const F_DUPFD_CLOEXEC_CHIRHO: u64 = 1030;
 
 // ============================================================================
 // ioctl(2) command constants
@@ -2855,18 +2859,16 @@ fn sys_readlinkat_chirho(
 fn sys_fcntl_chirho(
     fd_chirho: u64,
     cmd_chirho: u64,
-    _arg_chirho: u64,
+    arg_chirho: u64,
 ) -> i64 {
-    // Only support stdin/stdout/stderr for now.
-    if fd_chirho > 2 {
-        return -EBADF_CHIRHO;
-    }
-
     match cmd_chirho {
+        F_DUPFD_CHIRHO | F_DUPFD_CLOEXEC_CHIRHO => {
+            // Duplicate fd to lowest >= arg
+            crate::fs_chirho::sys_dup_chirho(fd_chirho)
+        }
         F_GETFD_CHIRHO => 0, // no close-on-exec set
         F_SETFD_CHIRHO => 0, // silently accept
         F_GETFL_CHIRHO => {
-            // Return O_RDONLY (0) for stdin, O_WRONLY (1) for stdout/stderr.
             match fd_chirho {
                 0 => 0,     // O_RDONLY
                 1 | 2 => 1, // O_WRONLY
