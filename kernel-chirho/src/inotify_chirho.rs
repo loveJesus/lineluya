@@ -187,7 +187,7 @@ pub fn sys_inotify_add_watch_chirho(
 
     // Read the pathname from userspace
     let path_chirho = if pathname_ptr_chirho != 0 {
-        crate::uaccess_chirho::read_user_string_chirho(pathname_ptr_chirho)
+        crate::uaccess_chirho::read_user_string_chirho(pathname_ptr_chirho, 4096)
             .unwrap_or_else(|_e_chirho| String::from("<invalid>"))
     } else {
         return -(crate::syscall_chirho::EFAULT_CHIRHO);

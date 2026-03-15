@@ -42,9 +42,17 @@ mod acpi_chirho;
 mod pci_chirho;
 mod smp_chirho;
 
-// Phase A5: Real hardware boot — bzImage protocol, AHCI/SATA
+// Phase A5: Real hardware boot — bzImage, AHCI, NVMe, e1000, USB, timer, MSI
 mod boot_protocol_chirho;
 mod ahci_chirho;
+mod hpet_chirho;
+mod nvme_chirho;
+mod e1000_chirho;
+mod usb_chirho;
+mod initramfs_chirho;
+mod cmdline_chirho;
+mod msi_chirho;
+mod random_chirho;
 
 // Phase 2: Process management & Linux syscall ABI
 mod syscall_chirho;
@@ -78,6 +86,8 @@ mod module_chirho;
 mod ko_loader_chirho;
 mod power_chirho;
 mod trace_chirho;
+mod eventfd_chirho;
+mod inotify_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use bootloader_api::config::Mapping;
