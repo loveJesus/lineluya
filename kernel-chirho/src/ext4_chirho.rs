@@ -1470,25 +1470,16 @@ impl Ext4MountChirho {
         let has_64bit_chirho = self.sb_chirho.has_64bit_chirho();
         let mut new_ino_chirho: Option<u32> = None;
 
-        crate::serial_println_chirho!(
-            "[EXT4] create: groups={} inodes_per_group={}",
-            self.group_descs_chirho.len(), sb_inodes_per_group_chirho
-        );
         for (gidx_chirho, gd_chirho) in self.group_descs_chirho.iter().enumerate() {
             let free_chirho = gd_chirho.free_inodes_count_chirho(has_64bit_chirho);
             if free_chirho == 0 {
                 continue;
             }
-            crate::serial_println_chirho!(
-                "[EXT4] create: group {} has {} free inodes",
-                gidx_chirho, free_chirho
-            );
 
             let bitmap_block_chirho = gd_chirho.inode_bitmap_chirho(has_64bit_chirho);
             let mut bitmap_data_chirho = match self.read_block_cached_chirho(bitmap_block_chirho) {
                 Some(d_chirho) => d_chirho,
                 None => {
-                    crate::serial_println_chirho!("[EXT4] create: failed to read inode bitmap");
                     return Err("failed to read inode bitmap");
                 }
             };
@@ -1498,10 +1489,9 @@ impl Ext4MountChirho {
                 gidx_chirho as u32,
                 sb_inodes_per_group_chirho,
             ) {
-                crate::serial_println_chirho!("[EXT4] create: allocated inode {}", ino_chirho);
                 // Write the updated bitmap back.
                 match self.write_block_chirho(bitmap_block_chirho, &bitmap_data_chirho) {
-                    Ok(()) => crate::serial_println_chirho!("[EXT4] create: bitmap written"),
+                    Ok(()) => {},
                     Err(e_chirho) => {
                         crate::serial_println_chirho!("[EXT4] create: bitmap write failed: {}", e_chirho);
                         return Err(e_chirho);
@@ -1509,15 +1499,12 @@ impl Ext4MountChirho {
                 }
                 new_ino_chirho = Some(ino_chirho);
                 break;
-            } else {
-                crate::serial_println_chirho!("[EXT4] create: alloc_inode_in_group returned None");
             }
         }
 
         let ino_chirho = match new_ino_chirho {
             Some(i_chirho) => i_chirho,
             None => {
-                crate::serial_println_chirho!("[EXT4] create: no free inodes found!");
                 return Err("no free inodes");
             }
         };

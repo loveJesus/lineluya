@@ -818,10 +818,6 @@ fn create_file_at_path_chirho(
         let (parent_inode_chirho, name_chirho) = match resolve_parent_live_chirho(path_chirho) {
             Ok(result_chirho) => result_chirho,
             Err(e_chirho) => {
-                crate::serial_println_chirho!(
-                    "[FS] create_file_at_path: resolve_parent failed for '{}': {}",
-                    path_chirho, e_chirho
-                );
                 return Err(e_chirho);
             }
         };
@@ -924,12 +920,7 @@ pub fn sys_openat_chirho(
         Ok(result_chirho) => result_chirho,
         Err(errno_chirho) => {
             // If O_CREAT is set and the file doesn't exist, create it
-            crate::serial_println_chirho!(
-                "[FS] open: path={} err={} flags={:#x}",
-                pathname_chirho, errno_chirho, flags_chirho
-            );
             if flags_chirho & O_CREAT_CHIRHO != 0 && errno_chirho == -ENOENT_CHIRHO {
-                crate::serial_println_chirho!("[FS] O_CREAT: creating {}", pathname_chirho);
                 match create_file_at_path_chirho(&pathname_chirho, mode_chirho) {
                     Ok(result_chirho) => result_chirho,
                     Err(e_chirho) => return e_chirho,

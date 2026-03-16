@@ -47,8 +47,8 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
     unsafe fn alloc(&self, layout_chirho: core::alloc::Layout) -> *mut u8 {
         let size_chirho = layout_chirho.size();
 
-        // Log allocations > 4MB (reduced from 1MB to quiet normal ops).
-        if size_chirho > 4 * 1024 * 1024 {
+        // Log only very large allocations (> 32MB).
+        if size_chirho > 32 * 1024 * 1024 {
             // Print PID
             let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(99);
             let pid_msg_chirho = b"pid=";
