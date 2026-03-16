@@ -248,6 +248,14 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     fb_println_chirho!("[OK] Syscall interface initialized");
 
     unsafe { syscall_entry_chirho::init_syscall_entry_chirho() };
+    // Sync PID 0's kernel_stack with the boot syscall stack so the
+    // scheduler sets the correct KERNEL_STACK_TOP when switching back.
+    unsafe {
+        let boot_kstack_chirho = syscall_entry_chirho::KERNEL_STACK_TOP_CHIRHO;
+        if let Some(task_arc_chirho) = task_chirho::current_task_chirho() {
+            task_arc_chirho.lock().kernel_stack_chirho = boot_kstack_chirho;
+        }
+    }
     fb_println_chirho!("[OK] Syscall entry trampoline initialized");
 
     fs_chirho::init_fs_chirho();
