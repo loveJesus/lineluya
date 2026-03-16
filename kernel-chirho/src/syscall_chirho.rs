@@ -1983,10 +1983,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     frame_chirho.rax_chirho = result_chirho as u64;
 
     // Preemptive scheduling on syscall return.
+    // Skip for syscalls that modify process state or already did scheduling.
     let skip_resched_chirho = matches!(
         syscall_nr_chirho,
         SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO | SYS_CLONE_CHIRHO | SYS_EXECVE_CHIRHO
-        | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO
+        | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO | SYS_WAIT4_CHIRHO
+        | SYS_SCHED_YIELD_CHIRHO
     );
     if !skip_resched_chirho && crate::scheduler_chirho::need_resched_chirho() {
         crate::scheduler_chirho::schedule_chirho();
