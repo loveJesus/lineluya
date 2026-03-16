@@ -720,28 +720,26 @@ impl Ext4MountChirho {
             }
         }
 
-        // Cache miss — read from device.
+        // Cache miss — read the full 4K block in one VirtIO request.
+        // VirtIO-blk supports multi-sector reads (sector count determined
+        // by the data buffer size in the descriptor).
         let bs_chirho = self.block_size_chirho as usize;
         let sectors_per_block_chirho = bs_chirho / 512;
         let start_sector_chirho = block_nr_chirho * sectors_per_block_chirho as u64;
 
         let mut buf_chirho = alloc::vec![0u8; bs_chirho];
 
-        // Read sector by sector (our block device trait reads 512-byte sectors).
         let registry_chirho = &crate::block_chirho::BLOCK_REGISTRY_CHIRHO;
-        for i_chirho in 0..sectors_per_block_chirho {
-            let sector_chirho = start_sector_chirho + i_chirho as u64;
-            let offset_chirho = i_chirho * 512;
-            if registry_chirho
-                .read_block_chirho(
-                    self.device_id_chirho as usize,
-                    sector_chirho,
-                    &mut buf_chirho[offset_chirho..offset_chirho + 512],
-                )
-                .is_err()
-            {
-                return None;
-            }
+        // Read entire 4K block in one request (8x faster than per-sector)
+        if registry_chirho
+            .read_block_chirho(
+                self.device_id_chirho as usize,
+                start_sector_chirho,
+                &mut buf_chirho,
+            )
+            .is_err()
+        {
+            return None;
         }
 
         // Insert into page cache.
