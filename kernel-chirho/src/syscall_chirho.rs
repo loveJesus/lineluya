@@ -3003,9 +3003,25 @@ fn sys_poll_chirho(
         }
     }
 
-    // If nothing is ready, yield CPU to prevent busy-looping.
+    // If nothing is ready, block until something arrives.
     if ready_count_chirho == 0 {
-        x86_64::instructions::interrupts::enable_and_hlt();
+        for _attempt_chirho in 0..1000u32 {
+            x86_64::instructions::interrupts::enable_and_hlt();
+            crate::net_chirho::poll_network_chirho();
+            // Re-check pollfds
+            for pfd_chirho in pollfds_chirho.iter() {
+                if pfd_chirho.fd_chirho >= 0 {
+                    let fd_val_chirho = pfd_chirho.fd_chirho as u64;
+                    if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho)
+                        && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
+                    {
+                        ready_count_chirho = 1;
+                        break;
+                    }
+                }
+            }
+            if ready_count_chirho > 0 { break; }
+        }
     }
 
     // Write pollfd array back to user space
@@ -3080,13 +3096,30 @@ fn sys_select_chirho(
     }
 
     if has_ready_chirho {
-        // Return count of ready fds (simplified: 1)
         1
     } else {
-        // No ready fds — yield CPU to prevent busy-looping.
-        // Poll network to check for incoming packets.
-        crate::net_chirho::poll_network_chirho();
-        x86_64::instructions::interrupts::enable_and_hlt();
+        // Block: HLT in a loop until something becomes ready.
+        // Each HLT waits for the next interrupt (timer, VirtIO-net, etc.)
+        // then re-polls the network and re-checks fds.
+        for _attempt_chirho in 0..1000u32 {
+            x86_64::instructions::interrupts::enable_and_hlt();
+            crate::net_chirho::poll_network_chirho();
+
+            // Re-check if any socket has data now.
+            if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
+                for fd_chirho in 0..nfds_chirho as usize {
+                    let byte_idx_chirho = fd_chirho / 8;
+                    let bit_idx_chirho = fd_chirho % 8;
+                    let set_size_chirho = core::cmp::min(128, ((nfds_chirho as usize + 7) / 8));
+                    if byte_idx_chirho < set_size_chirho {
+                        if crate::net_chirho::socket_has_data_chirho(fd_chirho as u64) {
+                            return 1;
+                        }
+                    }
+                }
+            }
+        }
+        // Timed out after ~10 seconds of HLTing (1000 timer ticks).
         0
     }
 }
