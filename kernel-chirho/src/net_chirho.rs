@@ -4472,6 +4472,8 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
     );
 
     // Wrap in UDP/IP with src=0.0.0.0, dst=255.255.255.255.
+    let src_ip_chirho: u32 = 0;          // 0.0.0.0
+    let dst_ip_chirho: u32 = 0xFFFFFFFF; // 255.255.255.255
     let udp_chirho = UdpDatagramChirho {
         src_port_chirho: DHCP_CLIENT_PORT_CHIRHO,
         dst_port_chirho: DHCP_SERVER_PORT_CHIRHO,
@@ -4479,7 +4481,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
         checksum_chirho: 0,
         payload_chirho: discover_payload_chirho,
     };
-    let udp_bytes_chirho = udp_chirho.build_chirho();
+    let udp_bytes_chirho = udp_chirho.build_with_checksum_chirho(src_ip_chirho, dst_ip_chirho);
 
     let total_len_chirho = 20 + udp_bytes_chirho.len() as u16;
     let ip_hdr_chirho = Ipv4HeaderChirho {
@@ -4493,8 +4495,8 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
         ttl_chirho: 128,
         protocol_chirho: IP_PROTO_UDP_CHIRHO,
         checksum_chirho: 0,
-        src_ip_chirho: 0,           // 0.0.0.0
-        dst_ip_chirho: 0xFFFFFFFF,  // 255.255.255.255
+        src_ip_chirho,
+        dst_ip_chirho,
     };
 
     let mut ip_pkt_chirho = ip_hdr_chirho.build_chirho();
@@ -4523,8 +4525,13 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
     let mut offer_server_chirho: u32 = 0;
     let mut got_offer_chirho = false;
 
-    for _poll_chirho in 0..2_000_000u32 {
+    for poll_i_chirho in 0..5_000_000u32 {
         core::hint::spin_loop();
+
+        // Every 100k iterations, log a progress dot for debugging.
+        if poll_i_chirho > 0 && poll_i_chirho % 500_000 == 0 {
+            crate::serial_println_chirho!("[DHCP] Polling for OFFER... ({}/5M)", poll_i_chirho);
+        }
 
         // Poll for incoming frames.
         let frame_chirho = {
@@ -4596,6 +4603,8 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
         mac_chirho, xid_chirho, DHCP_REQUEST_CHIRHO, offer_ip_chirho, offer_server_chirho,
     );
 
+    let req_src_ip_chirho: u32 = 0;
+    let req_dst_ip_chirho: u32 = 0xFFFFFFFF;
     let req_udp_chirho = UdpDatagramChirho {
         src_port_chirho: DHCP_CLIENT_PORT_CHIRHO,
         dst_port_chirho: DHCP_SERVER_PORT_CHIRHO,
@@ -4603,7 +4612,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
         checksum_chirho: 0,
         payload_chirho: request_payload_chirho,
     };
-    let req_udp_bytes_chirho = req_udp_chirho.build_chirho();
+    let req_udp_bytes_chirho = req_udp_chirho.build_with_checksum_chirho(req_src_ip_chirho, req_dst_ip_chirho);
 
     let req_total_len_chirho = 20 + req_udp_bytes_chirho.len() as u16;
     let req_ip_chirho = Ipv4HeaderChirho {
@@ -4613,8 +4622,8 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
         ttl_chirho: 128,
         protocol_chirho: IP_PROTO_UDP_CHIRHO,
         checksum_chirho: 0,
-        src_ip_chirho: 0,
-        dst_ip_chirho: 0xFFFFFFFF,
+        src_ip_chirho: req_src_ip_chirho,
+        dst_ip_chirho: req_dst_ip_chirho,
     };
     let mut req_pkt_chirho = req_ip_chirho.build_chirho();
     req_pkt_chirho.extend_from_slice(&req_udp_bytes_chirho);
@@ -5600,10 +5609,10 @@ impl VirtioNetIoDeviceChirho {
                 self.rx_vq_chirho.last_used_idx_chirho.wrapping_add(1);
         }
 
-        // Notify device about re-posted RX buffers.
-        if !self.sw_rx_queue_chirho.is_empty() {
-            self.transport_chirho.notify_queue_chirho(0);
-        }
+        // Always notify device about RX queue availability so it keeps
+        // injecting received frames.  Without this, the device may not
+        // deliver frames if it thinks the RX ring is unchanged.
+        self.transport_chirho.notify_queue_chirho(0);
     }
 
     /// Transmit a raw Ethernet frame through VirtIO-net I/O port transport.

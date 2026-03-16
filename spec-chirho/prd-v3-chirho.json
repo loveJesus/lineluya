@@ -103,37 +103,37 @@
     {
       "id_chirho": "P3-002",
       "title_chirho": "VirtIO-net send/receive packets",
-      "status_chirho": "done",
+      "status_chirho": "code-written",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-003",
       "title_chirho": "ARP + IPv4 + ICMP ping gateway",
-      "status_chirho": "done",
+      "status_chirho": "code-written",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-004",
       "title_chirho": "DHCP client (get IP from QEMU)",
-      "status_chirho": "done",
+      "status_chirho": "code-written",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-005",
       "title_chirho": "UDP DNS resolution",
-      "status_chirho": "done",
+      "status_chirho": "code-written",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-006",
       "title_chirho": "TCP connect + send + recv (wget test)",
-      "status_chirho": "done",
+      "status_chirho": "code-written",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-007",
       "title_chirho": "Socket syscalls work for userspace programs",
-      "status_chirho": "done",
+      "status_chirho": "code-written",
       "priority_chirho": "high"
     },
     {
@@ -163,7 +163,8 @@
     {
       "id_chirho": "P5-001",
       "title_chirho": "apk package manager runs",
-      "status_chirho": "done",
+      "status_chirho": "blocked",
+      "notes_chirho": "Requires networking (DHCP) + ext4 write support",
       "priority_chirho": "high"
     },
     {
