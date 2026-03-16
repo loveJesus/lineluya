@@ -297,10 +297,19 @@ pub fn schedule_chirho() {
                 // switch so that the new task can acquire it if needed.
                 drop(scheduler_guard_chirho);
 
-                // Switch to the new task's page table if it has one.
+                // Switch to the new task's page table, or fall back to boot PT.
                 if let Some(pt_root_chirho) = new_pt_root_chirho {
                     unsafe {
                         crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
+                    }
+                } else {
+                    // Task has no per-process PT — switch back to boot PML4
+                    // so the task runs in the shared boot address space.
+                    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+                    if boot_pml4_chirho.as_u64() != 0 {
+                        unsafe {
+                            crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
+                        }
                     }
                 }
 
@@ -522,6 +531,18 @@ pub fn yield_current_chirho() {
 #[inline]
 pub fn need_resched_chirho() -> bool {
     NEED_RESCHED_ATOMIC_CHIRHO.load(Ordering::Acquire)
+}
+
+/// Set the current running PID.  Called during boot to register PID 0
+/// with the scheduler so it participates in scheduling (gets pushed to
+/// the run queue when yielding).
+pub fn set_current_pid_chirho(pid_chirho: u64) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_guard_chirho = SCHEDULER_CHIRHO.lock();
+        if let Some(scheduler_chirho) = scheduler_guard_chirho.as_mut() {
+            scheduler_chirho.current_pid_chirho = Some(pid_chirho);
+        }
+    });
 }
 
 /// Return the PID of the currently running task, or `None` during idle.

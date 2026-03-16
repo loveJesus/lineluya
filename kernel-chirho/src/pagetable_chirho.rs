@@ -75,6 +75,11 @@ pub fn save_boot_pml4_chirho() {
     BOOT_PML4_PHYS_CHIRHO.store(frame_chirho.start_address().as_u64(), Ordering::Release);
 }
 
+/// Return the boot PML4 physical address.
+pub fn get_boot_pml4_chirho() -> PhysAddr {
+    PhysAddr::new(BOOT_PML4_PHYS_CHIRHO.load(Ordering::Acquire))
+}
+
 /// Look up a virtual address in the BOOT page table. If mapped, returns
 /// (physical_address, flags). Used by the page fault handler for lazy
 /// migration of user-space pages to per-process page tables.

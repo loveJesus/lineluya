@@ -239,6 +239,9 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     fb_println_chirho!("[OK] Task system initialized");
 
     scheduler_chirho::init_scheduler_chirho();
+    // Set PID 0 as the scheduler's current task so it participates
+    // in scheduling (gets pushed to run queue when yielding).
+    scheduler_chirho::set_current_pid_chirho(0);
     fb_println_chirho!("[OK] Scheduler initialized");
 
     unsafe { syscall_chirho::init_syscalls_chirho() };
