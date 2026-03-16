@@ -1065,6 +1065,8 @@ const TIOCSCTTY_CHIRHO: u64 = 0x540E;
 const TIOCGWINSZ_CHIRHO: u64 = 0x5413;
 /// FIONREAD -- bytes available to read.
 const FIONREAD_CHIRHO: u64 = 0x541B;
+/// FIONBIO -- set/clear non-blocking I/O.
+const FIONBIO_CHIRHO: u64 = 0x5421;
 /// FIOCLEX -- set close-on-exec flag.
 const FIOCLEX_CHIRHO: u64 = 0x5451;
 /// TIOCGPGRP -- get foreground process group ID.
@@ -1661,6 +1663,14 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg0_chirho,
             arg1_chirho as *mut u8,
             arg2_chirho as usize,
+        ),
+        // renameat (264) — same as renameat2 with flags=0
+        264 => sys_renameat2_chirho(
+            arg0_chirho as i32,
+            arg1_chirho as *const u8,
+            arg2_chirho as i32,
+            arg3_chirho as *const u8,
+            0,
         ),
         SYS_RENAMEAT2_CHIRHO => sys_renameat2_chirho(
             arg0_chirho as i32,
@@ -2731,6 +2741,10 @@ fn sys_ioctl_real_chirho(
         }
         FIOCLEX_CHIRHO => {
             // Set close-on-exec: silently succeed (stub)
+            0
+        }
+        FIONBIO_CHIRHO => {
+            // Set/clear non-blocking I/O: accept silently
             0
         }
         TIOCGPGRP_CHIRHO => {
