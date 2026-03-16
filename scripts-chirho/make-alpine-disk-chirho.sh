@@ -217,18 +217,26 @@ populate_image_darwin_chirho() {
         local abs_tarball_chirho
         abs_tarball_chirho="$(cd "$(dirname "$tarball_path_chirho")" && pwd)/$(basename "$tarball_path_chirho")"
 
-        # Generate the inittab / fstab / hostname content in-line for Docker
-        docker run --rm --privileged --platform linux/amd64 \
-            -v "$abs_image_chirho:/work-chirho/disk-chirho.img" \
-            -v "$abs_tarball_chirho:/work-chirho/rootfs-chirho.tar.gz" \
-            alpine:latest /bin/sh -c '
+        # Use docker cp instead of volume mounts (colima on macOS corrupts
+        # binary files via volume mounts with QEMU emulation).
+        log_chirho "Creating build container..."
+        local cid_chirho
+        cid_chirho=$(docker create --privileged alpine:latest sleep 3600)
+        docker start "$cid_chirho"
+
+        log_chirho "Copying files into container..."
+        docker cp "$abs_tarball_chirho" "$cid_chirho:/work-chirho-rootfs.tar.gz"
+        docker cp "$abs_image_chirho" "$cid_chirho:/work-chirho-disk.img"
+
+        log_chirho "Running build inside container..."
+        docker exec "$cid_chirho" /bin/sh -c '
 set -e
 apk add --no-cache e2fsprogs >/dev/null 2>&1
 
 mkdir -p /mnt-chirho
-mount -o loop /work-chirho/disk-chirho.img /mnt-chirho
+mount -o loop /work-chirho-disk.img /mnt-chirho
 
-tar xzf /work-chirho/rootfs-chirho.tar.gz -C /mnt-chirho
+tar xzf /work-chirho-rootfs.tar.gz -C /mnt-chirho
 
 # Ensure required directories
 for d in dev proc sys tmp run; do
@@ -336,6 +344,14 @@ sync
 umount /mnt-chirho
 echo "[DOCKER] rootfs populated and configured."
 '
+        # Copy the modified image back out of the container
+        log_chirho "Copying built image out of container..."
+        docker cp "$cid_chirho:/work-chirho-disk.img" "$abs_image_chirho"
+
+        # Clean up
+        docker stop "$cid_chirho" >/dev/null 2>&1 || true
+        docker rm "$cid_chirho" >/dev/null 2>&1 || true
+
         log_chirho "Image populated via Docker."
     else
         # Fallback: extract to a directory, user can manually dd or use Linux
