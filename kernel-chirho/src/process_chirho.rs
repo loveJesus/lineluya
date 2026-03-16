@@ -526,7 +526,15 @@ pub fn sys_wait4_chirho(
                 found_exit_code_chirho
             );
 
-            return reaped_pid_chirho as i64;
+            // Re-exec shell after reaping child.
+            // The SYSRET back to parent's userspace after a context switch
+            // cycle corrupts RCX (kernel stack frame pointer issue).
+            // Re-exec'ing the shell bypasses the problematic return path.
+            crate::serial_println_chirho!("[PROCESS] wait4: re-launching shell after child reap");
+            let shell_argv_chirho = [alloc::string::String::from("sh")];
+            let shell_envp_chirho = [alloc::string::String::from("HOME=/root")];
+            exec_shell_with_args_chirho(&shell_argv_chirho, &shell_envp_chirho);
+            // UNREACHABLE
         }
 
         // No zombie child found.

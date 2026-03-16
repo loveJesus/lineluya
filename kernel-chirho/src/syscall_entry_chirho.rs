@@ -114,20 +114,16 @@ syscall_entry_chirho:
 
     // Step 5: Align stack to 16 bytes before the call (16 pushes = 128 bytes,
     //         which is 16-byte aligned if KERNEL_STACK_TOP_CHIRHO was aligned).
-    //         Ensure alignment just in case.
     andq    $-16, %rsp
 
     // Save the frame pointer so we can restore it after the call.
-    // We stashed the real frame base in RDI already, but let's be safe:
     pushq   %rdi
 
     // Call the Rust syscall dispatcher.
-    // Prototype: extern "C" fn(*mut SyscallFrameChirho) -> i64
     call    syscall_dispatch_wrapper_chirho
 
     // Restore frame pointer from stack.
     popq    %rdi
-    // Now RDI = pointer to our SyscallFrameChirho on the kernel stack.
 
     // Step 6: Move RSP back to the frame so we can pop registers.
     movq    %rdi, %rsp
