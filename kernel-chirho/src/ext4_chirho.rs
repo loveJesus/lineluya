@@ -682,7 +682,7 @@ impl PageCacheChirho {
 
 /// Global page cache instance (protected by a spinlock).
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
-    spin::Mutex::new(PageCacheChirho::new_chirho(1024));
+    spin::Mutex::new(PageCacheChirho::new_chirho(4096));
 
 // ===========================================================================
 // A4-009: ext4 read-only VFS integration
