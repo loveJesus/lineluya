@@ -171,7 +171,7 @@
       "id_chirho": "P5-002",
       "title_chirho": "sqlite3 runs (pre-installed on disk)",
       "status_chirho": "code-written",
-      "notes_chirho": "Pre-installed via disk builder. statfs/fstatfs + fcntl F_SETLK + sendfile + file-backed mmap implemented. Needs QEMU test.",
+      "notes_chirho": "sqlite3 1.98MB + libreadline + libncursesw on ext4 disk. All symlinks created. ext4 symlink following works. mmap loop reads .so files fully. Heap 32MB. Needs QEMU test.",
       "priority_chirho": "high"
     },
     {
