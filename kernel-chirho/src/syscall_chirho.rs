@@ -2096,6 +2096,8 @@ fn sys_writev_chirho(
                 iov_base_chirho as *const u8,
                 iov_len_chirho,
             )
+        } else if crate::net_chirho::is_socket_fd_chirho(fd_chirho) {
+            crate::net_chirho::sys_sendto_chirho(fd_chirho, iov_base_chirho, iov_len_chirho as u64, 0, 0, 0)
         } else {
             crate::fs_chirho::sys_write_real_chirho(fd_chirho, iov_base_chirho, iov_len_chirho)
         };
