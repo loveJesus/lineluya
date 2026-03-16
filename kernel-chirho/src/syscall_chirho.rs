@@ -1304,6 +1304,14 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let arg1_chirho = frame_chirho.rsi_chirho;
     let arg2_chirho = frame_chirho.rdx_chirho;
     let arg3_chirho = frame_chirho.r10_chirho;
+
+    // DEBUG: log all syscalls during sqlite3 startup investigation
+    if syscall_nr_chirho != 1 && syscall_nr_chirho != 0 { // skip read/write spam
+        crate::serial_println_chirho!(
+            "[SC] nr={} a0={:#x} a1={:#x} a2={:#x}",
+            syscall_nr_chirho, arg0_chirho, arg1_chirho, arg2_chirho
+        );
+    }
     let arg4_chirho = frame_chirho.r8_chirho;
     let _arg5_chirho = frame_chirho.r9_chirho;
 
