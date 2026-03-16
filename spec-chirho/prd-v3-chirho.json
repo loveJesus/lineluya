@@ -115,7 +115,7 @@
     },
     {
       "id_chirho": "P3-004",
-      "title_chirho": "DHCP client (VERIFIED — IP=10.0.2.15!)",
+      "title_chirho": "DHCP client (VERIFIED \u2014 IP=10.0.2.15!)",
       "status_chirho": "done",
       "priority_chirho": "high"
     },
@@ -128,13 +128,13 @@
     },
     {
       "id_chirho": "P3-006",
-      "title_chirho": "TCP connect (VERIFIED — wget 1.1.1.1 SYN-ACK!)",
+      "title_chirho": "TCP connect (VERIFIED \u2014 wget 1.1.1.1 SYN-ACK!)",
       "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-007",
-      "title_chirho": "Socket syscalls work (VERIFIED — socket+connect+send!)",
+      "title_chirho": "Socket syscalls work (VERIFIED \u2014 socket+connect+send!)",
       "status_chirho": "done",
       "priority_chirho": "high"
     },
@@ -164,7 +164,7 @@
     },
     {
       "id_chirho": "P5-001",
-      "title_chirho": "apk package manager runs (VERIFIED — apk-tools 2.14.6!)",
+      "title_chirho": "apk package manager runs (VERIFIED \u2014 apk-tools 2.14.6!)",
       "status_chirho": "done",
       "notes_chirho": "apk --version prints apk-tools 2.14.6. Needs ext4 write for apk add.",
       "priority_chirho": "high"
@@ -193,7 +193,7 @@
       "id_chirho": "P5-005",
       "title_chirho": "python3 runs (pre-installed on disk)",
       "status_chirho": "code-written",
-      "notes_chirho": "python3.12 + libpython3.12.so + libffi + gdbm + xz + mpdecimal + libbz2 + stdlib (775 files) on disk. All .so symlinks. Needs QEMU test.",
+      "notes_chirho": "Loads libpython3.12.so, past type/import errors. Runs 2+ min without crash (slow under TCG). Needs 5+ min for stdlib loading.",
       "priority_chirho": "high"
     },
     {
