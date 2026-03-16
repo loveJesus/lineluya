@@ -734,18 +734,17 @@ pub fn sys_execve_chirho(
     // Try to resolve the file via the VFS first. If that fails, fall back to
     // the embedded hello-chirho binary (useful for early testing before the
     // filesystem has real binaries).
-    let elf_data_chirho: &[u8] = match try_read_file_chirho(&filename_str_chirho) {
+    // Read the ELF into a Vec — we'll drop it after mapping into user pages.
+    // Previously this was leaked (Vec::leak), wasting heap on every execve.
+    let elf_data_owned_chirho: Option<Vec<u8>> = try_read_file_chirho(&filename_str_chirho);
+    let elf_data_chirho: &[u8] = match &elf_data_owned_chirho {
         Some(data_chirho) => {
             crate::serial_println_chirho!(
                 "[PROCESS] execve: loaded \"{}\" from VFS ({} bytes)",
                 filename_str_chirho,
                 data_chirho.len()
             );
-            // Leak the Vec to get a &'static [u8] — the old process image is
-            // being replaced, so this memory won't be freed until the process
-            // exits. This is acceptable for a single-process kernel.
-            let leaked_chirho: &'static [u8] = alloc::vec::Vec::leak(data_chirho);
-            leaked_chirho
+            data_chirho.as_slice()
         }
         None => {
             // Check if the filename is a BusyBox applet — if so, load
@@ -872,15 +871,13 @@ pub fn sys_execve_chirho(
         let has_interp_data_chirho = !interp_data_vec_chirho.is_empty();
 
         if has_interp_data_chirho {
-            // Leak interpreter data to get a &'static [u8]
-            let interp_data_leaked_chirho: &'static [u8] =
-                alloc::vec::Vec::leak(interp_data_vec_chirho);
+            // Keep interpreter data alive (borrowed) during ELF loading.
+            // It will be dropped when interp_data_vec_chirho goes out of scope.
+            let interp_data_ref_chirho: &[u8] = &interp_data_vec_chirho;
 
-            // Load main ELF + interpreter using the existing
-            // load_elf_with_interp_chirho infrastructure.
             let dyn_result_chirho = match exec_chirho::load_elf_with_interp_chirho(
                 elf_data_chirho,
-                Some(interp_data_leaked_chirho),
+                Some(interp_data_ref_chirho),
             ) {
                 Ok(result_chirho) => result_chirho,
                 Err(err_chirho) => {
@@ -929,9 +926,12 @@ pub fn sys_execve_chirho(
             // ELF loader maps many pages that aren't in the per-process PT.
             // activate_per_process_pt_chirho();
 
-            // Jump to the interpreter's entry point (not the main binary's).
-            // The interpreter (ld-musl) will self-relocate, load the main
-            // binary, resolve symbols, and eventually call main().
+            // Drop ELF data BEFORE jumping — frees heap memory that was
+            // previously leaked via Vec::leak on every execve.
+            drop(interp_data_vec_chirho);
+            drop(elf_data_owned_chirho);
+
+            // Jump to the interpreter's entry point.
             exec_chirho::jump_to_userspace_chirho(
                 dyn_result_chirho.start_addr_chirho,
                 user_rsp_chirho,
@@ -988,8 +988,11 @@ pub fn sys_execve_chirho(
     activate_per_process_pt_chirho();
 
     // -----------------------------------------------------------------------
-    // Step 7: Jump to userspace (never returns on success)
+    // Step 7: Free ELF data and jump to userspace (never returns)
     // -----------------------------------------------------------------------
+    // Drop the ELF binary data — it's already mapped into user pages.
+    // Previously leaked via Vec::leak, wasting heap on every execve.
+    drop(elf_data_owned_chirho);
     exec_chirho::jump_to_userspace_chirho(loaded_chirho.entry_point_chirho, user_rsp_chirho);
 
     // UNREACHABLE: jump_to_userspace_chirho is -> !
