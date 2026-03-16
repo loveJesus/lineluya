@@ -1188,6 +1188,8 @@ pub fn exec_init_chirho() {
         alloc::string::String::from("PS1=lineluya# "),
         alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
         alloc::string::String::from("SHELL=/bin/sh"),
+        alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
+        alloc::string::String::from("PYTHONHOME=/usr"),
     ];
     let user_rsp_chirho = setup_user_stack_with_args_chirho(
         &loaded_chirho,
