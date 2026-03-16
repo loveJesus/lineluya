@@ -277,3 +277,19 @@ macro_rules! serial_println_chirho {
         $crate::serial_print_chirho!("{}\n", format_args!($($arg_chirho)*))
     };
 }
+
+/// Debug-only serial print. Compiles to nothing unless the `debug_serial`
+/// feature is enabled. Rust optimizes the empty branch away entirely.
+///
+/// Usage: `serial_debug_chirho!("[SUBSYS] debug info: {}", value);`
+///
+/// Enable with: `cargo build --features debug_serial`
+#[macro_export]
+macro_rules! serial_debug_chirho {
+    ($($arg_chirho:tt)*) => {
+        #[cfg(feature = "debug_serial")]
+        {
+            $crate::serial_println_chirho!($($arg_chirho)*);
+        }
+    };
+}

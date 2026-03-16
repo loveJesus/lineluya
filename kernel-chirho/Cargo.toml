@@ -12,6 +12,11 @@ description = "Lineluya - A Linux kernel rewrite in Rust"
 name = "kernel-chirho"
 path = "src/main_chirho.rs"
 
+[features]
+default = ["debug_serial"]  # Enable debug output during development
+debug_serial = []            # serial_debug_chirho!() prints to serial
+# Remove "debug_serial" from default for production builds
+
 [dependencies]
 bootloader_api = "0.11"
 x86_64 = { version = "0.15", features = ["instructions"] }
