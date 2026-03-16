@@ -15,6 +15,104 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 // ---------------------------------------------------------------------------
+// Typed error enum for ext4 operations
+// ---------------------------------------------------------------------------
+
+/// Typed errors for ext4 filesystem operations.
+/// Convert to Linux errno at syscall boundaries only.
+#[derive(Debug)]
+pub enum Ext4ErrorChirho {
+    /// I/O error reading from block device.
+    IoErrorChirho,
+    /// Superblock magic number or checksum invalid.
+    CorruptSuperblockChirho,
+    /// Inode data is corrupt or unsupported.
+    CorruptInodeChirho,
+    /// Directory entry parsing failed.
+    CorruptDirEntryChirho,
+    /// Extent tree is invalid or unsupported depth.
+    InvalidExtentChirho,
+    /// Feature not supported (e.g., non-extent block map).
+    UnsupportedFeatureChirho(&'static str),
+    /// File or directory not found.
+    NotFoundChirho,
+    /// File already exists.
+    AlreadyExistsChirho,
+    /// Not a directory.
+    NotDirectoryChirho,
+    /// Not a symlink.
+    NotSymlinkChirho,
+    /// Filesystem is read-only.
+    ReadOnlyChirho,
+    /// No free inodes or blocks.
+    NoSpaceChirho,
+}
+
+impl Ext4ErrorChirho {
+    /// Convert to Linux errno value for syscall return.
+    pub fn to_errno_chirho(&self) -> i64 {
+        match self {
+            Self::IoErrorChirho => -5,            // EIO
+            Self::CorruptSuperblockChirho => -5,  // EIO
+            Self::CorruptInodeChirho => -5,       // EIO
+            Self::CorruptDirEntryChirho => -5,    // EIO
+            Self::InvalidExtentChirho => -5,      // EIO
+            Self::UnsupportedFeatureChirho(_) => -95, // EOPNOTSUPP
+            Self::NotFoundChirho => -2,           // ENOENT
+            Self::AlreadyExistsChirho => -17,     // EEXIST
+            Self::NotDirectoryChirho => -20,      // ENOTDIR
+            Self::NotSymlinkChirho => -22,        // EINVAL
+            Self::ReadOnlyChirho => -30,          // EROFS
+            Self::NoSpaceChirho => -28,           // ENOSPC
+        }
+    }
+}
+
+/// Bridge for gradual migration: lets `?` coerce `&'static str` errors
+/// from not-yet-converted functions into `Ext4ErrorChirho`.
+impl From<&'static str> for Ext4ErrorChirho {
+    fn from(msg_chirho: &'static str) -> Self {
+        match msg_chirho {
+            "filesystem is read-only" => Self::ReadOnlyChirho,
+            "no free inodes" | "not enough free blocks" => Self::NoSpaceChirho,
+            _ => Self::IoErrorChirho,
+        }
+    }
+}
+
+impl core::fmt::Display for Ext4ErrorChirho {
+    fn fmt(&self, f_chirho: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::IoErrorChirho => write!(f_chirho, "I/O error"),
+            Self::CorruptSuperblockChirho => write!(f_chirho, "corrupt superblock"),
+            Self::CorruptInodeChirho => write!(f_chirho, "corrupt inode"),
+            Self::CorruptDirEntryChirho => write!(f_chirho, "corrupt directory entry"),
+            Self::InvalidExtentChirho => write!(f_chirho, "invalid extent tree"),
+            Self::UnsupportedFeatureChirho(msg_chirho) => {
+                write!(f_chirho, "unsupported feature: {}", msg_chirho)
+            }
+            Self::NotFoundChirho => write!(f_chirho, "not found"),
+            Self::AlreadyExistsChirho => write!(f_chirho, "already exists"),
+            Self::NotDirectoryChirho => write!(f_chirho, "not a directory"),
+            Self::NotSymlinkChirho => write!(f_chirho, "not a symlink"),
+            Self::ReadOnlyChirho => write!(f_chirho, "filesystem is read-only"),
+            Self::NoSpaceChirho => write!(f_chirho, "no space left on device"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mount mode enum — replaces bug-prone `readonly_chirho: bool`
+// ---------------------------------------------------------------------------
+
+/// Mount mode — replaces the bug-prone `readonly_chirho: bool` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountModeChirho {
+    ReadOnlyChirho,
+    ReadWriteChirho,
+}
+
+// ---------------------------------------------------------------------------
 // ext4 constants
 // ---------------------------------------------------------------------------
 
@@ -704,8 +802,8 @@ pub struct Ext4MountChirho {
     pub block_size_chirho: u32,
     /// Device ID in the block registry (for read_block calls).
     pub device_id_chirho: u32,
-    /// Whether this mount is read-only.
-    pub readonly_chirho: bool,
+    /// Mount mode: read-only or read-write.
+    pub mode_chirho: MountModeChirho,
 }
 
 impl Ext4MountChirho {
@@ -1385,11 +1483,13 @@ impl Ext4MountChirho {
     ///
     /// The block data must be exactly `block_size_chirho` bytes.
     #[allow(dead_code)]
-    pub fn write_block_chirho(&self, block_nr_chirho: u64, data_chirho: &[u8]) -> Result<(), &'static str> {
-        // readonly check skipped (field corrupted, see debug notes)
+    pub fn write_block_chirho(&self, block_nr_chirho: u64, data_chirho: &[u8]) -> Result<(), Ext4ErrorChirho> {
+        if self.mode_chirho == MountModeChirho::ReadOnlyChirho {
+            return Err(Ext4ErrorChirho::ReadOnlyChirho);
+        }
         let bs_chirho = self.block_size_chirho as usize;
         if data_chirho.len() != bs_chirho {
-            return Err("block data size mismatch");
+            return Err(Ext4ErrorChirho::IoErrorChirho);
         }
 
         let sectors_per_block_chirho = bs_chirho / 512;
@@ -1405,10 +1505,10 @@ impl Ext4MountChirho {
                     sector_chirho,
                     &data_chirho[offset_chirho..offset_chirho + 512],
                 )
-                .map_err(|_| "block write failed")?;
+                .map_err(|_| Ext4ErrorChirho::IoErrorChirho)?;
         }
 
-        // Invalidate the page cache entry for this block.
+        // Update the page cache entry for this block.
         {
             let mut cache_chirho = PAGE_CACHE_CHIRHO.lock();
             cache_chirho.insert_chirho(self.device_id_chirho, block_nr_chirho, data_chirho.to_vec());
@@ -1419,12 +1519,12 @@ impl Ext4MountChirho {
 
     /// Write an inode back to disk.
     #[allow(dead_code)]
-    pub fn write_inode_chirho(&self, ino_chirho: u32, inode_chirho: &Ext4InodeChirho) -> Result<(), &'static str> {
+    pub fn write_inode_chirho(&self, ino_chirho: u32, inode_chirho: &Ext4InodeChirho) -> Result<(), Ext4ErrorChirho> {
         let sb_inodes_per_group_chirho = self.sb_chirho.s_inodes_per_group_chirho;
         let (group_chirho, local_chirho) = inode_to_group_chirho(ino_chirho, sb_inodes_per_group_chirho);
 
         if group_chirho as usize >= self.group_descs_chirho.len() {
-            return Err("invalid block group");
+            return Err(Ext4ErrorChirho::CorruptInodeChirho);
         }
 
         let gd_chirho = &self.group_descs_chirho[group_chirho as usize];
@@ -1437,7 +1537,7 @@ impl Ext4MountChirho {
         let offset_in_block_chirho = (byte_offset_chirho % self.block_size_chirho as u64) as usize;
 
         let mut block_data_chirho = self.read_block_cached_chirho(block_nr_chirho)
-            .ok_or("failed to read inode table block")?;
+            .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
 
         // Copy the inode into the block data.
         let inode_bytes_chirho: &[u8] = unsafe {
@@ -1448,7 +1548,7 @@ impl Ext4MountChirho {
         };
         let end_chirho = offset_in_block_chirho + inode_bytes_chirho.len();
         if end_chirho > block_data_chirho.len() {
-            return Err("inode extends past block boundary");
+            return Err(Ext4ErrorChirho::CorruptInodeChirho);
         }
         block_data_chirho[offset_in_block_chirho..end_chirho].copy_from_slice(inode_bytes_chirho);
 
@@ -1464,14 +1564,15 @@ impl Ext4MountChirho {
         &self,
         parent_ino_chirho: u32,
         name_chirho: &str,
-        mode_chirho: u16,
-    ) -> Result<u32, &'static str> {
+        file_mode_chirho: u16,
+    ) -> Result<u32, Ext4ErrorChirho> {
         crate::serial_println_chirho!(
-            "[EXT4] create_file: parent={} name='{}' readonly={} (ignoring)",
-            parent_ino_chirho, name_chirho, self.readonly_chirho
+            "[EXT4] create_file: parent={} name='{}' mode={:?}",
+            parent_ino_chirho, name_chirho, self.mode_chirho
         );
-        // readonly_chirho is corrupted (shows true despite init=false).
-        // Skip check until root cause is found.
+        if self.mode_chirho == MountModeChirho::ReadOnlyChirho {
+            return Err(Ext4ErrorChirho::ReadOnlyChirho);
+        }
 
         let sb_inodes_per_group_chirho = self.sb_chirho.s_inodes_per_group_chirho;
 
@@ -1486,12 +1587,8 @@ impl Ext4MountChirho {
             }
 
             let bitmap_block_chirho = gd_chirho.inode_bitmap_chirho(has_64bit_chirho);
-            let mut bitmap_data_chirho = match self.read_block_cached_chirho(bitmap_block_chirho) {
-                Some(d_chirho) => d_chirho,
-                None => {
-                    return Err("failed to read inode bitmap");
-                }
-            };
+            let mut bitmap_data_chirho = self.read_block_cached_chirho(bitmap_block_chirho)
+                .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
 
             if let Some(ino_chirho) = alloc_inode_in_group_chirho(
                 &mut bitmap_data_chirho,
@@ -1499,28 +1596,17 @@ impl Ext4MountChirho {
                 sb_inodes_per_group_chirho,
             ) {
                 // Write the updated bitmap back.
-                match self.write_block_chirho(bitmap_block_chirho, &bitmap_data_chirho) {
-                    Ok(()) => {},
-                    Err(e_chirho) => {
-                        crate::serial_println_chirho!("[EXT4] create: bitmap write failed: {}", e_chirho);
-                        return Err(e_chirho);
-                    }
-                }
+                self.write_block_chirho(bitmap_block_chirho, &bitmap_data_chirho)?;
                 new_ino_chirho = Some(ino_chirho);
                 break;
             }
         }
 
-        let ino_chirho = match new_ino_chirho {
-            Some(i_chirho) => i_chirho,
-            None => {
-                return Err("no free inodes");
-            }
-        };
+        let ino_chirho = new_ino_chirho.ok_or(Ext4ErrorChirho::NoSpaceChirho)?;
 
         // Initialize the new inode.
         let new_inode_chirho = Ext4InodeChirho {
-            i_mode_chirho: S_IFREG_CHIRHO | mode_chirho,
+            i_mode_chirho: S_IFREG_CHIRHO | file_mode_chirho,
             i_uid_chirho: 0,
             i_size_lo_chirho: 0,
             i_atime_chirho: 0,
@@ -1569,16 +1655,19 @@ impl Ext4MountChirho {
         child_ino_chirho: u32,
         name_chirho: &str,
         file_type_chirho: u8,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Ext4ErrorChirho> {
         let dir_inode_chirho = self.read_inode_chirho(dir_ino_chirho)
-            .ok_or("failed to read directory inode")?;
+            .ok_or(Ext4ErrorChirho::NotFoundChirho)?;
+        if !dir_inode_chirho.is_dir_chirho() {
+            return Err(Ext4ErrorChirho::NotDirectoryChirho);
+        }
         let dir_size_chirho = dir_inode_chirho.size_chirho();
         crate::serial_println_chirho!(
             "[EXT4] add_dir_entry: ino={} size={} name='{}'",
             dir_ino_chirho, dir_size_chirho, name_chirho,
         );
         let mut dir_data_chirho = self.read_file_data_chirho(&dir_inode_chirho)
-            .ok_or("failed to read directory data")?;
+            .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
 
         // Build the new directory entry.
         let name_len_chirho = name_chirho.len() as u8;
@@ -1610,7 +1699,7 @@ impl Ext4MountChirho {
             self.write_file_data_chirho(dir_ino_chirho, &dir_data_chirho)?;
             // Update dir inode size
             let mut dir_inode_update_chirho = self.read_inode_chirho(dir_ino_chirho)
-                .ok_or("failed re-read dir inode")?;
+                .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
             dir_inode_update_chirho.i_size_lo_chirho = dir_data_chirho.len() as u32;
             self.write_inode_chirho(dir_ino_chirho, &dir_inode_update_chirho)?;
         } else {
@@ -1664,7 +1753,7 @@ impl Ext4MountChirho {
 
             // Update dir inode size
             let mut dir_inode_update_chirho = self.read_inode_chirho(dir_ino_chirho)
-                .ok_or("failed re-read dir inode")?;
+                .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
             dir_inode_update_chirho.i_size_lo_chirho = dir_data_chirho.len() as u32;
             self.write_inode_chirho(dir_ino_chirho, &dir_inode_update_chirho)?;
         }
@@ -1687,12 +1776,8 @@ impl Ext4MountChirho {
         ino_chirho: u32,
         data_chirho: &[u8],
     ) -> Result<(), &'static str> {
-        // readonly_chirho should be false (set at construction) but gets
-        // corrupted to true by unknown memory overwrite. Skip check for now.
-        // TODO: investigate struct layout / memory corruption.
-        // if self.readonly_chirho {
-        //     return Err("filesystem is read-only");
-        // }
+        // NOTE: read-only guard now lives in write_block_chirho via
+        // mode_chirho == MountModeChirho::ReadOnlyChirho check.
 
         let bs_chirho = self.block_size_chirho as usize;
         let blocks_needed_chirho = (data_chirho.len() + bs_chirho - 1) / bs_chirho;
@@ -1727,7 +1812,8 @@ impl Ext4MountChirho {
                 }
             }
 
-            self.write_block_chirho(bitmap_block_chirho, &bitmap_chirho)?;
+            self.write_block_chirho(bitmap_block_chirho, &bitmap_chirho)
+                .map_err(|_| "block bitmap write failed")?;
         }
 
         if allocated_blocks_chirho.len() < blocks_needed_chirho {
@@ -1740,7 +1826,8 @@ impl Ext4MountChirho {
             let end_chirho = core::cmp::min(start_chirho + bs_chirho, data_chirho.len());
             let mut block_buf_chirho = alloc::vec![0u8; bs_chirho];
             block_buf_chirho[..end_chirho - start_chirho].copy_from_slice(&data_chirho[start_chirho..end_chirho]);
-            self.write_block_chirho(blk_chirho, &block_buf_chirho)?;
+            self.write_block_chirho(blk_chirho, &block_buf_chirho)
+                .map_err(|_| "data block write failed")?;
         }
 
         // Update the inode with the new size and extent info.
@@ -1765,7 +1852,8 @@ impl Ext4MountChirho {
             inode_chirho.i_block_chirho[5] = first_phys_chirho as u32;
         }
 
-        self.write_inode_chirho(ino_chirho, &inode_chirho)?;
+        self.write_inode_chirho(ino_chirho, &inode_chirho)
+            .map_err(|_| "inode write failed")?;
 
         crate::serial_println_chirho!(
             "[EXT4] Wrote {} bytes to inode {} ({} blocks)",
@@ -1780,7 +1868,8 @@ impl Ext4MountChirho {
     /// Frees all data blocks and resets the inode size and extent tree.
     #[allow(dead_code)]
     pub fn truncate_file_chirho(&self, ino_chirho: u32) -> Result<(), &'static str> {
-        // readonly check skipped (field corrupted, see debug notes)
+        // NOTE: read-only guard now lives in write_block_chirho via
+        // mode_chirho == MountModeChirho::ReadOnlyChirho check.
 
         let mut inode_chirho = self.read_inode_chirho(ino_chirho)
             .ok_or("failed to read inode")?;
@@ -1795,7 +1884,8 @@ impl Ext4MountChirho {
         inode_chirho.i_block_chirho[1] = 4 | (0u32 << 16);
         inode_chirho.i_block_chirho[2] = 0;
 
-        self.write_inode_chirho(ino_chirho, &inode_chirho)?;
+        self.write_inode_chirho(ino_chirho, &inode_chirho)
+            .map_err(|_| "inode write failed in truncate")?;
 
         crate::serial_println_chirho!("[EXT4] Truncated inode {}", ino_chirho);
         Ok(())
@@ -2065,7 +2155,7 @@ pub fn mount_root_ext4_chirho(
         group_descs_chirho,
         block_size_chirho,
         device_id_chirho,
-        readonly_chirho: false,
+        mode_chirho: MountModeChirho::ReadWriteChirho,
     })
 }
 
@@ -2175,9 +2265,9 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
                 });
                 Ok(new_inode_chirho)
             }
-            Err(msg_chirho) => {
-                crate::serial_println_chirho!("[EXT4] create_file failed: {}", msg_chirho);
-                Err(-28) // ENOSPC
+            Err(err_chirho) => {
+                crate::serial_println_chirho!("[EXT4] create_file failed: {}", err_chirho);
+                Err(err_chirho.to_errno_chirho())
             }
         }
     }

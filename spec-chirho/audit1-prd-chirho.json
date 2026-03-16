@@ -1,0 +1,311 @@
+{
+  "title_chirho": "Lineluya Kernel Audit #1 — Rust Improvements PRD",
+  "description_chirho": "For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life. - John 3:16. Structured tasks from kernel-rust-improvements-chirho.md audit.",
+  "version_chirho": "1.0.0",
+  "created_chirho": "2026-03-16",
+  "categories_chirho": [
+    {
+      "id_chirho": "src-reorg",
+      "name_chirho": "Source Reorganization",
+      "tasks_chirho": [
+        {
+          "id_chirho": "src-reorg-001",
+          "title_chirho": "Move 70+ files into 9 subdirectories",
+          "status_chirho": "done",
+          "notes_chirho": "arch, mm, fs, net, sched, process, drivers, console, subsys"
+        },
+        {
+          "id_chirho": "src-reorg-002",
+          "title_chirho": "Split net_chirho.rs into sub-modules (socket, tcp, udp, dhcp, dns, arp)",
+          "status_chirho": "todo",
+          "priority_chirho": "high"
+        },
+        {
+          "id_chirho": "src-reorg-003",
+          "title_chirho": "Split syscall_chirho.rs into per-subsystem dispatch files",
+          "status_chirho": "todo",
+          "priority_chirho": "medium"
+        }
+      ]
+    },
+    {
+      "id_chirho": "typed-state",
+      "name_chirho": "Typed State Machines & Enums",
+      "tasks_chirho": [
+        {
+          "id_chirho": "typed-001",
+          "title_chirho": "MountModeChirho enum (ReadOnly/ReadWrite) replacing readonly_chirho: bool",
+          "status_chirho": "todo",
+          "file_chirho": "fs_chirho/ext4_chirho.rs",
+          "priority_chirho": "high",
+          "notes_chirho": "readonly_chirho field corrupts at runtime — enum prevents this"
+        },
+        {
+          "id_chirho": "typed-002",
+          "title_chirho": "SocketStateChirho — merge with TcpStateChirho into coherent lifecycle",
+          "status_chirho": "todo",
+          "file_chirho": "net_chirho/net_core_chirho.rs",
+          "priority_chirho": "high"
+        },
+        {
+          "id_chirho": "typed-003",
+          "title_chirho": "ProcessLifecycleStateChirho enum replacing TaskStateChirho",
+          "status_chirho": "todo",
+          "file_chirho": "sched_chirho/task_chirho.rs",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "typed-004",
+          "title_chirho": "FaultDispositionChirho enum for page fault handler",
+          "status_chirho": "todo",
+          "file_chirho": "arch_chirho/interrupts_chirho.rs",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "typed-005",
+          "title_chirho": "MappingKindChirho enum (Anonymous/FileBacked/Framebuffer)",
+          "status_chirho": "todo",
+          "file_chirho": "mm_chirho/mmap_chirho.rs",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "typed-006",
+          "title_chirho": "IoctlCommandChirho enum replacing raw integer matching",
+          "status_chirho": "todo",
+          "file_chirho": "net_chirho/net_core_chirho.rs",
+          "priority_chirho": "low"
+        },
+        {
+          "id_chirho": "typed-007",
+          "title_chirho": "ExecTargetChirho enum (EmbeddedBusyBox/ElfFromVfs/Script)",
+          "status_chirho": "todo",
+          "file_chirho": "process_chirho/exec_chirho.rs",
+          "priority_chirho": "low"
+        }
+      ]
+    },
+    {
+      "id_chirho": "typed-errors",
+      "name_chirho": "Typed Error Handling",
+      "tasks_chirho": [
+        {
+          "id_chirho": "err-001",
+          "title_chirho": "Ext4ErrorChirho enum replacing &'static str errors",
+          "status_chirho": "todo",
+          "file_chirho": "fs_chirho/ext4_chirho.rs",
+          "priority_chirho": "high",
+          "notes_chirho": "Distinguish parse/IO/corrupt/unsupported; convert to errno at boundary"
+        },
+        {
+          "id_chirho": "err-002",
+          "title_chirho": "NetErrorChirho enum for network subsystem",
+          "status_chirho": "todo",
+          "file_chirho": "net_chirho/net_core_chirho.rs",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "err-003",
+          "title_chirho": "ExecErrorChirho enum for process/exec path",
+          "status_chirho": "todo",
+          "file_chirho": "process_chirho/exec_chirho.rs",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "err-004",
+          "title_chirho": "Remove panic!/expect/unwrap from non-init code paths",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Audit all unwrap() calls in hot paths"
+        }
+      ]
+    },
+    {
+      "id_chirho": "unsafe-narrow",
+      "name_chirho": "Narrow Unsafe Boundaries",
+      "tasks_chirho": [
+        {
+          "id_chirho": "unsafe-001",
+          "title_chirho": "Wrap page table raw pointer ops in safe helpers",
+          "status_chirho": "todo",
+          "file_chirho": "mm_chirho/pagetable_chirho.rs",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "unsafe-002",
+          "title_chirho": "PerCpuSyscallStateChirho replacing static mut globals",
+          "status_chirho": "todo",
+          "file_chirho": "arch_chirho/syscall_entry_chirho.rs",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "unsafe-003",
+          "title_chirho": "Safe VirtIO descriptor ring wrapper",
+          "status_chirho": "todo",
+          "file_chirho": "drivers_chirho/virtio_chirho.rs",
+          "priority_chirho": "low"
+        },
+        {
+          "id_chirho": "unsafe-004",
+          "title_chirho": "Typed sockaddr decoder replacing raw pointer math",
+          "status_chirho": "todo",
+          "file_chirho": "net_chirho/net_core_chirho.rs",
+          "priority_chirho": "medium"
+        }
+      ]
+    },
+    {
+      "id_chirho": "constants",
+      "name_chirho": "Centralize Constants & Magic Numbers",
+      "tasks_chirho": [
+        {
+          "id_chirho": "const-001",
+          "title_chirho": "Network constants module (MTU 1500, loopback 65536, DNS 8.8.8.8)",
+          "status_chirho": "todo",
+          "file_chirho": "net_chirho/net_core_chirho.rs",
+          "priority_chirho": "high",
+          "notes_chirho": "MTU 1500 repeated in 5+ places"
+        },
+        {
+          "id_chirho": "const-002",
+          "title_chirho": "APIC/LAPIC register constants (0xFEE0_00B0 repeated 4x)",
+          "status_chirho": "done",
+          "file_chirho": "arch_chirho/interrupts_chirho.rs",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "const-003",
+          "title_chirho": "HeapConfigChirho replacing scattered heap size constants",
+          "status_chirho": "todo",
+          "file_chirho": "mm_chirho/allocator_chirho.rs",
+          "priority_chirho": "low"
+        },
+        {
+          "id_chirho": "const-004",
+          "title_chirho": "GDT selector newtypes (0x08, 0x10, 0x23, 0x2B, 0x30)",
+          "status_chirho": "todo",
+          "file_chirho": "arch_chirho/gdt_chirho.rs",
+          "priority_chirho": "low"
+        }
+      ]
+    },
+    {
+      "id_chirho": "logging",
+      "name_chirho": "Logging & Diagnostics",
+      "tasks_chirho": [
+        {
+          "id_chirho": "log-001",
+          "title_chirho": "Subsystem log macros (log_net!, log_mm!, log_fs!, log_sched!)",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Replace hundreds of serial_println! with tagged, level-gated macros"
+        },
+        {
+          "id_chirho": "log-002",
+          "title_chirho": "Remove unconditional logging from hot paths (poll, select, read)",
+          "status_chirho": "todo",
+          "priority_chirho": "high"
+        },
+        {
+          "id_chirho": "log-003",
+          "title_chirho": "IRQ-safe minimal logging for interrupt handlers",
+          "status_chirho": "todo",
+          "priority_chirho": "low"
+        }
+      ]
+    },
+    {
+      "id_chirho": "oom-fix",
+      "name_chirho": "OOM Bug Fix",
+      "tasks_chirho": [
+        {
+          "id_chirho": "oom-001",
+          "title_chirho": "Symlink loop detection (ELOOP, depth limit 40)",
+          "status_chirho": "done"
+        },
+        {
+          "id_chirho": "oom-002",
+          "title_chirho": "Blocking select/poll to prevent busy-loop OOM",
+          "status_chirho": "done"
+        },
+        {
+          "id_chirho": "oom-003",
+          "title_chirho": "Fix remaining 64MB a=8 alloc during ext4 open/readlink",
+          "status_chirho": "in_progress",
+          "priority_chirho": "critical",
+          "notes_chirho": "Happens in read_file_data_chirho via extend_from_slice loop. Pre-allocation at line 872 exists but Vec still doubles. May also be from buddy-alloc internal metadata alignment."
+        },
+        {
+          "id_chirho": "oom-004",
+          "title_chirho": "Cap pread64/pwrite64 kernel buffer at 16MB",
+          "status_chirho": "todo",
+          "priority_chirho": "medium"
+        }
+      ]
+    },
+    {
+      "id_chirho": "ssh",
+      "name_chirho": "SSH Connection",
+      "tasks_chirho": [
+        {
+          "id_chirho": "ssh-001",
+          "title_chirho": "Dropbear listens on port 2222",
+          "status_chirho": "done"
+        },
+        {
+          "id_chirho": "ssh-002",
+          "title_chirho": "TCP accept spawns child sockets for SYN",
+          "status_chirho": "done"
+        },
+        {
+          "id_chirho": "ssh-003",
+          "title_chirho": "Fix OOM so dropbear can reach select loop",
+          "status_chirho": "blocked",
+          "blocked_by_chirho": "oom-003"
+        },
+        {
+          "id_chirho": "ssh-004",
+          "title_chirho": "SSH banner exchange (dropbear sends version string)",
+          "status_chirho": "blocked",
+          "blocked_by_chirho": "ssh-003"
+        },
+        {
+          "id_chirho": "ssh-005",
+          "title_chirho": "Fork per connection for dropbear",
+          "status_chirho": "todo",
+          "priority_chirho": "high"
+        }
+      ]
+    },
+    {
+      "id_chirho": "fs-dynamic",
+      "name_chirho": "Dynamic Filesystem Hierarchy",
+      "tasks_chirho": [
+        {
+          "id_chirho": "fs-dyn-001",
+          "title_chirho": "Remove hardcoded /bin applet creation from init_fs",
+          "status_chirho": "todo",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "fs-dyn-002",
+          "title_chirho": "Support mount(2) from userspace for tmpfs/procfs/sysfs",
+          "status_chirho": "todo",
+          "priority_chirho": "medium"
+        },
+        {
+          "id_chirho": "fs-dyn-003",
+          "title_chirho": "Make ext4 root mount configurable via kernel cmdline",
+          "status_chirho": "todo",
+          "priority_chirho": "low"
+        }
+      ]
+    }
+  ],
+  "summary_chirho": {
+    "total_chirho": 38,
+    "done_chirho": 5,
+    "in_progress_chirho": 1,
+    "blocked_chirho": 2,
+    "todo_chirho": 30
+  }
+}

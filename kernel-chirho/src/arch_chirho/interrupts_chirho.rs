@@ -596,9 +596,17 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
             .notify_end_of_interrupt(InterruptIndexChirho::TimerChirho.as_u8_chirho());
         // LAPIC EOI
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let lapic_eoi_chirho = (phys_offset_chirho + 0xFEE0_00B0u64) as *mut u32;
-        core::ptr::write_volatile(lapic_eoi_chirho, 0);
+        write_lapic_eoi_chirho(phys_offset_chirho);
     }
+}
+
+/// Write LAPIC End-Of-Interrupt register.
+/// The LAPIC EOI register is at physical address 0xFEE0_00B0.
+#[inline(always)]
+unsafe fn write_lapic_eoi_chirho(phys_offset_chirho: u64) {
+    const LAPIC_EOI_PHYS_CHIRHO: u64 = 0xFEE0_00B0;
+    let lapic_eoi_chirho = (phys_offset_chirho + LAPIC_EOI_PHYS_CHIRHO) as *mut u32;
+    core::ptr::write_volatile(lapic_eoi_chirho, 0);
 }
 
 /// PS/2 keyboard interrupt handler (IRQ 1).
@@ -651,8 +659,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler_chirho(
 
         // LAPIC EOI: write 0 to the EOI register at LAPIC base + 0xB0
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let lapic_eoi_chirho = (phys_offset_chirho + 0xFEE0_00B0u64) as *mut u32;
-        core::ptr::write_volatile(lapic_eoi_chirho, 0);
+        write_lapic_eoi_chirho(phys_offset_chirho);
     }
 }
 
@@ -862,8 +869,7 @@ extern "x86-interrupt" fn virtio_interrupt_handler_chirho(
             .lock()
             .notify_end_of_interrupt((PIC_1_OFFSET_CHIRHO + 11) as u8);
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let lapic_eoi_chirho = (phys_offset_chirho + 0xFEE0_00B0u64) as *mut u32;
-        core::ptr::write_volatile(lapic_eoi_chirho, 0);
+        write_lapic_eoi_chirho(phys_offset_chirho);
     }
 }
 
@@ -881,7 +887,6 @@ extern "x86-interrupt" fn serial_interrupt_handler_chirho(
             .notify_end_of_interrupt((PIC_1_OFFSET_CHIRHO + 4) as u8);
         // LAPIC EOI
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let lapic_eoi_chirho = (phys_offset_chirho + 0xFEE0_00B0u64) as *mut u32;
-        core::ptr::write_volatile(lapic_eoi_chirho, 0);
+        write_lapic_eoi_chirho(phys_offset_chirho);
     }
 }

@@ -738,7 +738,11 @@ pub fn resolve_parent_live_chirho(
         return Err(-ENOENT_CHIRHO); // can't mkdir "/"
     }
 
-    let final_name_chirho = alloc::string::String::from(*components_chirho.last().unwrap());
+    // .last() is guaranteed Some because we checked is_empty() above, but
+    // use ok_or to avoid a panic path in the generated binary.
+    let final_name_chirho = alloc::string::String::from(
+        *components_chirho.last().ok_or(-ENOENT_CHIRHO)?
+    );
     let parent_components_chirho = &components_chirho[..components_chirho.len() - 1];
 
     // Build the parent path to check mount points
@@ -935,15 +939,15 @@ pub fn sys_openat_chirho(
                     full_path_chirho.push('/');
                 }
                 full_path_chirho.push_str(&raw_pathname_chirho);
-                crate::serial_debug_chirho!(
-                    "[FS] openat: dirfd={} resolved to '{}' + '{}'",
+                crate::log_fs_chirho!(
+                    "openat: dirfd={} resolved to '{}' + '{}'",
                     dirfd_chirho, full_path_chirho, raw_pathname_chirho
                 );
                 full_path_chirho
             } else {
                 // Can't resolve dirfd — try as absolute from CWD
-                crate::serial_debug_chirho!(
-                    "[FS] openat: dirfd={} unknown, treating '{}' as relative to /",
+                crate::log_fs_chirho!(
+                    "openat: dirfd={} unknown, treating '{}' as relative to /",
                     dirfd_chirho, raw_pathname_chirho
                 );
                 let mut full_path_chirho = alloc::string::String::from("/");
@@ -956,7 +960,7 @@ pub fn sys_openat_chirho(
     };
 
     // Log which file is being opened.
-    crate::serial_debug_chirho!("[OPEN] {}", &pathname_chirho);
+    crate::log_fs_chirho!("OPEN {}", &pathname_chirho);
 
     // Special case: /dev/pts/N -- PTY slave devices are created dynamically
     // and don't exist in the VFS tree.  We detect this pattern and create

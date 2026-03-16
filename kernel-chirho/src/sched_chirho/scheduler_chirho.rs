@@ -222,9 +222,10 @@ pub fn schedule_chirho() {
     // return with interrupts enabled because its saved rflags has IF set).
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut scheduler_guard_chirho = SCHEDULER_CHIRHO.lock();
-        let scheduler_chirho = scheduler_guard_chirho
-            .as_mut()
-            .expect("schedule_chirho: scheduler not initialised");
+        let scheduler_chirho = match scheduler_guard_chirho.as_mut() {
+            Some(s_chirho) => s_chirho,
+            None => return, // Scheduler not yet initialised — nothing to schedule.
+        };
 
         // 1. Clear the reschedule flag.
         scheduler_chirho.need_resched_chirho = false;

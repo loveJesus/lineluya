@@ -293,3 +293,70 @@ macro_rules! serial_debug_chirho {
         }
     };
 }
+
+/// Subsystem-tagged debug macros. Each compiles to nothing unless
+/// the `debug_serial` feature is enabled. Tags help filter kernel
+/// log output by subsystem.
+///
+/// Usage: `log_net_chirho!("TCP state: {:?}", state);`
+/// Output: `[NET] TCP state: Established`
+
+#[macro_export]
+macro_rules! log_net_chirho {
+    ($($arg_chirho:tt)*) => {
+        #[cfg(feature = "debug_serial")]
+        {
+            $crate::serial_println_chirho!("[NET] {}", format_args!($($arg_chirho)*));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! log_fs_chirho {
+    ($($arg_chirho:tt)*) => {
+        #[cfg(feature = "debug_serial")]
+        {
+            $crate::serial_println_chirho!("[FS] {}", format_args!($($arg_chirho)*));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! log_mm_chirho {
+    ($($arg_chirho:tt)*) => {
+        #[cfg(feature = "debug_serial")]
+        {
+            $crate::serial_println_chirho!("[MM] {}", format_args!($($arg_chirho)*));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! log_sched_chirho {
+    ($($arg_chirho:tt)*) => {
+        #[cfg(feature = "debug_serial")]
+        {
+            $crate::serial_println_chirho!("[SCHED] {}", format_args!($($arg_chirho)*));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! log_proc_chirho {
+    ($($arg_chirho:tt)*) => {
+        #[cfg(feature = "debug_serial")]
+        {
+            $crate::serial_println_chirho!("[PROC] {}", format_args!($($arg_chirho)*));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! log_drv_chirho {
+    ($($arg_chirho:tt)*) => {
+        #[cfg(feature = "debug_serial")]
+        {
+            $crate::serial_println_chirho!("[DRV] {}", format_args!($($arg_chirho)*));
+        }
+    };
+}

@@ -2006,7 +2006,7 @@ fn probe_ext4_and_mount_chirho() {
         group_descs_chirho,
         block_size_chirho,
         device_id_chirho: 0,
-        readonly_chirho: true,
+        mode_chirho: crate::ext4_chirho::MountModeChirho::ReadOnlyChirho,
     };
 
     // Create the VFS superblock for ext4.

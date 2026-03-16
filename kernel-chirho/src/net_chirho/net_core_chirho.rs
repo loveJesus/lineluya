@@ -93,6 +93,28 @@ pub const ICMP_ECHO_REPLY_CHIRHO: u8 = 0;
 pub const ICMP_ECHO_REQUEST_CHIRHO: u8 = 8;
 
 // ============================================================================
+// Network constants — centralized to avoid magic numbers (audit const-001)
+// ============================================================================
+
+/// Maximum Transmission Unit for standard Ethernet.
+pub const ETHERNET_MTU_CHIRHO: usize = 1500;
+
+/// Maximum Transmission Unit for loopback interface (matches Linux `lo`).
+pub const LOOPBACK_MTU_CHIRHO: usize = 65536;
+
+/// Google Public DNS server (8.8.8.8) as u32 in network byte order.
+pub const DEFAULT_DNS_CHIRHO: u32 = 0x08080808;
+
+/// Spin-loop iterations for DHCP / TCP-connect polling before timeout.
+pub const NETWORK_POLL_MAX_CHIRHO: u32 = 5_000_000;
+
+/// Spin-loop iterations for TCP recv / ARP / short polls.
+pub const NETWORK_POLL_SHORT_CHIRHO: u32 = 500_000;
+
+/// Maximum bytes copied from user-space in a single send/sendto call.
+pub const SOCKET_SEND_MAX_CHIRHO: usize = 65536;
+
+// ============================================================================
 // TCP flag constants (A3-002)
 // ============================================================================
 
@@ -177,8 +199,8 @@ impl NetDeviceChirho for LoopbackDeviceChirho {
     }
 
     fn mtu_chirho(&self) -> usize {
-        // Linux loopback MTU is 65536.
-        65536
+        // Linux loopback MTU is LOOPBACK_MTU_CHIRHO (65536).
+        LOOPBACK_MTU_CHIRHO
     }
 }
 
@@ -1668,7 +1690,7 @@ pub fn init_networking_chirho() {
     let mut devices_chirho = NET_DEVICES_CHIRHO.lock();
     devices_chirho.push(Box::new(loopback_chirho));
     drop(devices_chirho);
-    crate::serial_println_chirho!("[OK] Networking initialized — loopback device registered (lo, MTU=65536)");
+    crate::serial_println_chirho!("[OK] Networking initialized — loopback device registered (lo, MTU={})", LOOPBACK_MTU_CHIRHO);
 
     // A3-005: set up default routing table.
     init_routing_table_chirho();
@@ -2719,7 +2741,7 @@ fn tcp_send_syn_chirho(
         src_port_chirho, dst_port_chirho,
         seq_num_chirho: seq_chirho, ack_num_chirho: 0,
         data_offset_chirho: 5, flags_chirho: 0x02, // SYN
-        window_chirho: 65535, checksum_chirho: 0,
+        window_chirho: TCP_DEFAULT_WINDOW_CHIRHO, checksum_chirho: 0,
         urgent_ptr_chirho: 0, 
         payload_chirho: Vec::new(),
     };
@@ -2749,7 +2771,7 @@ fn tcp_send_ack_chirho(
         src_port_chirho, dst_port_chirho,
         seq_num_chirho: seq_chirho, ack_num_chirho: ack_chirho,
         data_offset_chirho: 5, flags_chirho: 0x10, // ACK
-        window_chirho: 65535, checksum_chirho: 0,
+        window_chirho: TCP_DEFAULT_WINDOW_CHIRHO, checksum_chirho: 0,
         urgent_ptr_chirho: 0, 
         payload_chirho: Vec::new(),
     };
@@ -2793,7 +2815,7 @@ pub fn sys_sendto_chirho(
     };
 
     // Read data from user-space
-    let count_chirho = core::cmp::min(len_chirho as usize, 65536);
+    let count_chirho = core::cmp::min(len_chirho as usize, SOCKET_SEND_MAX_CHIRHO);
     let mut data_chirho = Vec::with_capacity(count_chirho);
     if buf_chirho != 0 && count_chirho > 0 {
         let ptr_chirho = buf_chirho as *const u8;
@@ -2955,7 +2977,7 @@ pub fn sys_recvfrom_chirho(
         // runs the TCP state machine, updates rcv_nxt, sends ACKs, and
         // buffers payload data in recv_buf_chirho.  After each poll round,
         // re-acquire the socket table lock and check if data arrived.
-        for _poll_round_chirho in 0..500_000u32 {
+        for _poll_round_chirho in 0..NETWORK_POLL_SHORT_CHIRHO {
             // Process all pending packets through the standard RX path.
             // This calls deliver_tcp_from_frame_chirho which properly:
             //   1. Runs process_segment_chirho (updates TCB + rcv_nxt)
@@ -3224,7 +3246,7 @@ impl TcpRetransmitChirho {
             unacked_data_chirho: Vec::new(),
             unacked_seq_chirho: 0,
             cwnd_chirho: TCP_DEFAULT_MSS_CHIRHO as u32 * 10, // IW=10 per RFC 6928
-            ssthresh_chirho: 65535,
+            ssthresh_chirho: TCP_DEFAULT_WINDOW_CHIRHO as u32,
             timer_active_chirho: false,
         }
     }
@@ -3320,9 +3342,9 @@ pub const DNS_TYPE_CNAME_CHIRHO: u16 = 5;   // CNAME
 #[allow(dead_code)]
 pub const DNS_CLASS_IN_CHIRHO: u16 = 1;     // Internet class
 
-/// Default DNS server (Google Public DNS).
+/// Default DNS server (Google Public DNS) — alias for `DEFAULT_DNS_CHIRHO`.
 #[allow(dead_code)]
-pub const DNS_SERVER_CHIRHO: u32 = 0x08080808; // 8.8.8.8
+pub const DNS_SERVER_CHIRHO: u32 = DEFAULT_DNS_CHIRHO;
 /// DNS port.
 pub const DNS_PORT_CHIRHO: u16 = 53;
 
@@ -3763,8 +3785,8 @@ impl Default for VirtioNetHdrChirho {
     }
 }
 
-/// Maximum Ethernet frame size (MTU 1500 + 14 header + 4 FCS headroom).
-const MAX_FRAME_SIZE_CHIRHO: usize = 1518;
+/// Maximum Ethernet frame size (ETHERNET_MTU_CHIRHO + 14 header + 4 FCS headroom).
+const MAX_FRAME_SIZE_CHIRHO: usize = ETHERNET_MTU_CHIRHO + 18;
 
 /// Size of the VirtIO-net header in bytes (legacy, no mergeable buffers).
 const VIRTIO_NET_HDR_SIZE_CHIRHO: usize = 10;
@@ -3778,7 +3800,7 @@ const RX_RING_SIZE_CHIRHO: usize = 64;
 pub struct VirtioNetDeviceChirho {
     /// MAC address read from device config space.
     mac_addr_chirho: [u8; 6],
-    /// MTU (always 1500 for standard Ethernet).
+    /// MTU (defaults to `ETHERNET_MTU_CHIRHO` for standard Ethernet).
     mtu_val_chirho: usize,
     /// MMIO base address for register access.
     base_addr_chirho: usize,
@@ -3913,7 +3935,7 @@ impl VirtioNetDeviceChirho {
 
         Some(Self {
             mac_addr_chirho: mac_chirho,
-            mtu_val_chirho: 1500,
+            mtu_val_chirho: ETHERNET_MTU_CHIRHO,
             base_addr_chirho,
             initialized_chirho: true,
             rx_vq_chirho: rx_vq_mut_chirho,
@@ -4169,7 +4191,7 @@ pub fn arp_resolve_chirho(target_ip_chirho: u32, iface_idx_chirho: usize) -> Opt
     // Send ARP request and poll for reply.
     arp_request_chirho(target_ip_chirho, iface_idx_chirho);
 
-    for _attempt_chirho in 0..500_000u32 {
+    for _attempt_chirho in 0..NETWORK_POLL_SHORT_CHIRHO {
         core::hint::spin_loop();
         // Poll the device for incoming frames.
         poll_network_chirho();
@@ -4214,7 +4236,7 @@ pub fn set_interface_ip_chirho(iface_idx_chirho: usize, ip_chirho: u32) {
 }
 
 /// Global DNS server IP (set by DHCP or manually).
-pub static DNS_SERVER_IP_CHIRHO: Mutex<u32> = Mutex::new(0x08080808); // default: 8.8.8.8
+pub static DNS_SERVER_IP_CHIRHO: Mutex<u32> = Mutex::new(DEFAULT_DNS_CHIRHO); // default: 8.8.8.8
 
 /// Global gateway IP (set by DHCP or manually).
 pub static GATEWAY_IP_CHIRHO: Mutex<u32> = Mutex::new(0);
@@ -4915,11 +4937,11 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
     let mut offer_server_chirho: u32 = 0;
     let mut got_offer_chirho = false;
 
-    for poll_i_chirho in 0..5_000_000u32 {
+    for poll_i_chirho in 0..NETWORK_POLL_MAX_CHIRHO {
         core::hint::spin_loop();
 
         // Every 100k iterations, log a progress dot for debugging.
-        if poll_i_chirho > 0 && poll_i_chirho % 500_000 == 0 {
+        if poll_i_chirho > 0 && poll_i_chirho % NETWORK_POLL_SHORT_CHIRHO == 0 {
             crate::serial_println_chirho!("[DHCP] Polling for OFFER... ({}/5M)", poll_i_chirho);
         }
 
@@ -5124,7 +5146,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
             ipv4_addr_chirho: offer_ip_chirho,
             netmask_chirho: offer_subnet_chirho,
             flags_chirho: IFF_UP_CHIRHO | IFF_RUNNING_CHIRHO,
-            mtu_val_chirho: 1500,
+            mtu_val_chirho: ETHERNET_MTU_CHIRHO as u32,
         });
     }
 
@@ -5308,7 +5330,7 @@ pub fn tcp_connect_real_chirho(
     );
 
     // Poll for SYN-ACK and let the TCP state machine handle it.
-    for _poll_chirho in 0..5_000_000u32 {
+    for _poll_chirho in 0..NETWORK_POLL_MAX_CHIRHO {
         core::hint::spin_loop();
         poll_network_chirho();
 
@@ -5456,7 +5478,7 @@ pub fn sys_connect_real_chirho(
     }
 
     // Poll for SYN-ACK.
-    for _poll_chirho in 0..5_000_000u32 {
+    for _poll_chirho in 0..NETWORK_POLL_MAX_CHIRHO {
         core::hint::spin_loop();
         poll_network_chirho();
 
@@ -5489,7 +5511,7 @@ pub fn sys_sendto_real_chirho(
     };
 
     // Read data from user-space.
-    let count_chirho = core::cmp::min(len_chirho as usize, 65536);
+    let count_chirho = core::cmp::min(len_chirho as usize, SOCKET_SEND_MAX_CHIRHO);
     let mut data_chirho = Vec::with_capacity(count_chirho);
     if buf_chirho != 0 && count_chirho > 0 {
         let ptr_chirho = buf_chirho as *const u8;
@@ -5623,7 +5645,7 @@ pub struct VirtioNetIoDeviceChirho {
     transport_chirho: VirtioIoTransportChirho,
     /// MAC address read from device config space (offset 0x14, 6 bytes).
     mac_addr_chirho: [u8; 6],
-    /// MTU (always 1500 for standard Ethernet).
+    /// MTU (defaults to `ETHERNET_MTU_CHIRHO` for standard Ethernet).
     mtu_val_chirho: usize,
     /// Whether the device has been successfully initialized.
     initialized_chirho: bool,
@@ -5887,7 +5909,7 @@ impl VirtioNetIoDeviceChirho {
         Some(Self {
             transport_chirho,
             mac_addr_chirho: mac_chirho,
-            mtu_val_chirho: 1500,
+            mtu_val_chirho: ETHERNET_MTU_CHIRHO,
             initialized_chirho: true,
             rx_vq_chirho: rx_vq_mut_chirho,
             tx_vq_chirho,
@@ -6127,7 +6149,7 @@ impl VirtioNetIoDeviceChirho {
             }
             core::hint::spin_loop();
             spins_chirho += 1;
-            if spins_chirho > 500_000 {
+            if spins_chirho > NETWORK_POLL_SHORT_CHIRHO {
                 crate::serial_println_chirho!(
                     "[VNET-IO] TX timeout after {} spins",
                     spins_chirho
@@ -6283,7 +6305,7 @@ static IFACE_CONFIG_CHIRHO: Mutex<Vec<IfaceConfigChirho>> = Mutex::new(Vec::new(
 #[allow(dead_code)]
 pub fn init_loopback_ip_chirho() {
     let mut c_chirho = IFACE_CONFIG_CHIRHO.lock();
-    c_chirho.push(IfaceConfigChirho { name_chirho: alloc::string::String::from("lo"), ipv4_addr_chirho: LOOPBACK_IPV4_CHIRHO, netmask_chirho: LOOPBACK_NETMASK_CHIRHO, flags_chirho: IFF_UP_CHIRHO | IFF_LOOPBACK_CHIRHO | IFF_RUNNING_CHIRHO, mtu_val_chirho: 65536 });
+    c_chirho.push(IfaceConfigChirho { name_chirho: alloc::string::String::from("lo"), ipv4_addr_chirho: LOOPBACK_IPV4_CHIRHO, netmask_chirho: LOOPBACK_NETMASK_CHIRHO, flags_chirho: IFF_UP_CHIRHO | IFF_LOOPBACK_CHIRHO | IFF_RUNNING_CHIRHO, mtu_val_chirho: LOOPBACK_MTU_CHIRHO as u32 });
     crate::serial_println_chirho!("[NET] Loopback: 127.0.0.1/8");
 }
 
@@ -6364,7 +6386,7 @@ pub fn handle_net_ioctl_chirho(cmd_chirho: u64, ifr_chirho: u64) -> i64 {
     let mut cfg_chirho = IFACE_CONFIG_CHIRHO.lock();
     match cmd_chirho {
         SIOCGIFADDR_CHIRHO => { for ic_chirho in cfg_chirho.iter() { if ic_chirho.name_chirho == nm_chirho { let ap_chirho = (ifr_chirho + 16) as *mut u8; let ab_chirho = ic_chirho.ipv4_addr_chirho.to_be_bytes(); unsafe { core::ptr::write(ap_chirho, 2); core::ptr::write(ap_chirho.add(1), 0); core::ptr::write(ap_chirho.add(2), 0); core::ptr::write(ap_chirho.add(3), 0); for (j_chirho, byte_chirho) in ab_chirho.iter().enumerate() { core::ptr::write(ap_chirho.add(4+j_chirho), *byte_chirho); } } return 0; } } -ENOENT_NET_CHIRHO }
-        SIOCSIFADDR_CHIRHO => { let ap_chirho = (ifr_chirho + 20) as *const u8; let ad_chirho = unsafe { u32::from_be_bytes([*ap_chirho, *ap_chirho.add(1), *ap_chirho.add(2), *ap_chirho.add(3)]) }; for ic_chirho in cfg_chirho.iter_mut() { if ic_chirho.name_chirho == nm_chirho { ic_chirho.ipv4_addr_chirho = ad_chirho; return 0; } } cfg_chirho.push(IfaceConfigChirho { name_chirho: nm_chirho, ipv4_addr_chirho: ad_chirho, netmask_chirho: 0xFFFFFF00, flags_chirho: IFF_UP_CHIRHO|IFF_RUNNING_CHIRHO, mtu_val_chirho: 1500 }); 0 }
+        SIOCSIFADDR_CHIRHO => { let ap_chirho = (ifr_chirho + 20) as *const u8; let ad_chirho = unsafe { u32::from_be_bytes([*ap_chirho, *ap_chirho.add(1), *ap_chirho.add(2), *ap_chirho.add(3)]) }; for ic_chirho in cfg_chirho.iter_mut() { if ic_chirho.name_chirho == nm_chirho { ic_chirho.ipv4_addr_chirho = ad_chirho; return 0; } } cfg_chirho.push(IfaceConfigChirho { name_chirho: nm_chirho, ipv4_addr_chirho: ad_chirho, netmask_chirho: 0xFFFFFF00, flags_chirho: IFF_UP_CHIRHO|IFF_RUNNING_CHIRHO, mtu_val_chirho: ETHERNET_MTU_CHIRHO as u32 }); 0 }
         SIOCGIFFLAGS_CHIRHO => { for ic_chirho in cfg_chirho.iter() { if ic_chirho.name_chirho == nm_chirho { unsafe { core::ptr::write((ifr_chirho+16) as *mut u16, ic_chirho.flags_chirho as u16) }; return 0; } } -ENOENT_NET_CHIRHO }
         SIOCSIFFLAGS_CHIRHO => { let nf_chirho = unsafe { core::ptr::read((ifr_chirho+16) as *const u16) } as u32; for ic_chirho in cfg_chirho.iter_mut() { if ic_chirho.name_chirho == nm_chirho { ic_chirho.flags_chirho = nf_chirho; return 0; } } -ENOENT_NET_CHIRHO }
         _ => 0,

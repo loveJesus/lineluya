@@ -2187,8 +2187,15 @@ fn sys_writev_chirho(
         ).is_err() {
             return if total_written_chirho > 0 { total_written_chirho } else { -EFAULT_CHIRHO };
         }
-        let iov_base_chirho = u64::from_ne_bytes(iov_buf_chirho[0..8].try_into().unwrap());
-        let iov_len_chirho = u64::from_ne_bytes(iov_buf_chirho[8..16].try_into().unwrap()) as usize;
+        // SAFETY: Slicing [0..8] and [8..16] from a [u8; 16] always yields
+        // exactly 8 bytes, so try_into cannot fail.  We use unwrap_or(0) to
+        // avoid a panic path in the generated code nonetheless.
+        let iov_base_chirho = u64::from_ne_bytes(
+            iov_buf_chirho[0..8].try_into().unwrap_or([0u8; 8])
+        );
+        let iov_len_chirho = u64::from_ne_bytes(
+            iov_buf_chirho[8..16].try_into().unwrap_or([0u8; 8])
+        ) as usize;
         if iov_base_chirho == 0 || iov_len_chirho == 0 {
             continue;
         }
@@ -2249,7 +2256,9 @@ fn sys_pread64_chirho(
 
     // Read at the specified offset without changing the file position.
     // Support reads larger than 4KB (sqlite3 needs multi-page reads).
-    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    // Cap at 16MB to prevent OOM from untrusted userspace count (oom-004).
+    let capped_count_chirho = core::cmp::min(count_chirho, 16 * 1024 * 1024);
+    let mut kernel_buf_chirho = alloc::vec![0u8; capped_count_chirho];
 
     let bytes_read_chirho = {
         let mut file_guard_chirho = file_arc_chirho.lock();
@@ -2313,11 +2322,13 @@ fn sys_pwrite64_chirho(
 
     // Copy from user space into kernel buffer.
     // Support writes larger than 4KB (sqlite3 needs multi-page writes).
-    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    // Cap at 16MB to prevent OOM from untrusted userspace count (oom-004).
+    let capped_count_chirho = core::cmp::min(count_chirho, 16 * 1024 * 1024);
+    let mut kernel_buf_chirho = alloc::vec![0u8; capped_count_chirho];
     if crate::uaccess_chirho::copy_from_user_chirho(
         &mut kernel_buf_chirho,
         buf_addr_chirho,
-        count_chirho,
+        capped_count_chirho,
     ).is_err() {
         return -EFAULT_CHIRHO;
     }
@@ -2366,8 +2377,15 @@ fn sys_readv_chirho(
         ).is_err() {
             return if total_read_chirho > 0 { total_read_chirho } else { -EFAULT_CHIRHO };
         }
-        let iov_base_chirho = u64::from_ne_bytes(iov_buf_chirho[0..8].try_into().unwrap());
-        let iov_len_chirho = u64::from_ne_bytes(iov_buf_chirho[8..16].try_into().unwrap()) as usize;
+        // SAFETY: Slicing [0..8] and [8..16] from a [u8; 16] always yields
+        // exactly 8 bytes, so try_into cannot fail.  We use unwrap_or(0) to
+        // avoid a panic path in the generated code nonetheless.
+        let iov_base_chirho = u64::from_ne_bytes(
+            iov_buf_chirho[0..8].try_into().unwrap_or([0u8; 8])
+        );
+        let iov_len_chirho = u64::from_ne_bytes(
+            iov_buf_chirho[8..16].try_into().unwrap_or([0u8; 8])
+        ) as usize;
         if iov_base_chirho == 0 || iov_len_chirho == 0 {
             continue;
         }
@@ -2477,9 +2495,17 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         alloc::string::String::from("PYTHONHOME=/usr"),
         alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
     ];
-    let loaded_chirho = crate::exec_chirho::load_elf_into_memory_chirho(
+    let loaded_chirho = match crate::exec_chirho::load_elf_into_memory_chirho(
         crate::exec_chirho::BUSYBOX_ELF_CHIRHO
-    ).expect("Failed to reload shell");
+    ) {
+        Ok(l_chirho) => l_chirho,
+        Err(_e_chirho) => {
+            crate::serial_println_chirho!(
+                "[SYSCALL] exit: failed to reload shell ELF — halting"
+            );
+            loop { x86_64::instructions::hlt(); }
+        }
+    };
 
     crate::syscall_chirho::set_brk_chirho(loaded_chirho.brk_addr_chirho);
 

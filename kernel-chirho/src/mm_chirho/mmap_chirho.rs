@@ -65,6 +65,22 @@ const MMAP_BASE_ADDR_CHIRHO: u64 = 0x7F00_0000_0000;
 const PAGE_SIZE_CHIRHO: u64 = 4096;
 
 // ============================================================================
+// MappingKindChirho — mmap request classification
+// ============================================================================
+
+/// Classification of an mmap request.  Determined once from flags/fd,
+/// then used to dispatch to the correct mapping handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MappingKindChirho {
+    /// MAP_ANONYMOUS | MAP_PRIVATE — no backing file, zero-filled pages.
+    AnonymousChirho,
+    /// File-backed mapping — read file data into mapped pages.
+    FileBackedChirho,
+    /// /dev/fb0 mapping — map physical framebuffer directly.
+    FramebufferChirho,
+}
+
+// ============================================================================
 // VmaChirho — Virtual Memory Area
 // ============================================================================
 
@@ -168,23 +184,21 @@ impl MmChirho {
         fd_chirho: i32,
         _offset_chirho: u64,
     ) -> Result<u64, i64> {
-        use crate::syscall_chirho::{EINVAL_CHIRHO, ENOSYS_CHIRHO};
+        use crate::syscall_chirho::EINVAL_CHIRHO;
 
         // Validate length.
         if len_chirho == 0 {
             return Err(-EINVAL_CHIRHO);
         }
 
-        let is_anonymous_chirho = (flags_chirho & MAP_ANONYMOUS_CHIRHO) != 0;
-        let _is_private_chirho = (flags_chirho & MAP_PRIVATE_CHIRHO) != 0;
-
-        // For file-backed mappings (fd >= 0), we treat them as anonymous
-        // private mappings and copy the file data in afterward.  This is
-        // a simplification — real Linux would fault pages in lazily.
-        // Special case: /dev/fb0 mmap maps the physical framebuffer directly.
-        let has_file_chirho = fd_chirho >= 0 && !is_anonymous_chirho;
-        let is_fb_mmap_chirho = has_file_chirho
-            && crate::fb_device_chirho::is_fb_fd_chirho(fd_chirho as u64);
+        // Classify the mapping request once, up front.
+        let kind_chirho = if (flags_chirho & MAP_ANONYMOUS_CHIRHO) != 0 || fd_chirho < 0 {
+            MappingKindChirho::AnonymousChirho
+        } else if crate::fb_device_chirho::is_fb_fd_chirho(fd_chirho as u64) {
+            MappingKindChirho::FramebufferChirho
+        } else {
+            MappingKindChirho::FileBackedChirho
+        };
 
         // Round length up to page boundary.
         let aligned_len_chirho = align_up_page_chirho(len_chirho);
@@ -212,84 +226,94 @@ impl MmChirho {
             self.allocate_mmap_addr_chirho(aligned_len_chirho)?
         };
 
-        // For /dev/fb0 mmap, map the physical framebuffer pages directly
-        // instead of allocating new anonymous pages.
-        if is_fb_mmap_chirho {
-            let fb_phys_chirho = crate::fb_device_chirho::fb_phys_addr_chirho();
-            let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-            // The framebuffer is already accessible via phys_offset + fb_phys.
-            // Return that address so userspace can write pixels directly.
-            let fb_virt_chirho = fb_phys_chirho + phys_offset_chirho;
-            // Record the VMA but don't allocate new pages.
-            let vma_chirho = VmaChirho {
-                start_chirho: fb_virt_chirho,
-                end_chirho: fb_virt_chirho + aligned_len_chirho,
-                prot_chirho,
-                flags_chirho,
-            };
-            self.insert_vma_chirho(vma_chirho);
-            return Ok(fb_virt_chirho);
-        }
-
-        // Map the physical frames into the kernel page tables.
-        // For file-backed mappings, map as RW initially so we can copy
-        // file data in, then change to the requested protection after.
-        let initial_prot_chirho = if has_file_chirho {
-            PROT_READ_CHIRHO | PROT_WRITE_CHIRHO | PROT_EXEC_CHIRHO
-        } else {
-            prot_chirho
-        };
-        map_anonymous_pages_chirho(map_addr_chirho, aligned_len_chirho, initial_prot_chirho)?;
-
-        // For file-backed mappings, read data from the fd into the mapped
-        // region using sys_read_real in a loop. Each read copies up to 4K
-        // directly into the mapped pages (already RWX from above).
-        //
-        // IMPORTANT: We seek to the requested offset first and read
-        // sequentially. sys_read_real internally calls ext4 read_file_data
-        // which re-reads the file each time — but for 4K chunks this is
-        // acceptable (ext4 has a block cache). The alternative (bulk read
-        // via read_file_data_at_offset) caused heap corruption from nested
-        // Vec allocations.
-        if has_file_chirho {
-            let saved_pos_chirho = crate::fs_chirho::sys_lseek_chirho(
-                fd_chirho as u64, 0, 1,
-            );
-            let _ = crate::fs_chirho::sys_lseek_chirho(
-                fd_chirho as u64, _offset_chirho as i64, 0,
-            );
-            let total_chirho = aligned_len_chirho.min(8 * 1024 * 1024) as usize;
-            let mut done_chirho: usize = 0;
-            while done_chirho < total_chirho {
-                let chunk_chirho = core::cmp::min(4096, total_chirho - done_chirho);
-                let n_chirho = crate::fs_chirho::sys_read_real_chirho(
-                    fd_chirho as u64,
-                    map_addr_chirho + done_chirho as u64,
-                    chunk_chirho,
-                );
-                if n_chirho <= 0 { break; }
-                done_chirho += n_chirho as usize;
+        // Dispatch based on the mapping kind.
+        match kind_chirho {
+            MappingKindChirho::FramebufferChirho => {
+                // Map the physical framebuffer pages directly instead of
+                // allocating new anonymous pages.
+                let fb_phys_chirho = crate::fb_device_chirho::fb_phys_addr_chirho();
+                let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+                // The framebuffer is already accessible via phys_offset + fb_phys.
+                // Return that address so userspace can write pixels directly.
+                let fb_virt_chirho = fb_phys_chirho + phys_offset_chirho;
+                // Record the VMA but don't allocate new pages.
+                let vma_chirho = VmaChirho {
+                    start_chirho: fb_virt_chirho,
+                    end_chirho: fb_virt_chirho + aligned_len_chirho,
+                    prot_chirho,
+                    flags_chirho,
+                };
+                self.insert_vma_chirho(vma_chirho);
+                Ok(fb_virt_chirho)
             }
-            if saved_pos_chirho >= 0 {
+
+            MappingKindChirho::AnonymousChirho => {
+                // Zero-filled anonymous pages — the common case.
+                map_anonymous_pages_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho)?;
+
+                let vma_chirho = VmaChirho {
+                    start_chirho: map_addr_chirho,
+                    end_chirho: map_addr_chirho + aligned_len_chirho,
+                    prot_chirho,
+                    flags_chirho,
+                };
+                self.insert_vma_chirho(vma_chirho);
+                Ok(map_addr_chirho)
+            }
+
+            MappingKindChirho::FileBackedChirho => {
+                // Map as RWX initially so we can copy file data in, then
+                // the VMA records the originally requested protection.
+                let initial_prot_chirho =
+                    PROT_READ_CHIRHO | PROT_WRITE_CHIRHO | PROT_EXEC_CHIRHO;
+                map_anonymous_pages_chirho(
+                    map_addr_chirho, aligned_len_chirho, initial_prot_chirho,
+                )?;
+
+                // Read file data into the mapped region using sys_read_real
+                // in a loop.  Each read copies up to 4K directly into the
+                // mapped pages (already RWX from above).
+                //
+                // IMPORTANT: We seek to the requested offset first and read
+                // sequentially.  sys_read_real internally calls ext4
+                // read_file_data which re-reads the file each time — but
+                // for 4K chunks this is acceptable (ext4 has a block cache).
+                // The alternative (bulk read via read_file_data_at_offset)
+                // caused heap corruption from nested Vec allocations.
+                let saved_pos_chirho = crate::fs_chirho::sys_lseek_chirho(
+                    fd_chirho as u64, 0, 1,
+                );
                 let _ = crate::fs_chirho::sys_lseek_chirho(
-                    fd_chirho as u64, saved_pos_chirho, 0,
+                    fd_chirho as u64, _offset_chirho as i64, 0,
                 );
+                let total_chirho = aligned_len_chirho.min(8 * 1024 * 1024) as usize;
+                let mut done_chirho: usize = 0;
+                while done_chirho < total_chirho {
+                    let chunk_chirho = core::cmp::min(4096, total_chirho - done_chirho);
+                    let n_chirho = crate::fs_chirho::sys_read_real_chirho(
+                        fd_chirho as u64,
+                        map_addr_chirho + done_chirho as u64,
+                        chunk_chirho,
+                    );
+                    if n_chirho <= 0 { break; }
+                    done_chirho += n_chirho as usize;
+                }
+                if saved_pos_chirho >= 0 {
+                    let _ = crate::fs_chirho::sys_lseek_chirho(
+                        fd_chirho as u64, saved_pos_chirho, 0,
+                    );
+                }
+
+                let vma_chirho = VmaChirho {
+                    start_chirho: map_addr_chirho,
+                    end_chirho: map_addr_chirho + aligned_len_chirho,
+                    prot_chirho,
+                    flags_chirho,
+                };
+                self.insert_vma_chirho(vma_chirho);
+                Ok(map_addr_chirho)
             }
         }
-
-        // Record the VMA.
-        let vma_chirho = VmaChirho {
-            start_chirho: map_addr_chirho,
-            end_chirho: map_addr_chirho + aligned_len_chirho,
-            prot_chirho,
-            flags_chirho,
-        };
-        self.insert_vma_chirho(vma_chirho);
-
-        // Debug log removed — serial prints during syscalls can deadlock
-        // with the page fault handler's serial output.
-
-        Ok(map_addr_chirho)
     }
 
     // --------------------------------------------------------------------
