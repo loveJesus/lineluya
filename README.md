@@ -48,21 +48,24 @@ Lineluya is an ambitious, ground-up rewrite of the Linux kernel in Rust. It aims
 
 ![Lineluya running sqlite3, Python, Dropbear, apk](docs-chirho/screenshot-demo-chirho.png)
 
-Lineluya boots via UEFI in QEMU and runs **real Alpine Linux x86_64 programs** — not stubs, not wrappers, but actual unmodified binaries dynamically linked against **musl 1.2.5**. The kernel provides **DHCP networking with TCP stream reassembly**, reads from a **512MB ext4 rootfs** on **VirtIO-blk**, handles **per-process page tables with lazy migration**, and **recovers gracefully** from user-mode faults (GPF, page fault, illegal instruction) by re-launching the shell:
+Lineluya boots via UEFI in QEMU and runs **real Alpine Linux x86_64 programs** with **real fork() + preemptive scheduling**, **per-process page tables**, **ext4 read+write**, **TCP networking**, and **shell file I/O**:
 
 ```
-lineluya# echo hello
-hello
+lineluya# uname -a
+Lineluya lineluya 0.1.0 #1 SMP Lineluya 0.1.0 x86_64 Linux
 
-lineluya# ls /
-bin   dev   etc   home   lib   lost+found   media   mnt
-opt   proc   root   run   sbin   srv   sys   tmp   usr   var
+lineluya# echo "Praise Jesus" > /root/praise_chirho.txt
+lineluya# cat /root/praise_chirho.txt
+Praise Jesus
 
 lineluya# sqlite3 :memory: "SELECT 316, 42+1;"
 316|43
 
-lineluya# apk --version
-apk-tools 2.14.6, compiled for x86_64.
+lineluya# python3 --version
+Python 3.12.12
+
+lineluya# dropbear -V
+Dropbear v2025.88
 
 lineluya# id
 uid=0(root) gid=0(root)
