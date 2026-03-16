@@ -17,6 +17,7 @@ mod gdt_chirho;
 mod interrupts_chirho;
 mod memory_chirho;
 mod allocator_chirho;
+mod buddy_chirho;
 
 // Phase 3: Virtual Filesystem Switch (VFS)
 mod vfs_chirho;

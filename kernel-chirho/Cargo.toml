@@ -18,5 +18,5 @@ x86_64 = { version = "0.15", features = ["instructions"] }
 spin = "0.9"
 
 pc-keyboard = "0.8"
-linked_list_allocator = "0.10"
+# linked_list_allocator replaced by buddy_chirho.rs
 log = "0.4"

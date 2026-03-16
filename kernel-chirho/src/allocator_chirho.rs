@@ -7,7 +7,6 @@
 //! cache avoids the heap corruption that occurs under heavy churn.
 //! TODO: Replace with a more robust allocator (talc GPFs, need investigation).
 
-use linked_list_allocator::LockedHeap;
 use x86_64::structures::paging::mapper::MapToError;
 use x86_64::structures::paging::{
     FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
@@ -18,12 +17,15 @@ use x86_64::VirtAddr;
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
 /// Size of the kernel heap in bytes (256 MiB).
-/// Pre-generated SSH keys avoid dropbear's 128MB key-gen allocation.
 pub const HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
 
-/// Global heap allocator.
+/// Global heap allocator — buddy system for efficient power-of-2 allocations.
+/// Handles large contiguous blocks (64MB+) without fragmentation.
 #[global_allocator]
-static ALLOCATOR_CHIRHO: LockedHeap = LockedHeap::empty();
+static ALLOCATOR_CHIRHO: crate::buddy_chirho::LockedBuddyChirho =
+    crate::buddy_chirho::LockedBuddyChirho(spin::Mutex::new(
+        crate::buddy_chirho::BuddyAllocatorChirho::new_chirho(),
+    ));
 
 /// Initialise the kernel heap.
 pub fn init_heap_chirho(
@@ -53,9 +55,9 @@ pub fn init_heap_chirho(
     }
 
     unsafe {
-        ALLOCATOR_CHIRHO
+        ALLOCATOR_CHIRHO.0
             .lock()
-            .init(HEAP_START_CHIRHO as *mut u8, HEAP_SIZE_CHIRHO);
+            .init_chirho(HEAP_START_CHIRHO, HEAP_SIZE_CHIRHO);
     }
 
     Ok(())
