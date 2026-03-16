@@ -161,9 +161,45 @@ pub fn init_heap_chirho(
 /// Custom allocation error handler — logs size, align, and caller address.
 #[alloc_error_handler]
 fn alloc_error_handler_chirho(layout_chirho: core::alloc::Layout) -> ! {
-    // Print caller return address for debugging
-    let caller_chirho: u64;
-    unsafe { core::arch::asm!("mov {}, [rbp+8]", out(reg) caller_chirho); }
+    // Scan stack for kernel code addresses to find the caller.
+    // Since frame pointers are optimized out, scan RSP upward for
+    // values that look like kernel text addresses (0x10000XXXXXX).
+    let mut rsp_chirho: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_chirho); }
+
+    let stack_msg_chirho = b"\r\n[ALLOC] Stack scan: ";
+    for &b_chirho in stack_msg_chirho {
+        unsafe {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+        }
+    }
+    let hex_chars2_chirho = b"0123456789abcdef";
+    let mut found_chirho = 0u32;
+    for off_chirho in (0..256).step_by(8) {
+        if found_chirho >= 6 { break; }
+        let addr_chirho = rsp_chirho + off_chirho as u64;
+        let val_chirho = unsafe { *(addr_chirho as *const u64) };
+        // Check if it looks like a kernel text address
+        if val_chirho > 0x10000100000 && val_chirho < 0x10000200000 {
+            // Print the kernel offset (subtract base)
+            let offset_chirho = val_chirho - 0x10000000000;
+            for shift_chirho in (0..6).rev() {
+                let nibble_chirho = ((offset_chirho >> (shift_chirho * 4)) & 0xF) as usize;
+                unsafe {
+                    while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                    x86_64::instructions::port::Port::<u8>::new(0x3F8).write(hex_chars2_chirho[nibble_chirho]);
+                }
+            }
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b' ');
+            }
+            found_chirho += 1;
+        }
+    }
+
+    let caller_chirho: u64 = 0;
 
     let caller_msg_chirho = b"\r\n[ALLOC] OOM caller=0x";
     for &b_chirho in caller_msg_chirho {
