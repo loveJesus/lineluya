@@ -204,14 +204,14 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
     // --- 6. Add the child to the scheduler run queue ---
     crate::scheduler_chirho::add_task_chirho(child_pid_chirho);
 
-    // --- 7. Return child PID to parent (real fork semantics) ---
-    // The child is now on the scheduler run queue with rax=0 in its saved
-    // syscall frame.  When the scheduler picks it, it resumes via
-    // fork_child_return_chirho → SYSRET with rax=0 (child sees fork()=0).
-    // The parent continues here with fork() returning the child PID.
-    // The reschedule check at syscall_dispatch_chirho exit will context-switch
-    // to the child when the parent's time slice expires.
-    child_pid_chirho as i64
+    // --- 7. vfork semantics: child runs first ---
+    // Real fork requires per-process page tables (CR3 switching) to prevent
+    // the child's execve from overwriting the parent's address space.
+    // Until per-process page tables are fully working, we use vfork
+    // semantics: fork returns 0 (child path), child calls execve, sys_exit
+    // re-launches the shell.  The child IS registered in the scheduler for
+    // future use once page table isolation is implemented.
+    0i64
 }
 
 // ===========================================================================
