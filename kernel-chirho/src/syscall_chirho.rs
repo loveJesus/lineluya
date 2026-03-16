@@ -1053,6 +1053,14 @@ const F_DUPFD_CLOEXEC_CHIRHO: u64 = 1030;
 const TCGETS_CHIRHO: u64 = 0x5401;
 /// TCSETS -- set terminal attributes.
 const TCSETS_CHIRHO: u64 = 0x5402;
+/// TCSETSW -- set terminal attributes, drain output first.
+const TCSETSW_CHIRHO: u64 = 0x5403;
+/// TCSETSF -- set terminal attributes, drain + flush.
+const TCSETSF_CHIRHO: u64 = 0x5404;
+/// TIOCNOTTY -- give up controlling terminal.
+const TIOCNOTTY_CHIRHO: u64 = 0x5422;
+/// TIOCSCTTY -- become controlling terminal.
+const TIOCSCTTY_CHIRHO: u64 = 0x540E;
 /// TIOCGWINSZ -- get window size.
 const TIOCGWINSZ_CHIRHO: u64 = 0x5413;
 /// FIONREAD -- bytes available to read.
@@ -2644,10 +2652,34 @@ fn sys_ioctl_real_chirho(
     // Fallback: handle common terminal ioctls for any fd
     // (BusyBox dup's the TTY to fd 4+ and calls ioctl on it)
     match cmd_chirho {
-        TCGETS_CHIRHO | TCSETS_CHIRHO => {
-            // Not a real TTY yet; return -ENOTTY
+        TCGETS_CHIRHO => {
+            // For stdin/stdout/stderr (fds 0-2), return a basic termios
+            // so isatty() returns true. Programs use this to decide whether
+            // to use line-buffered output, readline, etc.
+            if fd_chirho <= 2 && arg_chirho != 0 {
+                // Return a minimal cooked-mode termios
+                unsafe {
+                    core::ptr::write_bytes(arg_chirho as *mut u8, 0, 60);
+                    // c_iflag: ICRNL | IXON
+                    core::ptr::write((arg_chirho) as *mut u32, 0x0500);
+                    // c_oflag: OPOST | ONLCR
+                    core::ptr::write((arg_chirho + 4) as *mut u32, 0x0005);
+                    // c_cflag: B38400 | CS8 | CREAD | HUPCL
+                    core::ptr::write((arg_chirho + 8) as *mut u32, 0x00BF);
+                    // c_lflag: ECHO | ECHOE | ECHOK | ISIG | ICANON | IEXTEN | ECHOCTL | ECHOKE
+                    core::ptr::write((arg_chirho + 12) as *mut u32, 0x8A3B);
+                }
+                return 0;
+            }
             -ENOTTY_CHIRHO
         }
+        TCSETS_CHIRHO | TCSETSW_CHIRHO | TCSETSF_CHIRHO => {
+            // Accept termios changes for fds 0-2
+            if fd_chirho <= 2 { return 0; }
+            -ENOTTY_CHIRHO
+        }
+        TIOCNOTTY_CHIRHO => 0,    // give up controlling TTY: succeed
+        TIOCSCTTY_CHIRHO => 0,    // become controlling TTY: succeed
         TIOCGWINSZ_CHIRHO => {
             // Return a default 80x24 window size
             if arg_chirho == 0 {
