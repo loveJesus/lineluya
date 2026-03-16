@@ -35,7 +35,7 @@
         {
           "id_chirho": "typed-001",
           "title_chirho": "MountModeChirho enum (ReadOnly/ReadWrite) replacing readonly_chirho: bool",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "fs_chirho/ext4_chirho.rs",
           "priority_chirho": "high",
           "notes_chirho": "readonly_chirho field corrupts at runtime — enum prevents this"
@@ -64,7 +64,7 @@
         {
           "id_chirho": "typed-005",
           "title_chirho": "MappingKindChirho enum (Anonymous/FileBacked/Framebuffer)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "mm_chirho/mmap_chirho.rs",
           "priority_chirho": "medium"
         },
@@ -91,7 +91,7 @@
         {
           "id_chirho": "err-001",
           "title_chirho": "Ext4ErrorChirho enum replacing &'static str errors",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "fs_chirho/ext4_chirho.rs",
           "priority_chirho": "high",
           "notes_chirho": "Distinguish parse/IO/corrupt/unsupported; convert to errno at boundary"
@@ -160,7 +160,7 @@
         {
           "id_chirho": "const-001",
           "title_chirho": "Network constants module (MTU 1500, loopback 65536, DNS 8.8.8.8)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "net_chirho/net_core_chirho.rs",
           "priority_chirho": "high",
           "notes_chirho": "MTU 1500 repeated in 5+ places"
@@ -195,7 +195,7 @@
         {
           "id_chirho": "log-001",
           "title_chirho": "Subsystem log macros (log_net!, log_mm!, log_fs!, log_sched!)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
           "notes_chirho": "Replace hundreds of serial_println! with tagged, level-gated macros"
         },
@@ -237,7 +237,7 @@
         {
           "id_chirho": "oom-004",
           "title_chirho": "Cap pread64/pwrite64 kernel buffer at 16MB",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium"
         }
       ]
@@ -303,9 +303,9 @@
   ],
   "summary_chirho": {
     "total_chirho": 38,
-    "done_chirho": 5,
+    "done_chirho": 13,
     "in_progress_chirho": 1,
     "blocked_chirho": 2,
-    "todo_chirho": 30
+    "todo_chirho": 22
   }
 }
