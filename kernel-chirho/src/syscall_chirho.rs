@@ -1970,12 +1970,29 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // If the timer interrupt has expired the current task's time slice,
     // NEED_RESCHED_ATOMIC_CHIRHO will be set.  Calling schedule_chirho()
     // here performs a context switch to the next runnable task before
-    // returning to userspace.  This is the key mechanism that enables
-    // real fork() (parent continues, child runs separately) and prevents
-    // any single task from monopolizing the CPU.
-    if crate::scheduler_chirho::need_resched_chirho() {
-        crate::scheduler_chirho::schedule_chirho();
-    }
+    // returning to userspace.
+    //
+    // SKIP for fork/vfork/clone/execve — these modify the process image
+    // or use vfork semantics where the child must run to completion first.
+    // Once per-process page tables with CR3 switching are implemented,
+    // fork can safely preempt.
+    // Preemptive scheduling: check reschedule flag on syscall return.
+    // Currently disabled pending per-process page table isolation —
+    // with shared page tables, context-switching during vfork-child
+    // execution corrupts the parent's address space.
+    // TODO: Re-enable once CR3 switching is implemented.
+    //
+    // let skip_resched_chirho = matches!(
+    //     syscall_nr_chirho,
+    //     SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO | SYS_CLONE_CHIRHO | SYS_EXECVE_CHIRHO
+    //     | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO
+    // );
+    // if !skip_resched_chirho && crate::scheduler_chirho::need_resched_chirho() {
+    //     crate::scheduler_chirho::schedule_chirho();
+    // }
+    // NOTE: need_resched flag is set by timer but not acted upon yet.
+    // Once per-process page tables are working, re-enable the context
+    // switch on syscall return.
 
     result_chirho
 }
