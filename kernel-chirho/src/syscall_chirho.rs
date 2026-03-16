@@ -1306,9 +1306,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let arg3_chirho = frame_chirho.r10_chirho;
 
     // Syscall trace (disabled — enable for debugging)
-    // if syscall_nr_chirho != 1 && syscall_nr_chirho != 0 {
-    //     crate::serial_println_chirho!("[SC] nr={}", syscall_nr_chirho);
-    // }
+    if syscall_nr_chirho != 0 && syscall_nr_chirho != 7 {
+        crate::serial_println_chirho!("[SC] nr={}", syscall_nr_chirho);
+     }
     let arg4_chirho = frame_chirho.r8_chirho;
     let _arg5_chirho = frame_chirho.r9_chirho;
 
