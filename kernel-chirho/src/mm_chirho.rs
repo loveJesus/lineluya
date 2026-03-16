@@ -241,34 +241,39 @@ impl MmChirho {
         };
         map_anonymous_pages_chirho(map_addr_chirho, aligned_len_chirho, initial_prot_chirho)?;
 
-        // For file-backed mappings, read the file data ONCE and copy it
-        // into the mapped region. The old approach (read in 4K loop via
-        // sys_read_real) was O(n²) because each read re-loaded the entire
-        // file from ext4. Now we read the file's data directly from the
-        // VFS and memcpy it in one shot.
+        // For file-backed mappings, read data from the fd into the mapped
+        // region using sys_read_real in a loop. Each read copies up to 4K
+        // directly into the mapped pages (already RWX from above).
+        //
+        // IMPORTANT: We seek to the requested offset first and read
+        // sequentially. sys_read_real internally calls ext4 read_file_data
+        // which re-reads the file each time — but for 4K chunks this is
+        // acceptable (ext4 has a block cache). The alternative (bulk read
+        // via read_file_data_at_offset) caused heap corruption from nested
+        // Vec allocations.
         if has_file_chirho {
-            let file_data_chirho = crate::fs_chirho::read_file_data_at_offset_chirho(
-                fd_chirho as u64,
-                _offset_chirho,
-                aligned_len_chirho,
+            let saved_pos_chirho = crate::fs_chirho::sys_lseek_chirho(
+                fd_chirho as u64, 0, 1,
             );
-            if let Some(data_chirho) = file_data_chirho {
-                let copy_len_chirho = core::cmp::min(data_chirho.len(), aligned_len_chirho as usize);
-                if copy_len_chirho > 0 {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            data_chirho.as_ptr(),
-                            map_addr_chirho as *mut u8,
-                            copy_len_chirho,
-                        );
-                    }
-                }
-                // Skip protection change — keep pages RWX. This is less secure
-                // but avoids a bug where update_page_protection corrupts page
-                // table entries for other mappings. TODO: investigate.
-                // if prot_chirho != initial_prot_chirho {
-                //     update_page_protection_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho);
-                // }
+            let _ = crate::fs_chirho::sys_lseek_chirho(
+                fd_chirho as u64, _offset_chirho as i64, 0,
+            );
+            let total_chirho = aligned_len_chirho.min(8 * 1024 * 1024) as usize;
+            let mut done_chirho: usize = 0;
+            while done_chirho < total_chirho {
+                let chunk_chirho = core::cmp::min(4096, total_chirho - done_chirho);
+                let n_chirho = crate::fs_chirho::sys_read_real_chirho(
+                    fd_chirho as u64,
+                    map_addr_chirho + done_chirho as u64,
+                    chunk_chirho,
+                );
+                if n_chirho <= 0 { break; }
+                done_chirho += n_chirho as usize;
+            }
+            if saved_pos_chirho >= 0 {
+                let _ = crate::fs_chirho::sys_lseek_chirho(
+                    fd_chirho as u64, saved_pos_chirho, 0,
+                );
             }
         }
 
