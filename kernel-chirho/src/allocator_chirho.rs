@@ -3,10 +3,11 @@
 
 //! Kernel heap allocator module.
 //!
-//! Uses locked linked-list heap allocator. The 128MB heap with 16MB page
-//! cache avoids the heap corruption that occurs under heavy churn.
-//! TODO: Replace with a more robust allocator (talc GPFs, need investigation).
+//! Uses the `buddy-alloc` crate — a battle-tested buddy system allocator
+//! for no_std Rust. Handles large contiguous allocations (64MB+) without
+//! fragmentation, with correct buddy merging via bitmap tracking.
 
+use buddy_alloc::{BuddyAllocParam, FastAllocParam, NonThreadsafeAlloc};
 use x86_64::structures::paging::mapper::MapToError;
 use x86_64::structures::paging::{
     FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
@@ -19,15 +20,34 @@ pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 /// Size of the kernel heap in bytes (256 MiB).
 pub const HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
 
-/// Global heap allocator — buddy system for efficient power-of-2 allocations.
-/// Handles large contiguous blocks (64MB+) without fragmentation.
-#[global_allocator]
-static ALLOCATOR_CHIRHO: crate::buddy_chirho::LockedBuddyChirho =
-    crate::buddy_chirho::LockedBuddyChirho(spin::Mutex::new(
-        crate::buddy_chirho::BuddyAllocatorChirho::new_chirho(),
-    ));
+/// Fast allocator region (first 1 MiB of heap — for small objects).
+/// Keep small so buddy allocator gets maximum contiguous space.
+const FAST_HEAP_SIZE_CHIRHO: usize = 1 * 1024 * 1024;
 
-/// Initialise the kernel heap.
+/// Buddy allocator region (remaining heap — handles all sizes including 64MB+).
+const BUDDY_HEAP_SIZE_CHIRHO: usize = HEAP_SIZE_CHIRHO - FAST_HEAP_SIZE_CHIRHO;
+
+/// Global heap allocator — buddy-alloc crate with fast+buddy dual allocator.
+/// NonThreadsafeAlloc is wrapped in a const constructor; we handle thread
+/// safety via the kernel's single-CPU model + interrupt disabling.
+#[global_allocator]
+static ALLOCATOR_CHIRHO: NonThreadsafeAlloc = unsafe {
+    let fast_param_chirho = FastAllocParam::new(
+        HEAP_START_CHIRHO as *const u8,
+        FAST_HEAP_SIZE_CHIRHO,
+    );
+    let buddy_param_chirho = BuddyAllocParam::new(
+        (HEAP_START_CHIRHO + FAST_HEAP_SIZE_CHIRHO) as *const u8,
+        BUDDY_HEAP_SIZE_CHIRHO,
+        16, // leaf_size: minimum allocation unit (16 bytes)
+    );
+    NonThreadsafeAlloc::new(fast_param_chirho, buddy_param_chirho)
+};
+
+/// Initialise the kernel heap by mapping pages.
+///
+/// The buddy-alloc crate initializes itself lazily on first use,
+/// so we only need to map the virtual pages to physical frames here.
 pub fn init_heap_chirho(
     mapper_chirho: &mut impl Mapper<Size4KiB>,
     frame_allocator_chirho: &mut impl FrameAllocator<Size4KiB>,
@@ -54,19 +74,10 @@ pub fn init_heap_chirho(
         }
     }
 
-    unsafe {
-        ALLOCATOR_CHIRHO.0
-            .lock()
-            .init_chirho(HEAP_START_CHIRHO, HEAP_SIZE_CHIRHO);
-    }
-
     Ok(())
 }
 
-/// Custom allocation error handler — logs and aborts the allocation
-/// instead of panicking. This prevents userspace OOM from crashing
-/// the kernel. The caller (mmap, Vec, etc.) gets a null pointer and
-/// should return -ENOMEM to userspace.
+/// Custom allocation error handler — logs and halts.
 #[alloc_error_handler]
 fn alloc_error_handler_chirho(layout_chirho: core::alloc::Layout) -> ! {
     // Use raw serial to avoid allocation in the error path
@@ -77,7 +88,6 @@ fn alloc_error_handler_chirho(layout_chirho: core::alloc::Layout) -> ! {
             x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
         }
     }
-    // Print size as decimal
     let size_chirho = layout_chirho.size();
     let mut digits_chirho = [0u8; 20];
     let mut n_chirho = size_chirho;
@@ -105,6 +115,5 @@ fn alloc_error_handler_chirho(layout_chirho: core::alloc::Layout) -> ! {
             x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
         }
     }
-    // Halt instead of panic — prevents cascading failures
     loop { x86_64::instructions::hlt(); }
 }
