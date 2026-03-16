@@ -2953,17 +2953,43 @@ fn sys_poll_chirho(
         )
     };
 
+    // Poll network for incoming packets before checking fds.
+    crate::net_chirho::poll_network_chirho();
+
     for pfd_chirho in pollfds_chirho.iter_mut() {
         if pfd_chirho.fd_chirho < 0 {
             pfd_chirho.revents_chirho = 0;
             continue;
         }
-        // Mark requested POLLIN/POLLOUT as ready
-        let ready_mask_chirho = pfd_chirho.events_chirho & (POLLIN_CHIRHO | POLLOUT_CHIRHO);
-        pfd_chirho.revents_chirho = ready_mask_chirho;
-        if ready_mask_chirho != 0 {
+
+        let fd_val_chirho = pfd_chirho.fd_chirho as u64;
+        let mut revents_chirho: i16 = 0;
+
+        if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
+            // Socket fd: only report POLLIN if data/connection pending.
+            if pfd_chirho.events_chirho & POLLIN_CHIRHO != 0
+                && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
+            {
+                revents_chirho |= POLLIN_CHIRHO;
+            }
+            // POLLOUT: sockets are always writable (simplified)
+            if pfd_chirho.events_chirho & POLLOUT_CHIRHO != 0 {
+                revents_chirho |= POLLOUT_CHIRHO;
+            }
+        } else {
+            // Regular file/pipe: always ready for requested ops.
+            revents_chirho = pfd_chirho.events_chirho & (POLLIN_CHIRHO | POLLOUT_CHIRHO);
+        }
+
+        pfd_chirho.revents_chirho = revents_chirho;
+        if revents_chirho != 0 {
             ready_count_chirho += 1;
         }
+    }
+
+    // If nothing is ready, yield CPU to prevent busy-looping.
+    if ready_count_chirho == 0 {
+        x86_64::instructions::interrupts::enable_and_hlt();
     }
 
     // Write pollfd array back to user space
@@ -2978,21 +3004,75 @@ fn sys_poll_chirho(
     ready_count_chirho
 }
 
-/// `select(2)` simplified implementation.
+/// `select(2)` implementation.
 ///
-/// Returns nfds (all fds ready) as a stub.
+/// Checks which file descriptors are ready for I/O. For socket fds
+/// with pending connections/data, reports POLLIN. For regular files
+/// and pipes, always reports ready. For listening sockets with no
+/// pending connections, blocks (yields CPU) until timeout.
 fn sys_select_chirho(
     nfds_chirho: i32,
-    _readfds_chirho: u64,
+    readfds_ptr_chirho: u64,
     _writefds_chirho: u64,
     _exceptfds_chirho: u64,
-    _timeout_chirho: u64,
+    timeout_ptr_chirho: u64,
 ) -> i64 {
     if nfds_chirho < 0 {
         return -EINVAL_CHIRHO;
     }
-    // Simplified: report all fds as ready
-    nfds_chirho as i64
+
+    // Check if any socket has pending data by polling the network.
+    crate::net_chirho::poll_network_chirho();
+
+    // Check if any of the readfds have actual data available.
+    let mut has_ready_chirho = false;
+    if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
+        // Read the fd_set from userspace (128 bytes = 1024 bits)
+        let mut fds_buf_chirho = [0u8; 128];
+        let set_size_chirho = core::cmp::min(128, ((nfds_chirho as usize + 7) / 8));
+        if crate::uaccess_chirho::copy_from_user_chirho(
+            &mut fds_buf_chirho[..set_size_chirho],
+            readfds_ptr_chirho,
+            set_size_chirho,
+        ).is_ok() {
+            // Check each fd in the set
+            for fd_chirho in 0..nfds_chirho as usize {
+                let byte_idx_chirho = fd_chirho / 8;
+                let bit_idx_chirho = fd_chirho % 8;
+                if byte_idx_chirho < set_size_chirho && fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho) != 0 {
+                    // Check if this fd is a socket with pending data
+                    if crate::net_chirho::socket_has_data_chirho(fd_chirho as u64) {
+                        has_ready_chirho = true;
+                        break;
+                    }
+                    // Regular files are always "ready"
+                    let is_regular_chirho = {
+                        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+                        if let Some(fd_table_chirho) = fd_table_guard_chirho.as_ref() {
+                            fd_table_chirho.get_chirho(fd_chirho).is_some()
+                        } else {
+                            false
+                        }
+                    };
+                    if is_regular_chirho && !crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
+                        has_ready_chirho = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if has_ready_chirho {
+        // Return count of ready fds (simplified: 1)
+        1
+    } else {
+        // No ready fds — yield CPU to prevent busy-looping.
+        // Poll network to check for incoming packets.
+        crate::net_chirho::poll_network_chirho();
+        x86_64::instructions::interrupts::enable_and_hlt();
+        0
+    }
 }
 
 /// `epoll_create1(2)` stub -- return a fake epoll fd.

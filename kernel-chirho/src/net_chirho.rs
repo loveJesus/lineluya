@@ -2170,6 +2170,31 @@ pub fn is_socket_fd_chirho(fd_chirho: u64) -> bool {
     socket_idx_from_fd_chirho(fd_chirho).is_ok()
 }
 
+/// Check if a socket fd has pending data or connections.
+/// For listening sockets, checks if there's a pending TCP connection.
+/// For connected sockets, checks if there's received data.
+pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
+    let socket_idx_chirho = match socket_idx_from_fd_chirho(fd_chirho) {
+        Ok(idx_chirho) => idx_chirho,
+        Err(_) => return false,
+    };
+    let sockets_chirho = SOCKET_TABLE_CHIRHO.lock();
+    if let Some(Some(sock_chirho)) = sockets_chirho.get(socket_idx_chirho) {
+        // Check if there's data in the receive buffer
+        if !sock_chirho.recv_buf_chirho.is_empty() {
+            return true;
+        }
+        // For listening sockets, check if there's a pending connection.
+        // (Currently no pending connection queue — always false for listeners.)
+        if sock_chirho.state_chirho == SocketStateChirho::ListeningChirho {
+            return false; // No pending connections yet
+        }
+        false
+    } else {
+        false
+    }
+}
+
 fn socket_idx_from_fd_chirho(fd_chirho: u64) -> Result<usize, i64> {
     let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
     let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
