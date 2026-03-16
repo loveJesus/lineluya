@@ -2192,6 +2192,11 @@ pub fn is_socket_fd_chirho(fd_chirho: u64) -> bool {
     socket_idx_from_fd_chirho(fd_chirho).is_ok()
 }
 
+/// Public wrapper for socket_idx_from_fd (used by epoll).
+pub fn socket_idx_from_fd_pub_chirho(fd_chirho: u64) -> Result<usize, i64> {
+    socket_idx_from_fd_chirho(fd_chirho)
+}
+
 /// Check if a socket fd has pending data or connections.
 /// For listening sockets, checks if there's a pending TCP connection.
 /// For connected sockets, checks if there's received data.
@@ -4474,12 +4479,14 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
                 .map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
             if local_port_chirho != segment_chirho.dst_port_chirho { continue; }
 
-            if sock_chirho.state_chirho == SocketStateChirho::ConnectedChirho {
+            // Match connected sockets AND child sockets in handshake
+            // (UnconnectedChirho with remote_addr set = spawned by SYN).
+            if sock_chirho.remote_addr_chirho.is_some() {
                 let remote_port_chirho = sock_chirho.remote_addr_chirho
                     .map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
                 if remote_port_chirho == segment_chirho.src_port_chirho {
                     target_idx_chirho = Some(idx_chirho);
-                    break; // Exact match — connected socket
+                    break; // Exact match — connected or handshaking socket
                 }
             } else if sock_chirho.state_chirho == SocketStateChirho::ListeningChirho {
                 listen_idx_chirho = Some(idx_chirho);

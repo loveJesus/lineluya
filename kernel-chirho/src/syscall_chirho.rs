@@ -1333,6 +1333,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
+    // Temporary: log every syscall from PID > 1 to trace dropbear flow
+    let cur_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+    if cur_pid_chirho > 1 {
+        crate::serial_debug_chirho!("[SC] pid={} nr={}", cur_pid_chirho, syscall_nr_chirho);
+    }
 
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => {
@@ -3082,17 +3087,22 @@ fn sys_select_chirho(
     // Check if any socket has pending data by polling the network.
     crate::net_chirho::poll_network_chirho();
 
+    // Read the fd_set once from userspace for both initial check and re-check loop.
+    let mut fds_buf_chirho = [0u8; 128];
+    let set_size_chirho = if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
+        let sz_chirho = core::cmp::min(128, ((nfds_chirho as usize + 7) / 8));
+        let _ = crate::uaccess_chirho::copy_from_user_chirho(
+            &mut fds_buf_chirho[..sz_chirho], readfds_ptr_chirho, sz_chirho,
+        );
+        sz_chirho
+    } else {
+        0
+    };
+
     // Check if any of the readfds have actual data available.
     let mut has_ready_chirho = false;
-    if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
-        // Read the fd_set from userspace (128 bytes = 1024 bits)
-        let mut fds_buf_chirho = [0u8; 128];
-        let set_size_chirho = core::cmp::min(128, ((nfds_chirho as usize + 7) / 8));
-        if crate::uaccess_chirho::copy_from_user_chirho(
-            &mut fds_buf_chirho[..set_size_chirho],
-            readfds_ptr_chirho,
-            set_size_chirho,
-        ).is_ok() {
+    if set_size_chirho > 0 {
+        {
             // Check each fd in the set
             for fd_chirho in 0..nfds_chirho as usize {
                 let byte_idx_chirho = fd_chirho / 8;
@@ -3121,64 +3131,196 @@ fn sys_select_chirho(
         }
     }
 
+    // Helper: scan fds_buf for ready sockets, build output fd_set, return count.
+    let write_ready_fds_chirho = |fds_buf_chirho: &[u8; 128], set_size_chirho: usize,
+                                   nfds_chirho: i32, readfds_ptr_chirho: u64| -> i64 {
+        let mut out_fds_chirho = [0u8; 128];
+        let mut count_chirho: i64 = 0;
+        for fd_chirho in 0..nfds_chirho as usize {
+            let byte_idx_chirho = fd_chirho / 8;
+            let bit_idx_chirho = fd_chirho % 8;
+            if byte_idx_chirho < set_size_chirho
+                && fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho) != 0
+            {
+                let ready_chirho = if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
+                    crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
+                } else {
+                    // Regular files/pipes are always ready.
+                    let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+                    fd_table_guard_chirho.as_ref()
+                        .and_then(|t_chirho| t_chirho.get_chirho(fd_chirho))
+                        .is_some()
+                };
+                if ready_chirho {
+                    out_fds_chirho[byte_idx_chirho] |= 1 << bit_idx_chirho;
+                    count_chirho += 1;
+                }
+            }
+        }
+        if count_chirho > 0 {
+            // Write the modified fd_set back to userspace.
+            let _ = crate::uaccess_chirho::copy_to_user_chirho(
+                readfds_ptr_chirho, &out_fds_chirho[..set_size_chirho], set_size_chirho,
+            );
+        }
+        count_chirho
+    };
+
     if has_ready_chirho {
-        1
+        write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho)
     } else {
         // Block: HLT in a loop until something becomes ready.
-        // Each HLT waits for the next interrupt (timer, VirtIO-net, etc.)
-        // then re-polls the network and re-checks fds.
         for _attempt_chirho in 0..1000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
-            // Re-check if any socket has data now.
-            if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
-                for fd_chirho in 0..nfds_chirho as usize {
-                    let byte_idx_chirho = fd_chirho / 8;
-                    let bit_idx_chirho = fd_chirho % 8;
-                    let set_size_chirho = core::cmp::min(128, ((nfds_chirho as usize + 7) / 8));
-                    if byte_idx_chirho < set_size_chirho {
-                        if crate::net_chirho::socket_has_data_chirho(fd_chirho as u64) {
-                            return 1;
-                        }
-                    }
-                }
+            let count_chirho = write_ready_fds_chirho(
+                &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
+            );
+            if count_chirho > 0 {
+                return count_chirho;
             }
         }
-        // Timed out after ~10 seconds of HLTing (1000 timer ticks).
         0
     }
 }
 
-/// `epoll_create1(2)` stub -- return a fake epoll fd.
-///
-/// Allocates a fake fd number from a static counter. Real epoll semantics
-/// are not implemented yet; this is enough for programs that probe epoll
-/// availability.
+/// Simplified epoll state: maps monitored fds to their event data.
+/// Each entry is (fd, events_mask, data_u64).
+static EPOLL_ENTRIES_CHIRHO: spin::Mutex<alloc::vec::Vec<(i32, u32, u64)>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+
+/// `epoll_create1(2)` — create an epoll instance.
 fn sys_epoll_create1_chirho(_flags_chirho: u32) -> i64 {
     static NEXT_EPOLL_FD_CHIRHO: AtomicU64 = AtomicU64::new(100);
     let fd_chirho = NEXT_EPOLL_FD_CHIRHO.fetch_add(1, Ordering::SeqCst);
     fd_chirho as i64
 }
 
-/// `epoll_ctl(2)` stub -- return 0 (success).
+/// `epoll_ctl(2)` — add/modify/delete a fd in the epoll interest list.
 fn sys_epoll_ctl_chirho(
     _epfd_chirho: i32,
-    _op_chirho: i32,
-    _fd_chirho: i32,
-    _event_chirho: u64,
+    op_chirho: i32,
+    fd_chirho: i32,
+    event_ptr_chirho: u64,
 ) -> i64 {
+    const EPOLL_CTL_ADD_CHIRHO: i32 = 1;
+    const EPOLL_CTL_DEL_CHIRHO: i32 = 2;
+    const EPOLL_CTL_MOD_CHIRHO: i32 = 3;
+
+    // Read epoll_event struct from userspace: { u32 events, u64 data } = 12 bytes packed
+    let (events_chirho, data_chirho) = if event_ptr_chirho != 0 {
+        let ev_chirho = unsafe { core::ptr::read(event_ptr_chirho as *const u32) };
+        let dt_chirho = unsafe { core::ptr::read((event_ptr_chirho + 4) as *const u64) };
+        (ev_chirho, dt_chirho)
+    } else {
+        (0, 0)
+    };
+
+    let mut entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
+    match op_chirho {
+        EPOLL_CTL_ADD_CHIRHO => {
+            entries_chirho.push((fd_chirho, events_chirho, data_chirho));
+        }
+        EPOLL_CTL_DEL_CHIRHO => {
+            entries_chirho.retain(|(f_chirho, _, _)| *f_chirho != fd_chirho);
+        }
+        EPOLL_CTL_MOD_CHIRHO => {
+            for entry_chirho in entries_chirho.iter_mut() {
+                if entry_chirho.0 == fd_chirho {
+                    entry_chirho.1 = events_chirho;
+                    entry_chirho.2 = data_chirho;
+                }
+            }
+        }
+        _ => return -EINVAL_CHIRHO,
+    }
     0
 }
 
-/// `epoll_wait(2)` / `epoll_pwait(2)` stub -- return 0 (no events).
+/// `epoll_wait(2)` / `epoll_pwait(2)` — wait for events on sockets.
+///
+/// Simplified: polls all sockets for data/connections, blocks via HLT
+/// if nothing ready. Writes epoll_event structs to userspace when ready.
 fn sys_epoll_wait_chirho(
     _epfd_chirho: i32,
-    _events_chirho: u64,
-    _maxevents_chirho: i32,
-    _timeout_chirho: i32,
+    events_ptr_chirho: u64,
+    maxevents_chirho: i32,
+    timeout_chirho: i32,
 ) -> i64 {
-    0
+    if events_ptr_chirho == 0 || maxevents_chirho <= 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    crate::serial_debug_chirho!(
+        "[EPOLL] wait: maxev={} timeout={} entries={}",
+        maxevents_chirho, timeout_chirho,
+        EPOLL_ENTRIES_CHIRHO.lock().len(),
+    );
+
+    // Try up to 1000 HLT cycles (~10s). If timeout is 0, don't block.
+    let max_attempts_chirho = if timeout_chirho == 0 { 1u32 }
+        else if timeout_chirho < 0 { 1000 } // infinite → cap at 10s
+        else { core::cmp::min((timeout_chirho as u32) / 10, 1000) };
+
+    for _attempt_chirho in 0..max_attempts_chirho {
+        crate::net_chirho::poll_network_chirho();
+
+        // Scan registered epoll entries for ready fds.
+        let mut count_chirho: i32 = 0;
+        let entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
+        for &(fd_chirho, mask_chirho, data_chirho) in entries_chirho.iter() {
+            if count_chirho >= maxevents_chirho { break; }
+
+            let mut ready_events_chirho: u32 = 0;
+
+            if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
+                if crate::net_chirho::socket_has_data_chirho(fd_chirho as u64) {
+                    ready_events_chirho |= 0x001; // EPOLLIN
+                }
+                // Connected sockets: always writable.
+                // Check state via socket table.
+                let table_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
+                if let Ok(idx_chirho) = crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_chirho as u64) {
+                    if let Some(Some(ref sock_chirho)) = table_chirho.get(idx_chirho) {
+                        if sock_chirho.state_chirho == crate::net_chirho::SocketStateChirho::ConnectedChirho {
+                            ready_events_chirho |= 0x004; // EPOLLOUT
+                        }
+                    }
+                }
+            } else {
+                // Regular file: always ready.
+                ready_events_chirho |= mask_chirho & (0x001 | 0x004);
+            }
+
+            if ready_events_chirho != 0 {
+                // Write epoll_event: { u32 events, u64 data } = 12 bytes packed
+                let offset_chirho = (count_chirho as u64) * 12;
+                let event_addr_chirho = events_ptr_chirho + offset_chirho;
+                unsafe {
+                    core::ptr::write(event_addr_chirho as *mut u32, ready_events_chirho);
+                    core::ptr::write((event_addr_chirho + 4) as *mut u64, data_chirho);
+                }
+                count_chirho += 1;
+            }
+        }
+        drop(entries_chirho);
+
+        if count_chirho > 0 {
+            crate::serial_println_chirho!(
+                "[EPOLL] returning {} events", count_chirho,
+            );
+            return count_chirho as i64;
+        }
+
+        // Nothing ready — yield CPU, wait for interrupt.
+        if timeout_chirho != 0 {
+            x86_64::instructions::interrupts::enable_and_hlt();
+        } else {
+            return 0; // Non-blocking: return immediately.
+        }
+    }
+    0 // Timed out.
 }
 
 // ============================================================================
