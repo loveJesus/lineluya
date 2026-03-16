@@ -215,6 +215,11 @@ launch_qemu_chirho() {
         log_chirho "  WARNING: No Alpine disk image -- VirtIO tests will be skipped"
     fi
 
+    # VirtIO-net with QEMU user-mode networking (DHCP + port forwarding)
+    qemu_args_chirho+=(-netdev "user,id=net0-chirho,hostfwd=tcp::2222-:22")
+    qemu_args_chirho+=(-device "virtio-net-pci,netdev=net0-chirho")
+    log_chirho "  Network: VirtIO-net (user-mode, SSH on localhost:2222)"
+
     # Serial: write to log file (non-interactive)
     qemu_args_chirho+=(-serial "file:$SERIAL_LOG_CHIRHO")
 
