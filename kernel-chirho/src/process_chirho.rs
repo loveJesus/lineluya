@@ -940,6 +940,51 @@ fn activate_per_process_pt_chirho() {
 }
 
 // ===========================================================================
+// Shell re-launch (used by sys_exit and fault handlers)
+// ===========================================================================
+
+/// Re-launch the BusyBox shell after a process exits or crashes.
+///
+/// This function never returns — it loads BusyBox and jumps to userspace.
+/// Called from sys_exit (vfork child exit) and from user-mode fault handlers
+/// (GPF, illegal instruction, etc.) to recover gracefully.
+pub fn exec_shell_with_args_chirho(
+    _argv_chirho: &[alloc::string::String],
+    _envp_chirho: &[alloc::string::String],
+) -> ! {
+    let shell_argv_chirho = [alloc::string::String::from("sh")];
+    let shell_envp_chirho = [
+        alloc::string::String::from("HOME=/root"),
+        alloc::string::String::from("PATH=/bin:/sbin:/usr/bin:/usr/sbin"),
+        alloc::string::String::from("TERM=linux"),
+        alloc::string::String::from("PS1=lineluya# "),
+        alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
+        alloc::string::String::from("SHELL=/bin/sh"),
+        alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
+        alloc::string::String::from("PYTHONHOME=/usr"),
+        alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
+    ];
+
+    let loaded_chirho = crate::exec_chirho::load_elf_into_memory_chirho(
+        crate::exec_chirho::BUSYBOX_ELF_CHIRHO,
+    )
+    .expect("Failed to reload shell");
+
+    crate::syscall_chirho::set_brk_chirho(loaded_chirho.brk_addr_chirho);
+
+    let user_rsp_chirho = crate::exec_chirho::setup_user_stack_with_args_chirho(
+        &loaded_chirho,
+        &shell_argv_chirho,
+        &shell_envp_chirho,
+    );
+
+    crate::exec_chirho::jump_to_userspace_chirho(
+        loaded_chirho.entry_point_chirho,
+        user_rsp_chirho,
+    );
+}
+
+// ===========================================================================
 // Internal helpers
 // ===========================================================================
 
