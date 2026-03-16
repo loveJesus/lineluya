@@ -5,6 +5,7 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 #![feature(custom_test_frameworks)]
+#![feature(alloc_error_handler)]
 
 extern crate alloc;
 
