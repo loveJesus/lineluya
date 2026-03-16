@@ -176,6 +176,12 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
                 }));
 
                 entries_chirho.push((String::from(name_chirho), new_inode_chirho));
+                if entries_chirho.len() > 200 {
+                    crate::serial_println_chirho!(
+                        "[TMPFS] dir has {} entries after adding '{}'",
+                        entries_chirho.len(), name_chirho,
+                    );
+                }
 
                 Ok(Arc::new(InodeChirho {
                     ino_chirho,
@@ -228,6 +234,12 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
                 }));
 
                 entries_chirho.push((String::from(name_chirho), new_inode_chirho));
+                if entries_chirho.len() > 200 {
+                    crate::serial_println_chirho!(
+                        "[TMPFS] dir has {} entries after adding '{}'",
+                        entries_chirho.len(), name_chirho,
+                    );
+                }
 
                 Ok(Arc::new(InodeChirho {
                     ino_chirho,

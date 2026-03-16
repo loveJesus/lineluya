@@ -389,6 +389,14 @@ impl MmChirho {
             .position(|existing_chirho| existing_chirho.start_chirho > vma_chirho.start_chirho)
             .unwrap_or(self.vmas_chirho.len());
         self.vmas_chirho.insert(pos_chirho, vma_chirho);
+        // Warn if VMA count is growing unexpectedly
+        if self.vmas_chirho.len() > 100 && self.vmas_chirho.len() % 500 == 0 {
+            crate::serial_println_chirho!(
+                "[MM] VMA count = {} (capacity {} bytes)",
+                self.vmas_chirho.len(),
+                self.vmas_chirho.capacity() * core::mem::size_of::<VmaChirho>(),
+            );
+        }
     }
 
     /// Remove or split VMAs that overlap with `[addr, addr + len)`.
@@ -604,7 +612,30 @@ fn map_anonymous_pages_chirho(
         let page_chirho: Page<Size4KiB> =
             Page::containing_address(VirtAddr::new(page_addr_chirho));
 
-        // Allocate a physical frame.
+        // Check if the page is already mapped (from a previous exec).
+        // If so, just update flags — don't allocate a new frame.
+        // This prevents the ~16MB/exec frame leak that caused the 64MB OOM.
+        {
+            let already_mapped_chirho = {
+                if let Some(ref mapper_chirho) = *GLOBAL_MAPPER_CHIRHO.lock() {
+                    mapper_chirho.translate_page(page_chirho).is_ok()
+                } else {
+                    false
+                }
+            };
+
+            if already_mapped_chirho {
+                // Page exists — just update flags (no new frame needed)
+                if let Some(ref mut mapper_chirho) = *GLOBAL_MAPPER_CHIRHO.lock() {
+                    let _ = unsafe {
+                        mapper_chirho.update_flags(page_chirho, flags_chirho)
+                    }.map(|flush_chirho| flush_chirho.flush());
+                }
+                continue; // Skip frame allocation + zero-fill
+            }
+        }
+
+        // Allocate a physical frame for a genuinely new page.
         let frame_chirho = {
             let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
             match alloc_lock_chirho.as_mut() {
@@ -612,9 +643,7 @@ fn map_anonymous_pages_chirho(
                     Some(f_chirho) => f_chirho,
                     None => return Err(-ENOMEM_CHIRHO),
                 },
-                None => {
-                    return Err(-ENOMEM_CHIRHO);
-                }
+                None => return Err(-ENOMEM_CHIRHO),
             }
         };
 
@@ -625,20 +654,9 @@ fn map_anonymous_pages_chirho(
                 Some(mapper_chirho) => {
                     let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
                     match alloc_lock_chirho.as_mut() {
-                        Some(alloc_chirho) => {
-                            // SAFETY: We are mapping a freshly allocated frame
-                            // to a user-space address that is not currently
-                            // mapped.  The frame allocator guarantees the frame
-                            // is unused.
-                            unsafe {
-                                mapper_chirho.map_to(
-                                    page_chirho,
-                                    frame_chirho,
-                                    flags_chirho,
-                                    alloc_chirho,
-                                )
-                            }
-                        }
+                        Some(alloc_chirho) => unsafe {
+                            mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
+                        },
                         None => return Err(-ENOMEM_CHIRHO),
                     }
                 }
@@ -648,21 +666,7 @@ fn map_anonymous_pages_chirho(
 
         match result_chirho {
             Ok(flush_chirho) => flush_chirho.flush(),
-            Err(_e_chirho) => {
-                // Page may already be mapped (e.g., overlapping ELF segments
-                // sharing the same page).  This is normal with MAP_FIXED.
-                // Try to update flags instead of failing.
-                let page_chirho: Page<Size4KiB> =
-                    Page::containing_address(VirtAddr::new(page_addr_chirho));
-                if let Some(ref mut mapper_chirho) = *GLOBAL_MAPPER_CHIRHO.lock() {
-                    let _ = unsafe {
-                        mapper_chirho.update_flags(page_chirho, flags_chirho)
-                    }.map(|flush_chirho| flush_chirho.flush());
-                }
-                // Skip zero-fill for already-mapped pages — data will be
-                // written by the caller (exec_chirho copies segment data).
-                continue;
-            }
+            Err(_e_chirho) => continue, // Shouldn't happen (we checked above)
         }
 
         // Zero-fill the page.

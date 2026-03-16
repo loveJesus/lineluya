@@ -844,6 +844,15 @@ impl Ext4MountChirho {
     #[allow(dead_code)]
     pub fn read_file_data_chirho(&self, inode_chirho: &Ext4InodeChirho) -> Option<Vec<u8>> {
         let file_size_chirho = inode_chirho.size_chirho() as usize;
+        // Log reads > 256KB for debugging heap usage.
+        if file_size_chirho > 256 * 1024 {
+            let mode_copy_chirho = { inode_chirho.i_mode_chirho };
+            crate::serial_println_chirho!(
+                "[EXT4-RD] size={} mode=0x{:x}",
+                file_size_chirho,
+                mode_copy_chirho,
+            );
+        }
         if file_size_chirho == 0 {
             return Some(Vec::new());
         }
@@ -1563,6 +1572,11 @@ impl Ext4MountChirho {
     ) -> Result<(), &'static str> {
         let dir_inode_chirho = self.read_inode_chirho(dir_ino_chirho)
             .ok_or("failed to read directory inode")?;
+        let dir_size_chirho = dir_inode_chirho.size_chirho();
+        crate::serial_println_chirho!(
+            "[EXT4] add_dir_entry: ino={} size={} name='{}'",
+            dir_ino_chirho, dir_size_chirho, name_chirho,
+        );
         let mut dir_data_chirho = self.read_file_data_chirho(&dir_inode_chirho)
             .ok_or("failed to read directory data")?;
 

@@ -369,7 +369,26 @@ fn clone_fs_data_chirho(
 pub fn resolve_path_chirho(
     path_chirho: &str,
 ) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
+    resolve_path_depth_chirho(path_chirho, 0)
+}
+
+/// Linux ELOOP — too many levels of symbolic links.
+const ELOOP_CHIRHO: i64 = 40;
+
+/// Maximum symlink depth (matches Linux MAXSYMLINKS = 40).
+const MAX_SYMLINK_DEPTH_CHIRHO: u32 = 40;
+
+fn resolve_path_depth_chirho(
+    path_chirho: &str,
+    symlink_depth_chirho: u32,
+) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
     use crate::tmpfs_chirho::TmpfsDataChirho;
+
+    // Symlink loop detection — prevent unbounded recursion that causes
+    // the 64MB OOM (each recursive call builds a String that doubles).
+    if symlink_depth_chirho > MAX_SYMLINK_DEPTH_CHIRHO {
+        return Err(-ELOOP_CHIRHO);
+    }
 
     // Only absolute paths for now
     if !path_chirho.starts_with('/') {
@@ -610,7 +629,7 @@ pub fn resolve_path_chirho(
                                 remaining_path_chirho.push('/');
                                 remaining_path_chirho.push_str(remaining_components_chirho[rest_idx_chirho]);
                             }
-                            return resolve_path_chirho(&remaining_path_chirho);
+                            return resolve_path_depth_chirho(&remaining_path_chirho, symlink_depth_chirho + 1);
                         }
                     }
 
@@ -817,6 +836,7 @@ fn create_file_at_path_chirho(
     path_chirho: &str,
     mode_chirho: u32,
 ) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
+    crate::serial_println_chirho!("[FS-CREATE] creating '{}'", path_chirho);
     // Create the file in the parent directory
     {
         let (parent_inode_chirho, name_chirho) = match resolve_parent_live_chirho(path_chirho) {
@@ -891,6 +911,9 @@ pub fn sys_openat_chirho(
     } else {
         raw_pathname_chirho
     };
+
+    // Log which file is being opened.
+    crate::serial_debug_chirho!("[OPEN] {}", &pathname_chirho);
 
     // Special case: /dev/pts/N -- PTY slave devices are created dynamically
     // and don't exist in the VFS tree.  We detect this pattern and create

@@ -18,8 +18,7 @@ use x86_64::VirtAddr;
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
 /// Total mapped heap: 32MB fast + 256MB buddy = 288MB.
-/// Works with QEMU -m 1G (default). For dropbear SSH server,
-/// use -m 4G and increase these values.
+/// Works with QEMU -m 1G (default).
 pub const HEAP_SIZE_CHIRHO: usize = 288 * 1024 * 1024;
 
 /// Fast allocator: 32 MiB for small/medium objects.
@@ -27,6 +26,11 @@ const FAST_HEAP_SIZE_CHIRHO: usize = 32 * 1024 * 1024;
 
 /// Buddy allocator: 256 MiB.
 const BUDDY_HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
+
+/// Global counter for large (>256KB) allocations.
+/// Used by diagnostic logging to correlate allocs with code sections.
+pub static LARGE_ALLOC_COUNT_CHIRHO: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 
 /// Inner allocator from buddy-alloc crate.
 static INNER_ALLOC_CHIRHO: NonThreadsafeAlloc = unsafe {
@@ -49,53 +53,23 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
     unsafe fn alloc(&self, layout_chirho: core::alloc::Layout) -> *mut u8 {
         let size_chirho = layout_chirho.size();
 
-        // Log only very large allocations (> 32MB).
+        // Track large allocations
+        if size_chirho > 256 * 1024 {
+            LARGE_ALLOC_COUNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Cap: refuse allocations > 128MB.
+        if size_chirho > 128 * 1024 * 1024 {
+            return core::ptr::null_mut();
+        }
+
+        // Log allocations > 32MB for debugging.
         if size_chirho > 32 * 1024 * 1024 {
-            // Print PID
-            let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(99);
-            let pid_msg_chirho = b"pid=";
-            for &b_chirho in pid_msg_chirho {
-                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
-            }
-            let pd_chirho = b'0' + (pid_chirho % 10) as u8;
-            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(pd_chirho);
-            // Print last syscall nr for context
-            let last_sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO
-                .load(core::sync::atomic::Ordering::Relaxed);
-            let sc_msg_chirho = b"sc=";
-            for &b_chirho in sc_msg_chirho {
-                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
-            }
-            let mut sd_chirho = [0u8; 5]; let mut sn_chirho = last_sc_chirho; let mut si_chirho = 0usize;
-            if sn_chirho == 0 { sd_chirho[0] = b'0'; si_chirho = 1; }
-            else { while sn_chirho > 0 { sd_chirho[si_chirho] = b'0' + (sn_chirho % 10) as u8; sn_chirho /= 10; si_chirho += 1; } }
-            for j_chirho in (0..si_chirho).rev() {
-                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(sd_chirho[j_chirho]);
-            }
-            let align_chirho = layout_chirho.align();
-            let align_msg_chirho = b" align=";
-            for &b_chirho in align_msg_chirho {
-                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
-            }
-            let mut ad_chirho = [0u8; 10]; let mut an_chirho = align_chirho; let mut ai_chirho = 0;
-            if an_chirho == 0 { ad_chirho[0] = b'0'; ai_chirho = 1; }
-            else { while an_chirho > 0 { ad_chirho[ai_chirho] = b'0' + (an_chirho % 10) as u8; an_chirho /= 10; ai_chirho += 1; } }
-            for j_chirho in (0..ai_chirho).rev() {
-                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(ad_chirho[j_chirho]);
-            }
-            // Raw serial to avoid recursion
-            let msg_chirho = b"[ALLOC] large: ";
+            let msg_chirho = b"\r\n[ALLOC] large: ";
             for &b_chirho in msg_chirho {
                 while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
                 x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
             }
-            // Print size in decimal
             let mut digits_chirho = [0u8; 20];
             let mut n_chirho = size_chirho;
             let mut i_chirho = 0usize;

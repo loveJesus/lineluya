@@ -4039,8 +4039,10 @@ fn sys_getdents64_chirho(
         }
     };
 
-    // 2. Collect directory entries via readdir callback into a kernel buffer
-    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    // 2. Collect directory entries via readdir callback into a kernel buffer.
+    // Cap at 64KB to prevent userspace from causing huge kernel allocations.
+    let capped_count_chirho = core::cmp::min(count_chirho, 64 * 1024);
+    let mut kernel_buf_chirho = alloc::vec![0u8; capped_count_chirho];
     let mut bytes_written_chirho: usize = 0;
     let mut error_chirho: Option<i64> = None;
 
@@ -4061,7 +4063,7 @@ fn sys_getdents64_chirho(
                 let reclen_unaligned_chirho: usize = 8 + 8 + 2 + 1 + name_len_chirho; // 19 + name_len
                 let reclen_chirho = (reclen_unaligned_chirho + 7) & !7; // align to 8
 
-                if bytes_written_chirho + reclen_chirho > count_chirho {
+                if bytes_written_chirho + reclen_chirho > capped_count_chirho {
                     return false; // buffer full
                 }
 
@@ -4912,7 +4914,9 @@ fn sys_getdents_chirho(
 
     // Collect directory entries -- use the same linux_dirent64 layout
     // since on x86_64, getdents and getdents64 have identical struct layout.
-    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
+    // Cap at 64KB to prevent userspace from causing huge kernel allocations.
+    let capped_count_chirho = core::cmp::min(count_chirho, 64 * 1024);
+    let mut kernel_buf_chirho = alloc::vec![0u8; capped_count_chirho];
     let mut bytes_written_chirho: usize = 0;
     let mut error_chirho: Option<i64> = None;
 
