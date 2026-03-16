@@ -471,6 +471,10 @@ pub const SYS_CLONE3_CHIRHO: u64 = 435;
 
 // --- Phase 10: Massive syscall coverage additions ---
 
+/// `statfs(2)` -- get filesystem statistics.
+pub const SYS_STATFS_CHIRHO: u64 = 137;
+/// `fstatfs(2)` -- get filesystem statistics by fd.
+pub const SYS_FSTATFS_CHIRHO: u64 = 138;
 /// `fchmod(2)` -- change file mode by fd.
 pub const SYS_FCHMOD_CHIRHO: u64 = 91;
 /// `fchown(2)` -- change file owner by fd.
@@ -747,6 +751,43 @@ pub struct SysinfoChirho {
     pub mem_unit_chirho: u32,
     /// Padding to 64 bytes.
     pub _padding_chirho: [u8; 4],
+}
+
+// ============================================================================
+// StatfsChirho -- Linux statfs structure (for statfs/fstatfs)
+// ============================================================================
+
+/// Linux `struct statfs` equivalent for statfs(2)/fstatfs(2).
+///
+/// Layout matches the kernel's `struct statfs` on x86_64 (120 bytes).
+/// sqlite3 uses this to detect filesystem capabilities (e.g. POSIX locks).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct StatfsChirho {
+    /// Type of filesystem (magic number).
+    pub f_type_chirho: i64,
+    /// Optimal transfer block size.
+    pub f_bsize_chirho: i64,
+    /// Total data blocks in filesystem.
+    pub f_blocks_chirho: u64,
+    /// Free blocks in filesystem.
+    pub f_bfree_chirho: u64,
+    /// Free blocks available to unprivileged user.
+    pub f_bavail_chirho: u64,
+    /// Total file nodes in filesystem.
+    pub f_files_chirho: u64,
+    /// Free file nodes in filesystem.
+    pub f_ffree_chirho: u64,
+    /// Filesystem ID.
+    pub f_fsid_chirho: [i32; 2],
+    /// Maximum length of filenames.
+    pub f_namelen_chirho: i64,
+    /// Fragment size.
+    pub f_frsize_chirho: i64,
+    /// Mount flags.
+    pub f_flags_chirho: i64,
+    /// Padding.
+    pub f_spare_chirho: [i64; 4],
 }
 
 // ============================================================================
@@ -1593,6 +1634,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg3_chirho as u32,
             arg4_chirho as *mut u8,
         ),
+        SYS_STATFS_CHIRHO => sys_statfs_chirho(arg1_chirho as *mut StatfsChirho),
+        SYS_FSTATFS_CHIRHO => sys_statfs_chirho(arg1_chirho as *mut StatfsChirho),
         SYS_SYSINFO_CHIRHO => sys_sysinfo_chirho(arg0_chirho as *mut SysinfoChirho),
         SYS_MKNOD_CHIRHO => 0,   // stub: silently succeed
         SYS_PERSONALITY_CHIRHO => sys_personality_chirho(arg0_chirho),
@@ -1664,7 +1707,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_PPOLL_CHIRHO => sys_ppoll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho, arg3_chirho, arg4_chirho),
 
         // --- Phase 8+9: sendfile, splice, tee, vmsplice, copy_file_range ---
-        SYS_SENDFILE_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_SENDFILE_CHIRHO => sys_sendfile_chirho(
+            arg0_chirho,       // out_fd
+            arg1_chirho,       // in_fd
+            arg2_chirho,       // offset ptr (or NULL)
+            arg3_chirho as usize, // count
+        ),
         SYS_SPLICE_CHIRHO | SYS_TEE_CHIRHO | SYS_VMSPLICE_CHIRHO => -ENOSYS_CHIRHO,
         SYS_COPY_FILE_RANGE_CHIRHO => -ENOSYS_CHIRHO,
         SYS_FALLOCATE_CHIRHO => 0,    // stub: silently succeed
@@ -3848,6 +3896,80 @@ fn sys_sysinfo_chirho(info_chirho: *mut SysinfoChirho) -> i64 {
     0
 }
 
+/// `statfs(2)` / `fstatfs(2)` implementation.
+///
+/// Returns an ext4-like statfs struct. sqlite3 uses this to detect
+/// filesystem type and choose appropriate locking strategy.
+fn sys_statfs_chirho(buf_chirho: *mut StatfsChirho) -> i64 {
+    if buf_chirho.is_null() {
+        return -EFAULT_CHIRHO;
+    }
+
+    // EXT4_SUPER_MAGIC = 0xEF53
+    let sf_chirho = StatfsChirho {
+        f_type_chirho: 0xEF53,           // ext4 magic
+        f_bsize_chirho: 4096,            // block size
+        f_blocks_chirho: 131072,         // 512MB / 4K
+        f_bfree_chirho: 65536,           // ~half free
+        f_bavail_chirho: 65536,
+        f_files_chirho: 32768,
+        f_ffree_chirho: 16384,
+        f_fsid_chirho: [0x1234, 0x5678],
+        f_namelen_chirho: 255,
+        f_frsize_chirho: 4096,
+        f_flags_chirho: 0,
+        f_spare_chirho: [0; 4],
+    };
+
+    unsafe {
+        core::ptr::write(buf_chirho, sf_chirho);
+    }
+    0
+}
+
+/// `sendfile(2)` implementation.
+///
+/// Copies data from in_fd to out_fd in kernel space (no user-space bounce).
+/// Used by wget, cp, and other file transfer utilities.
+fn sys_sendfile_chirho(
+    out_fd_chirho: u64,
+    in_fd_chirho: u64,
+    _offset_ptr_chirho: u64,
+    count_chirho: usize,
+) -> i64 {
+    // Read up to 4KB at a time from in_fd, write to out_fd.
+    let chunk_size_chirho = core::cmp::min(count_chirho, 4096);
+    let mut buf_chirho = alloc::vec![0u8; chunk_size_chirho];
+    let mut total_chirho: usize = 0;
+
+    while total_chirho < count_chirho {
+        let to_read_chirho = core::cmp::min(chunk_size_chirho, count_chirho - total_chirho);
+        let n_chirho = crate::fs_chirho::sys_read_real_chirho(
+            in_fd_chirho,
+            buf_chirho.as_mut_ptr() as u64,
+            to_read_chirho,
+        );
+        if n_chirho <= 0 {
+            break;
+        }
+        let written_chirho = if out_fd_chirho == 1 || out_fd_chirho == 2 {
+            sys_write_chirho(out_fd_chirho, buf_chirho.as_ptr(), n_chirho as usize)
+        } else {
+            crate::fs_chirho::sys_write_real_chirho(
+                out_fd_chirho,
+                buf_chirho.as_ptr() as u64,
+                n_chirho as usize,
+            )
+        };
+        if written_chirho < 0 {
+            break;
+        }
+        total_chirho += written_chirho as usize;
+    }
+
+    total_chirho as i64
+}
+
 /// `sched_getaffinity(2)` implementation.
 ///
 /// Writes a 1-bit CPU affinity mask (single CPU) to user buffer.
@@ -4172,6 +4294,8 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_PPOLL_CHIRHO => "ppoll",
         SYS_EPOLL_PWAIT_CHIRHO => "epoll_pwait",
         SYS_EPOLL_CREATE1_CHIRHO => "epoll_create1",
+        SYS_STATFS_CHIRHO => "statfs",
+        SYS_FSTATFS_CHIRHO => "fstatfs",
         SYS_SYSINFO_CHIRHO => "sysinfo",
         SYS_MKNOD_CHIRHO => "mknod",
         SYS_PERSONALITY_CHIRHO => "personality",
