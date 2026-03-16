@@ -2184,10 +2184,10 @@ pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
         if !sock_chirho.recv_buf_chirho.is_empty() {
             return true;
         }
-        // For listening sockets, check if there's a pending connection.
-        // (Currently no pending connection queue — always false for listeners.)
+        // For listening sockets, check if there's a pending connection
+        // in the accept queue.
         if sock_chirho.state_chirho == SocketStateChirho::ListeningChirho {
-            return false; // No pending connections yet
+            return !sock_chirho.accept_queue_chirho.is_empty();
         }
         false
     } else {
@@ -4437,103 +4437,200 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
     );
 
     let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
-    for slot_chirho in table_chirho.iter_mut() {
-        if let Some(ref mut sock_chirho) = slot_chirho {
-            let base_type_chirho = sock_chirho.sock_type_chirho & 0xF;
-            if base_type_chirho != 1 {
-                continue; // Only SOCK_STREAM
-            }
 
-            // Match by local port.
+    // First pass: find the target socket (connected sockets take priority
+    // over listening sockets).
+    let mut target_idx_chirho: Option<usize> = None;
+    let mut listen_idx_chirho: Option<usize> = None;
+
+    for (idx_chirho, slot_chirho) in table_chirho.iter().enumerate() {
+        if let Some(ref sock_chirho) = slot_chirho {
+            let base_type_chirho = sock_chirho.sock_type_chirho & 0xF;
+            if base_type_chirho != 1 { continue; }
+
             let local_port_chirho = sock_chirho.local_addr_chirho
                 .map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
+            if local_port_chirho != segment_chirho.dst_port_chirho { continue; }
 
-            if local_port_chirho != segment_chirho.dst_port_chirho {
-                continue;
-            }
-
-            // For connected sockets, also check remote port.
             if sock_chirho.state_chirho == SocketStateChirho::ConnectedChirho {
                 let remote_port_chirho = sock_chirho.remote_addr_chirho
                     .map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
-                if remote_port_chirho != segment_chirho.src_port_chirho {
-                    continue;
+                if remote_port_chirho == segment_chirho.src_port_chirho {
+                    target_idx_chirho = Some(idx_chirho);
+                    break; // Exact match — connected socket
+                }
+            } else if sock_chirho.state_chirho == SocketStateChirho::ListeningChirho {
+                listen_idx_chirho = Some(idx_chirho);
+            }
+        }
+    }
+
+    // For SYN on a listening socket: create a NEW child socket.
+    let has_syn_chirho = (segment_chirho.flags_chirho & TCP_SYN_CHIRHO) != 0;
+    let has_ack_chirho = (segment_chirho.flags_chirho & TCP_ACK_CHIRHO) != 0;
+    if target_idx_chirho.is_none() && has_syn_chirho && !has_ack_chirho {
+        if let Some(listen_idx_val_chirho) = listen_idx_chirho {
+            let local_port_chirho = segment_chirho.dst_port_chirho;
+            let remote_port_chirho = segment_chirho.src_port_chirho;
+            let remote_ip_chirho = ip_hdr_chirho.src_ip_chirho;
+
+            // Create a new child socket for this connection.
+            let mut child_idx_chirho: Option<usize> = None;
+            for (i_chirho, slot_chirho) in table_chirho.iter_mut().enumerate() {
+                if slot_chirho.is_none() {
+                    let mut child_sock_chirho = SocketChirho::new_chirho(
+                        2, // AF_INET
+                        1, // SOCK_STREAM
+                        6, // IPPROTO_TCP
+                    );
+                    child_sock_chirho.local_addr_chirho = Some(SockAddrInChirho {
+                        port_chirho: local_port_chirho,
+                        addr_chirho: 0, // INADDR_ANY
+                    });
+                    child_sock_chirho.remote_addr_chirho = Some(SockAddrInChirho {
+                        port_chirho: remote_port_chirho,
+                        addr_chirho: remote_ip_chirho,
+                    });
+
+                    // Process the SYN through the child's TCB.
+                    child_sock_chirho.tcb_chirho.state_chirho = TcpStateChirho::ListenChirho;
+                    let response_chirho = child_sock_chirho.tcb_chirho.process_segment_chirho(
+                        &segment_chirho, local_port_chirho,
+                    );
+
+                    *slot_chirho = Some(child_sock_chirho);
+                    child_idx_chirho = Some(i_chirho);
+
+                    crate::serial_println_chirho!(
+                        "[TCP] New child socket {} for {}:{} -> port {}",
+                        i_chirho, format_ip_chirho(remote_ip_chirho),
+                        remote_port_chirho, local_port_chirho,
+                    );
+
+                    // Send SYN-ACK response.
+                    if let Some(resp_seg_chirho) = response_chirho {
+                        send_tcp_response_chirho(
+                            &resp_seg_chirho,
+                            ip_hdr_chirho.dst_ip_chirho,
+                            ip_hdr_chirho.src_ip_chirho,
+                        );
+                    }
+                    break;
                 }
             }
+            return; // SYN handled by new child socket
+        }
+    }
 
-            // Process the segment through the TCP state machine.
-            let response_chirho = sock_chirho.tcb_chirho.process_segment_chirho(
-                &segment_chirho,
+    // Use target_idx (connected socket) or listen_idx (fallback).
+    let sock_idx_chirho = target_idx_chirho.or(listen_idx_chirho);
+    if sock_idx_chirho.is_none() { return; }
+    let sock_idx_chirho = sock_idx_chirho.unwrap();
+
+    if let Some(ref mut sock_chirho) = table_chirho[sock_idx_chirho] {
+        let local_port_chirho = sock_chirho.local_addr_chirho
+            .map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
+
+        // Process the segment through the TCP state machine.
+        let response_chirho = sock_chirho.tcb_chirho.process_segment_chirho(
+            &segment_chirho,
+            local_port_chirho,
+        );
+
+        // Deliver payload data to the receive buffer.
+        let can_receive_chirho = matches!(
+            sock_chirho.tcb_chirho.state_chirho,
+            TcpStateChirho::EstablishedChirho
+            | TcpStateChirho::CloseWaitChirho
+            | TcpStateChirho::FinWait2Chirho
+        );
+        if !segment_chirho.payload_chirho.is_empty() && can_receive_chirho {
+            for byte_chirho in &segment_chirho.payload_chirho {
+                sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
+            }
+            crate::serial_println_chirho!(
+                "[TCP] Delivered {} bytes to socket port {}",
+                segment_chirho.payload_chirho.len(),
                 local_port_chirho,
             );
+        }
 
-            // Deliver payload data to the receive buffer.
-            // Accept data in Established, CloseWait (FIN+data segment
-            // transitions state before we reach here), and FinWait2
-            // (peer can still send data after we sent FIN).
-            let can_receive_chirho = matches!(
-                sock_chirho.tcb_chirho.state_chirho,
-                TcpStateChirho::EstablishedChirho
-                | TcpStateChirho::CloseWaitChirho
-                | TcpStateChirho::FinWait2Chirho
+        // When TCP transitions to ESTABLISHED, update socket state
+        // and push to the listening socket's accept queue.
+        if sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+            && sock_chirho.state_chirho != SocketStateChirho::ConnectedChirho
+        {
+            sock_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
+            crate::serial_println_chirho!(
+                "[TCP] Connection ESTABLISHED on socket {} port {}",
+                sock_idx_chirho, local_port_chirho,
             );
-            if !segment_chirho.payload_chirho.is_empty() && can_receive_chirho {
-                for byte_chirho in &segment_chirho.payload_chirho {
-                    sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
-                }
-                crate::serial_println_chirho!(
-                    "[TCP] Delivered {} bytes to socket port {}",
-                    segment_chirho.payload_chirho.len(),
-                    local_port_chirho,
-                );
-            }
 
-            // Update socket state if TCP transitioned to ESTABLISHED.
-            if sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
-                && sock_chirho.state_chirho != SocketStateChirho::ConnectedChirho
-            {
-                sock_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
+            // Push to the listener's accept queue.
+            if let Some(listen_idx_val_chirho) = listen_idx_chirho {
+                if let Some(ref mut listener_chirho) = table_chirho[listen_idx_val_chirho] {
+                    listener_chirho.accept_queue_chirho.push_back(sock_idx_chirho as u64);
+                    crate::serial_println_chirho!(
+                        "[TCP] Queued socket {} for accept on listener {}",
+                        sock_idx_chirho, listen_idx_val_chirho,
+                    );
+                }
             }
+        }
 
             // Send any response segment.
             if let Some(resp_seg_chirho) = response_chirho {
-                let src_ip_chirho = ip_hdr_chirho.dst_ip_chirho;
-                let dst_ip_chirho = ip_hdr_chirho.src_ip_chirho;
-
-                // Compute TCP checksum.
-                let cksum_chirho = resp_seg_chirho.compute_checksum_chirho(src_ip_chirho, dst_ip_chirho);
-                let mut seg_with_cksum_chirho = resp_seg_chirho;
-                seg_with_cksum_chirho.checksum_chirho = cksum_chirho;
-                let tcp_bytes_chirho = seg_with_cksum_chirho.build_chirho();
-
-                let total_len_chirho = 20 + tcp_bytes_chirho.len() as u16;
-                let ip_resp_chirho = Ipv4HeaderChirho {
-                    version_chirho: 4,
-                    ihl_chirho: 5,
-                    tos_chirho: 0,
-                    total_length_chirho: total_len_chirho,
-                    id_chirho: 0,
-                    flags_chirho: 0x02,
-                    fragment_offset_chirho: 0,
-                    ttl_chirho: 64,
-                    protocol_chirho: IP_PROTO_TCP_CHIRHO,
-                    checksum_chirho: 0,
-                    src_ip_chirho,
-                    dst_ip_chirho,
-                };
-                let mut pkt_chirho = ip_resp_chirho.build_chirho();
-                pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
-
-                // Send without holding the socket table lock — drop it first.
-                // We can't do that easily here, so just send inline (okay for now).
                 drop(table_chirho);
-                let _ = send_ip_packet_chirho(&pkt_chirho);
+                send_tcp_response_chirho(
+                    &resp_seg_chirho,
+                    ip_hdr_chirho.dst_ip_chirho,
+                    ip_hdr_chirho.src_ip_chirho,
+                );
                 return;
             }
 
             return; // Matched socket found.
-        }
     }
+}
+
+/// Send a TCP response segment wrapped in an IP packet.
+fn send_tcp_response_chirho(
+    resp_seg_chirho: &TcpSegmentChirho,
+    src_ip_chirho: u32,
+    dst_ip_chirho: u32,
+) {
+    let cksum_chirho = resp_seg_chirho.compute_checksum_chirho(src_ip_chirho, dst_ip_chirho);
+    let mut seg_with_cksum_chirho = TcpSegmentChirho {
+        src_port_chirho: resp_seg_chirho.src_port_chirho,
+        dst_port_chirho: resp_seg_chirho.dst_port_chirho,
+        seq_num_chirho: resp_seg_chirho.seq_num_chirho,
+        ack_num_chirho: resp_seg_chirho.ack_num_chirho,
+        data_offset_chirho: resp_seg_chirho.data_offset_chirho,
+        flags_chirho: resp_seg_chirho.flags_chirho,
+        window_chirho: resp_seg_chirho.window_chirho,
+        checksum_chirho: cksum_chirho,
+        urgent_ptr_chirho: resp_seg_chirho.urgent_ptr_chirho,
+        payload_chirho: resp_seg_chirho.payload_chirho.clone(),
+    };
+    let tcp_bytes_chirho = seg_with_cksum_chirho.build_chirho();
+    let total_len_chirho = 20 + tcp_bytes_chirho.len() as u16;
+    let ip_resp_chirho = Ipv4HeaderChirho {
+        version_chirho: 4,
+        ihl_chirho: 5,
+        tos_chirho: 0,
+        total_length_chirho: total_len_chirho,
+        id_chirho: 0,
+        flags_chirho: 0x02,
+        fragment_offset_chirho: 0,
+        ttl_chirho: 64,
+        protocol_chirho: IP_PROTO_TCP_CHIRHO,
+        checksum_chirho: 0,
+        src_ip_chirho,
+        dst_ip_chirho,
+    };
+    let mut pkt_chirho = ip_resp_chirho.build_chirho();
+    pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
+    let _ = send_ip_packet_chirho(&pkt_chirho);
 }
 
 // ============================================================================
