@@ -33,6 +33,7 @@ use crate::elf_chirho::{
 use crate::dynlink_chirho::{
     AT_BASE_CHIRHO, find_interp_in_phdrs_chirho, load_elf_at_base_chirho,
     interp_load_base_chirho, parse_dynamic_section_chirho, apply_relative_relocs_chirho,
+    resolve_symbol_relocs_chirho,
 };
 use crate::gdt_chirho::{USER_CS_CHIRHO, USER_DS_CHIRHO};
 use crate::mm_chirho::{
@@ -440,6 +441,37 @@ pub fn load_elf_with_interp_chirho(
                     serial_println_chirho!(
                         "[EXEC] R_X86_64_RELATIVE relocations applied to interpreter"
                     );
+
+                    // -----------------------------------------------------------
+                    // Resolve R_X86_64_GLOB_DAT and R_X86_64_JUMP_SLOT in the
+                    // main binary against the interpreter's (musl) exports.
+                    //
+                    // BusyBox references libc functions (time, printf, opendir,
+                    // etc.) via GOT slots that need to point into musl.  Without
+                    // this, any BusyBox command that calls those functions will
+                    // crash with #UD because the GOT still contains zeros or
+                    // un-relocated file offsets.
+                    // -----------------------------------------------------------
+                    if let Ok(exe_dyn_info_chirho) =
+                        parse_dynamic_section_chirho(elf_data_chirho, exe_load_bias_chirho)
+                    {
+                        serial_println_chirho!(
+                            "[EXEC] Resolving GLOB_DAT/JUMP_SLOT: exe symtab={:#x}, strtab={:#x}",
+                            exe_dyn_info_chirho.symtab_addr_chirho,
+                            exe_dyn_info_chirho.strtab_addr_chirho
+                        );
+                        unsafe {
+                            resolve_symbol_relocs_chirho(
+                                &exe_dyn_info_chirho,
+                                exe_load_bias_chirho,
+                                &interp_dyn_info_chirho,
+                                interp_base_chirho,
+                            );
+                        }
+                        serial_println_chirho!(
+                            "[EXEC] Symbol resolution complete for main binary"
+                        );
+                    }
                 }
                 Err(err_chirho) => {
                     serial_println_chirho!(
