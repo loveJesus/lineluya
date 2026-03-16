@@ -711,6 +711,25 @@ impl Ext4MountChirho {
     /// Checks the page cache first; on miss, reads from the block device
     /// and caches the result.
     #[allow(dead_code)]
+    /// Copy a cached block directly into a destination buffer (no heap alloc).
+    /// Returns the number of bytes copied.
+    pub fn read_block_into_chirho(&self, block_nr_chirho: u64, dest_chirho: &mut [u8]) -> Option<usize> {
+        // Check page cache first — zero-copy from cache to dest
+        {
+            let mut cache_chirho = PAGE_CACHE_CHIRHO.lock();
+            if let Some(data_chirho) = cache_chirho.get_chirho(self.device_id_chirho, block_nr_chirho) {
+                let copy_len_chirho = core::cmp::min(data_chirho.len(), dest_chirho.len());
+                dest_chirho[..copy_len_chirho].copy_from_slice(&data_chirho[..copy_len_chirho]);
+                return Some(copy_len_chirho);
+            }
+        }
+        // Cache miss — read from disk and insert into cache, then copy
+        let block_chirho = self.read_block_cached_chirho(block_nr_chirho)?;
+        let copy_len_chirho = core::cmp::min(block_chirho.len(), dest_chirho.len());
+        dest_chirho[..copy_len_chirho].copy_from_slice(&block_chirho[..copy_len_chirho]);
+        Some(copy_len_chirho)
+    }
+
     pub fn read_block_cached_chirho(&self, block_nr_chirho: u64) -> Option<Vec<u8>> {
         // Check page cache.
         {
@@ -822,38 +841,44 @@ impl Ext4MountChirho {
         Some(data_chirho)
     }
 
-    /// Read a single logical 4K block from the inode's extent tree.
-    /// Returns a Vec<u8> of up to 4096 bytes, or None if the block is a hole.
+    /// Read a single logical 4K block into a provided buffer (zero-copy).
+    /// Returns the number of bytes copied, or None on error.
+    pub fn read_block_by_logical_into_chirho(
+        &self,
+        inode_chirho: &Ext4InodeChirho,
+        logical_block_chirho: u64,
+        dest_chirho: &mut [u8],
+    ) -> Option<usize> {
+        if !inode_chirho.uses_extents_chirho() {
+            return None;
+        }
+        let header_chirho = inode_chirho.extent_header_chirho();
+        if !header_chirho.is_valid_chirho() {
+            return None;
+        }
+        let block_copy_chirho = inode_chirho.i_block_chirho;
+        let phys_block_chirho = self.find_phys_block_chirho(
+            &block_copy_chirho, &header_chirho, logical_block_chirho as u32,
+        );
+        if let Some(pb_chirho) = phys_block_chirho {
+            self.read_block_into_chirho(pb_chirho, dest_chirho)
+        } else {
+            // Sparse hole — zero fill
+            let fill_chirho = core::cmp::min(4096, dest_chirho.len());
+            dest_chirho[..fill_chirho].fill(0);
+            Some(fill_chirho)
+        }
+    }
+
+    /// Read a single logical 4K block (allocating Vec — use read_block_by_logical_into for zero-copy).
     pub fn read_block_by_logical_chirho(
         &self,
         inode_chirho: &Ext4InodeChirho,
         logical_block_chirho: u64,
     ) -> Option<Vec<u8>> {
-        if !inode_chirho.uses_extents_chirho() {
-            return None;
-        }
-
-        let header_chirho = inode_chirho.extent_header_chirho();
-        if !header_chirho.is_valid_chirho() {
-            return None;
-        }
-
-        let block_copy_chirho = inode_chirho.i_block_chirho;
-
-        // Find the physical block for this logical block by walking extents
-        let phys_block_chirho = self.find_phys_block_chirho(
-            &block_copy_chirho,
-            &header_chirho,
-            logical_block_chirho as u32,
-        );
-
-        if let Some(pb_chirho) = phys_block_chirho {
-            // Read via the block cache (avoids redundant disk I/O)
-            self.read_block_cached_chirho(pb_chirho)
-        } else {
-            // Sparse hole — return zeros
-            Some(alloc::vec![0u8; 4096])
-        }
+        let mut buf_chirho = alloc::vec![0u8; 4096];
+        self.read_block_by_logical_into_chirho(inode_chirho, logical_block_chirho, &mut buf_chirho)?;
+        Some(buf_chirho)
     }
 
     /// Find the physical block number for a logical block in the extent tree.
@@ -2042,14 +2067,17 @@ impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
         let end_block_chirho = (pos_chirho + to_read_chirho + 4095) / 4096;
         let num_blocks_chirho = end_block_chirho - start_block_chirho;
 
-        // Read blocks one at a time via the block cache.
+        // Read blocks via zero-copy path (no per-block Vec allocation).
         let mut bytes_copied_chirho = 0usize;
+        let mut block_buf_chirho = [0u8; 4096]; // stack buffer, reused per block
         for blk_idx_chirho in start_block_chirho..end_block_chirho {
-            let block_data_chirho = mount_chirho.read_block_by_logical_chirho(
+            let read_result_chirho = mount_chirho.read_block_by_logical_into_chirho(
                 &ext4_inode_chirho,
                 blk_idx_chirho as u64,
+                &mut block_buf_chirho,
             );
-            if let Some(data_chirho) = block_data_chirho {
+            if let Some(_n_chirho) = read_result_chirho {
+                let data_chirho = &block_buf_chirho[..];
                 // Calculate the slice within this block we need
                 let block_start_chirho = blk_idx_chirho * 4096;
                 let copy_start_chirho = if pos_chirho > block_start_chirho {
