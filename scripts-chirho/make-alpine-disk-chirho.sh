@@ -217,26 +217,32 @@ populate_image_darwin_chirho() {
         local abs_tarball_chirho
         abs_tarball_chirho="$(cd "$(dirname "$tarball_path_chirho")" && pwd)/$(basename "$tarball_path_chirho")"
 
-        # Use docker cp instead of volume mounts (colima on macOS corrupts
-        # binary files via volume mounts with QEMU emulation).
-        log_chirho "Creating build container..."
+        # colima on macOS corrupts binary files via volume mounts and docker cp.
+        # Workaround: use docker exec to build, then pipe the image out via
+        # stdout using docker exec cat.
+        log_chirho "Building ext4 image inside Docker container..."
+
         local cid_chirho
         cid_chirho=$(docker create --privileged alpine:latest sleep 3600)
-        docker start "$cid_chirho"
+        docker start "$cid_chirho" >/dev/null
 
-        log_chirho "Copying files into container..."
-        docker cp "$abs_tarball_chirho" "$cid_chirho:/work-chirho-rootfs.tar.gz"
-        docker cp "$abs_image_chirho" "$cid_chirho:/work-chirho-disk.img"
+        # Pipe the rootfs tarball into the container via docker exec
+        cat "$abs_tarball_chirho" | docker exec -i "$cid_chirho" sh -c 'cat > /tmp/rootfs.tar.gz'
 
-        log_chirho "Running build inside container..."
+        # Run the build
         docker exec "$cid_chirho" /bin/sh -c '
 set -e
+
+# Create a fresh ext4 image inside the container
 apk add --no-cache e2fsprogs >/dev/null 2>&1
+truncate -s 512M /tmp/disk.img
+mkfs.ext4 -F -L "lineluya-vblk" /tmp/disk.img >/dev/null 2>&1
 
 mkdir -p /mnt-chirho
-mount -o loop /work-chirho-disk.img /mnt-chirho
+mount -o loop /tmp/disk.img /mnt-chirho
 
-tar xzf /work-chirho-rootfs.tar.gz -C /mnt-chirho
+tar xzf /tmp/rootfs.tar.gz -C /mnt-chirho
+rm /tmp/rootfs.tar.gz
 
 # Ensure required directories
 for d in dev proc sys tmp run; do
@@ -299,29 +305,37 @@ fi
 # P5: Pre-install Alpine packages for Lineluya testing
 # These bypass the need for networking (apk) inside the kernel.
 # ---------------------------------------------------------------
-echo "[DOCKER] Installing P5 packages into rootfs..."
+echo "[DOCKER] Installing P5 packages into rootfs..." >&2
 
-# Set up Alpine repos inside the rootfs
-mkdir -p /mnt-chirho/etc/apk
-cat > /mnt-chirho/etc/apk/repositories << '\''REPOS_CHIRHO'\''
-https://dl-cdn.alpinelinux.org/alpine/v3.21/main
-https://dl-cdn.alpinelinux.org/alpine/v3.21/community
+# Install packages into the rootfs using the HOST apk (which matches
+# the container arch).  We use --allow-untrusted because the host keys
+# may not match the target repo version. We use --arch x86_64 to ensure
+# we get x86_64 packages even if running on ARM64.
+# Use the HOST repos (same Alpine version as container) with x86_64 arch.
+HOST_VER=$(cat /etc/alpine-release | cut -d. -f1-2)
+mkdir -p /mnt-chirho/etc/apk/keys
+cp -a /etc/apk/keys/* /mnt-chirho/etc/apk/keys/ 2>/dev/null || true
+
+cat > /tmp/repos-chirho << REPOS_CHIRHO
+https://dl-cdn.alpinelinux.org/alpine/v${HOST_VER}/main
+https://dl-cdn.alpinelinux.org/alpine/v${HOST_VER}/community
 REPOS_CHIRHO
 
-# Install packages into rootfs using apk --root
-# Copy host apk keys so signature verification works
-cp -a /etc/apk/keys /mnt-chirho/etc/apk/ 2>/dev/null || true
-
 apk --root /mnt-chirho --initdb \
-    --keys-dir /mnt-chirho/etc/apk/keys \
-    --repositories-file /mnt-chirho/etc/apk/repositories \
+    --arch x86_64 \
+    --allow-untrusted \
+    --repositories-file /tmp/repos-chirho \
     add \
     sqlite sqlite-libs \
     python3 \
     dropbear dropbear-scp \
-    2>&1 | tail -5
+    >&2 2>&1
 
-echo "[DOCKER] P5 packages installed into rootfs."
+# Verify installation
+ls /mnt-chirho/usr/bin/sqlite3 >/dev/null 2>&1 && echo "[DOCKER] sqlite3 INSTALLED" >&2 || echo "[DOCKER] sqlite3 MISSING" >&2
+ls /mnt-chirho/usr/bin/python3 >/dev/null 2>&1 && echo "[DOCKER] python3 INSTALLED" >&2 || echo "[DOCKER] python3 MISSING" >&2
+
+echo "[DOCKER] P5 packages installed into rootfs." >&2
 
 # Create a test Python script
 cat > /mnt-chirho/root/hello_chirho.py << '\''PYTEST_CHIRHO'\''
@@ -343,16 +357,18 @@ SQLTEST_CHIRHO
 sync
 umount /mnt-chirho
 echo "[DOCKER] rootfs populated and configured."
-'
-        # Copy the modified image back out of the container
-        log_chirho "Copying built image out of container..."
-        docker cp "$cid_chirho:/work-chirho-disk.img" "$abs_image_chirho"
 
-        # Clean up
+echo "[DOCKER] Build complete."
+'
+        # Pipe the finished image out of the container via stdout
+        log_chirho "Extracting disk image from container..."
+        docker exec "$cid_chirho" cat /tmp/disk.img > "$abs_image_chirho"
+
+        # Clean up container
         docker stop "$cid_chirho" >/dev/null 2>&1 || true
         docker rm "$cid_chirho" >/dev/null 2>&1 || true
 
-        log_chirho "Image populated via Docker."
+        log_chirho "Image populated via Docker ($(du -h "$abs_image_chirho" | cut -f1))."
     else
         # Fallback: extract to a directory, user can manually dd or use Linux
         log_chirho "WARNING: No Docker available on macOS — cannot mount ext4 natively."
