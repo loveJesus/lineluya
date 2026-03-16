@@ -149,16 +149,15 @@ syscall_entry_chirho:
     popq    %rcx                             // rcx_chirho  (user RIP for sysretq)
     popq    %r11                             // r11_chirho  (user RFLAGS for sysretq)
 
-    // Step 9: Restore user RSP + callee-saved registers.
+    // Step 9: Restore user RSP.
     popq    %rsp                             // rsp_chirho
-    // Skip callee-saved (rbx, rbp, r12-r15) — they're preserved by
-    // the C ABI across the Rust call. Only fork_child_return needs them.
+    // Callee-saved registers (rbx-r15) remain on the kernel stack
+    // but are preserved by the C ABI across the Rust call.
 
     // Step 10: Switch GS base back to user before returning.
     swapgs
 
-    // Step 11: Return to userspace.
-    //          sysretq loads RIP from RCX and RFLAGS from R11.
+    // Step 11: Return to userspace via SYSRET.
     sysretq
 
 .size syscall_entry_chirho, . - syscall_entry_chirho
