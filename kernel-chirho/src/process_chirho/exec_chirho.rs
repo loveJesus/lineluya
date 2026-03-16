@@ -66,13 +66,13 @@ const USER_STACK_SIZE_CHIRHO: u64 = 8 * 1024 * 1024;
 /// `include_bytes!` embeds the file contents directly into the kernel image
 /// at compile time.
 pub static HELLO_ELF_CHIRHO: &[u8] = include_bytes!(
-    "../../userspace-chirho/hello-chirho/target/x86_64-unknown-none/release/hello-chirho"
+    "../../../userspace-chirho/hello-chirho/target/x86_64-unknown-none/release/hello-chirho"
 );
 
 /// BusyBox static x86_64 binary — 1.1MB, 40+ commands including ash shell.
 /// Note: BIOS boot can't handle >6MB kernels. Use UEFI boot with BusyBox.
 pub static BUSYBOX_ELF_CHIRHO: &[u8] = include_bytes!(
-    "../../userspace-chirho/busybox-chirho/output-chirho/busybox-chirho"
+    "../../../userspace-chirho/busybox-chirho/output-chirho/busybox-chirho"
 );
 
 // ============================================================================

@@ -9,94 +9,185 @@
 
 extern crate alloc;
 
-// Phase 1: Bare metal boot
+// ============================================================================
+// Console & output — serial, framebuffer, VGA, dmesg, tty, pty
+// ============================================================================
+#[path = "console_chirho/serial_chirho.rs"]
 mod serial_chirho;
+#[path = "console_chirho/vga_buffer_chirho.rs"]
 mod vga_buffer_chirho;
+#[path = "console_chirho/fbconsole_chirho.rs"]
 mod fbconsole_chirho;
+#[path = "console_chirho/dmesg_chirho.rs"]
+mod dmesg_chirho;
+#[path = "console_chirho/tty_chirho.rs"]
+mod tty_chirho;
+#[path = "console_chirho/pty_chirho.rs"]
+mod pty_chirho;
+#[path = "console_chirho/cmdline_chirho.rs"]
+mod cmdline_chirho;
+
+// ============================================================================
+// Architecture — GDT, IDT, APIC, ACPI, SMP, syscall entry, context switch
+// ============================================================================
+#[path = "arch_chirho/gdt_chirho.rs"]
 mod gdt_chirho;
+#[path = "arch_chirho/interrupts_chirho.rs"]
 mod interrupts_chirho;
-mod memory_chirho;
+#[path = "arch_chirho/syscall_entry_chirho.rs"]
+mod syscall_entry_chirho;
+#[path = "arch_chirho/context_switch_chirho.rs"]
+mod context_switch_chirho;
+#[path = "arch_chirho/apic_chirho.rs"]
+mod apic_chirho;
+#[path = "arch_chirho/acpi_chirho.rs"]
+mod acpi_chirho;
+#[path = "arch_chirho/smp_chirho.rs"]
+mod smp_chirho;
+#[path = "arch_chirho/hpet_chirho.rs"]
+mod hpet_chirho;
+#[path = "arch_chirho/msi_chirho.rs"]
+mod msi_chirho;
+#[path = "arch_chirho/boot_protocol_chirho.rs"]
+mod boot_protocol_chirho;
+#[path = "arch_chirho/multiboot2_header_chirho.rs"]
+mod multiboot2_header_chirho;
+
+// ============================================================================
+// Memory management — heap allocator, frame allocator, page tables, uaccess
+// ============================================================================
+#[path = "mm_chirho/allocator_chirho.rs"]
 mod allocator_chirho;
 #[allow(dead_code)]
-mod buddy_chirho; // Kept as reference; using buddy-alloc crate instead
+#[path = "mm_chirho/buddy_chirho.rs"]
+mod buddy_chirho;
+#[path = "mm_chirho/memory_chirho.rs"]
+mod memory_chirho;
+#[path = "mm_chirho/pagetable_chirho.rs"]
+mod pagetable_chirho;
+#[path = "mm_chirho/uaccess_chirho.rs"]
+mod uaccess_chirho;
+#[path = "mm_chirho/mmap_chirho.rs"]
+mod mm_chirho;
 
-// Phase 3: Virtual Filesystem Switch (VFS)
+// ============================================================================
+// Filesystem — VFS, tmpfs, ext4, procfs, sysfs, devtmpfs, pipes
+// ============================================================================
+#[path = "fs_chirho/vfs_chirho.rs"]
 mod vfs_chirho;
+#[path = "fs_chirho/tmpfs_chirho.rs"]
 mod tmpfs_chirho;
+#[path = "fs_chirho/devtmpfs_chirho.rs"]
 mod devtmpfs_chirho;
+#[path = "fs_chirho/procfs_chirho.rs"]
 mod procfs_chirho;
+#[path = "fs_chirho/sysfs_chirho.rs"]
 mod sysfs_chirho;
+#[path = "fs_chirho/vfs_ops_chirho.rs"]
 mod fs_chirho;
-
-// Phase 5: Block I/O layer
-mod block_chirho;
-mod bio_chirho;
-
-// Phase A4: VirtIO device drivers, GPT, ext4
-mod virtio_chirho;
-mod gpt_chirho;
+#[path = "fs_chirho/ext4_chirho.rs"]
 mod ext4_chirho;
-
-// Phase 6: Networking socket stubs
-mod net_chirho;
-
-// Phase 8: Hardware support — APIC, ACPI, PCI, SMP
-mod apic_chirho;
-mod acpi_chirho;
-mod pci_chirho;
-mod smp_chirho;
-
-// Phase A5: Real hardware boot — bzImage, AHCI, NVMe, e1000, USB, timer, MSI
-mod boot_protocol_chirho;
-mod ahci_chirho;
-mod hpet_chirho;
-mod nvme_chirho;
-mod e1000_chirho;
-mod usb_chirho;
+#[path = "fs_chirho/gpt_chirho.rs"]
+mod gpt_chirho;
+#[path = "fs_chirho/pipe_chirho.rs"]
+mod pipe_chirho;
+#[path = "fs_chirho/initramfs_chirho.rs"]
 mod initramfs_chirho;
-mod cmdline_chirho;
-mod msi_chirho;
+#[path = "fs_chirho/overlayfs_chirho.rs"]
+#[allow(dead_code)]
+mod overlayfs_chirho;
+
+// ============================================================================
+// Drivers — VirtIO, PCI, AHCI, NVMe, e1000, USB, block I/O, framebuffer
+// ============================================================================
+#[path = "drivers_chirho/block_chirho.rs"]
+mod block_chirho;
+#[path = "drivers_chirho/bio_chirho.rs"]
+mod bio_chirho;
+#[path = "drivers_chirho/virtio_chirho.rs"]
+mod virtio_chirho;
+#[path = "drivers_chirho/pci_chirho.rs"]
+mod pci_chirho;
+#[path = "drivers_chirho/ahci_chirho.rs"]
+mod ahci_chirho;
+#[path = "drivers_chirho/nvme_chirho.rs"]
+mod nvme_chirho;
+#[path = "drivers_chirho/e1000_chirho.rs"]
+mod e1000_chirho;
+#[path = "drivers_chirho/usb_chirho.rs"]
+mod usb_chirho;
+#[path = "drivers_chirho/fb_device_chirho.rs"]
+mod fb_device_chirho;
+#[path = "drivers_chirho/random_chirho.rs"]
 mod random_chirho;
 
-// Phase E1: Real hardware boot — Multiboot2, dmesg
-mod multiboot2_header_chirho;
-mod dmesg_chirho;
+// ============================================================================
+// Networking — TCP/IP stack, sockets, DHCP, DNS
+// ============================================================================
+#[path = "net_chirho/net_core_chirho.rs"]
+mod net_chirho;
 
-// Phase 2: Process management & Linux syscall ABI
-mod syscall_chirho;
-mod syscall_entry_chirho;
+// ============================================================================
+// Scheduling — task management, scheduler, wait queues, futex
+// ============================================================================
+#[path = "sched_chirho/task_chirho.rs"]
 mod task_chirho;
-mod elf_chirho;
+#[path = "sched_chirho/scheduler_chirho.rs"]
 mod scheduler_chirho;
-mod context_switch_chirho;
-mod uaccess_chirho;
-mod mm_chirho;
-mod pagetable_chirho;
-mod exec_chirho;
-mod dynlink_chirho;
-mod signal_chirho;
-mod pipe_chirho;
-mod process_chirho;
+#[path = "sched_chirho/waitqueue_chirho.rs"]
 mod waitqueue_chirho;
+#[path = "sched_chirho/futex_chirho.rs"]
 mod futex_chirho;
-mod tty_chirho;
-mod pty_chirho;
-mod fb_device_chirho;
 
-// Phase 9: Advanced subsystem stubs
+// ============================================================================
+// Process management — fork, exec, ELF loading, dynamic linking, signals
+// ============================================================================
+#[path = "process_chirho/process_core_chirho.rs"]
+mod process_chirho;
+#[path = "process_chirho/exec_chirho.rs"]
+mod exec_chirho;
+#[path = "process_chirho/elf_chirho.rs"]
+mod elf_chirho;
+#[path = "process_chirho/dynlink_chirho.rs"]
+mod dynlink_chirho;
+#[path = "process_chirho/signal_chirho.rs"]
+mod signal_chirho;
+
+// ============================================================================
+// Syscall dispatch (top-level — routes to all subsystems)
+// ============================================================================
+mod syscall_chirho;
+
+// ============================================================================
+// Advanced subsystem stubs — io_uring, BPF, epoll, cgroups, namespaces, etc.
+// ============================================================================
+#[path = "subsys_chirho/io_uring_chirho.rs"]
 mod io_uring_chirho;
+#[path = "subsys_chirho/bpf_chirho.rs"]
 mod bpf_chirho;
+#[path = "subsys_chirho/vdso_chirho.rs"]
 mod vdso_chirho;
+#[path = "subsys_chirho/epoll_chirho.rs"]
 mod epoll_chirho;
+#[path = "subsys_chirho/cgroup_chirho.rs"]
 mod cgroup_chirho;
+#[path = "subsys_chirho/namespace_chirho.rs"]
 mod namespace_chirho;
+#[path = "subsys_chirho/seccomp_chirho.rs"]
 mod seccomp_chirho;
+#[path = "subsys_chirho/capability_chirho.rs"]
 mod capability_chirho;
+#[path = "subsys_chirho/module_chirho.rs"]
 mod module_chirho;
+#[path = "subsys_chirho/ko_loader_chirho.rs"]
 mod ko_loader_chirho;
+#[path = "subsys_chirho/power_chirho.rs"]
 mod power_chirho;
+#[path = "subsys_chirho/trace_chirho.rs"]
 mod trace_chirho;
+#[path = "subsys_chirho/eventfd_chirho.rs"]
 mod eventfd_chirho;
+#[path = "subsys_chirho/inotify_chirho.rs"]
 mod inotify_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
