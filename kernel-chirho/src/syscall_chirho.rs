@@ -62,6 +62,19 @@ pub struct SyscallFrameChirho {
     pub r11_chirho: u64,
     /// User-space stack pointer (saved by the entry stub).
     pub rsp_chirho: u64,
+    // --- Callee-saved registers (needed for fork child return) ---
+    /// Callee-saved register rbx.
+    pub rbx_chirho: u64,
+    /// Callee-saved register rbp (frame pointer).
+    pub rbp_chirho: u64,
+    /// Callee-saved register r12.
+    pub r12_chirho: u64,
+    /// Callee-saved register r13.
+    pub r13_chirho: u64,
+    /// Callee-saved register r14.
+    pub r14_chirho: u64,
+    /// Callee-saved register r15.
+    pub r15_chirho: u64,
 }
 
 impl SyscallFrameChirho {
@@ -78,6 +91,12 @@ impl SyscallFrameChirho {
             rcx_chirho: 0,
             r11_chirho: 0,
             rsp_chirho: 0,
+            rbx_chirho: 0,
+            rbp_chirho: 0,
+            r12_chirho: 0,
+            r13_chirho: 0,
+            r14_chirho: 0,
+            r15_chirho: 0,
         }
     }
 }
@@ -1963,22 +1982,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Store the return value so the caller (assembly stub) can put it in rax.
     frame_chirho.rax_chirho = result_chirho as u64;
 
-    // --- Preemptive scheduling: check reschedule flag on syscall return ---
-    // If the timer interrupt has expired the current task's time slice,
-    // NEED_RESCHED_ATOMIC_CHIRHO will be set.  Calling schedule_chirho()
-    // here performs a context switch to the next runnable task before
-    // returning to userspace.
-    //
-    // SKIP for fork/vfork/clone/execve — these modify the process image
-    // or use vfork semantics where the child must run to completion first.
-    // Once per-process page tables with CR3 switching are implemented,
-    // fork can safely preempt.
-    // Preemptive scheduling: disabled — requires map_page_in_pt_chirho()
-    // to populate per-process page tables before CR3 can be switched safely.
-    // The scheduler infrastructure + per-process PTs are ready; what's
-    // missing is the ability to map ELF segments into a non-current PT.
-    // TODO: Implement map_page_in_pt_chirho(pml4_phys, vaddr, paddr, flags)
-    // then re-enable: schedule_chirho() on need_resched_chirho().
+    // Preemptive scheduling: disabled (vfork model).
+    // Infrastructure ready: per-task kernel stack, per-process PTs,
+    // extended SyscallFrame with callee-saved registers.
+    // Remaining issue: child stuck in userspace after SYSRET
+    // (verified via syscall trace — no child syscalls appear).
 
     result_chirho
 }
@@ -2378,9 +2386,8 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         }
     }
 
-    // With vfork semantics, the exiting process IS the shell.
-    // Re-exec the shell so the user gets a new prompt.
-    crate::serial_println_chirho!("[SYSCALL] exit: re-launching shell after vfork-child exit");
+    // vfork: re-launch the shell after child exit.
+    crate::serial_println_chirho!("[SYSCALL] exit: re-launching shell after child exit");
 
     // Re-load BusyBox as ash shell
     let shell_argv_chirho = [

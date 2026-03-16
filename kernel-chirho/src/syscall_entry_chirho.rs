@@ -90,23 +90,29 @@ syscall_entry_chirho:
     movq    KERNEL_STACK_TOP_CHIRHO(%rip), %rsp
 
     // Step 3: Push registers to build SyscallFrameChirho (reverse of struct order).
-    //         The struct starts with rax at offset 0 and ends with rsp at offset 72.
-    //         We push from the last field (rsp) to the first field (rax).
-    pushq   USER_RSP_SCRATCH_CHIRHO(%rip)   // rsp_chirho  (offset 72)
-    pushq   %r11                             // r11_chirho  (offset 64) -- user RFLAGS
-    pushq   %rcx                             // rcx_chirho  (offset 56) -- user RIP
-    pushq   %r9                              // r9_chirho   (offset 48)
-    pushq   %r8                              // r8_chirho   (offset 40)
-    pushq   %r10                             // r10_chirho  (offset 32)
-    pushq   %rdx                             // rdx_chirho  (offset 24)
-    pushq   %rsi                             // rsi_chirho  (offset 16)
-    pushq   %rdi                             // rdi_chirho  (offset  8)
-    pushq   %rax                             // rax_chirho  (offset  0)
+    //         Push from last field to first field.
+    //         Callee-saved registers (rbx, rbp, r12-r15) are saved for fork.
+    pushq   %r15                             // r15_chirho  (offset 120)
+    pushq   %r14                             // r14_chirho  (offset 112)
+    pushq   %r13                             // r13_chirho  (offset 104)
+    pushq   %r12                             // r12_chirho  (offset  96)
+    pushq   %rbp                             // rbp_chirho  (offset  88)
+    pushq   %rbx                             // rbx_chirho  (offset  80)
+    pushq   USER_RSP_SCRATCH_CHIRHO(%rip)   // rsp_chirho  (offset  72)
+    pushq   %r11                             // r11_chirho  (offset  64) -- user RFLAGS
+    pushq   %rcx                             // rcx_chirho  (offset  56) -- user RIP
+    pushq   %r9                              // r9_chirho   (offset  48)
+    pushq   %r8                              // r8_chirho   (offset  40)
+    pushq   %r10                             // r10_chirho  (offset  32)
+    pushq   %rdx                             // rdx_chirho  (offset  24)
+    pushq   %rsi                             // rsi_chirho  (offset  16)
+    pushq   %rdi                             // rdi_chirho  (offset   8)
+    pushq   %rax                             // rax_chirho  (offset   0)
 
     // Step 4: First argument = pointer to SyscallFrameChirho (top of stack).
     movq    %rsp, %rdi
 
-    // Step 5: Align stack to 16 bytes before the call (10 pushes = 80 bytes,
+    // Step 5: Align stack to 16 bytes before the call (16 pushes = 128 bytes,
     //         which is 16-byte aligned if KERNEL_STACK_TOP_CHIRHO was aligned).
     //         Ensure alignment just in case.
     andq    $-16, %rsp
@@ -143,8 +149,10 @@ syscall_entry_chirho:
     popq    %rcx                             // rcx_chirho  (user RIP for sysretq)
     popq    %r11                             // r11_chirho  (user RFLAGS for sysretq)
 
-    // Step 9: Restore user RSP.  The last value on our frame is rsp_chirho.
-    popq    %rsp
+    // Step 9: Restore user RSP + callee-saved registers.
+    popq    %rsp                             // rsp_chirho
+    // Skip callee-saved (rbx, rbp, r12-r15) — they're preserved by
+    // the C ABI across the Rust call. Only fork_child_return needs them.
 
     // Step 10: Switch GS base back to user before returning.
     swapgs
