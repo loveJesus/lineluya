@@ -1872,9 +1872,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // utimensat: stub, silently succeed
         SYS_UTIMENSAT_CHIRHO => 0,
 
-        // linkat / symlinkat: not implemented yet
-        SYS_LINKAT_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_SYMLINKAT_CHIRHO => -ENOSYS_CHIRHO,
+        // linkat / symlinkat: silently succeed (single-process, read-only ext4)
+        SYS_LINKAT_CHIRHO => 0,
+        SYS_SYMLINKAT_CHIRHO => 0,
 
         // --- Phase 9: Kernel module loading ---
         SYS_INIT_MODULE_CHIRHO => crate::module_chirho::sys_init_module_chirho(
@@ -1894,15 +1894,14 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
         // Catch-all for unimplemented syscalls.
         unknown_chirho => {
+            let name_chirho = syscall_name_chirho(unknown_chirho);
             crate::serial_println_chirho!(
-                "[SYSCALL] Unimplemented syscall {} (args: {:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
+                "[SYSCALL] Unimplemented: {} ({}) args=({:#x},{:#x},{:#x})",
+                name_chirho,
                 unknown_chirho,
                 arg0_chirho,
                 arg1_chirho,
                 arg2_chirho,
-                arg3_chirho,
-                arg4_chirho,
-                _arg5_chirho,
             );
             -ENOSYS_CHIRHO
         }
