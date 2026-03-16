@@ -127,7 +127,7 @@ You can modify the following section
 
 ### Verified Working in QEMU (x86_64)
 - BusyBox shell: echo, date, ls, cat, mkdir, hostname, id, pwd, uname
-- Alpine BusyBox: ls /mnt/bin (70+ commands), uname -a, cat /mnt/etc/hostname, id
+- Alpine BusyBox: ls /bin (70+ commands), uname -a, cat /etc/hostname, id
 - VirtIO-blk: sector read/write, ext4 superblock/inode/extent parsing
 - Framebuffer: boot messages rendered as pixels on UEFI display
 - musl 1.2.5: TLS setup, self-relocation, dynamic symbol resolution
