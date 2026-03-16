@@ -2165,6 +2165,11 @@ fn register_socket_fd_chirho(socket_idx_chirho: usize) -> Result<i64, i64> {
 }
 
 /// Look up the socket table index from an fd by reading inode_chirho.ino_chirho.
+/// Check if a file descriptor is a socket.
+pub fn is_socket_fd_chirho(fd_chirho: u64) -> bool {
+    socket_idx_from_fd_chirho(fd_chirho).is_ok()
+}
+
 fn socket_idx_from_fd_chirho(fd_chirho: u64) -> Result<usize, i64> {
     let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
     let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
@@ -2783,14 +2788,36 @@ pub fn sys_sendto_chirho(
         let remote_addr_chirho = socket_chirho.remote_addr_chirho;
         let local_port_chirho = socket_chirho.local_addr_chirho.map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
 
-        // Build TCP data segment (updates snd_nxt)
+        // Build and send TCP data segment via the network
         if sock_type_chirho == Some(SocketTypeChirho::SockStreamChirho) {
-            let remote_port_chirho = remote_addr_chirho.map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
-            let _ = socket_chirho.tcb_chirho.make_data_segment_chirho(
-                local_port_chirho,
-                remote_port_chirho,
-                &data_chirho,
-            );
+            let remote_chirho = remote_addr_chirho.unwrap_or(SockAddrInChirho { port_chirho: 0, addr_chirho: 0 });
+            let remote_port_chirho = remote_chirho.port_chirho;
+            let remote_ip_chirho = remote_chirho.addr_chirho;
+            let src_ip_chirho = socket_chirho.local_addr_chirho
+                .map(|a_chirho| a_chirho.addr_chirho)
+                .unwrap_or(get_interface_ip_chirho(0));
+
+            if let Some(seg_chirho) = socket_chirho.tcb_chirho.make_data_segment_chirho(
+                local_port_chirho, remote_port_chirho, &data_chirho,
+            ) {
+                // Send the TCP data packet
+                let cksum_chirho = seg_chirho.compute_checksum_chirho(src_ip_chirho, remote_ip_chirho);
+                let mut seg_ck_chirho = seg_chirho;
+                seg_ck_chirho.checksum_chirho = cksum_chirho;
+                let tcp_bytes_chirho = seg_ck_chirho.build_chirho();
+                let ip_hdr_chirho = Ipv4HeaderChirho {
+                    version_chirho: 4, ihl_chirho: 5, tos_chirho: 0,
+                    total_length_chirho: 20 + tcp_bytes_chirho.len() as u16,
+                    id_chirho: 0, flags_chirho: 0x02, fragment_offset_chirho: 0,
+                    ttl_chirho: 64, protocol_chirho: IP_PROTO_TCP_CHIRHO,
+                    checksum_chirho: 0, src_ip_chirho, dst_ip_chirho: remote_ip_chirho,
+                };
+                let mut pkt_chirho = ip_hdr_chirho.build_chirho();
+                pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
+                drop(table_chirho); // Release lock before sending
+                let _ = send_ip_packet_chirho(&pkt_chirho);
+                return count_chirho as i64;
+            }
         }
 
         // Find peer socket by matching remote/local addrs (loopback delivery)
@@ -2881,7 +2908,70 @@ pub fn sys_recvfrom_chirho(
         {
             return 0; // EOF — peer closed
         }
-        return 0; // No data available (non-blocking return)
+
+        // Poll network for incoming TCP data (blocking recv)
+        let local_port_chirho = socket_chirho.local_addr_chirho.map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
+        let remote_port_chirho = socket_chirho.remote_addr_chirho.map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
+        drop(table_chirho); // Release lock for network polling
+
+        for poll_chirho in 0..10_000_000u32 {
+            core::hint::spin_loop();
+
+            let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
+            if let Some(dev_chirho) = devs_chirho.get_mut(0) {
+                if let Some(raw_chirho) = dev_chirho.recv_packet_chirho() {
+                    if let Some(eth_chirho) = EthernetFrameChirho::parse_chirho(&raw_chirho) {
+                        if eth_chirho.ethertype_chirho == ETHERTYPE_IPV4_CHIRHO {
+                            if let Some(ip_chirho) = Ipv4HeaderChirho::parse_chirho(&eth_chirho.payload_chirho) {
+                                if ip_chirho.protocol_chirho == IP_PROTO_TCP_CHIRHO {
+                                    let hdr_len_chirho = (ip_chirho.ihl_chirho as usize) * 4;
+                                    if let Some(seg_chirho) = TcpSegmentChirho::parse_chirho(
+                                        &eth_chirho.payload_chirho[hdr_len_chirho..],
+                                    ) {
+                                        if seg_chirho.dst_port_chirho == local_port_chirho
+                                            && seg_chirho.src_port_chirho == remote_port_chirho
+                                            && !seg_chirho.payload_chirho.is_empty()
+                                        {
+                                            drop(devs_chirho);
+                                            // ACK the data
+                                            let src_ip_chirho = get_interface_ip_chirho(0);
+                                            let new_ack_chirho = seg_chirho.seq_num_chirho
+                                                .wrapping_add(seg_chirho.payload_chirho.len() as u32);
+                                            tcp_send_ack_chirho(
+                                                src_ip_chirho, ip_chirho.src_ip_chirho,
+                                                local_port_chirho, remote_port_chirho,
+                                                seg_chirho.ack_num_chirho, new_ack_chirho,
+                                            );
+
+                                            // Copy data to user buffer
+                                            let copy_len_chirho = core::cmp::min(
+                                                len_chirho as usize,
+                                                seg_chirho.payload_chirho.len(),
+                                            );
+                                            if buf_chirho != 0 {
+                                                let ptr_chirho = buf_chirho as *mut u8;
+                                                for i_chirho in 0..copy_len_chirho {
+                                                    unsafe {
+                                                        core::ptr::write_volatile(
+                                                            ptr_chirho.add(i_chirho),
+                                                            seg_chirho.payload_chirho[i_chirho],
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            return copy_len_chirho as i64;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            drop(devs_chirho);
+        }
+
+        return 0; // Timeout — no data
     }
 
     let count_chirho = core::cmp::min(len_chirho as usize, socket_chirho.recv_buf_chirho.len());

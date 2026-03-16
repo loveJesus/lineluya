@@ -1318,8 +1318,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => {
             if arg0_chirho == 0 {
-                // stdin → direct serial poll (no VFS, no heap, minimal stack)
+                // stdin → direct serial poll
                 sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
+            } else if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
+                // Socket fd → recvfrom
+                crate::net_chirho::sys_recvfrom_chirho(
+                    arg0_chirho, arg1_chirho, arg2_chirho, 0, 0, 0,
+                )
             } else {
                 crate::fs_chirho::sys_read_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
             }
@@ -1329,8 +1334,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 // stdout/stderr → direct serial write (no VFS, no heap, no locks)
                 sys_write_chirho(arg0_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
             } else {
-                // Other fds → VFS path
-                crate::fs_chirho::sys_write_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
+                // Check if it's a socket fd — if so, route to sendto
+                if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
+                    crate::net_chirho::sys_sendto_chirho(
+                        arg0_chirho, arg1_chirho, arg2_chirho, 0, 0, 0,
+                    )
+                } else {
+                    // Regular file fd → VFS path
+                    crate::fs_chirho::sys_write_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
+                }
             }
         },
         SYS_OPEN_CHIRHO => crate::fs_chirho::sys_open_chirho(
