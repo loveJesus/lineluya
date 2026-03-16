@@ -2924,8 +2924,11 @@ pub fn sys_recvfrom_chirho(
         let remote_port_chirho = socket_chirho.remote_addr_chirho.map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
         drop(table_chirho); // Release lock for network polling
 
-        for poll_chirho in 0..10_000_000u32 {
+        for poll_chirho in 0..50_000_000u32 {
             core::hint::spin_loop();
+
+            // Only poll every 100 iterations to reduce lock contention
+            if poll_chirho % 100 != 0 { continue; }
 
             let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
             if let Some(dev_chirho) = devs_chirho.get_mut(0) {
@@ -2938,6 +2941,11 @@ pub fn sys_recvfrom_chirho(
                                     if let Some(seg_chirho) = TcpSegmentChirho::parse_chirho(
                                         &eth_chirho.payload_chirho[hdr_len_chirho..],
                                     ) {
+                                        crate::serial_println_chirho!(
+                                            "[NET] recv: TCP src={} dst={} flags={:#x} payload={}B",
+                                            seg_chirho.src_port_chirho, seg_chirho.dst_port_chirho,
+                                            seg_chirho.flags_chirho, seg_chirho.payload_chirho.len()
+                                        );
                                         if seg_chirho.dst_port_chirho == local_port_chirho
                                             && seg_chirho.src_port_chirho == remote_port_chirho
                                             && !seg_chirho.payload_chirho.is_empty()
@@ -4223,16 +4231,14 @@ pub fn send_ip_packet_chirho(ip_packet_chirho: &[u8]) -> Result<(), i64> {
     let dst_mac_chirho = arp_resolve_chirho(next_hop_chirho, iface_idx_chirho)
         .unwrap_or([0xFF; 6]); // fallback to broadcast
 
-    // Get our MAC.
-    let src_mac_chirho = {
-        let devices_chirho = NET_DEVICES_CHIRHO.lock();
-        match devices_chirho.get(iface_idx_chirho) {
-            Some(dev_chirho) => dev_chirho.mac_address_chirho(),
-            None => return Err(-crate::syscall_chirho::ENETUNREACH_CHIRHO),
-        }
+    // Get MAC and send in ONE lock acquisition (avoid deadlock from
+    // double-locking the non-reentrant spin::Mutex).
+    let mut devices_chirho = NET_DEVICES_CHIRHO.lock();
+    let src_mac_chirho = match devices_chirho.get(iface_idx_chirho) {
+        Some(dev_chirho) => dev_chirho.mac_address_chirho(),
+        None => return Err(-crate::syscall_chirho::ENETUNREACH_CHIRHO),
     };
 
-    // Build and send Ethernet frame.
     let eth_frame_chirho = EthernetFrameChirho {
         dst_mac_chirho,
         src_mac_chirho,
@@ -4242,7 +4248,6 @@ pub fn send_ip_packet_chirho(ip_packet_chirho: &[u8]) -> Result<(), i64> {
 
     let raw_frame_chirho = eth_frame_chirho.build_chirho();
 
-    let mut devices_chirho = NET_DEVICES_CHIRHO.lock();
     if let Some(dev_chirho) = devices_chirho.get_mut(iface_idx_chirho) {
         dev_chirho.send_packet_chirho(&raw_frame_chirho);
         Ok(())
