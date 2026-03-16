@@ -24,7 +24,7 @@ jobs:
       - name: install-rust-toolchain-chirho
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-15
+          toolchain: nightly-2026-03-10
           components: rustfmt, clippy, rust-src, llvm-tools-preview
           targets: x86_64-unknown-none
 
@@ -40,10 +40,10 @@ jobs:
             cargo-${{ runner.os }}-
 
       - name: check-kernel-chirho
-        run: cd kernel-chirho && cargo +nightly-2025-01-15 check
+        run: cd kernel-chirho && cargo +nightly-2026-03-10 check
 
       - name: clippy-chirho
-        run: cd kernel-chirho && cargo +nightly-2025-01-15 clippy -- -D warnings
+        run: cd kernel-chirho && cargo +nightly-2026-03-10 clippy -- -D warnings
         continue-on-error: true
 
       - name: fmt-check-chirho
@@ -51,7 +51,7 @@ jobs:
         continue-on-error: true
 
       - name: build-kernel-release-chirho
-        run: cd kernel-chirho && cargo +nightly-2025-01-15 build --release
+        run: cd kernel-chirho && cargo +nightly-2026-03-10 build --release
 
       - name: upload-kernel-artifact-chirho
         uses: actions/upload-artifact@v4
@@ -146,7 +146,7 @@ jobs:
       - name: install-rust-toolchain-chirho
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-15
+          toolchain: nightly-2026-03-10
           targets: wasm32-unknown-unknown
 
       - name: build-wasm-kernel-chirho
@@ -164,9 +164,9 @@ jobs:
       - name: install-rust-toolchain-chirho
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-15
+          toolchain: nightly-2026-03-10
           components: rust-src
 
       - name: test-kernel-core-chirho
-        run: cd kernel-core-chirho && cargo +nightly-2025-01-15 test 2>/dev/null || echo "kernel-core tests not yet available"
+        run: cd kernel-core-chirho && cargo +nightly-2026-03-10 test 2>/dev/null || echo "kernel-core tests not yet available"
         continue-on-error: true
