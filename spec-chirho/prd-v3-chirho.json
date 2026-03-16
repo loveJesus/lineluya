@@ -128,14 +128,14 @@
     },
     {
       "id_chirho": "P3-006",
-      "title_chirho": "TCP connect + send + recv (wget test)",
-      "status_chirho": "code-written",
+      "title_chirho": "TCP connect (VERIFIED — wget 1.1.1.1 SYN-ACK!)",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P3-007",
-      "title_chirho": "Socket syscalls work for userspace programs",
-      "status_chirho": "code-written",
+      "title_chirho": "Socket syscalls work (VERIFIED — socket+connect+send!)",
+      "status_chirho": "done",
       "priority_chirho": "high"
     },
     {
