@@ -905,30 +905,19 @@ pub fn sys_execve_chirho(
 /// Resolve an interpreter path from a PT_INTERP segment.
 ///
 /// The ELF binary specifies an interpreter like "/lib/ld-musl-x86_64.so.1",
-/// but the Alpine rootfs is mounted at /mnt in our VFS. This function
-/// determines the correct VFS path for the interpreter:
-///
-/// - If the executable path starts with "/mnt", the rootfs is at /mnt,
-///   so prepend "/mnt" to the interpreter path.
-/// - Otherwise, try the raw path first; if it doesn't exist, try /mnt-prefixed.
+/// Resolve the ELF interpreter path. With ext4 mounted at "/", the
+/// interpreter path from PT_INTERP (e.g., "/lib/ld-musl-x86_64.so.1")
+/// should resolve directly via the VFS.
 fn resolve_interp_path_chirho(
     interp_path_chirho: &str,
-    exe_path_chirho: &str,
+    _exe_path_chirho: &str,
 ) -> String {
-    // If the executable is from /mnt (ext4 rootfs), prepend /mnt to the
-    // interpreter path.
-    if exe_path_chirho.starts_with("/mnt") {
-        let mut resolved_chirho = String::from("/mnt");
-        resolved_chirho.push_str(interp_path_chirho);
-        return resolved_chirho;
-    }
-
-    // Otherwise try the raw path first. If it resolves in the VFS, use it.
+    // Try the raw path first — with ext4 at "/" this should work directly.
     if fs_chirho::resolve_path_chirho(interp_path_chirho).is_ok() {
         return String::from(interp_path_chirho);
     }
 
-    // Fall back to /mnt-prefixed path.
+    // Fall back to /mnt-prefixed path for backward compatibility.
     let mut resolved_chirho = String::from("/mnt");
     resolved_chirho.push_str(interp_path_chirho);
     resolved_chirho

@@ -2319,10 +2319,10 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
     ];
     let shell_envp_chirho = [
         alloc::string::String::from("HOME=/root"),
-        alloc::string::String::from("PATH=/mnt/bin:/mnt/sbin:/mnt/usr/bin:/mnt/usr/sbin:/bin:/sbin"),
+        alloc::string::String::from("PATH=/bin:/sbin:/usr/bin:/usr/sbin"),
         alloc::string::String::from("TERM=linux"),
         alloc::string::String::from("PS1=lineluya# "),
-        alloc::string::String::from("LD_LIBRARY_PATH=/mnt/lib:/mnt/usr/lib"),
+        alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
         alloc::string::String::from("SHELL=/bin/sh"),
     ];
     let loaded_chirho = crate::exec_chirho::load_elf_into_memory_chirho(
@@ -3242,7 +3242,7 @@ unsafe fn user_str_eq_chirho(user_str_chirho: *const u8, target_chirho: &[u8]) -
 }
 
 /// Fallback path for /proc/self/exe readlink.
-const PROC_SELF_EXE_FALLBACK_CHIRHO: &[u8] = b"/mnt/bin/busybox";
+const PROC_SELF_EXE_FALLBACK_CHIRHO: &[u8] = b"/bin/busybox";
 
 /// `readlink(2)` implementation.
 ///
