@@ -1337,10 +1337,12 @@ unsafe fn resolve_rela_table_chirho(
                     if let Ok(name_str_chirho) =
                         core::str::from_utf8(&name_buf_chirho[..log_len_chirho])
                     {
+                        // Not a problem: musl's dynamic linker will resolve
+                        // these from DT_NEEDED shared libraries after we
+                        // jump to userspace.
                         serial_println_chirho!(
-                            "[SYMRES]   UNRESOLVED: {} (GOT@{:#x})",
+                            "[SYMRES]   deferred: {} (musl will resolve from .so)",
                             name_str_chirho,
-                            got_slot_addr_chirho
                         );
                     }
                 }
