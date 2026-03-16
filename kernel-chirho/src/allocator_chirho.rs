@@ -17,8 +17,8 @@ use x86_64::VirtAddr;
 /// Virtual address where the kernel heap begins.
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
-/// Size of the kernel heap in bytes (16 MiB — needed for loading Alpine binaries + musl).
-pub const HEAP_SIZE_CHIRHO: usize = 16 * 1024 * 1024;
+/// Size of the kernel heap in bytes (32 MiB — needed for loading sqlite3 + musl + libreadline).
+pub const HEAP_SIZE_CHIRHO: usize = 32 * 1024 * 1024;
 
 /// Global heap allocator backed by a locked linked-list allocator.
 #[global_allocator]

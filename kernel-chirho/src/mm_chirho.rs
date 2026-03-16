@@ -239,8 +239,8 @@ impl MmChirho {
         // For file-backed mappings, copy file data into the mapped region.
         // Seek to the requested offset first (musl maps ELF segments at
         // specific file offsets via the mmap offset parameter).
+        // Read in a loop since sys_read_real caps at 4096 bytes per call.
         if has_file_chirho {
-            // Save current position, seek to offset, read, restore.
             let saved_pos_chirho = crate::fs_chirho::sys_lseek_chirho(
                 fd_chirho as u64, 0, 1, // SEEK_CUR
             );
@@ -249,12 +249,20 @@ impl MmChirho {
                 _offset_chirho as i64,
                 0, // SEEK_SET
             );
-            let read_len_chirho = aligned_len_chirho.min(4 * 1024 * 1024) as usize; // cap at 4MB
-            let _bytes_chirho = crate::fs_chirho::sys_read_real_chirho(
-                fd_chirho as u64,
-                map_addr_chirho,
-                read_len_chirho,
-            );
+            let total_to_read_chirho = aligned_len_chirho.min(4 * 1024 * 1024) as usize;
+            let mut bytes_done_chirho: usize = 0;
+            while bytes_done_chirho < total_to_read_chirho {
+                let chunk_chirho = core::cmp::min(4096, total_to_read_chirho - bytes_done_chirho);
+                let n_chirho = crate::fs_chirho::sys_read_real_chirho(
+                    fd_chirho as u64,
+                    map_addr_chirho + bytes_done_chirho as u64,
+                    chunk_chirho,
+                );
+                if n_chirho <= 0 {
+                    break; // EOF or error
+                }
+                bytes_done_chirho += n_chirho as usize;
+            }
             // Restore file position.
             if saved_pos_chirho >= 0 {
                 let _ = crate::fs_chirho::sys_lseek_chirho(
