@@ -2498,38 +2498,76 @@ impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
             .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
             .ok_or(-20i64)?; // ENOTDIR
 
-        let mount_chirho = fs_data_chirho.mount_chirho.lock();
-        let entries_chirho = mount_chirho
-            .read_dir_entries_chirho(fs_data_chirho.ino_chirho)
+        let ino_chirho = fs_data_chirho.ino_chirho;
+        let mount_chirho = fs_data_chirho.mount_chirho.clone();
+        drop(inode_guard_chirho);
+
+        let mount_guard_chirho = mount_chirho.lock();
+
+        // Block-by-block directory scanning — avoids the 64MB OOM
+        // from reading the entire directory into Vec<DirEntryInfoChirho>.
+        let dir_inode_chirho = mount_guard_chirho.read_inode_chirho(ino_chirho)
             .ok_or(-5i64)?; // EIO
+        let dir_size_chirho = dir_inode_chirho.size_chirho() as usize;
+        let num_blocks_chirho = (dir_size_chirho + 4095) / 4096;
 
         let mut count_chirho = 0usize;
+        let mut entry_idx_chirho = 0usize;
         let start_chirho = file_chirho.pos_chirho as usize;
+        let mut block_buf_chirho = [0u8; 4096];
 
-        for (idx_chirho, entry_chirho) in entries_chirho.iter().enumerate() {
-            if idx_chirho < start_chirho {
+        'outer: for blk_idx_chirho in 0..num_blocks_chirho {
+            if mount_guard_chirho.read_block_by_logical_into_chirho(
+                &dir_inode_chirho, blk_idx_chirho as u64, &mut block_buf_chirho,
+            ).is_none() {
                 continue;
             }
-            // Map ext4 file type to DT_* constants
-            let dt_chirho = match entry_chirho.file_type_chirho {
-                FT_REG_FILE_CHIRHO => 8,  // DT_REG
-                FT_DIR_CHIRHO => 4,       // DT_DIR
-                FT_SYMLINK_CHIRHO => 10,  // DT_LNK
-                FT_CHRDEV_CHIRHO => 2,    // DT_CHR
-                FT_BLKDEV_CHIRHO => 6,    // DT_BLK
-                _ => 0,                    // DT_UNKNOWN
+
+            let block_end_chirho = if blk_idx_chirho == num_blocks_chirho - 1 {
+                dir_size_chirho - blk_idx_chirho * 4096
+            } else {
+                4096
             };
-            if !callback_chirho(
-                &entry_chirho.name_chirho,
-                entry_chirho.inode_chirho as u64,
-                dt_chirho,
-            ) {
-                break;
+            let mut offset_chirho = 0usize;
+
+            while offset_chirho + 8 <= block_end_chirho {
+                let entry_ino_chirho = u32::from_le_bytes(
+                    block_buf_chirho[offset_chirho..offset_chirho + 4].try_into().unwrap_or([0; 4])
+                );
+                let rec_len_chirho = u16::from_le_bytes(
+                    block_buf_chirho[offset_chirho + 4..offset_chirho + 6].try_into().unwrap_or([0; 2])
+                ) as usize;
+                let name_len_chirho = block_buf_chirho[offset_chirho + 6] as usize;
+                let file_type_chirho = block_buf_chirho[offset_chirho + 7];
+
+                if rec_len_chirho == 0 { break; }
+
+                if entry_ino_chirho != 0 && name_len_chirho > 0 && offset_chirho + 8 + name_len_chirho <= 4096 {
+                    if entry_idx_chirho >= start_chirho {
+                        if let Ok(name_chirho) = core::str::from_utf8(
+                            &block_buf_chirho[offset_chirho + 8..offset_chirho + 8 + name_len_chirho]
+                        ) {
+                            let dt_chirho = match file_type_chirho {
+                                FT_REG_FILE_CHIRHO => 8,
+                                FT_DIR_CHIRHO => 4,
+                                FT_SYMLINK_CHIRHO => 10,
+                                FT_CHRDEV_CHIRHO => 2,
+                                FT_BLKDEV_CHIRHO => 6,
+                                _ => 0,
+                            };
+                            if !callback_chirho(name_chirho, entry_ino_chirho as u64, dt_chirho) {
+                                break 'outer;
+                            }
+                            count_chirho += 1;
+                        }
+                    }
+                    entry_idx_chirho += 1;
+                }
+                offset_chirho += rec_len_chirho;
             }
-            count_chirho += 1;
-            file_chirho.pos_chirho = (idx_chirho + 1) as u64;
         }
 
+        file_chirho.pos_chirho = entry_idx_chirho as u64;
         Ok(count_chirho)
     }
 }
