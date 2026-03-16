@@ -1142,6 +1142,13 @@ pub fn sys_write_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho:
     // Write through the file ops
     let bytes_written_chirho = {
         let mut file_guard_chirho = file_arc_chirho.lock();
+
+        // O_APPEND: seek to end of file before writing
+        if file_guard_chirho.flags_chirho & crate::vfs_chirho::O_APPEND_CHIRHO != 0 {
+            let size_chirho = file_guard_chirho.inode_chirho.lock().size_chirho;
+            file_guard_chirho.pos_chirho = size_chirho;
+        }
+
         match file_guard_chirho.ops_chirho.write_chirho(&mut file_guard_chirho, &kernel_buf_chirho) {
             Ok(n_chirho) => n_chirho,
             Err(errno_chirho) => return errno_chirho,
