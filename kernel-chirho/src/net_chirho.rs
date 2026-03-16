@@ -2628,6 +2628,11 @@ pub fn sys_connect_chirho(
                                                 seg_chirho.ack_num_chirho,
                                             );
 
+                                            // Save values before dropping device lock
+                                            let syn_ack_seq_chirho = seg_chirho.seq_num_chirho;
+                                            let syn_ack_ack_chirho = seg_chirho.ack_num_chirho;
+                                            drop(devs_chirho); // Release NET_DEVICES lock!
+
                                             // Send ACK to complete handshake
                                             tcp_send_ack_chirho(
                                                 src_ip_chirho,
@@ -2642,10 +2647,15 @@ pub fn sys_connect_chirho(
                                             let mut t_chirho = SOCKET_TABLE_CHIRHO.lock();
                                             if let Some(ref mut s_chirho) = t_chirho[socket_idx_chirho] {
                                                 s_chirho.tcb_chirho.state_chirho = TcpStateChirho::EstablishedChirho;
-                                                s_chirho.tcb_chirho.irs_chirho = seg_chirho.seq_num_chirho;
-                                                s_chirho.tcb_chirho.rcv_nxt_chirho = seg_chirho.seq_num_chirho.wrapping_add(1);
-                                                s_chirho.tcb_chirho.snd_una_chirho = seg_chirho.ack_num_chirho;
+                                                s_chirho.tcb_chirho.irs_chirho = syn_ack_seq_chirho;
+                                                s_chirho.tcb_chirho.rcv_nxt_chirho = syn_ack_seq_chirho.wrapping_add(1);
+                                                s_chirho.tcb_chirho.snd_una_chirho = syn_ack_ack_chirho;
                                                 s_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
+                                                // Update local addr to use the VirtIO NIC IP
+                                                s_chirho.local_addr_chirho = Some(SockAddrInChirho {
+                                                    port_chirho: local_port_chirho,
+                                                    addr_chirho: src_ip_chirho,
+                                                });
                                             }
 
                                             crate::serial_println_chirho!("[NET] sys_connect: ESTABLISHED!");
