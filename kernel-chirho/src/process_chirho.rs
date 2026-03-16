@@ -204,13 +204,13 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
     // --- 6. Add the child to the scheduler run queue ---
     crate::scheduler_chirho::add_task_chirho(child_pid_chirho);
 
-    // --- 7. vfork: child runs first (real fork needs user-space debugging) ---
-    // Context switch to child works (verified: PID 0→2, naked trampoline
-    // reaches SYSRET). But child never makes a syscall after SYSRET —
-    // likely user-space code enters infinite loop (shared user stack,
-    // stale registers, or BusyBox ash's fork-return code path issue).
-    // Infrastructure ready: per-task kernel stack, TSS.RSP0 switching,
-    // per-process page tables, naked fork_child_return.
+    // --- 7. vfork: child runs first ---
+    // Real fork: context switch works, child reaches SYSRET, callee-saved
+    // regs preserved in extended SyscallFrame. But child never makes a
+    // syscall after SYSRET — stuck in userspace infinite loop. Needs QEMU
+    // GDB to trace: the child's RCX (user RIP) might be in musl's
+    // sigprocmask() instead of the fork return point due to signal mask
+    // restore interleaving.
     0i64
 }
 
@@ -523,7 +523,7 @@ pub fn sys_wait4_chirho(
 #[unsafe(naked)]
 unsafe extern "C" fn fork_child_return_chirho() {
     core::arch::naked_asm!(
-        // RSP points to the SyscallFrameChirho:
+        // RSP points to the extended SyscallFrameChirho:
         //   [rsp+0x00] = rax (0 for child)
         //   [rsp+0x08] = rdi
         //   [rsp+0x10] = rsi
@@ -534,18 +534,39 @@ unsafe extern "C" fn fork_child_return_chirho() {
         //   [rsp+0x38] = rcx (user RIP)
         //   [rsp+0x40] = r11 (user RFLAGS)
         //   [rsp+0x48] = rsp (user stack)
+        //   [rsp+0x50] = rbx (callee-saved)
+        //   [rsp+0x58] = rbp (callee-saved)
+        //   [rsp+0x60] = r12 (callee-saved)
+        //   [rsp+0x68] = r13 (callee-saved)
+        //   [rsp+0x70] = r14 (callee-saved)
+        //   [rsp+0x78] = r15 (callee-saved)
 
-        "mov rax, [rsp + 0x00]",    // rax = 0 (fork return)
-        "mov rdi, [rsp + 0x08]",
-        "mov rsi, [rsp + 0x10]",
-        "mov rdx, [rsp + 0x18]",
-        "mov r10, [rsp + 0x20]",
-        "mov r8,  [rsp + 0x28]",
-        "mov r9,  [rsp + 0x30]",
-        "mov rcx, [rsp + 0x38]",    // rcx = user RIP (for sysretq)
-        "mov r11, [rsp + 0x40]",    // r11 = user RFLAGS
-        "mov r15, [rsp + 0x48]",    // r15 = user RSP
-        "mov rsp, r15",
+        // Restore callee-saved registers FIRST (they use r15 as scratch later)
+        "mov rbx, [rsp + 0x50]",
+        "mov rbp, [rsp + 0x58]",
+        "mov r12, [rsp + 0x60]",
+        "mov r13, [rsp + 0x68]",
+        "mov r14, [rsp + 0x70]",
+        // Save user RSP to r15 BEFORE loading r15's saved value
+        "mov r15, [rsp + 0x48]",    // r15 = user RSP (temporary)
+        "push r15",                  // save user RSP on kernel stack
+
+        // Now restore caller-saved + syscall registers
+        "mov rax, [rsp + 0x08]",    // rax = 0 (fork return) — +8 for the push
+        "mov rdi, [rsp + 0x10]",
+        "mov rsi, [rsp + 0x18]",
+        "mov rdx, [rsp + 0x20]",
+        "mov r10, [rsp + 0x28]",
+        "mov r8,  [rsp + 0x30]",
+        "mov r9,  [rsp + 0x38]",
+        "mov rcx, [rsp + 0x40]",    // rcx = user RIP
+        "mov r11, [rsp + 0x48]",    // r11 = user RFLAGS
+        // Restore r15's callee-saved value
+        "mov r15, [rsp + 0x80]",    // r15_chirho at original offset 0x78 + 8 for push
+
+        // Switch to user stack (pop the saved user RSP)
+        "pop rsp",
+
         "swapgs",
         "sysretq",
     );
