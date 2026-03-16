@@ -925,18 +925,28 @@ pub fn sys_execve_chirho(
 /// ELF loader to use the global mapper (which maps into the current CR3)
 /// and then transfer all user mappings to an isolated address space.
 fn activate_per_process_pt_chirho() {
-    // Per-process page table infrastructure is ready (map_page_in_pt_chirho,
-    // mirror_user_mappings_chirho, switch_page_table_chirho) but CR3
-    // switching is deferred because the global OffsetPageTable mapper is
-    // bound to the boot PML4. After switching CR3, new mmap/page-fault
-    // allocations would go to the boot PT instead of the per-process PT.
-    //
-    // TODO: Either re-initialize the mapper after CR3 switch, or use
-    // map_page_in_pt_chirho for all mapping operations, or implement
-    // lazy page migration in the page fault handler.
-    //
-    // The per-process PT is stored in the task descriptor and will be
-    // used when real fork + preemptive scheduling are enabled.
+    // Switch CR3 to the per-process page table. User-space pages are
+    // lazily migrated from the boot PT by the page fault handler.
+    // The mapper stays pointed at the boot PML4 (for mmap operations),
+    // while the page fault handler uses map_page_in_pt_chirho to populate
+    // the per-process PT on demand.
+    let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => t_chirho,
+        None => return,
+    };
+    let pt_root_chirho = task_arc_chirho.lock().page_table_root_chirho;
+
+    if let Some(pml4_phys_chirho) = pt_root_chirho {
+        crate::serial_println_chirho!(
+            "[PROCESS] Switching CR3 to per-process PT {:#x} (lazy migration)",
+            pml4_phys_chirho.as_u64(),
+        );
+        unsafe {
+            crate::pagetable_chirho::switch_page_table_chirho(pml4_phys_chirho);
+        }
+        // NOTE: mapper stays pointing at boot PML4. New mmap operations
+        // go to boot PML4, and page faults lazily migrate to current PT.
+    }
 }
 
 // ===========================================================================
