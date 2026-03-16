@@ -689,6 +689,11 @@ impl VirtioIoTransportChirho {
         let hi_chirho = self.read_config32_chirho(offset_chirho + 4) as u64;
         (hi_chirho << 32) | lo_chirho
     }
+
+    /// Read a single byte from the device-specific config space at `offset`.
+    pub fn read_config8_chirho(&self, offset_chirho: u16) -> u8 {
+        unsafe { self.read8_chirho(VIRTIO_IO_CONFIG_CHIRHO + offset_chirho) }
+    }
 }
 
 // ============================================================================
@@ -1519,29 +1524,26 @@ pub fn init_virtio_chirho() {
                     dev_chirho.function_chirho,
                     dev_chirho.device_id_chirho,
                 );
-                let mut bar0_chirho = read_pci_bar_chirho(dev_chirho, 0);
-                // Assign BAR0 if UEFI left it unconfigured.
-                if bar0_chirho & 0xFFFF_FFF0 == 0 && bar0_chirho & 1 == 0 {
+                let bar0_chirho = read_pci_bar_chirho(dev_chirho, 0);
+                let is_io_bar_chirho = bar0_chirho & 1 != 0;
+
+                if is_io_bar_chirho {
+                    // I/O port transport — probe via net_chirho
+                    let io_base_chirho = (bar0_chirho & 0xFFFC) as u16;
                     crate::serial_println_chirho!(
-                        "    VirtIO-net BAR0 is zero — assigning via pci_assign_bar_chirho"
+                        "    VirtIO-net BAR0 is I/O port: raw={:#x} base={:#06x}",
+                        bar0_chirho,
+                        io_base_chirho
                     );
-                    if let Some(assigned_chirho) = unsafe { pci_assign_bar_chirho(dev_chirho, 0) } {
-                        bar0_chirho = assigned_chirho as u32;
-                        crate::serial_println_chirho!(
-                            "    VirtIO-net BAR0 assigned at {:#010x}",
-                            bar0_chirho
-                        );
-                    }
+                    enable_io_and_busmaster_chirho(dev_chirho);
+                    crate::net_chirho::probe_virtio_net_io_chirho(io_base_chirho);
+                } else {
+                    // MMIO transport — log but skip (crashes in UEFI)
+                    crate::serial_println_chirho!(
+                        "    VirtIO-net BAR0 is MMIO: {:#010x} — skipping (UEFI unsafe)",
+                        bar0_chirho
+                    );
                 }
-                let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-                let net_mmio_virt_chirho =
-                    ((bar0_chirho & 0xFFFF_FFF0) as u64 + phys_offset_chirho) as usize;
-                crate::serial_println_chirho!(
-                    "    VirtIO-net BAR0={:#010x} virt={:#x} IRQ={}",
-                    bar0_chirho,
-                    net_mmio_virt_chirho,
-                    dev_chirho.interrupt_line_chirho,
-                );
             }
         }
     }
@@ -1709,7 +1711,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
 /// Enable I/O space access and bus mastering in the PCI command register.
 ///
 /// Required before accessing VirtIO legacy I/O port BARs.
-fn enable_io_and_busmaster_chirho(dev_chirho: &PciDeviceChirho) {
+pub fn enable_io_and_busmaster_chirho(dev_chirho: &PciDeviceChirho) {
     unsafe {
         let cmd_status_chirho = pci_config_read_u32_chirho(
             dev_chirho.bus_chirho,
