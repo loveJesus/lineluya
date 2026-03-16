@@ -251,6 +251,9 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     pty_chirho::init_pty_chirho();
     fb_println_chirho!("[OK] PTY subsystem initialized");
 
+    // Initialize kernel symbol table for .ko module loading
+    ko_loader_chirho::init_kernel_symbols_chirho();
+
     // Phase A4: VirtIO device discovery — scan PCI bus, probe any VirtIO-blk,
     // and attempt to read sector 0 as a smoke test (P2-001 / P2-002).
     virtio_chirho::init_virtio_chirho();
