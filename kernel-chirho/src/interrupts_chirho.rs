@@ -621,10 +621,15 @@ extern "x86-interrupt" fn simd_fp_handler_chirho(_sf: InterruptStackFrame) {
 }
 
 /// VirtIO PCI interrupt handler (IRQ 11, vector 43).
-/// Just acknowledge — we use polling for VirtIO I/O.
+/// Reads the ISR register to acknowledge the device-side interrupt,
+/// then sends EOI to the PIC.
 extern "x86-interrupt" fn virtio_interrupt_handler_chirho(
     _stack_frame_chirho: InterruptStackFrame,
 ) {
+    // Read the VirtIO ISR status register to acknowledge the device
+    // interrupt. Without this, the device won't deliver new interrupts.
+    crate::virtio_chirho::ack_virtio_interrupt_chirho();
+
     unsafe {
         PICS_CHIRHO
             .lock()
