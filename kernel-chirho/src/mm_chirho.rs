@@ -839,6 +839,39 @@ pub unsafe fn init_mm_chirho(
     crate::serial_println_chirho!("[OK] MM subsystem initialized");
 }
 
+/// Re-initialize the global mapper to point at the current CR3's PML4.
+///
+/// After switching CR3 to a per-process page table, the mapper must be
+/// updated so that `map_to()` writes to the CURRENT page table (not the
+/// boot PML4 the mapper was originally created with).
+///
+/// This function reads CR3, obtains a `&'static mut PageTable` reference
+/// to the active PML4 via the physical memory window, and replaces the
+/// global mapper with a fresh `OffsetPageTable` pointing there.
+///
+/// # Safety
+///
+/// The current CR3 must point to a valid PML4 with kernel mappings.
+pub unsafe fn reinit_mapper_for_current_cr3_chirho() {
+    use x86_64::registers::control::Cr3;
+    use x86_64::structures::paging::PageTable;
+    use x86_64::VirtAddr;
+
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let (pml4_frame_chirho, _flags_chirho) = Cr3::read();
+    let pml4_phys_chirho = pml4_frame_chirho.start_address().as_u64();
+    let pml4_virt_chirho = pml4_phys_chirho + phys_offset_chirho;
+    let pml4_table_chirho: &'static mut PageTable =
+        &mut *(pml4_virt_chirho as *mut PageTable);
+
+    let new_mapper_chirho = OffsetPageTable::new(
+        pml4_table_chirho,
+        VirtAddr::new(phys_offset_chirho),
+    );
+
+    *GLOBAL_MAPPER_CHIRHO.lock() = Some(new_mapper_chirho);
+}
+
 // ============================================================================
 // Internal utilities
 // ============================================================================
