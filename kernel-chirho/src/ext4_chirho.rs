@@ -1792,9 +1792,48 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
 
     fn readlink_chirho(
         &self,
-        _inode_chirho: &crate::vfs_chirho::InodeChirho,
+        inode_chirho: &crate::vfs_chirho::InodeChirho,
     ) -> Result<String, i64> {
-        Err(-22) // EINVAL — not a symlink
+        // Check if symlink mode
+        if inode_chirho.mode_chirho & 0xF000 != 0xA000 {
+            return Err(-22); // EINVAL — not a symlink
+        }
+        // For inline symlinks (target stored in fs_data), extract it.
+        // Ext4 stores short symlink targets (<=60 bytes) in i_block.
+        if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
+            if let Some(ext4_data_chirho) = data_chirho.downcast_ref::<Ext4FsDataChirho>() {
+                let mount_guard_chirho = ext4_data_chirho.mount_chirho.lock();
+                let raw_inode_chirho = mount_guard_chirho.read_inode_chirho(ext4_data_chirho.ino_chirho);
+                if let Some(raw_chirho) = raw_inode_chirho {
+                    if raw_chirho.is_symlink_chirho() {
+                        let size_chirho = raw_chirho.i_size_lo_chirho as usize;
+                        if size_chirho <= 60 {
+                            // Inline symlink — target stored in i_block.
+                            // Copy to stack to avoid packed struct alignment issue.
+                            let block_copy_chirho = raw_chirho.i_block_chirho;
+                            let bytes_chirho = unsafe {
+                                core::slice::from_raw_parts(
+                                    block_copy_chirho.as_ptr() as *const u8,
+                                    size_chirho,
+                                )
+                            };
+                            if let Ok(target_chirho) = core::str::from_utf8(bytes_chirho) {
+                                return Ok(String::from(target_chirho.trim_end_matches('\0')));
+                            }
+                        }
+                        // Long symlink — read from data blocks via extent tree
+                        if let Some(data_vec_chirho) = mount_guard_chirho.read_file_data_chirho(&raw_chirho) {
+                            if data_vec_chirho.len() >= size_chirho {
+                                if let Ok(target_chirho) = core::str::from_utf8(&data_vec_chirho[..size_chirho]) {
+                                    return Ok(String::from(target_chirho.trim_end_matches('\0')));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(-22) // EINVAL
     }
 }
 

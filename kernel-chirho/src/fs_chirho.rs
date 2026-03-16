@@ -586,6 +586,33 @@ pub fn resolve_path_chirho(
 
             match lookup_result_chirho {
                 Ok(child_inode_chirho) => {
+                    // Symlink following: if the inode is a symlink, read
+                    // the target and recursively resolve it.
+                    if child_inode_chirho.mode_chirho & 0xF000 == 0xA000 {
+                        // S_IFLNK
+                        if let Ok(target_chirho) = child_inode_chirho.ops_chirho.readlink_chirho(&child_inode_chirho) {
+                            // Build the resolved path: if target is relative,
+                            // prepend the current directory; if absolute, use as-is.
+                            let resolved_target_chirho = if target_chirho.starts_with('/') {
+                                target_chirho
+                            } else {
+                                // Get parent path
+                                let parent_path_chirho = path_chirho.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
+                                let mut full_chirho = String::from(parent_path_chirho);
+                                full_chirho.push('/');
+                                full_chirho.push_str(&target_chirho);
+                                full_chirho
+                            };
+                            // Append remaining path components after the symlink
+                            let mut remaining_path_chirho = resolved_target_chirho;
+                            for rest_idx_chirho in (idx_chirho + 1)..remaining_components_chirho.len() {
+                                remaining_path_chirho.push('/');
+                                remaining_path_chirho.push_str(remaining_components_chirho[rest_idx_chirho]);
+                            }
+                            return resolve_path_chirho(&remaining_path_chirho);
+                        }
+                    }
+
                     if is_last_chirho {
                         let file_ops_chirho = detect_file_ops_chirho(&child_inode_chirho);
                         let fs_data_clone_chirho = clone_fs_data_chirho(&child_inode_chirho.fs_data_chirho);
