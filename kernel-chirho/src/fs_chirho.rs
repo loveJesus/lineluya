@@ -855,18 +855,38 @@ pub fn sys_openat_chirho(
         Err(_) => return -EFAULT_CHIRHO,
     };
 
-    // Handle AT_FDCWD (-100): if the path is relative and dirfd is AT_FDCWD,
-    // prepend the current working directory (default "/").
+    // Handle relative paths: resolve against dirfd or CWD.
     let pathname_chirho = if !raw_pathname_chirho.starts_with('/') {
         if dirfd_chirho == AT_FDCWD_CHIRHO {
-            // Prepend CWD — for now we always use "/" as the working directory.
+            // AT_FDCWD: resolve relative to current working directory.
             let mut full_path_chirho = alloc::string::String::from("/");
             full_path_chirho.push_str(&raw_pathname_chirho);
             full_path_chirho
         } else {
-            // Non-AT_FDCWD dirfd for relative paths is not yet supported.
-            // Fall through and try resolving the raw path anyway.
-            raw_pathname_chirho
+            // Resolve relative to the directory referenced by dirfd.
+            // Look up the dirfd's path in the fd table.
+            let dir_path_chirho = get_fd_path_chirho(dirfd_chirho as u64);
+            if let Some(dp_chirho) = dir_path_chirho {
+                let mut full_path_chirho = dp_chirho;
+                if !full_path_chirho.ends_with('/') {
+                    full_path_chirho.push('/');
+                }
+                full_path_chirho.push_str(&raw_pathname_chirho);
+                crate::serial_debug_chirho!(
+                    "[FS] openat: dirfd={} resolved to '{}' + '{}'",
+                    dirfd_chirho, full_path_chirho, raw_pathname_chirho
+                );
+                full_path_chirho
+            } else {
+                // Can't resolve dirfd — try as absolute from CWD
+                crate::serial_debug_chirho!(
+                    "[FS] openat: dirfd={} unknown, treating '{}' as relative to /",
+                    dirfd_chirho, raw_pathname_chirho
+                );
+                let mut full_path_chirho = alloc::string::String::from("/");
+                full_path_chirho.push_str(&raw_pathname_chirho);
+                full_path_chirho
+            }
         }
     } else {
         raw_pathname_chirho
@@ -1009,10 +1029,35 @@ pub fn sys_openat_chirho(
     };
 
     fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+    // Store the path for dirfd resolution in future openat calls.
+    if fd_chirho < fd_table_chirho.paths_chirho.len() {
+        fd_table_chirho.paths_chirho[fd_chirho] = Some(pathname_chirho.clone());
+    }
     fd_chirho as i64
 }
 
 /// `open(2)` -- wrapper around openat with AT_FDCWD.
+/// Get the path associated with a file descriptor (for openat dirfd resolution).
+pub fn get_fd_path_chirho(fd_chirho: u64) -> Option<alloc::string::String> {
+    let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
+        if let Some(Some(ref path_chirho)) = fd_table_chirho.paths_chirho.get(fd_chirho as usize) {
+            return Some(path_chirho.clone());
+        }
+    }
+    None
+}
+
+/// Store the path for a file descriptor.
+pub fn set_fd_path_chirho(fd_chirho: usize, path_chirho: &str) {
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    if let Some(ref mut fd_table_chirho) = *fd_table_guard_chirho {
+        if fd_chirho < fd_table_chirho.paths_chirho.len() {
+            fd_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(path_chirho));
+        }
+    }
+}
+
 pub fn sys_open_chirho(
     pathname_addr_chirho: u64,
     flags_chirho: u32,

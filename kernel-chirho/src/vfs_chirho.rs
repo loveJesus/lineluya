@@ -280,6 +280,8 @@ pub trait SuperOpsChirho: Send + Sync {
 /// descriptions.
 pub struct FdTableChirho {
     pub fds_chirho: Vec<Option<Arc<Mutex<FileChirho>>>>,
+    /// Path associated with each fd (for openat dirfd resolution).
+    pub paths_chirho: Vec<Option<alloc::string::String>>,
 }
 
 /// Linux errno: bad file descriptor.
@@ -293,7 +295,9 @@ impl FdTableChirho {
     pub fn new_chirho(capacity_chirho: usize) -> Self {
         let mut fds_chirho = Vec::with_capacity(capacity_chirho);
         fds_chirho.resize_with(capacity_chirho, || None);
-        Self { fds_chirho }
+        let mut paths_chirho = Vec::with_capacity(capacity_chirho);
+        paths_chirho.resize_with(capacity_chirho, || None);
+        Self { fds_chirho, paths_chirho }
     }
 
     /// Allocate the lowest available file descriptor, returning its index.
@@ -340,6 +344,7 @@ impl FdTableChirho {
     pub fn clone_table_chirho(&self) -> Self {
         Self {
             fds_chirho: self.fds_chirho.clone(),
+            paths_chirho: self.paths_chirho.clone(),
         }
     }
 }
