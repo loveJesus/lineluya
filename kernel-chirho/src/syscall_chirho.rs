@@ -1034,6 +1034,12 @@ const F_SETFD_CHIRHO: u64 = 2;
 const F_GETFL_CHIRHO: u64 = 3;
 /// Set file status flags.
 const F_SETFL_CHIRHO: u64 = 4;
+/// Get advisory record lock.
+const F_GETLK_CHIRHO: u64 = 5;
+/// Set advisory record lock (blocking).
+const F_SETLK_CHIRHO: u64 = 6;
+/// Set advisory record lock (wait).
+const F_SETLKW_CHIRHO: u64 = 7;
 /// Duplicate fd with close-on-exec.
 const F_DUPFD_CLOEXEC_CHIRHO: u64 = 1030;
 
@@ -3247,13 +3253,26 @@ fn sys_fcntl_chirho(
             }
         }
         F_SETFL_CHIRHO => 0, // silently accept
+        F_GETLK_CHIRHO => {
+            // Advisory file locking: report "no lock held" by setting
+            // l_type to F_UNLCK (2). sqlite3 uses this to probe locking.
+            if arg_chirho != 0 {
+                // struct flock: l_type is the first i16 field
+                unsafe {
+                    core::ptr::write(arg_chirho as *mut i16, 2); // F_UNLCK
+                }
+            }
+            0
+        }
+        F_SETLK_CHIRHO | F_SETLKW_CHIRHO => {
+            // Advisory file locking: silently succeed (single-process kernel).
+            // sqlite3 requires this to succeed for database access.
+            0
+        }
         _ => {
-            crate::serial_println_chirho!(
-                "[SYSCALL] fcntl(fd={}, cmd={}) -> EINVAL (unsupported)",
-                fd_chirho,
-                cmd_chirho,
-            );
-            -EINVAL_CHIRHO
+            // Silently succeed for unknown commands instead of failing —
+            // many programs probe fcntl capabilities and don't check errors.
+            0
         }
     }
 }
