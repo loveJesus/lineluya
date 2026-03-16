@@ -917,7 +917,7 @@ impl Ext4MountChirho {
     }
 
     /// Find the physical block number for a logical block in the extent tree.
-    fn find_phys_block_chirho(
+    pub fn find_phys_block_chirho(
         &self,
         block_data_chirho: &[u32; 15],
         header_chirho: &Ext4ExtentHeaderChirho,
@@ -2348,41 +2348,100 @@ impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
 
         let mount_guard_chirho = mount_chirho.lock();
 
-        // For append/overwrite: read existing data, merge with new data,
-        // then write everything back.  write_file_data_chirho replaces the
-        // entire file contents (it allocates fresh extents).
+        // Block-level write: only modify the affected 4KB blocks.
+        // For each block that overlaps [pos, pos+len):
+        //   1. Read the existing block from disk
+        //   2. Overlay the new data at the correct offset within the block
+        //   3. Write the modified block back
         let new_end_chirho = pos_chirho + buf_chirho.len();
         let final_size_chirho = core::cmp::max(current_size_chirho, new_end_chirho);
 
-        let mut full_data_chirho = alloc::vec![0u8; final_size_chirho];
+        // Read the ext4 inode for block mapping
+        let ext4_inode_chirho = mount_guard_chirho.read_inode_chirho(ino_chirho)
+            .ok_or(-5i64)?; // EIO
 
-        // Read existing data if any.
-        if current_size_chirho > 0 {
-            if let Some(ext4_inode_chirho) = mount_guard_chirho.read_inode_chirho(ino_chirho) {
-                let mut block_buf_chirho = [0u8; 4096];
-                let num_blocks_chirho = (current_size_chirho + 4095) / 4096;
-                for blk_idx_chirho in 0..num_blocks_chirho {
-                    if let Some(_n_chirho) = mount_guard_chirho.read_block_by_logical_into_chirho(
-                        &ext4_inode_chirho,
-                        blk_idx_chirho as u64,
-                        &mut block_buf_chirho,
-                    ) {
-                        let start_chirho = blk_idx_chirho * 4096;
-                        let end_chirho = core::cmp::min(start_chirho + 4096, current_size_chirho);
-                        full_data_chirho[start_chirho..end_chirho]
-                            .copy_from_slice(&block_buf_chirho[..end_chirho - start_chirho]);
+        let start_block_chirho = pos_chirho / 4096;
+        let end_block_chirho = (new_end_chirho + 4095) / 4096;
+        let mut block_buf_chirho = [0u8; 4096];
+        let mut bytes_remaining_chirho = buf_chirho.len();
+        let mut buf_offset_chirho = 0usize;
+
+        for blk_idx_chirho in start_block_chirho..end_block_chirho {
+            // Read existing block (if it exists)
+            let block_start_chirho = blk_idx_chirho * 4096;
+            block_buf_chirho = [0u8; 4096];
+
+            // Try to read the existing block data
+            let _ = mount_guard_chirho.read_block_by_logical_into_chirho(
+                &ext4_inode_chirho,
+                blk_idx_chirho as u64,
+                &mut block_buf_chirho,
+            );
+
+            // Calculate the write range within this block
+            let write_start_in_block_chirho = if block_start_chirho < pos_chirho {
+                pos_chirho - block_start_chirho
+            } else {
+                0
+            };
+            let write_end_in_block_chirho = core::cmp::min(
+                4096,
+                new_end_chirho.saturating_sub(block_start_chirho),
+            );
+            let write_len_chirho = write_end_in_block_chirho - write_start_in_block_chirho;
+
+            // Overlay new data into the block buffer
+            if write_len_chirho > 0 && buf_offset_chirho + write_len_chirho <= buf_chirho.len() {
+                block_buf_chirho[write_start_in_block_chirho..write_end_in_block_chirho]
+                    .copy_from_slice(&buf_chirho[buf_offset_chirho..buf_offset_chirho + write_len_chirho]);
+                buf_offset_chirho += write_len_chirho;
+                bytes_remaining_chirho -= write_len_chirho;
+            }
+
+            // Find the physical block and write it back
+            let block_copy_chirho = ext4_inode_chirho.i_block_chirho;
+            let header_copy_chirho = ext4_inode_chirho.extent_header_chirho();
+            let phys_block_chirho = mount_guard_chirho.find_phys_block_chirho(
+                &block_copy_chirho,
+                &header_copy_chirho,
+                blk_idx_chirho as u32,
+            );
+
+            if let Some(pb_chirho) = phys_block_chirho {
+                // Write the modified block to the existing physical block
+                let _ = mount_guard_chirho.write_block_chirho(pb_chirho, &block_buf_chirho);
+            } else {
+                // Block doesn't exist yet — need to allocate.
+                // For now, fall back to full-file write for new blocks.
+                crate::serial_debug_chirho!(
+                    "[EXT4] write: block {} not mapped, falling back to full write",
+                    blk_idx_chirho
+                );
+                // Read full file, overlay, write back (old path)
+                let mut full_data_chirho = alloc::vec![0u8; final_size_chirho];
+                if current_size_chirho > 0 {
+                    let num_blocks_chirho = (current_size_chirho + 4095) / 4096;
+                    for bi_chirho in 0..num_blocks_chirho {
+                        let mut bb_chirho = [0u8; 4096];
+                        if let Some(_) = mount_guard_chirho.read_block_by_logical_into_chirho(
+                            &ext4_inode_chirho, bi_chirho as u64, &mut bb_chirho,
+                        ) {
+                            let s_chirho = bi_chirho * 4096;
+                            let e_chirho = core::cmp::min(s_chirho + 4096, current_size_chirho);
+                            full_data_chirho[s_chirho..e_chirho]
+                                .copy_from_slice(&bb_chirho[..e_chirho - s_chirho]);
+                        }
                     }
                 }
+                full_data_chirho[pos_chirho..new_end_chirho].copy_from_slice(buf_chirho);
+                let _ = mount_guard_chirho.write_file_data_chirho(ino_chirho, &full_data_chirho);
+                // Update inode size
+                let mut inode_guard2_chirho = file_chirho.inode_chirho.lock();
+                inode_guard2_chirho.size_chirho = final_size_chirho as u64;
+                file_chirho.pos_chirho = new_end_chirho as u64;
+                return Ok(buf_chirho.len());
             }
         }
-
-        // Overlay the new data at the current file position.
-        full_data_chirho[pos_chirho..new_end_chirho].copy_from_slice(buf_chirho);
-
-        // Write the full file data to disk.
-        mount_guard_chirho
-            .write_file_data_chirho(ino_chirho, &full_data_chirho)
-            .map_err(|_e_chirho| -28i64)?; // ENOSPC
 
         // Update the VFS inode size.
         let mut inode_guard2_chirho = file_chirho.inode_chirho.lock();
