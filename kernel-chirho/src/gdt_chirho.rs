@@ -153,6 +153,19 @@ pub static TSS_CHIRHO: Lazy<TaskStateSegment> = Lazy::new(|| {
     tss_chirho
 });
 
+/// Update TSS.RSP0 (privilege_stack_table[0]) to point at the given
+/// task's kernel stack top.  Called by the scheduler before a context
+/// switch so that SYSCALL/interrupt entry uses the correct kernel stack.
+///
+/// # Safety
+/// The stack address must be a valid, mapped kernel stack top.
+pub unsafe fn set_tss_rsp0_chirho(stack_top_chirho: u64) {
+    use x86_64::VirtAddr;
+    // SAFETY: single-CPU, interrupts disabled during schedule.
+    let tss_ptr_chirho = &TSS_CHIRHO as *const _ as *mut x86_64::structures::tss::TaskStateSegment;
+    (*tss_ptr_chirho).privilege_stack_table[0] = VirtAddr::new(stack_top_chirho);
+}
+
 // ============================================================================
 // GDT construction
 // ============================================================================

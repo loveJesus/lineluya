@@ -204,12 +204,13 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
     // --- 6. Add the child to the scheduler run queue ---
     crate::scheduler_chirho::add_task_chirho(child_pid_chirho);
 
-    // --- 7. vfork semantics: child runs first ---
-    // Real fork requires per-process page tables with a dedicated mapper
-    // that can populate a non-current page table. Until then, vfork
-    // semantics: fork returns 0, child calls execve, sys_exit re-launches
-    // the shell. The per-process PT infrastructure is ready but needs
-    // map_page_in_pt_chirho() to map ELF segments into a specific PML4.
+    // --- 7. vfork: child runs first (real fork needs user-space debugging) ---
+    // Context switch to child works (verified: PID 0→2, naked trampoline
+    // reaches SYSRET). But child never makes a syscall after SYSRET —
+    // likely user-space code enters infinite loop (shared user stack,
+    // stale registers, or BusyBox ash's fork-return code path issue).
+    // Infrastructure ready: per-task kernel stack, TSS.RSP0 switching,
+    // per-process page tables, naked fork_child_return.
     0i64
 }
 
@@ -516,53 +517,38 @@ pub fn sys_wait4_chirho(
 /// SYSRET back to userspace.
 ///
 /// The SyscallFrameChirho has `rax=0`, so the child sees `fork()` returning 0.
-fn fork_child_return_chirho() {
-    // The RSP currently points to the SyscallFrameChirho on the child's
-    // kernel stack.  We need to restore the registers and SYSRET.
-    //
-    // SAFETY: This function is only reached via a context switch where
-    // RSP was set to point at a valid SyscallFrameChirho.
-    unsafe {
-        core::arch::asm!(
-            // RSP points to the SyscallFrameChirho laid out as:
-            //   [rsp+0x00] = rax (0 for child)
-            //   [rsp+0x08] = rdi
-            //   [rsp+0x10] = rsi
-            //   [rsp+0x18] = rdx
-            //   [rsp+0x20] = r10
-            //   [rsp+0x28] = r8
-            //   [rsp+0x30] = r9
-            //   [rsp+0x38] = rcx (return address)
-            //   [rsp+0x40] = r11 (saved rflags)
-            //   [rsp+0x48] = rsp (user stack)
+/// Naked trampoline — NO Rust prologue.  The context switch sets RSP to
+/// point at the SyscallFrameChirho on the child's kernel stack.
+/// We read the frame, restore registers, and SYSRET to userspace.
+#[unsafe(naked)]
+unsafe extern "C" fn fork_child_return_chirho() {
+    core::arch::naked_asm!(
+        // RSP points to the SyscallFrameChirho:
+        //   [rsp+0x00] = rax (0 for child)
+        //   [rsp+0x08] = rdi
+        //   [rsp+0x10] = rsi
+        //   [rsp+0x18] = rdx
+        //   [rsp+0x20] = r10
+        //   [rsp+0x28] = r8
+        //   [rsp+0x30] = r9
+        //   [rsp+0x38] = rcx (user RIP)
+        //   [rsp+0x40] = r11 (user RFLAGS)
+        //   [rsp+0x48] = rsp (user stack)
 
-            // Restore registers from the frame.
-            "mov rax, [rsp + 0x00]",    // rax = 0 (fork return value)
-            "mov rdi, [rsp + 0x08]",    // rdi
-            "mov rsi, [rsp + 0x10]",    // rsi
-            "mov rdx, [rsp + 0x18]",    // rdx
-            "mov r10, [rsp + 0x20]",    // r10
-            "mov r8,  [rsp + 0x28]",    // r8
-            "mov r9,  [rsp + 0x30]",    // r9
-            "mov rcx, [rsp + 0x38]",    // rcx = user RIP (for sysretq)
-            "mov r11, [rsp + 0x40]",    // r11 = user RFLAGS (for sysretq)
-
-            // Load the user stack pointer into a scratch register.
-            // We must read it before overwriting RSP.
-            "mov r15, [rsp + 0x48]",    // r15 = user RSP
-
-            // Switch to the user stack.
-            "mov rsp, r15",
-
-            // Swap GS back to user GS (swapgs convention).
-            "swapgs",
-
-            // Return to userspace via SYSRET.
-            // SYSRET sets RIP = RCX, RFLAGS = R11, and transitions to ring 3.
-            "sysretq",
-            options(noreturn),
-        );
-    }
+        "mov rax, [rsp + 0x00]",    // rax = 0 (fork return)
+        "mov rdi, [rsp + 0x08]",
+        "mov rsi, [rsp + 0x10]",
+        "mov rdx, [rsp + 0x18]",
+        "mov r10, [rsp + 0x20]",
+        "mov r8,  [rsp + 0x28]",
+        "mov r9,  [rsp + 0x30]",
+        "mov rcx, [rsp + 0x38]",    // rcx = user RIP (for sysretq)
+        "mov r11, [rsp + 0x40]",    // r11 = user RFLAGS
+        "mov r15, [rsp + 0x48]",    // r15 = user RSP
+        "mov rsp, r15",
+        "swapgs",
+        "sysretq",
+    );
 }
 
 // ===========================================================================
