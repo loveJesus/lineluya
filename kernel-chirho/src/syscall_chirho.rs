@@ -1734,6 +1734,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_UMOUNT2_CHIRHO => sys_umount2_chirho(arg0_chirho, arg1_chirho as u32),
 
         // epoll family
+        213 => sys_epoll_create1_chirho(0), // epoll_create(size) — ignore size, same as create1(0)
         SYS_EPOLL_CREATE1_CHIRHO => sys_epoll_create1_chirho(arg0_chirho as u32),
         SYS_EPOLL_CTL_CHIRHO => sys_epoll_ctl_chirho(
             arg0_chirho as i32,
