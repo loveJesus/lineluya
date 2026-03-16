@@ -158,9 +158,33 @@ impl FileOpsChirho for PipeReadOpsChirho {
                 // Write end closed and buffer empty => EOF.
                 return Ok(0);
             }
-            // In a real kernel we would block here; for now return 0
-            // (non-blocking / no data available).
-            return Ok(0);
+            // Spin-wait for data: drop the lock, yield to the scheduler,
+            // then re-acquire and check again. This allows the writer
+            // (in a separate task or after a context switch) to produce
+            // data. Limited to 100K iterations to prevent infinite hang
+            // in single-task vfork mode.
+            drop(pipe_chirho);
+            for _retry_chirho in 0..100_000u32 {
+                core::hint::spin_loop();
+                let pipe_recheck_chirho = self.pipe_chirho.lock();
+                if !pipe_recheck_chirho.buffer_chirho.is_empty() {
+                    // Data arrived — fall through to the copy-out path.
+                    let to_read_chirho = buf_chirho.len().min(pipe_recheck_chirho.buffer_chirho.len());
+                    // Need mutable access to drain the buffer.
+                    drop(pipe_recheck_chirho);
+                    let mut pipe_drain_chirho = self.pipe_chirho.lock();
+                    let actual_chirho = buf_chirho.len().min(pipe_drain_chirho.buffer_chirho.len());
+                    for i_chirho in 0..actual_chirho {
+                        buf_chirho[i_chirho] = pipe_drain_chirho.buffer_chirho.pop_front().unwrap();
+                    }
+                    return Ok(actual_chirho);
+                }
+                if pipe_recheck_chirho.closed_write_chirho {
+                    return Ok(0); // Writer closed while we were waiting.
+                }
+                drop(pipe_recheck_chirho);
+            }
+            return Ok(0); // Timeout — no data arrived.
         }
 
         let to_read_chirho = buf_chirho.len().min(pipe_chirho.buffer_chirho.len());
