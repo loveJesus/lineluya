@@ -47,9 +47,23 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
     unsafe fn alloc(&self, layout_chirho: core::alloc::Layout) -> *mut u8 {
         let size_chirho = layout_chirho.size();
 
-        // Log allocations > 1MB to find the Vec doubling to 64MB.
+        // Log allocations > 1MB with last syscall number.
         if size_chirho > 1024 * 1024 {
-            // Also print align to distinguish different callers
+            // Print last syscall nr for context
+            let last_sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO
+                .load(core::sync::atomic::Ordering::Relaxed);
+            let sc_msg_chirho = b"sc=";
+            for &b_chirho in sc_msg_chirho {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+            let mut sd_chirho = [0u8; 5]; let mut sn_chirho = last_sc_chirho; let mut si_chirho = 0usize;
+            if sn_chirho == 0 { sd_chirho[0] = b'0'; si_chirho = 1; }
+            else { while sn_chirho > 0 { sd_chirho[si_chirho] = b'0' + (sn_chirho % 10) as u8; sn_chirho /= 10; si_chirho += 1; } }
+            for j_chirho in (0..si_chirho).rev() {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(sd_chirho[j_chirho]);
+            }
             let align_chirho = layout_chirho.align();
             let align_msg_chirho = b" align=";
             for &b_chirho in align_msg_chirho {

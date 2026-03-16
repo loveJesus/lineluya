@@ -681,10 +681,9 @@ impl PageCacheChirho {
 }
 
 /// Global page cache instance (protected by a spinlock).
-/// Page cache disabled to avoid BTreeMap heap fragmentation that
-/// causes the 64MB OOM. BTreeMap internal nodes use align=8 allocations
-/// that double from 2MB→4MB→...→64MB during heavy file I/O.
-/// TODO: Replace BTreeMap with a fixed-size array cache.
+/// Page cache disabled — BTreeMap node allocations (align=8) double
+/// from 2MB→64MB during heavy open() calls. Need to replace BTreeMap
+/// with a fixed-size array to avoid heap fragmentation.
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
     spin::Mutex::new(PageCacheChirho::new_chirho(0));
 
@@ -1181,10 +1180,66 @@ impl Ext4MountChirho {
         dir_ino_chirho: u32,
         name_chirho: &str,
     ) -> Option<DirEntryInfoChirho> {
-        let entries_chirho = self.read_dir_entries_chirho(dir_ino_chirho)?;
-        for entry_chirho in entries_chirho {
-            if entry_chirho.name_chirho == name_chirho {
-                return Some(entry_chirho);
+        // Scan directory blocks sequentially instead of reading the
+        // entire directory into a Vec. This avoids the 2MB→64MB Vec
+        // doubling that caused OOM for large directories like /usr/lib.
+        let inode_chirho = self.read_inode_chirho(dir_ino_chirho)?;
+        if !inode_chirho.is_dir_chirho() {
+            return None;
+        }
+        let dir_size_chirho = inode_chirho.size_chirho() as usize;
+        let num_blocks_chirho = (dir_size_chirho + 4095) / 4096;
+
+        let mut block_buf_chirho = [0u8; 4096];
+        for blk_idx_chirho in 0..num_blocks_chirho {
+            if self.read_block_by_logical_into_chirho(
+                &inode_chirho,
+                blk_idx_chirho as u64,
+                &mut block_buf_chirho,
+            )
+            .is_none()
+            {
+                continue;
+            }
+
+            // Parse directory entries in this block.
+            let block_end_chirho = if blk_idx_chirho == num_blocks_chirho - 1 {
+                dir_size_chirho - blk_idx_chirho * 4096
+            } else {
+                4096
+            };
+            let mut offset_chirho = 0usize;
+            while offset_chirho + 8 <= block_end_chirho {
+                let ino_chirho = u32::from_le_bytes(
+                    block_buf_chirho[offset_chirho..offset_chirho + 4]
+                        .try_into()
+                        .unwrap_or([0; 4]),
+                );
+                let rec_len_chirho = u16::from_le_bytes(
+                    block_buf_chirho[offset_chirho + 4..offset_chirho + 6]
+                        .try_into()
+                        .unwrap_or([0; 2]),
+                ) as usize;
+                let name_len_chirho = block_buf_chirho[offset_chirho + 6] as usize;
+                let file_type_chirho = block_buf_chirho[offset_chirho + 7];
+
+                if rec_len_chirho == 0 {
+                    break;
+                }
+                if ino_chirho != 0 && name_len_chirho > 0 && offset_chirho + 8 + name_len_chirho <= 4096 {
+                    if let Ok(entry_name_chirho) = core::str::from_utf8(
+                        &block_buf_chirho[offset_chirho + 8..offset_chirho + 8 + name_len_chirho],
+                    ) {
+                        if entry_name_chirho == name_chirho {
+                            return Some(DirEntryInfoChirho {
+                                inode_chirho: ino_chirho,
+                                name_chirho: alloc::string::String::from(entry_name_chirho),
+                                file_type_chirho,
+                            });
+                        }
+                    }
+                }
+                offset_chirho += rec_len_chirho;
             }
         }
         None
