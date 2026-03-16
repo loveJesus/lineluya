@@ -17,17 +17,14 @@ use x86_64::VirtAddr;
 /// Virtual address where the kernel heap begins.
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
-/// Total mapped heap: 32MB fast + 256MB buddy = 288MB.
-/// buddy-alloc limits max alloc to ~region/4 due to metadata.
-/// 256MB buddy → max alloc ~64MB. For dropbear SSH (needs 64MB),
-/// this is tight. TODO: increase if dropbear still OOMs.
-pub const HEAP_SIZE_CHIRHO: usize = 288 * 1024 * 1024;
+/// Total mapped heap: 32MB fast + 512MB buddy = 544MB.
+pub const HEAP_SIZE_CHIRHO: usize = 544 * 1024 * 1024;
 
 /// Fast allocator: 32 MiB for small/medium objects.
 const FAST_HEAP_SIZE_CHIRHO: usize = 32 * 1024 * 1024;
 
-/// Buddy allocator: 256 MiB.
-const BUDDY_HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
+/// Buddy allocator: 512 MiB.
+const BUDDY_HEAP_SIZE_CHIRHO: usize = 512 * 1024 * 1024;
 
 /// Global heap allocator — buddy-alloc crate with fast+buddy dual allocator.
 /// NonThreadsafeAlloc is wrapped in a const constructor; we handle thread
@@ -79,9 +76,29 @@ pub fn init_heap_chirho(
     Ok(())
 }
 
-/// Custom allocation error handler — logs and halts.
+/// Custom allocation error handler — logs size, align, and caller address.
 #[alloc_error_handler]
 fn alloc_error_handler_chirho(layout_chirho: core::alloc::Layout) -> ! {
+    // Print caller return address for debugging
+    let caller_chirho: u64;
+    unsafe { core::arch::asm!("mov {}, [rbp+8]", out(reg) caller_chirho); }
+
+    let caller_msg_chirho = b"\r\n[ALLOC] OOM caller=0x";
+    for &b_chirho in caller_msg_chirho {
+        unsafe {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+        }
+    }
+    let hex_chirho = b"0123456789abcdef";
+    for shift_chirho in (0..16).rev() {
+        let nibble_chirho = ((caller_chirho >> (shift_chirho * 4)) & 0xF) as usize;
+        unsafe {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(hex_chirho[nibble_chirho]);
+        }
+    }
+
     // Use raw serial to avoid allocation in the error path
     let msg_chirho = b"\r\n[ALLOC] OOM: ";
     for &b_chirho in msg_chirho {
