@@ -1592,6 +1592,72 @@ pub fn init_kernel_symbols_chirho() {
         dma_noop_stub_chirho as *const () as u64,
     );
 
+    // Tracing/instrumentation stubs (required by all modern .ko files)
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__fentry__"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__stack_chk_fail"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__stack_chk_guard"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+
+    // Module lifecycle
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("module_layout"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("module_put"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("try_module_get"),
+        netdev_noop_stub_chirho as *const () as u64, // returns 1 (success)
+    );
+
+    // Network module symbols (for dummy.ko)
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("rtnl_link_register"),
+        netdev_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("rtnl_link_unregister"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("ether_setup"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("eth_mac_addr"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("eth_validate_addr"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("dev_get_stats64"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("netdev_stats_to_stats64"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__dev_get_by_index"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("init_net"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+
     // Misc kernel APIs needed by drivers
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("msleep"),
