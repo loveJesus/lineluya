@@ -164,9 +164,9 @@
     },
     {
       "id_chirho": "P5-001",
-      "title_chirho": "apk package manager runs",
-      "status_chirho": "blocked",
-      "notes_chirho": "Requires networking (DHCP) + ext4 write support",
+      "title_chirho": "apk package manager runs (VERIFIED — apk-tools 2.14.6!)",
+      "status_chirho": "done",
+      "notes_chirho": "apk --version prints apk-tools 2.14.6. Needs ext4 write for apk add.",
       "priority_chirho": "high"
     },
     {
