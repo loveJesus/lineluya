@@ -826,6 +826,9 @@ pub fn sys_execve_chirho(
             // Debug: verify argv[0] on the user stack
             debug_verify_stack_chirho(user_rsp_chirho);
 
+            // Update /proc/self/exe path for the new executable.
+            crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
+
             crate::serial_println_chirho!(
                 "[PROCESS] execve: ready to enter userspace (dynamic) — entry={:#x}, rsp={:#x}",
                 dyn_result_chirho.start_addr_chirho,
@@ -877,6 +880,9 @@ pub fn sys_execve_chirho(
 
     // Debug: verify argv[0] on the user stack
     debug_verify_stack_chirho(user_rsp_chirho);
+
+    // Update /proc/self/exe path for the new executable.
+    crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
 
     crate::serial_println_chirho!(
         "[PROCESS] execve: ready to enter userspace (static) — entry={:#x}, rsp={:#x}",

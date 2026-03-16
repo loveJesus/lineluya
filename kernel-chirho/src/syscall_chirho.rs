@@ -1127,6 +1127,20 @@ const REALTIME_EPOCH_CHIRHO: i64 = 1773532800;
 /// process loader would set this to the end of the BSS/data segment.
 static CURRENT_BRK_CHIRHO: AtomicU64 = AtomicU64::new(0x0060_0000);
 
+/// Current executable path (for /proc/self/exe readlink).
+/// Updated by execve when a new binary is loaded.
+static CURRENT_EXE_PATH_CHIRHO: spin::Mutex<[u8; 256]> = spin::Mutex::new([0u8; 256]);
+static CURRENT_EXE_PATH_LEN_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Set the current executable path (called from execve).
+pub fn set_current_exe_path_chirho(path_chirho: &[u8]) {
+    let mut buf_chirho = CURRENT_EXE_PATH_CHIRHO.lock();
+    let len_chirho = core::cmp::min(path_chirho.len(), 255);
+    buf_chirho[..len_chirho].copy_from_slice(&path_chirho[..len_chirho]);
+    buf_chirho[len_chirho] = 0;
+    CURRENT_EXE_PATH_LEN_CHIRHO.store(len_chirho as u64, Ordering::Relaxed);
+}
+
 /// Set the initial program break (called by exec after loading ELF).
 /// Last syscall number for post-mortem debugging.
 pub static LAST_SYSCALL_NR_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -3164,8 +3178,8 @@ unsafe fn user_str_eq_chirho(user_str_chirho: *const u8, target_chirho: &[u8]) -
     next_chirho == 0
 }
 
-/// Path returned for /proc/self/exe readlink.
-const PROC_SELF_EXE_PATH_CHIRHO: &[u8] = b"/hello-chirho";
+/// Fallback path for /proc/self/exe readlink.
+const PROC_SELF_EXE_FALLBACK_CHIRHO: &[u8] = b"/mnt/bin/busybox";
 
 /// `readlink(2)` implementation.
 ///
@@ -3185,14 +3199,25 @@ fn sys_readlink_chirho(
     };
 
     if is_proc_self_exe_chirho {
-        let copy_len_chirho = if bufsiz_chirho < PROC_SELF_EXE_PATH_CHIRHO.len() {
-            bufsiz_chirho
-        } else {
-            PROC_SELF_EXE_PATH_CHIRHO.len()
-        };
+        // Use the stored executable path from execve, or fallback.
+        let exe_len_chirho = CURRENT_EXE_PATH_LEN_CHIRHO.load(Ordering::Relaxed) as usize;
+        if exe_len_chirho > 0 {
+            let exe_path_chirho = CURRENT_EXE_PATH_CHIRHO.lock();
+            let copy_len_chirho = core::cmp::min(bufsiz_chirho, exe_len_chirho);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    exe_path_chirho.as_ptr(),
+                    buf_chirho,
+                    copy_len_chirho,
+                );
+            }
+            return copy_len_chirho as i64;
+        }
+        // Fallback
+        let copy_len_chirho = core::cmp::min(bufsiz_chirho, PROC_SELF_EXE_FALLBACK_CHIRHO.len());
         unsafe {
             core::ptr::copy_nonoverlapping(
-                PROC_SELF_EXE_PATH_CHIRHO.as_ptr(),
+                PROC_SELF_EXE_FALLBACK_CHIRHO.as_ptr(),
                 buf_chirho,
                 copy_len_chirho,
             );
