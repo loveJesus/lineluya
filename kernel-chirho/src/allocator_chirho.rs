@@ -17,14 +17,15 @@ use x86_64::VirtAddr;
 /// Virtual address where the kernel heap begins.
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
-/// Total mapped heap: 32MB fast + 256MB buddy = 288MB.
-pub const HEAP_SIZE_CHIRHO: usize = 288 * 1024 * 1024;
+/// Total mapped heap: 64MB fast + 512MB buddy = 576MB.
+/// Use with QEMU -m 4G. Boot maps ~147K pages (~8-10s).
+pub const HEAP_SIZE_CHIRHO: usize = 576 * 1024 * 1024;
 
-/// Fast allocator: 32 MiB for small/medium objects.
-const FAST_HEAP_SIZE_CHIRHO: usize = 32 * 1024 * 1024;
+/// Fast allocator: 64 MiB for small/medium objects.
+const FAST_HEAP_SIZE_CHIRHO: usize = 64 * 1024 * 1024;
 
-/// Buddy allocator: 256 MiB.
-const BUDDY_HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
+/// Buddy allocator: 512 MiB. Largest contiguous alloc ~128MB.
+const BUDDY_HEAP_SIZE_CHIRHO: usize = 512 * 1024 * 1024;
 
 /// Inner allocator from buddy-alloc crate.
 static INNER_ALLOC_CHIRHO: NonThreadsafeAlloc = unsafe {
