@@ -115,23 +115,29 @@ You can modify the following section
 
 ## Project: Lineluya — Linux Kernel Rewrite in Rust
 
-### Current State (v3.2.0 — "Clearing the Land")
-- 55,000+ lines of Rust across 75+ kernel modules
-- **Alpine Linux BusyBox v1.37.0 runs** via musl 1.2.5 dynamic linker
+### Current State (v3.3.0 — "Clearing the Land")
+- 65,000+ lines of Rust across 75+ kernel modules
+- **5 real Alpine Linux programs run**: sqlite3, python3, dropbear, apk, BusyBox
+- **TCP networking**: DHCP + 3-way handshake + HTTP data transfer
 - Boots via UEFI in QEMU with pixel framebuffer console (1280x800)
-- VirtIO-blk I/O port driver reads 512MB ext4 Alpine disk
-- VFS: tmpfs, procfs, devtmpfs, ext4 (read-only)
-- PIE (ET_DYN) and static (ET_EXEC) ELF loading with kernel-side relocations
-- Full ELF symbol resolution (GLOB_DAT + JUMP_SLOT) for musl programs
-- SSE/SSE2 enabled, full IDT exception handlers
-- 75+ syscalls fully implemented, 60+ stubs
+- VirtIO-blk + VirtIO-net I/O port drivers
+- ext4 mounted at / with symlink following
+- .ko kernel module loading with 81 symbol exports
+- PIE ELF loading with GLOB_DAT/JUMP_SLOT symbol resolution
+- 75+ syscalls, graceful OOM handler
 
 ### Verified Working in QEMU (x86_64)
-- BusyBox shell: echo, date, ls, cat, mkdir, hostname, id, pwd, uname
-- Alpine BusyBox: ls /bin (70+ commands), uname -a, cat /etc/hostname, id
-- VirtIO-blk: sector read/write, ext4 superblock/inode/extent parsing
-- Framebuffer: boot messages rendered as pixels on UEFI display
-- musl 1.2.5: TLS setup, self-relocation, dynamic symbol resolution
+- **sqlite3 3.51.2**: SELECT 316, 42+1 → 316|43
+- **Python 3.12.12**: python3 --version
+- **Dropbear SSH v2025.88**: version + ECDSA host key generation
+- **apk-tools 2.14.6**: Alpine package manager
+- **TCP**: SYN→SYN-ACK→ACK→ESTABLISHED, HTTP GET/response (PCAP verified)
+- **DHCP**: IP=10.0.2.15, GW=10.0.2.2, DNS=10.0.2.3
+- **.ko modules**: ELF relocations, init_module called, 81 kernel symbols
+- BusyBox: ls (color!), cat, date, id, echo, uname (200+ applets)
+- VirtIO-blk: 4K block reads, ext4 per-block I/O with page cache
+- Framebuffer: 1280x800 green-on-black, screenshots captured
+- musl 1.2.5: TLS, self-relocation, dynamic symbol resolution
 - VirtIO-net: MAC detected, DHCP DISCOVER sent (OFFER pending)
 
 ### Code Written — Needs QEMU Testing
