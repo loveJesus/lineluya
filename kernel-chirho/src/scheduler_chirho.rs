@@ -313,10 +313,26 @@ pub fn schedule_chirho() {
                     }
                 }
 
-                // SAFETY: Both pointers are obtained from the task table which
-                // guarantees their validity for the lifetime of the respective
-                // tasks.  Interrupts are disabled (we are inside
-                // `without_interrupts`).
+                // Set kernel stack for the new task: both TSS.RSP0 (for
+                // interrupt entry) and KERNEL_STACK_TOP_CHIRHO (for the
+                // SYSCALL entry stub, which loads RSP from this static).
+                {
+                    let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+                    if let Some(task_arc_chirho) = list_chirho
+                        .iter()
+                        .find(|t_chirho| t_chirho.lock().pid_chirho == next_chirho)
+                    {
+                        let kstack_top_chirho = task_arc_chirho.lock().kernel_stack_chirho;
+                        unsafe {
+                            crate::gdt_chirho::set_tss_rsp0_chirho(kstack_top_chirho);
+                            crate::syscall_entry_chirho::KERNEL_STACK_TOP_CHIRHO = kstack_top_chirho;
+                        }
+                    }
+                }
+
+                if old_ctx_ptr_chirho.is_null() || new_ctx_ptr_chirho.is_null() {
+                    return;
+                }
                 unsafe {
                     switch_context_chirho(old_ctx_ptr_chirho, new_ctx_ptr_chirho);
                 }
