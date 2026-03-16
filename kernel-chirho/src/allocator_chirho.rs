@@ -17,8 +17,8 @@ use x86_64::VirtAddr;
 /// Virtual address where the kernel heap begins.
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
-/// Size of the kernel heap in bytes (256 MiB — balances boot speed vs capacity).
-/// 512MB was too slow to map (131K pages). 256MB maps 65K pages in ~5s.
+/// Size of the kernel heap in bytes (256 MiB).
+/// Pre-generated SSH keys avoid dropbear's 128MB key-gen allocation.
 pub const HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
 
 /// Global heap allocator.
