@@ -169,9 +169,9 @@
     },
     {
       "id_chirho": "P5-002",
-      "title_chirho": "sqlite3 runs (pre-installed on disk)",
-      "status_chirho": "code-written",
-      "notes_chirho": "sqlite3 1.98MB + libreadline + libncursesw on ext4 disk. All symlinks created. ext4 symlink following works. mmap loop reads .so files fully. Heap 32MB. Needs QEMU test.",
+      "title_chirho": "sqlite3 runs (VERIFIED in QEMU!)",
+      "status_chirho": "done",
+      "notes_chirho": "SQLite version 3.51.2 2026-01-09 confirmed running in QEMU. Dynamically linked via musl, loaded from ext4 at /.",
       "priority_chirho": "high"
     },
     {
