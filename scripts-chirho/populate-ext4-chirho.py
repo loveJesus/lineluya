@@ -179,11 +179,22 @@ def install_packages_chirho(img_path_chirho):
 
     # Packages to install (and their deps that aren't already in minirootfs)
     packages_chirho = [
+        # sqlite3 + deps
         "sqlite-libs-3.51.2-r0",
         "sqlite-3.51.2-r0",
         "ncurses-terminfo-base-6.5_p20251123-r0",
         "libncursesw-6.5_p20251123-r0",
         "readline-8.3.1-r0",
+        # python3 + deps
+        "libffi-3.5.2-r0",
+        "gdbm-1.26-r0",
+        "xz-libs-5.8.2-r0",
+        "mpdecimal-4.0.1-r0",
+        "libbz2-1.0.8-r6",
+        "libpanelw-6.5_p20251123-r0",
+        "python3-3.12.12-r0",
+        # dropbear SSH
+        "dropbear-2025.88-r1",
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir_chirho:
