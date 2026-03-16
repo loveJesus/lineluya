@@ -1987,13 +1987,28 @@ fn probe_ext4_and_mount_chirho() {
         readonly_chirho: true,
     };
 
-    // Create the VFS superblock for ext4 and mount at /mnt.
+    // Create the VFS superblock for ext4.
     let ext4_vfs_sb_chirho = crate::ext4_chirho::mount_ext4_vfs_chirho(ext4_mount_chirho);
 
-    // Create /mnt directory in root tmpfs and register the mount.
-    // First create the /mnt directory via the root fs.
+    // Mount ext4 as the root filesystem ("/") so Alpine paths work
+    // natively: /bin/busybox, /usr/bin/sqlite3, /lib/ld-musl-x86_64.so.1.
+    // Also mount at /mnt for backward compatibility with existing scripts.
     {
-        // Create /mnt in the root tmpfs via resolve_parent_live_chirho
+        let mut mounts_chirho = crate::fs_chirho::MOUNT_TABLE_CHIRHO.lock();
+        // Root mount — ext4 becomes the primary filesystem
+        mounts_chirho.push(crate::fs_chirho::MountPointChirho {
+            path_chirho: String::from("/"),
+            superblock_chirho: ext4_vfs_sb_chirho.clone(),
+        });
+        // Backward compat: /mnt also points to ext4 root
+        mounts_chirho.push(crate::fs_chirho::MountPointChirho {
+            path_chirho: String::from("/mnt"),
+            superblock_chirho: ext4_vfs_sb_chirho,
+        });
+    }
+
+    // Create /mnt directory in root tmpfs for backward compatibility.
+    {
         match crate::fs_chirho::resolve_parent_live_chirho("/mnt") {
             Ok((parent_chirho, name_chirho)) => {
                 let parent_guard_chirho = parent_chirho.lock();
@@ -2003,23 +2018,12 @@ fn probe_ext4_and_mount_chirho() {
                     0o755,
                 );
             }
-            Err(_) => {
-                crate::serial_println_chirho!("[EXT4] Warning: could not create /mnt directory");
-            }
+            Err(_) => {}
         }
     }
 
-    // Register the mount in the mount table.
-    {
-        let mut mounts_chirho = crate::fs_chirho::MOUNT_TABLE_CHIRHO.lock();
-        mounts_chirho.push(crate::fs_chirho::MountPointChirho {
-            path_chirho: String::from("/mnt"),
-            superblock_chirho: ext4_vfs_sb_chirho,
-        });
-    }
-
     crate::serial_println_chirho!(
-        "[EXT4] ext4 filesystem mounted read-only at /mnt ({} block groups, {} blocks)",
+        "[EXT4] ext4 filesystem mounted at / and /mnt ({} block groups, {} blocks)",
         bg_count_chirho,
         total_blocks_chirho
     );

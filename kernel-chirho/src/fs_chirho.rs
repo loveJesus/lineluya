@@ -129,6 +129,16 @@ pub fn init_fs_chirho() {
         });
     }
 
+    // 5b. Mount tmpfs on /tmp (writable temp storage even when / is ext4 read-only)
+    let tmp_sb_chirho = crate::tmpfs_chirho::mount_tmpfs_chirho();
+    {
+        let mut mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+        mounts_chirho.push(MountPointChirho {
+            path_chirho: String::from("/tmp"),
+            superblock_chirho: tmp_sb_chirho,
+        });
+    }
+
     // 6. Initialise the FD table with stdin/stdout/stderr -> /dev/console
     {
         let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
