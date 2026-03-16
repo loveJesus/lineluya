@@ -181,7 +181,10 @@ impl MmChirho {
         // For file-backed mappings (fd >= 0), we treat them as anonymous
         // private mappings and copy the file data in afterward.  This is
         // a simplification — real Linux would fault pages in lazily.
+        // Special case: /dev/fb0 mmap maps the physical framebuffer directly.
         let has_file_chirho = fd_chirho >= 0 && !is_anonymous_chirho;
+        let is_fb_mmap_chirho = has_file_chirho
+            && crate::fb_device_chirho::is_fb_fd_chirho(fd_chirho as u64);
 
         // Round length up to page boundary.
         let aligned_len_chirho = align_up_page_chirho(len_chirho);
@@ -208,6 +211,25 @@ impl MmChirho {
             // No hint — pick an address automatically.
             self.allocate_mmap_addr_chirho(aligned_len_chirho)?
         };
+
+        // For /dev/fb0 mmap, map the physical framebuffer pages directly
+        // instead of allocating new anonymous pages.
+        if is_fb_mmap_chirho {
+            let fb_phys_chirho = crate::fb_device_chirho::fb_phys_addr_chirho();
+            let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+            // The framebuffer is already accessible via phys_offset + fb_phys.
+            // Return that address so userspace can write pixels directly.
+            let fb_virt_chirho = fb_phys_chirho + phys_offset_chirho;
+            // Record the VMA but don't allocate new pages.
+            let vma_chirho = VmaChirho {
+                start_chirho: fb_virt_chirho,
+                end_chirho: fb_virt_chirho + aligned_len_chirho,
+                prot_chirho,
+                flags_chirho,
+            };
+            self.insert_vma_chirho(vma_chirho);
+            return Ok(fb_virt_chirho);
+        }
 
         // Map the physical frames into the kernel page tables.
         // TEMPORARY: We use the kernel mapper because per-process page tables

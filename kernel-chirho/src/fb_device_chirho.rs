@@ -63,6 +63,9 @@ const FBIOGETCMAP_CHIRHO: u64 = 0x4604;
 /// FBIOPUTCMAP ioctl number.
 const FBIOPUTCMAP_CHIRHO: u64 = 0x4605;
 
+/// FBIOPAN_DISPLAY ioctl number — screen panning / double-buffering.
+const FBIOPAN_DISPLAY_CHIRHO: u64 = 0x4606;
+
 /// FBIOBLANK ioctl number.
 const FBIOBLANK_CHIRHO: u64 = 0x4611;
 
@@ -459,6 +462,12 @@ impl FileOpsChirho for FbDeviceOpsChirho {
                 Ok(0)
             }
 
+            FBIOPAN_DISPLAY_CHIRHO => {
+                // Screen panning / double-buffering: accept silently
+                // (fixed framebuffer, no panning hardware)
+                Ok(0)
+            }
+
             _ => Err(-EINVAL_CHIRHO),
         }
     }
@@ -478,6 +487,21 @@ pub static FB_DEVICE_OPS_CHIRHO: FbDeviceOpsChirho = FbDeviceOpsChirho;
 /// Get the framebuffer physical address for mmap support.
 pub fn fb_phys_addr_chirho() -> u64 {
     FB_ACTUAL_PHYS_CHIRHO.load(Ordering::Relaxed)
+}
+
+/// Track the fd number that was opened for /dev/fb0 (set by open handler).
+static FB_OPEN_FD_CHIRHO: core::sync::atomic::AtomicI64 =
+    core::sync::atomic::AtomicI64::new(-1);
+
+/// Record which fd was assigned to /dev/fb0 (called from open).
+pub fn set_fb_fd_chirho(fd_chirho: u64) {
+    FB_OPEN_FD_CHIRHO.store(fd_chirho as i64, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Check if a given fd is the framebuffer device (for mmap special-casing).
+pub fn is_fb_fd_chirho(fd_chirho: u64) -> bool {
+    let stored_chirho = FB_OPEN_FD_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+    stored_chirho >= 0 && stored_chirho == fd_chirho as i64
 }
 
 /// Get the framebuffer total size for mmap support.
