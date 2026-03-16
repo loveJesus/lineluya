@@ -1982,11 +1982,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Store the return value so the caller (assembly stub) can put it in rax.
     frame_chirho.rax_chirho = result_chirho as u64;
 
-    // Preemptive scheduling: disabled (vfork model).
-    // Infrastructure ready: per-task kernel stack, per-process PTs,
-    // extended SyscallFrame with callee-saved registers.
-    // Remaining issue: child stuck in userspace after SYSRET
-    // (verified via syscall trace — no child syscalls appear).
+    // Preemptive scheduling on syscall return.
+    let skip_resched_chirho = matches!(
+        syscall_nr_chirho,
+        SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO | SYS_CLONE_CHIRHO | SYS_EXECVE_CHIRHO
+        | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO
+    );
+    if !skip_resched_chirho && crate::scheduler_chirho::need_resched_chirho() {
+        crate::scheduler_chirho::schedule_chirho();
+    }
 
     result_chirho
 }
@@ -2386,8 +2390,10 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         }
     }
 
-    // vfork: re-launch the shell after child exit.
-    crate::serial_println_chirho!("[SYSCALL] exit: re-launching shell after child exit");
+    // Yield to parent (real fork) or re-launch shell (fallback).
+    crate::serial_println_chirho!("[SYSCALL] exit: PID={} zombie, yielding", pid_chirho);
+    crate::scheduler_chirho::yield_current_chirho();
+    crate::serial_println_chirho!("[SYSCALL] exit: no parent, re-launching shell");
 
     // Re-load BusyBox as ash shell
     let shell_argv_chirho = [

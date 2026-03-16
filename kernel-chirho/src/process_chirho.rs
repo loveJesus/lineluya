@@ -153,12 +153,65 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             .as_ref()
             .map(|t_chirho| t_chirho.clone_table_chirho());
 
-        // Clone the parent's page table with COW semantics (if it has one).
+        // Create a per-process page table for the child.
+        // If parent has one, clone it with COW. Otherwise create a fresh
+        // PT (copies boot PML4 entries) — the child gets its own address
+        // space so the parent's post-fork stack writes don't corrupt it.
         let child_pt_root_chirho = match parent_chirho.page_table_root_chirho {
             Some(parent_pml4_chirho) => {
                 crate::pagetable_chirho::clone_page_table_chirho(parent_pml4_chirho)
             }
-            None => None,
+            None => {
+                // Parent has no per-process PT (initial shell in boot PML4).
+                // Create a fresh PT for the child and copy the user stack
+                // pages so parent's post-fork stack writes don't corrupt
+                // the child's saved register state on the user stack.
+                let pt_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
+                if let Some(child_pml4_chirho) = pt_chirho {
+                    // Copy the user stack pages (8 MiB region at 0x7fffff7ff000)
+                    // from the boot PML4 to the child's PML4 using fresh frames.
+                    let stack_base_chirho: u64 = 0x7fffff7ff000;
+                    let stack_pages_chirho: u64 = 2048; // 8 MiB / 4 KiB
+                    for pg_chirho in 0..stack_pages_chirho {
+                        let vaddr_chirho = stack_base_chirho + pg_chirho * 4096;
+                        if let Some((phys_chirho, flags_chirho)) =
+                            crate::pagetable_chirho::lookup_in_boot_pt_chirho(vaddr_chirho)
+                        {
+                            // Allocate a new frame and copy the page contents
+                            let new_frame_chirho = {
+                                let mut alloc_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+                                alloc_chirho.as_mut().and_then(|a_chirho| {
+                                    use x86_64::structures::paging::FrameAllocator;
+                                    a_chirho.allocate_frame()
+                                })
+                            };
+                            if let Some(frame_chirho) = new_frame_chirho {
+                                let src_virt_chirho = phys_chirho + crate::pagetable_chirho::phys_mem_offset_chirho();
+                                let dst_virt_chirho = frame_chirho.start_address().as_u64()
+                                    + crate::pagetable_chirho::phys_mem_offset_chirho();
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(
+                                        src_virt_chirho as *const u8,
+                                        dst_virt_chirho as *mut u8,
+                                        4096,
+                                    );
+                                }
+                                let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                                    child_pml4_chirho,
+                                    vaddr_chirho,
+                                    frame_chirho.start_address().as_u64(),
+                                    flags_chirho,
+                                );
+                            }
+                        }
+                    }
+                    crate::serial_println_chirho!(
+                        "[PROCESS] fork: created child PT {:#x} with copied stack",
+                        child_pml4_chirho.as_u64(),
+                    );
+                }
+                pt_chirho
+            }
         };
 
         TaskChirho {
@@ -204,14 +257,8 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
     // --- 6. Add the child to the scheduler run queue ---
     crate::scheduler_chirho::add_task_chirho(child_pid_chirho);
 
-    // --- 7. vfork: child runs first ---
-    // Real fork: context switch works, child reaches SYSRET, callee-saved
-    // regs preserved in extended SyscallFrame. But child never makes a
-    // syscall after SYSRET — stuck in userspace infinite loop. Needs QEMU
-    // GDB to trace: the child's RCX (user RIP) might be in musl's
-    // sigprocmask() instead of the fork return point due to signal mask
-    // restore interleaving.
-    0i64
+    // --- 7. Real fork with IRETQ return ---
+    child_pid_chirho as i64
 }
 
 // ===========================================================================
@@ -523,52 +570,64 @@ pub fn sys_wait4_chirho(
 #[unsafe(naked)]
 unsafe extern "C" fn fork_child_return_chirho() {
     core::arch::naked_asm!(
-        // RSP points to the extended SyscallFrameChirho:
-        //   [rsp+0x00] = rax (0 for child)
-        //   [rsp+0x08] = rdi
-        //   [rsp+0x10] = rsi
-        //   [rsp+0x18] = rdx
-        //   [rsp+0x20] = r10
-        //   [rsp+0x28] = r8
-        //   [rsp+0x30] = r9
-        //   [rsp+0x38] = rcx (user RIP)
-        //   [rsp+0x40] = r11 (user RFLAGS)
-        //   [rsp+0x48] = rsp (user stack)
-        //   [rsp+0x50] = rbx (callee-saved)
-        //   [rsp+0x58] = rbp (callee-saved)
-        //   [rsp+0x60] = r12 (callee-saved)
-        //   [rsp+0x68] = r13 (callee-saved)
-        //   [rsp+0x70] = r14 (callee-saved)
-        //   [rsp+0x78] = r15 (callee-saved)
+        // RSP points to the extended SyscallFrameChirho.
+        // Use IRETQ instead of SYSRET for more reliable ring transition.
+        // IRETQ pops: RIP, CS, RFLAGS, RSP, SS from the stack.
 
-        // Restore callee-saved registers FIRST (they use r15 as scratch later)
-        "mov rbx, [rsp + 0x50]",
-        "mov rbp, [rsp + 0x58]",
-        "mov r12, [rsp + 0x60]",
-        "mov r13, [rsp + 0x68]",
-        "mov r14, [rsp + 0x70]",
-        // Save user RSP to r15 BEFORE loading r15's saved value
-        "mov r15, [rsp + 0x48]",    // r15 = user RSP (temporary)
-        "push r15",                  // save user RSP on kernel stack
+        // First, restore ALL general-purpose registers from the frame.
+        // We use rax as scratch last (it's overwritten by the frame value).
+        "mov rbx, [rsp + 0x50]",    // rbx (callee-saved)
+        "mov rbp, [rsp + 0x58]",    // rbp (callee-saved)
+        "mov r12, [rsp + 0x60]",    // r12 (callee-saved)
+        "mov r13, [rsp + 0x68]",    // r13 (callee-saved)
+        "mov r14, [rsp + 0x70]",    // r14 (callee-saved)
+        "mov r15, [rsp + 0x78]",    // r15 (callee-saved)
+        "mov rdi, [rsp + 0x08]",    // rdi
+        "mov rsi, [rsp + 0x10]",    // rsi
+        "mov rdx, [rsp + 0x18]",    // rdx
+        "mov r10, [rsp + 0x20]",    // r10
+        "mov r8,  [rsp + 0x28]",    // r8
+        "mov r9,  [rsp + 0x30]",    // r9
+        "mov rcx, [rsp + 0x38]",    // rcx (user RIP, saved for IRETQ below)
+        "mov r11, [rsp + 0x40]",    // r11 (user RFLAGS)
 
-        // Now restore caller-saved + syscall registers
-        "mov rax, [rsp + 0x08]",    // rax = 0 (fork return) — +8 for the push
-        "mov rdi, [rsp + 0x10]",
-        "mov rsi, [rsp + 0x18]",
-        "mov rdx, [rsp + 0x20]",
-        "mov r10, [rsp + 0x28]",
-        "mov r8,  [rsp + 0x30]",
-        "mov r9,  [rsp + 0x38]",
-        "mov rcx, [rsp + 0x40]",    // rcx = user RIP
-        "mov r11, [rsp + 0x48]",    // r11 = user RFLAGS
-        // Restore r15's callee-saved value
-        "mov r15, [rsp + 0x80]",    // r15_chirho at original offset 0x78 + 8 for push
+        // Build IRETQ frame on the kernel stack.
+        // IRETQ expects (from top): RIP, CS, RFLAGS, RSP, SS
+        // We need to push these in reverse order.
 
-        // Switch to user stack (pop the saved user RSP)
-        "pop rsp",
+        // Save rax temporarily (we need rsp slot first)
+        "mov rax, [rsp + 0x48]",    // rax = user RSP (temporary)
+        "mov [rsp + 0x20], rax",    // stash user RSP in a slot we don't need (r10 slot)
 
+        // Now load rax with the fork return value
+        "mov rax, [rsp + 0x00]",    // rax = 0 (fork return)
+
+        // Build IRETQ frame on the kernel stack.
+        // IRETQ pops: RIP, CS, RFLAGS, RSP, SS (5 quadwords, 40 bytes).
+        // We build this at the TOP of the kernel stack using push.
+        // Save everything we need on the kernel stack first.
+        "push rax",                         // save rax=0
+
+        // Push IRETQ frame in REVERSE order (SS first, RIP last)
+        "mov rax, 0x23",                    // SS = user data segment
+        "push rax",
+        "mov rax, [rsp + 0x28]",            // user RSP from stashed slot (+8 for saved rax, +8 for SS push)
+        "push rax",                          // RSP
+        "push r11",                          // RFLAGS
+        "mov rax, 0x2b",                    // CS = user code segment
+        "push rax",
+        "push rcx",                          // RIP = user return address
+
+        // Restore rax=0 (skip over 5 IRETQ pushes + 1 saved rax = 48 bytes)
+        "mov rax, [rsp + 0x28]",             // saved rax at RSP+40
+        // Actually just set rax=0 directly (it's the fork return value)
+        "xor eax, eax",
+
+        // Swap GS before returning to user mode
         "swapgs",
-        "sysretq",
+
+        // Return to userspace via IRETQ
+        "iretq",
     );
 }
 
