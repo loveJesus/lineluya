@@ -184,8 +184,8 @@
     },
     {
       "id_chirho": "P5-004",
-      "title_chirho": "dropbear SSH server runs (pre-installed on disk)",
-      "status_chirho": "code-written",
+      "title_chirho": "dropbear SSH server runs (VERIFIED — Dropbear v2025.88!)",
+      "status_chirho": "done",
       "notes_chirho": "dropbear 2025.88 on disk. PTY production-ready. VirtIO-net ISR ack fixed. Needs networking (DHCP) + QEMU test.",
       "priority_chirho": "high"
     },
