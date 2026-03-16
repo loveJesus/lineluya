@@ -180,6 +180,56 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
         }
     }
 
+    // CRITICAL: Also copy the physical memory window mapping from the
+    // lower half.  The bootloader maps all physical memory at
+    // PHYS_MEM_OFFSET (typically 0x10000000000 → PML4 entry 2).
+    // Without this entry, the kernel can't access page tables, user
+    // memory, or any physical address via phys_to_virt_chirho.
+    // This was the cause of the triple fault when switching CR3.
+    let phys_offset_chirho = phys_mem_offset_chirho();
+    if phys_offset_chirho != 0 {
+        let phys_pml4_idx_chirho = ((phys_offset_chirho >> 39) & 0x1FF) as usize;
+        if phys_pml4_idx_chirho < KERNEL_PML4_START_CHIRHO {
+            let entry_chirho = &current_pml4_chirho[phys_pml4_idx_chirho];
+            if !entry_chirho.is_unused() {
+                new_pml4_chirho[phys_pml4_idx_chirho].set_addr(
+                    entry_chirho.addr(),
+                    entry_chirho.flags(),
+                );
+                crate::serial_println_chirho!(
+                    "[PAGETABLE] Copied phys-mem window PML4[{}] (offset {:#x})",
+                    phys_pml4_idx_chirho,
+                    phys_offset_chirho,
+                );
+            }
+        }
+    }
+
+    // Also copy any other non-user lower-half entries that the bootloader
+    // set up (e.g., framebuffer identity mappings, UEFI runtime services).
+    // We identify these by checking if they're NOT in typical user ranges
+    // (0x400000..0x800000000000 for user code/heap/stack).
+    let phys_pml4_idx2_chirho = if phys_offset_chirho != 0 {
+        ((phys_offset_chirho >> 39) & 0x1FF) as usize
+    } else {
+        usize::MAX
+    };
+    for i_chirho in 0..KERNEL_PML4_START_CHIRHO {
+        if new_pml4_chirho[i_chirho].is_unused() && !current_pml4_chirho[i_chirho].is_unused() {
+            // Only copy entries that map very low addresses (bootloader/fw)
+            // or the physical memory window.  Skip entries that look like
+            // they map user program addresses (will be set up per-process).
+            let vaddr_base_chirho = (i_chirho as u64) << 39;
+            // Skip typical user-space ranges (above 4 GiB user VA)
+            if vaddr_base_chirho < 0x1_0000_0000 || i_chirho == phys_pml4_idx2_chirho {
+                new_pml4_chirho[i_chirho].set_addr(
+                    current_pml4_chirho[i_chirho].addr(),
+                    current_pml4_chirho[i_chirho].flags(),
+                );
+            }
+        }
+    }
+
     crate::serial_println_chirho!(
         "[PAGETABLE] Created user page table: PML4 phys={:#x}",
         pml4_phys_chirho.as_u64()
