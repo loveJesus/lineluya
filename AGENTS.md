@@ -138,17 +138,13 @@ You can modify the following section
 - VirtIO-blk: 4K block reads, ext4 per-block I/O with page cache
 - Framebuffer: 1280x800 green-on-black, screenshots captured
 - musl 1.2.5: TLS, self-relocation, dynamic symbol resolution
-- VirtIO-net: MAC detected, DHCP DISCOVER sent (OFFER pending)
+- VirtIO-net: DHCP complete, TCP handshake + HTTP verified in PCAP
 
-### Code Written — Needs QEMU Testing
-- Full ELF GLOB_DAT/JUMP_SLOT symbol resolution (all BusyBox applets should work)
-- sqlite3 3.51.2 pre-installed on 512MB ext4 disk (statfs + fcntl locking + sendfile)
-- python3 3.12.12 pre-installed (/proc/self/exe tracking + clock_getres)
-- dropbear SSH pre-installed (PTY subsystem verified production-ready)
-- /dev/fb0 mmap maps physical framebuffer (Xorg fbdev should work)
-- .ko module loader: 60+ kernel symbols, modprobe dependency resolver, KASLR relocs
-- VirtIO-net DHCP: UDP checksum fixed, RX notification improved
-- File-backed mmap + finit_module for .ko from fd
+### Code Written — Needs More Work
+- TCP stream reassembly (recv gets partial data, needs segment ordering)
+- Preemptive scheduling (fork returns 0/vfork, dropbear needs real fork)
+- ext4 write support (needed for apk add, gcc compilation)
+- X11/Xorg with fbdev driver (fb0 mmap implemented, needs Xorg binary)
 - WASM kernel: compiles to 10KB, built-in demo shell (NOT real BusyBox)
 - CF Worker: R2/KV/D1/DO endpoints (code written, not deployed)
 - Namespaces/cgroups/seccomp: structs exist, not enforced in fork/exec
@@ -183,11 +179,13 @@ qemu-system-x86_64 \
 ```
 
 ### Known Issues
-- Fork uses vfork semantics (shell re-execs after each command)
-- DHCP OFFER not yet received (DISCOVER sent, RX polling improved)
-- No real multi-process scheduling (single-threaded kernel)
+- Fork uses vfork semantics (child runs immediately, parent waits)
+- No preemptive scheduling (cooperative only, breaks dropbear SSH server)
 - ext4 is read-only (no write support)
+- TCP recv gets partial data (needs stream reassembly)
+- Python3 stdlib loading slow under QEMU TCG (ARM64→x86_64 emulation)
+- linked_list_allocator fragmentation under heavy alloc/dealloc
 - MAP_SHARED treated as MAP_PRIVATE (single-process, functionally equivalent)
 
 ### Tags
-v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath (v1 PRD 100%), v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs
+v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath (v1 PRD 100%), v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run
