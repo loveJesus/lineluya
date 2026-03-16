@@ -2565,13 +2565,168 @@ pub fn sys_connect_chirho(
         return -ECONNREFUSED_CHIRHO;
     }
 
-    // No listener found — refuse connection
-    if let Some(ref mut connecting_chirho) = table_chirho[socket_idx_chirho] {
-        connecting_chirho.tcb_chirho.state_chirho = TcpStateChirho::ClosedChirho;
-        connecting_chirho.state_chirho = SocketStateChirho::UnconnectedChirho;
+    // No local listener — this is an OUTGOING connection.
+    // Send SYN on the network and wait for SYN-ACK.
+    drop(table_chirho); // Release lock before network I/O
+
+    // Send SYN packet via VirtIO-net
+    let (_gw_chirho, iface_idx_chirho) = match route_packet_chirho(dest_addr_chirho.addr_chirho) {
+        Ok(r_chirho) => r_chirho,
+        Err(e_chirho) => return e_chirho,
+    };
+    let src_ip_chirho = get_interface_ip_chirho(iface_idx_chirho);
+    if src_ip_chirho == 0 {
+        crate::serial_println_chirho!("[NET] sys_connect: no IP assigned, -ENETUNREACH");
+        return -99; // ENETUNREACH
     }
-    crate::serial_println_chirho!("[NET] sys_connect: no listener, -ECONNREFUSED");
-    -ECONNREFUSED_CHIRHO
+
+    let local_port_chirho = local_addr_chirho.unwrap().port_chirho;
+    let remote_port_chirho = dest_addr_chirho.port_chirho;
+    let remote_ip_chirho = dest_addr_chirho.addr_chirho;
+
+    crate::serial_println_chirho!(
+        "[NET] sys_connect: sending SYN to {}.{}.{}.{}:{}",
+        (remote_ip_chirho >> 24) & 0xFF, (remote_ip_chirho >> 16) & 0xFF,
+        (remote_ip_chirho >> 8) & 0xFF, remote_ip_chirho & 0xFF,
+        remote_port_chirho
+    );
+
+    // Build and send SYN
+    tcp_send_syn_chirho(src_ip_chirho, remote_ip_chirho, local_port_chirho, remote_port_chirho, iss_chirho);
+
+    // Poll for SYN-ACK (with timeout)
+    for poll_chirho in 0..10_000_000u32 {
+        core::hint::spin_loop();
+
+        // Check for incoming packets
+        {
+            let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
+            if let Some(dev_chirho) = devs_chirho.get_mut(0) {
+                if let Some(raw_chirho) = dev_chirho.recv_packet_chirho() {
+                    // Process the received packet — look for SYN-ACK
+                    if let Some(eth_chirho) = EthernetFrameChirho::parse_chirho(&raw_chirho) {
+                        if eth_chirho.ethertype_chirho == ETHERTYPE_IPV4_CHIRHO {
+                            if let Some(ip_chirho) = Ipv4HeaderChirho::parse_chirho(&eth_chirho.payload_chirho) {
+                                if ip_chirho.protocol_chirho == IP_PROTO_TCP_CHIRHO {
+                                    let hdr_len_chirho = (ip_chirho.ihl_chirho as usize) * 4;
+                                    if let Some(seg_chirho) = TcpSegmentChirho::parse_chirho(
+                                        &eth_chirho.payload_chirho[hdr_len_chirho..],
+                                    ) {
+                                        // Check if this is SYN-ACK for our connection
+                                        if seg_chirho.dst_port_chirho == local_port_chirho
+                                            && seg_chirho.src_port_chirho == remote_port_chirho
+                                            && (seg_chirho.flags_chirho & 0x12) == 0x12 // SYN+ACK
+                                        {
+                                            crate::serial_println_chirho!(
+                                                "[NET] sys_connect: SYN-ACK received! seq={} ack={}",
+                                                seg_chirho.seq_num_chirho,
+                                                seg_chirho.ack_num_chirho,
+                                            );
+
+                                            // Send ACK to complete handshake
+                                            tcp_send_ack_chirho(
+                                                src_ip_chirho,
+                                                remote_ip_chirho,
+                                                local_port_chirho,
+                                                remote_port_chirho,
+                                                seg_chirho.ack_num_chirho,
+                                                seg_chirho.seq_num_chirho.wrapping_add(1),
+                                            );
+
+                                            // Update socket state
+                                            let mut t_chirho = SOCKET_TABLE_CHIRHO.lock();
+                                            if let Some(ref mut s_chirho) = t_chirho[socket_idx_chirho] {
+                                                s_chirho.tcb_chirho.state_chirho = TcpStateChirho::EstablishedChirho;
+                                                s_chirho.tcb_chirho.irs_chirho = seg_chirho.seq_num_chirho;
+                                                s_chirho.tcb_chirho.rcv_nxt_chirho = seg_chirho.seq_num_chirho.wrapping_add(1);
+                                                s_chirho.tcb_chirho.snd_una_chirho = seg_chirho.ack_num_chirho;
+                                                s_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
+                                            }
+
+                                            crate::serial_println_chirho!("[NET] sys_connect: ESTABLISHED!");
+                                            return 0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if poll_chirho > 0 && poll_chirho % 2_000_000 == 0 {
+            crate::serial_println_chirho!("[NET] sys_connect: waiting for SYN-ACK ({}/10M)...", poll_chirho);
+        }
+    }
+
+    crate::serial_println_chirho!("[NET] sys_connect: timeout waiting for SYN-ACK");
+    let mut t_chirho = SOCKET_TABLE_CHIRHO.lock();
+    if let Some(ref mut s_chirho) = t_chirho[socket_idx_chirho] {
+        s_chirho.tcb_chirho.state_chirho = TcpStateChirho::ClosedChirho;
+        s_chirho.state_chirho = SocketStateChirho::UnconnectedChirho;
+    }
+    -110 // ETIMEDOUT
+}
+
+/// Send a TCP SYN packet.
+fn tcp_send_syn_chirho(
+    src_ip_chirho: u32, dst_ip_chirho: u32,
+    src_port_chirho: u16, dst_port_chirho: u16,
+    seq_chirho: u32,
+) {
+    let syn_seg_chirho = TcpSegmentChirho {
+        src_port_chirho, dst_port_chirho,
+        seq_num_chirho: seq_chirho, ack_num_chirho: 0,
+        data_offset_chirho: 5, flags_chirho: 0x02, // SYN
+        window_chirho: 65535, checksum_chirho: 0,
+        urgent_ptr_chirho: 0, 
+        payload_chirho: Vec::new(),
+    };
+    let cksum_chirho = syn_seg_chirho.compute_checksum_chirho(src_ip_chirho, dst_ip_chirho);
+    let mut syn_ck_chirho = syn_seg_chirho;
+    syn_ck_chirho.checksum_chirho = cksum_chirho;
+    let tcp_bytes_chirho = syn_ck_chirho.build_chirho();
+    let ip_hdr_chirho = Ipv4HeaderChirho {
+        version_chirho: 4, ihl_chirho: 5, tos_chirho: 0,
+        total_length_chirho: 20 + tcp_bytes_chirho.len() as u16,
+        id_chirho: 0, flags_chirho: 0x02, fragment_offset_chirho: 0,
+        ttl_chirho: 64, protocol_chirho: IP_PROTO_TCP_CHIRHO,
+        checksum_chirho: 0, src_ip_chirho, dst_ip_chirho,
+    };
+    let mut pkt_chirho = ip_hdr_chirho.build_chirho();
+    pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
+    let _ = send_ip_packet_chirho(&pkt_chirho);
+}
+
+/// Send a TCP ACK packet.
+fn tcp_send_ack_chirho(
+    src_ip_chirho: u32, dst_ip_chirho: u32,
+    src_port_chirho: u16, dst_port_chirho: u16,
+    seq_chirho: u32, ack_chirho: u32,
+) {
+    let ack_seg_chirho = TcpSegmentChirho {
+        src_port_chirho, dst_port_chirho,
+        seq_num_chirho: seq_chirho, ack_num_chirho: ack_chirho,
+        data_offset_chirho: 5, flags_chirho: 0x10, // ACK
+        window_chirho: 65535, checksum_chirho: 0,
+        urgent_ptr_chirho: 0, 
+        payload_chirho: Vec::new(),
+    };
+    let cksum_chirho = ack_seg_chirho.compute_checksum_chirho(src_ip_chirho, dst_ip_chirho);
+    let mut ack_ck_chirho = ack_seg_chirho;
+    ack_ck_chirho.checksum_chirho = cksum_chirho;
+    let tcp_bytes_chirho = ack_ck_chirho.build_chirho();
+    let ip_hdr_chirho = Ipv4HeaderChirho {
+        version_chirho: 4, ihl_chirho: 5, tos_chirho: 0,
+        total_length_chirho: 20 + tcp_bytes_chirho.len() as u16,
+        id_chirho: 0, flags_chirho: 0x02, fragment_offset_chirho: 0,
+        ttl_chirho: 64, protocol_chirho: IP_PROTO_TCP_CHIRHO,
+        checksum_chirho: 0, src_ip_chirho, dst_ip_chirho,
+    };
+    let mut pkt_chirho = ip_hdr_chirho.build_chirho();
+    pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
+    let _ = send_ip_packet_chirho(&pkt_chirho);
 }
 
 /// `sendto(2)` — send data through a socket.
