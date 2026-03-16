@@ -327,8 +327,67 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
         }
     }
 
-    // Could not handle the page fault — halt.
+    // Could not handle the page fault — log and halt.
     x86_64::instructions::interrupts::disable();
+    {
+        use x86_64::registers::control::Cr2;
+        let fault_addr_chirho = Cr2::read().unwrap_or(x86_64::VirtAddr::zero());
+        // Use raw serial port write to avoid mutex deadlock
+        let msg_chirho = b"\r\n!!! PAGE FAULT - UNHANDLED !!!\r\n";
+        for &b_chirho in msg_chirho {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
+        // Print fault address as hex
+        let addr_val_chirho = fault_addr_chirho.as_u64();
+        let hex_chars_chirho = b"0123456789abcdef";
+        let prefix_chirho = b"addr=0x";
+        for &b_chirho in prefix_chirho {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
+        for shift_chirho in (0..16).rev() {
+            let nibble_chirho = ((addr_val_chirho >> (shift_chirho * 4)) & 0xF) as usize;
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(hex_chars_chirho[nibble_chirho]);
+            }
+        }
+        // Print error code
+        let err_prefix_chirho = b" err=";
+        for &b_chirho in err_prefix_chirho {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
+        let err_val_chirho = error_code_chirho.bits() as u64;
+        for shift_chirho in (0..2).rev() {
+            let nibble_chirho = ((err_val_chirho >> (shift_chirho * 4)) & 0xF) as usize;
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(hex_chars_chirho[nibble_chirho]);
+            }
+        }
+        let user_str_chirho = if is_user_chirho { b" USER" } else { b" KERN" };
+        for &b_chirho in user_str_chirho.iter() {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
+        let nl_chirho = b"\r\n";
+        for &b_chirho in nl_chirho {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
+    }
     loop {
         x86_64::instructions::hlt();
     }

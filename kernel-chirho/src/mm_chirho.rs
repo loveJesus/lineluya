@@ -232,9 +232,14 @@ impl MmChirho {
         }
 
         // Map the physical frames into the kernel page tables.
-        // TEMPORARY: We use the kernel mapper because per-process page tables
-        // are not yet implemented.
-        map_anonymous_pages_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho)?;
+        // For file-backed mappings, map as RW initially so we can copy
+        // file data in, then change to the requested protection after.
+        let initial_prot_chirho = if has_file_chirho {
+            PROT_READ_CHIRHO | PROT_WRITE_CHIRHO | PROT_EXEC_CHIRHO
+        } else {
+            prot_chirho
+        };
+        map_anonymous_pages_chirho(map_addr_chirho, aligned_len_chirho, initial_prot_chirho)?;
 
         // For file-backed mappings, read the file data ONCE and copy it
         // into the mapped region. The old approach (read in 4K loop via
@@ -257,16 +262,18 @@ impl MmChirho {
             );
             if let Some(data_chirho) = file_data_chirho {
                 let copy_len_chirho = core::cmp::min(data_chirho.len(), aligned_len_chirho as usize);
-                crate::serial_println_chirho!(
-                    "[MMAP] copying {} bytes to {:#x}",
-                    copy_len_chirho, map_addr_chirho
-                );
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        data_chirho.as_ptr(),
-                        map_addr_chirho as *mut u8,
-                        copy_len_chirho,
-                    );
+                if copy_len_chirho > 0 {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            data_chirho.as_ptr(),
+                            map_addr_chirho as *mut u8,
+                            copy_len_chirho,
+                        );
+                    }
+                }
+                // Now change protection to what was requested (may be read-only)
+                if prot_chirho != initial_prot_chirho {
+                    update_page_protection_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho);
                 }
             }
         }
