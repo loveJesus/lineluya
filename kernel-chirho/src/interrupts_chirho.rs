@@ -722,7 +722,7 @@ extern "x86-interrupt" fn device_not_available_handler_chirho(_sf: InterruptStac
             "or ax, 0x2",     // set CR0.MP (bit 1)
             "mov cr0, rax",
             "mov rax, cr4",
-            "or ax, 0x600",   // set CR4.OSFXSR + CR4.OSXMMEXCPT
+            "or eax, 0x10600", // set CR4.OSFXSR(9) + CR4.OSXMMEXCPT(10) + CR4.FSGSBASE(16)
             "mov cr4, rax",
             out("rax") _,
             options(nomem, nostack)
