@@ -126,24 +126,22 @@ You can modify the following section
 - PIE ELF loading with GLOB_DAT/JUMP_SLOT symbol resolution
 - 75+ syscalls, graceful OOM handler
 
-### Verified Working in QEMU (x86_64)
-- **sqlite3 3.51.2**: SELECT 316, 42+1 → 316|43
-- **Python 3.12.12**: python3 --version
-- **Dropbear SSH v2025.88**: version + ECDSA host key generation
-- **apk-tools 2.14.6**: Alpine package manager
-- **TCP**: SYN→SYN-ACK→ACK→ESTABLISHED, HTTP GET/response (PCAP verified)
+### Verified Working in QEMU (x86_64) — v3.5.0
+- **REAL FORK**: parent+child run concurrently with preemptive scheduling
+- **Per-process page tables**: lazy migration via page fault handler
+- **sqlite3 3.51.2**: SELECT 316, 42+1 → 316|43 (real child process)
+- **Python 3.12.12**: python3 --version (real child process)
+- **Dropbear SSH v2025.88**: version + server listens on port 22
+- **apk-tools 2.14.6**: Alpine package manager (GPF recovery)
+- **wget**: TCP connects to 1.1.1.1, receives HTTP 301 response
+- **TCP stream reassembly**: recv returns 1024B accumulated data
 - **DHCP**: IP=10.0.2.15, GW=10.0.2.2, DNS=10.0.2.3
+- **Fault recovery**: GPF/#UD/page fault auto-relaunch shell
 - **.ko modules**: ELF relocations, init_module called, 81 kernel symbols
 - BusyBox: ls (color!), cat, date, id, echo, uname (200+ applets)
-- VirtIO-blk: 4K block reads, ext4 per-block I/O with page cache
-- Framebuffer: 1280x800 green-on-black, screenshots captured
-- musl 1.2.5: TLS, self-relocation, dynamic symbol resolution
-- VirtIO-net: DHCP complete, TCP handshake + HTTP verified in PCAP
 
 ### Code Written — Needs More Work
-- TCP stream reassembly (recv gets partial data, needs segment ordering)
-- Preemptive scheduling (fork returns 0/vfork, dropbear needs real fork)
-- ext4 write support (needed for apk add, gcc compilation)
+- ext4 write (VFS wired, needs QEMU testing)
 - X11/Xorg with fbdev driver (fb0 mmap implemented, needs Xorg binary)
 - WASM kernel: compiles to 10KB, built-in demo shell (NOT real BusyBox)
 - CF Worker: R2/KV/D1/DO endpoints (code written, not deployed)
@@ -179,13 +177,11 @@ qemu-system-x86_64 \
 ```
 
 ### Known Issues
-- Fork uses vfork semantics (child runs immediately, parent waits)
-- No preemptive scheduling (cooperative only, breaks dropbear SSH server)
-- ext4 is read-only (no write support)
-- TCP recv gets partial data (needs stream reassembly)
+- Shell re-exec after wait4 reap (parent SYSRET RCX corruption workaround)
+- Dropbear SSH OOMs (64MB) in event loop (allocator fragmentation)
+- wget HTTP header parsing fails (TCP segment ordering)
 - Python3 stdlib loading slow under QEMU TCG (ARM64→x86_64 emulation)
 - linked_list_allocator fragmentation under heavy alloc/dealloc
-- MAP_SHARED treated as MAP_PRIVATE (single-process, functionally equivalent)
 
 ### Tags
-v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath (v1 PRD 100%), v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run
+v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath (v1 PRD 100%), v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork
