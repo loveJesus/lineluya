@@ -57,7 +57,11 @@ struct ProcSymlinkTargetChirho {
 // ---------------------------------------------------------------------------
 
 fn gen_version_chirho() -> String {
-    String::from("Linux version 0.1.0 (lineluya@rust) (gcc) #1 SMP\n")
+    // CARGO_PKG_VERSION from Cargo.toml at compile time
+    alloc::format!(
+        "Lineluya {} (kernel-chirho) (rustc nightly) #1 SMP x86_64\n",
+        env!("CARGO_PKG_VERSION"),
+    )
 }
 
 fn gen_cpuinfo_chirho() -> String {
@@ -65,7 +69,13 @@ fn gen_cpuinfo_chirho() -> String {
 }
 
 fn gen_meminfo_chirho() -> String {
-    String::from("MemTotal:       524288 kB\nMemFree:        262144 kB\nMemAvailable:   262144 kB\n")
+    // Report actual heap size (288MB = 32MB fast + 256MB buddy)
+    let total_kb_chirho = (crate::allocator_chirho::HEAP_SIZE_CHIRHO / 1024) as u64;
+    let free_kb_chirho = total_kb_chirho / 2; // approximate
+    alloc::format!(
+        "MemTotal:    {:>8} kB\nMemFree:     {:>8} kB\nMemAvailable:{:>8} kB\nBuffers:            0 kB\nCached:             0 kB\nSwapTotal:          0 kB\nSwapFree:           0 kB\n",
+        total_kb_chirho, free_kb_chirho, free_kb_chirho
+    )
 }
 
 fn gen_uptime_chirho() -> String {
