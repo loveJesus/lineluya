@@ -380,6 +380,16 @@ pub fn resolve_path_chirho(
         let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
         for mount_chirho in mounts_chirho.iter() {
             let mount_path_chirho = &mount_chirho.path_chirho;
+            // Special case: "/" matches all absolute paths
+            if mount_path_chirho == "/" {
+                if mount_prefix_len_chirho == 0 {
+                    mount_prefix_len_chirho = 1;
+                    current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
+                }
+                continue;
+            }
+            // Normal mount: path must start with mount_path and be
+            // followed by '/' or be an exact match
             if path_chirho.starts_with(mount_path_chirho.as_str())
                 && mount_path_chirho.len() > mount_prefix_len_chirho
                 && (path_chirho.len() == mount_path_chirho.len()
