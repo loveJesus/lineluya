@@ -943,6 +943,415 @@ pub unsafe fn resolve_needed_names_chirho(
 }
 
 // ============================================================================
+// Symbol resolution for R_X86_64_GLOB_DAT / R_X86_64_JUMP_SLOT
+// ============================================================================
+
+/// ELF symbol binding constants.
+const STB_GLOBAL_CHIRHO: u8 = 1;
+const STB_WEAK_CHIRHO: u8 = 2;
+
+/// ELF special section index: undefined symbol.
+const SHN_UNDEF_CHIRHO: u16 = 0;
+
+/// Extract binding from `st_info` (high 4 bits).
+#[inline]
+fn elf64_st_bind_chirho(info_chirho: u8) -> u8 {
+    info_chirho >> 4
+}
+
+/// Determine the number of symbols in the symbol table by reading the
+/// `DT_HASH` table.  The ELF hash table layout is:
+///   `[nbucket: u32] [nchain: u32] [bucket[nbucket]] [chain[nchain]]`
+/// where `nchain` equals the number of symbol table entries.
+///
+/// Falls back to `DT_GNU_HASH` if `DT_HASH` is not present.
+///
+/// # Safety
+///
+/// The hash table address must point to mapped, readable memory.
+unsafe fn symtab_count_from_hash_chirho(info_chirho: &DynamicInfoChirho) -> usize {
+    // ---- Try classic DT_HASH first (simplest) ----
+    if info_chirho.hash_addr_chirho != 0 {
+        let hash_ptr_chirho = info_chirho.hash_addr_chirho as *const u32;
+        // nchain is the second u32 and equals the symbol count.
+        let nchain_chirho = core::ptr::read_unaligned(hash_ptr_chirho.add(1));
+        return nchain_chirho as usize;
+    }
+
+    // ---- Fall back to DT_GNU_HASH ----
+    // GNU hash layout:
+    //   u32 nbuckets
+    //   u32 symoffset  (index of first symbol in the hash)
+    //   u32 bloom_size
+    //   u32 bloom_shift
+    //   u64[bloom_size]  bloom filter
+    //   u32[nbuckets]    buckets (each stores a symtab index, or 0)
+    //   u32[]            chains (one per hashed symbol, high bit = end)
+    //
+    // The maximum symbol index is found by scanning all bucket values for
+    // the largest, then walking the chain from that bucket until the
+    // terminator bit (bit 0) is set.
+    if info_chirho.gnu_hash_addr_chirho != 0 {
+        let base_chirho = info_chirho.gnu_hash_addr_chirho as *const u32;
+        let nbuckets_chirho = core::ptr::read_unaligned(base_chirho) as usize;
+        let symoffset_chirho = core::ptr::read_unaligned(base_chirho.add(1)) as usize;
+        let bloom_size_chirho = core::ptr::read_unaligned(base_chirho.add(2)) as usize;
+        // bloom filter is u64 array
+        let buckets_ptr_chirho = (info_chirho.gnu_hash_addr_chirho
+            + 16  // 4 x u32 header
+            + (bloom_size_chirho as u64) * 8) as *const u32;
+
+        // Find the maximum symbol index across all buckets.
+        let mut max_sym_chirho: u32 = 0;
+        for idx_chirho in 0..nbuckets_chirho {
+            let bucket_val_chirho = core::ptr::read_unaligned(buckets_ptr_chirho.add(idx_chirho));
+            if bucket_val_chirho > max_sym_chirho {
+                max_sym_chirho = bucket_val_chirho;
+            }
+        }
+
+        if max_sym_chirho == 0 {
+            // No symbols hashed — return symoffset as lower bound.
+            return symoffset_chirho;
+        }
+
+        // Walk the chain from max_sym_chirho until the end-of-chain bit (bit 0) is set.
+        let chains_ptr_chirho = buckets_ptr_chirho.add(nbuckets_chirho);
+        let mut sym_idx_chirho = max_sym_chirho;
+        loop {
+            let chain_val_chirho = core::ptr::read_unaligned(
+                chains_ptr_chirho.add((sym_idx_chirho - symoffset_chirho as u32) as usize),
+            );
+            if chain_val_chirho & 1 != 0 {
+                // End of chain — sym_idx_chirho is the last symbol.
+                break;
+            }
+            sym_idx_chirho += 1;
+        }
+
+        return (sym_idx_chirho + 1) as usize;
+    }
+
+    // No hash table available — return 0 (caller should handle gracefully).
+    0
+}
+
+/// Look up a symbol name in the interpreter's (musl's) exported symbols.
+///
+/// Iterates the interpreter's `DT_SYMTAB` and compares names via
+/// `DT_STRTAB`.  Returns the **file-relative** `st_value` of the first
+/// matching `STB_GLOBAL` or `STB_WEAK` symbol with a non-zero value and
+/// defined section (i.e. `st_shndx != SHN_UNDEF`).
+///
+/// # Safety
+///
+/// Both the symbol table and string table must reside in mapped memory.
+unsafe fn lookup_symbol_in_interp_chirho(
+    name_chirho: &[u8],
+    interp_info_chirho: &DynamicInfoChirho,
+    interp_sym_count_chirho: usize,
+) -> Option<u64> {
+    if interp_info_chirho.symtab_addr_chirho == 0
+        || interp_info_chirho.strtab_addr_chirho == 0
+        || interp_sym_count_chirho == 0
+    {
+        return None;
+    }
+
+    let sym_size_chirho = if interp_info_chirho.syment_size_chirho != 0 {
+        interp_info_chirho.syment_size_chirho as usize
+    } else {
+        mem::size_of::<Elf64SymChirho>()
+    };
+
+    for idx_chirho in 1..interp_sym_count_chirho {
+        let sym_addr_chirho =
+            interp_info_chirho.symtab_addr_chirho + (idx_chirho as u64) * (sym_size_chirho as u64);
+        let sym_chirho = core::ptr::read_unaligned(sym_addr_chirho as *const Elf64SymChirho);
+
+        // Skip undefined symbols and symbols with zero value.
+        if sym_chirho.st_shndx_chirho == SHN_UNDEF_CHIRHO || sym_chirho.st_value_chirho == 0 {
+            continue;
+        }
+
+        // Only consider GLOBAL or WEAK bindings.
+        let binding_chirho = elf64_st_bind_chirho(sym_chirho.st_info_chirho);
+        if binding_chirho != STB_GLOBAL_CHIRHO && binding_chirho != STB_WEAK_CHIRHO {
+            continue;
+        }
+
+        // Compare the symbol name byte-by-byte.
+        let str_ptr_chirho =
+            (interp_info_chirho.strtab_addr_chirho + sym_chirho.st_name_chirho as u64) as *const u8;
+
+        let mut match_chirho = true;
+        for (pos_chirho, &expected_byte_chirho) in name_chirho.iter().enumerate() {
+            let actual_byte_chirho = core::ptr::read(str_ptr_chirho.add(pos_chirho));
+            if actual_byte_chirho != expected_byte_chirho {
+                match_chirho = false;
+                break;
+            }
+        }
+        // The name in strtab must also be NUL-terminated right after.
+        if match_chirho {
+            let term_byte_chirho = core::ptr::read(str_ptr_chirho.add(name_chirho.len()));
+            if term_byte_chirho != 0 {
+                match_chirho = false;
+            }
+        }
+
+        if match_chirho {
+            return Some(sym_chirho.st_value_chirho);
+        }
+    }
+
+    None
+}
+
+/// Read a NUL-terminated symbol name from a string table, returning a
+/// byte slice up to `max_len_chirho` bytes (not including the NUL).
+///
+/// # Safety
+///
+/// The string table must be in mapped memory.
+unsafe fn read_sym_name_bytes_chirho(
+    strtab_addr_chirho: u64,
+    name_offset_chirho: u32,
+    buf_chirho: &mut [u8],
+) -> usize {
+    let ptr_chirho = (strtab_addr_chirho + name_offset_chirho as u64) as *const u8;
+    let mut len_chirho: usize = 0;
+    while len_chirho < buf_chirho.len() {
+        let byte_chirho = core::ptr::read(ptr_chirho.add(len_chirho));
+        if byte_chirho == 0 {
+            break;
+        }
+        buf_chirho[len_chirho] = byte_chirho;
+        len_chirho += 1;
+    }
+    len_chirho
+}
+
+/// Resolve `R_X86_64_GLOB_DAT` and `R_X86_64_JUMP_SLOT` relocations in a
+/// binary by looking up each referenced symbol in the interpreter's
+/// (musl's) exported symbol table.
+///
+/// For each relocation:
+///   1. Extract the symbol index from `r_info`.
+///   2. Read the symbol name from the binary's own `DT_STRTAB`.
+///   3. Look up that name in the interpreter's `DT_SYMTAB`.
+///   4. Write `interp_base + interp_sym_value` to the GOT slot at
+///      `binary_base + r_offset`.
+///
+/// This handles both the DT_RELA table and the DT_JMPREL (PLT) table.
+///
+/// # Safety
+///
+/// All relocation targets, symbol tables, and string tables must reside in
+/// mapped, writable memory.
+pub unsafe fn resolve_symbol_relocs_chirho(
+    bin_info_chirho: &DynamicInfoChirho,
+    bin_load_bias_chirho: u64,
+    interp_info_chirho: &DynamicInfoChirho,
+    interp_base_chirho: u64,
+) {
+    // Determine how many symbols the interpreter exports.
+    let interp_sym_count_chirho = symtab_count_from_hash_chirho(interp_info_chirho);
+    serial_println_chirho!(
+        "[SYMRES] Interpreter symbol count: {} (hash={:#x}, gnu_hash={:#x})",
+        interp_sym_count_chirho,
+        interp_info_chirho.hash_addr_chirho,
+        interp_info_chirho.gnu_hash_addr_chirho
+    );
+
+    if interp_sym_count_chirho == 0 {
+        serial_println_chirho!("[SYMRES] WARNING: no symbols found in interpreter, skipping");
+        return;
+    }
+
+    let bin_sym_size_chirho = if bin_info_chirho.syment_size_chirho != 0 {
+        bin_info_chirho.syment_size_chirho as usize
+    } else {
+        mem::size_of::<Elf64SymChirho>()
+    };
+
+    let mut resolved_count_chirho: usize = 0;
+    let mut unresolved_count_chirho: usize = 0;
+
+    // A buffer for reading symbol names.
+    let mut name_buf_chirho = [0u8; 256];
+
+    // ---- Process DT_RELA table ----
+    resolve_rela_table_chirho(
+        bin_info_chirho.rela_addr_chirho,
+        bin_info_chirho.rela_size_chirho,
+        bin_info_chirho.relaent_size_chirho,
+        bin_info_chirho,
+        bin_sym_size_chirho,
+        bin_load_bias_chirho,
+        interp_info_chirho,
+        interp_base_chirho,
+        interp_sym_count_chirho,
+        &mut name_buf_chirho,
+        &mut resolved_count_chirho,
+        &mut unresolved_count_chirho,
+    );
+
+    // ---- Process DT_JMPREL (PLT) table ----
+    resolve_rela_table_chirho(
+        bin_info_chirho.jmprel_addr_chirho,
+        bin_info_chirho.pltrelsz_chirho,
+        mem::size_of::<Elf64RelaChirho>() as u64, // JMPREL entries are always Elf64_Rela-sized
+        bin_info_chirho,
+        bin_sym_size_chirho,
+        bin_load_bias_chirho,
+        interp_info_chirho,
+        interp_base_chirho,
+        interp_sym_count_chirho,
+        &mut name_buf_chirho,
+        &mut resolved_count_chirho,
+        &mut unresolved_count_chirho,
+    );
+
+    serial_println_chirho!(
+        "[SYMRES] Symbol resolution complete: {} resolved, {} unresolved",
+        resolved_count_chirho,
+        unresolved_count_chirho
+    );
+}
+
+/// Process a single RELA relocation table, resolving GLOB_DAT and JUMP_SLOT
+/// entries against the interpreter's symbol table.
+///
+/// # Safety
+///
+/// All addresses must be in mapped memory.
+unsafe fn resolve_rela_table_chirho(
+    rela_addr_chirho: u64,
+    rela_size_chirho: u64,
+    relaent_size_chirho: u64,
+    bin_info_chirho: &DynamicInfoChirho,
+    bin_sym_size_chirho: usize,
+    bin_load_bias_chirho: u64,
+    interp_info_chirho: &DynamicInfoChirho,
+    interp_base_chirho: u64,
+    interp_sym_count_chirho: usize,
+    name_buf_chirho: &mut [u8; 256],
+    resolved_count_chirho: &mut usize,
+    unresolved_count_chirho: &mut usize,
+) {
+    if rela_addr_chirho == 0 || rela_size_chirho == 0 {
+        return;
+    }
+
+    let entry_size_chirho = relaent_size_chirho.max(mem::size_of::<Elf64RelaChirho>() as u64);
+    let num_entries_chirho = rela_size_chirho / entry_size_chirho;
+
+    for idx_chirho in 0..num_entries_chirho {
+        let entry_addr_chirho = rela_addr_chirho + idx_chirho * entry_size_chirho;
+        let rela_chirho = core::ptr::read_unaligned(entry_addr_chirho as *const Elf64RelaChirho);
+
+        let rtype_chirho = rela_chirho.rela_type_chirho();
+
+        if rtype_chirho != R_X86_64_GLOB_DAT_CHIRHO
+            && rtype_chirho != R_X86_64_JUMP_SLOT_CHIRHO
+        {
+            continue; // Only handle these two types here.
+        }
+
+        let sym_idx_chirho = rela_chirho.rela_sym_chirho();
+        if sym_idx_chirho == 0 {
+            continue; // No symbol — skip.
+        }
+
+        // Read the symbol entry from the binary's own symtab.
+        let bin_sym_addr_chirho = bin_info_chirho.symtab_addr_chirho
+            + (sym_idx_chirho as u64) * (bin_sym_size_chirho as u64);
+        let bin_sym_chirho =
+            core::ptr::read_unaligned(bin_sym_addr_chirho as *const Elf64SymChirho);
+
+        // Read the symbol name from the binary's strtab.
+        let name_len_chirho = read_sym_name_bytes_chirho(
+            bin_info_chirho.strtab_addr_chirho,
+            bin_sym_chirho.st_name_chirho,
+            name_buf_chirho,
+        );
+
+        if name_len_chirho == 0 {
+            *unresolved_count_chirho += 1;
+            continue;
+        }
+
+        let name_slice_chirho = &name_buf_chirho[..name_len_chirho];
+
+        // Look up this symbol in the interpreter's exports.
+        match lookup_symbol_in_interp_chirho(
+            name_slice_chirho,
+            interp_info_chirho,
+            interp_sym_count_chirho,
+        ) {
+            Some(interp_sym_value_chirho) => {
+                let resolved_addr_chirho =
+                    interp_base_chirho.wrapping_add(interp_sym_value_chirho);
+                let got_slot_addr_chirho =
+                    rela_chirho.r_offset_chirho.wrapping_add(bin_load_bias_chirho);
+
+                core::ptr::write(got_slot_addr_chirho as *mut u64, resolved_addr_chirho);
+
+                *resolved_count_chirho += 1;
+
+                // Log first few resolutions for debugging.
+                if *resolved_count_chirho <= 10 {
+                    // Build a short name for logging (avoid alloc).
+                    let log_len_chirho = name_len_chirho.min(48);
+                    let mut log_buf_chirho = [0u8; 48];
+                    log_buf_chirho[..log_len_chirho]
+                        .copy_from_slice(&name_slice_chirho[..log_len_chirho]);
+                    if let Ok(name_str_chirho) =
+                        core::str::from_utf8(&log_buf_chirho[..log_len_chirho])
+                    {
+                        serial_println_chirho!(
+                            "[SYMRES]   {} -> {:#x} (GOT@{:#x})",
+                            name_str_chirho,
+                            resolved_addr_chirho,
+                            got_slot_addr_chirho
+                        );
+                    }
+                }
+            }
+            None => {
+                // Symbol not found in interpreter.
+                // For weak symbols that are allowed to be unresolved,
+                // write 0. For required symbols, log a warning.
+                let got_slot_addr_chirho =
+                    rela_chirho.r_offset_chirho.wrapping_add(bin_load_bias_chirho);
+
+                // Check if the symbol is weak in the binary's own symtab.
+                let binding_chirho = elf64_st_bind_chirho(bin_sym_chirho.st_info_chirho);
+                if binding_chirho == STB_WEAK_CHIRHO {
+                    // Weak — OK to leave as 0.
+                    core::ptr::write(got_slot_addr_chirho as *mut u64, 0);
+                } else if *unresolved_count_chirho < 10 {
+                    // Log a few unresolved strong symbols for debugging.
+                    let log_len_chirho = name_len_chirho.min(48);
+                    if let Ok(name_str_chirho) =
+                        core::str::from_utf8(&name_buf_chirho[..log_len_chirho])
+                    {
+                        serial_println_chirho!(
+                            "[SYMRES]   UNRESOLVED: {} (GOT@{:#x})",
+                            name_str_chirho,
+                            got_slot_addr_chirho
+                        );
+                    }
+                }
+
+                *unresolved_count_chirho += 1;
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Internal helpers
 // ============================================================================
 
