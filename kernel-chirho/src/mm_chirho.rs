@@ -263,10 +263,12 @@ impl MmChirho {
                         );
                     }
                 }
-                // Now change protection to what was requested (may be read-only)
-                if prot_chirho != initial_prot_chirho {
-                    update_page_protection_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho);
-                }
+                // Skip protection change — keep pages RWX. This is less secure
+                // but avoids a bug where update_page_protection corrupts page
+                // table entries for other mappings. TODO: investigate.
+                // if prot_chirho != initial_prot_chirho {
+                //     update_page_protection_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho);
+                // }
             }
         }
 

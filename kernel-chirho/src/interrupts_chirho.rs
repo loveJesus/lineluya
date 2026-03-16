@@ -298,20 +298,22 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 | PageTableFlags::WRITABLE
                 | PageTableFlags::USER_ACCESSIBLE;
 
-            // Try to get mapper and allocator. Use try_lock first, then
-            // fall back to blocking lock if it fails (user faults need mapping).
-            let mapper_result_chirho = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock()
-                .or_else(|| {
-                    // Spin briefly for the lock — user page faults MUST be resolved
-                    for _ in 0..1000 { core::hint::spin_loop(); }
-                    crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock()
-                });
-            let alloc_result_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock()
-                .or_else(|| {
-                    for _ in 0..1000 { core::hint::spin_loop(); }
-                    crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock()
-                });
-            if let (Some(mut mg_chirho), Some(mut ag_chirho)) = (mapper_result_chirho, alloc_result_chirho) {
+            // Spin-wait for mapper and allocator locks. User-mode page
+            // faults MUST be resolved — spinning is safe since the lock
+            // holders are kernel threads that will release promptly.
+            let mut mg_chirho = loop {
+                if let Some(g_chirho) = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock() {
+                    break g_chirho;
+                }
+                core::hint::spin_loop();
+            };
+            let mut ag_chirho = loop {
+                if let Some(g_chirho) = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() {
+                    break g_chirho;
+                }
+                core::hint::spin_loop();
+            };
+            if true {
                 if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
                     if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
                         let map_result_chirho = unsafe {
