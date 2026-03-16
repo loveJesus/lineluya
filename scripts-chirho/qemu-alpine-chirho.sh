@@ -25,7 +25,7 @@ KERNEL_UEFI_CHIRHO="$PROJECT_DIR_CHIRHO/target/disk-images-chirho/lineluya-uefi-
 KERNEL_BIN_CHIRHO="$PROJECT_DIR_CHIRHO/target/x86_64-lineluya-chirho/release/lineluya-chirho"
 
 # Alpine rootfs
-ALPINE_ROOTFS_CHIRHO="$PROJECT_DIR_CHIRHO/target/alpine-rootfs-chirho/alpine-rootfs-chirho.img"
+ALPINE_ROOTFS_CHIRHO="$PROJECT_DIR_CHIRHO/target/alpine-virtio-chirho/alpine-virtio-chirho.img"
 
 # QEMU defaults
 MEMORY_CHIRHO="${MEMORY_CHIRHO:-1G}"
@@ -190,18 +190,16 @@ build_qemu_cmd_chirho() {
         fi
     fi
 
-    # ---- Alpine rootfs disk ----
-    cmd_chirho+=(-drive "format=raw,file=$ALPINE_ROOTFS_CHIRHO,id=alpine-disk-chirho,if=none")
-    cmd_chirho+=(-device "ahci,id=ahci-chirho")
-    cmd_chirho+=(-device "ide-hd,drive=alpine-disk-chirho,bus=ahci-chirho.0")
+    # ---- Alpine rootfs disk (VirtIO-blk) ----
+    cmd_chirho+=(-drive "file=$ALPINE_ROOTFS_CHIRHO,format=raw,if=virtio")
 
     # ---- Serial console (primary I/O for Lineluya) ----
     cmd_chirho+=(-serial stdio)
     cmd_chirho+=(-nographic)
 
-    # ---- Networking (user-mode, port forward SSH) ----
+    # ---- Networking (VirtIO-net, user-mode, port forward SSH) ----
     cmd_chirho+=(-netdev "user,id=net0-chirho,hostfwd=tcp::2222-:22")
-    cmd_chirho+=(-device "e1000,netdev=net0-chirho")
+    cmd_chirho+=(-device "virtio-net-pci,netdev=net0-chirho")
 
     # ---- Debug mode ----
     if [[ "$DEBUG_MODE_CHIRHO" -eq 1 ]]; then
