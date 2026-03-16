@@ -1528,10 +1528,132 @@ pub fn init_kernel_symbols_chirho() {
         free_irq_stub_chirho as *const () as u64,
     );
 
+    // A2-014: DMA / memory mapping stubs (needed by device drivers)
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("dma_alloc_coherent"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("dma_free_coherent"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("dma_map_single"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("dma_unmap_single"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("ioremap"),
+        ioremap_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("iounmap"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("request_mem_region"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("release_mem_region"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+
+    // A2-015: Network driver registration stubs
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("register_netdev"),
+        netdev_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("unregister_netdev"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("alloc_etherdev"),
+        alloc_etherdev_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("free_netdev"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("netif_start_queue"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("netif_stop_queue"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("netif_wake_queue"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+
+    // Misc kernel APIs needed by drivers
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("msleep"),
+        msleep_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("udelay"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("mdelay"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("jiffies"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__this_module"),
+        dma_noop_stub_chirho as *const () as u64,
+    );
+
     crate::serial_println_chirho!(
         "[KO] Kernel symbol table ready ({} symbols)",
         KernelSymbolTableChirho::symbol_count_chirho()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Additional C ABI stubs for driver support
+// ---------------------------------------------------------------------------
+
+/// No-op stub for functions that don't need real implementation.
+unsafe extern "C" fn dma_noop_stub_chirho() {}
+
+/// ioremap stub: returns the physical address + phys_mem_offset.
+unsafe extern "C" fn ioremap_stub_chirho(
+    phys_addr_chirho: u64,
+    _size_chirho: u64,
+) -> u64 {
+    phys_addr_chirho + crate::pagetable_chirho::phys_mem_offset_chirho()
+}
+
+/// register_netdev stub: always succeeds.
+unsafe extern "C" fn netdev_noop_stub_chirho(_dev_chirho: u64) -> i32 {
+    0
+}
+
+/// alloc_etherdev stub: allocates zeroed memory for a net_device.
+unsafe extern "C" fn alloc_etherdev_stub_chirho(sizeof_priv_chirho: i32) -> u64 {
+    let size_chirho = 2048 + sizeof_priv_chirho as usize;
+    let layout_chirho = core::alloc::Layout::from_size_align(size_chirho, 8)
+        .unwrap_or(core::alloc::Layout::new::<u8>());
+    let ptr_chirho = alloc::alloc::alloc_zeroed(layout_chirho);
+    ptr_chirho as u64
+}
+
+/// msleep stub: busy-wait for approximately N milliseconds.
+unsafe extern "C" fn msleep_stub_chirho(msecs_chirho: u32) {
+    for _ in 0..(msecs_chirho as u64 * 10_000) {
+        core::hint::spin_loop();
+    }
 }
 
 // ---------------------------------------------------------------------------
