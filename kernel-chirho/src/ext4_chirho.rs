@@ -681,8 +681,10 @@ impl PageCacheChirho {
 }
 
 /// Global page cache instance (protected by a spinlock).
+/// 256 entries × 4KB = 1MB cache. Reduced from 4096 (16MB) to avoid
+/// fragmenting the buddy allocator's 256MB region.
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
-    spin::Mutex::new(PageCacheChirho::new_chirho(4096));
+    spin::Mutex::new(PageCacheChirho::new_chirho(256));
 
 // ===========================================================================
 // A4-009: ext4 read-only VFS integration

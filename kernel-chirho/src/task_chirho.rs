@@ -640,15 +640,63 @@ fn make_comm_chirho(name_chirho: &str) -> [u8; TASK_COMM_LEN_CHIRHO] {
 ///
 /// Panics if the heap allocator cannot satisfy the request.
 fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
-    use alloc::vec;
+    // Allocate kernel stacks from the FRAME ALLOCATOR (physical memory)
+    // instead of the heap. This prevents heap fragmentation from leaked
+    // stacks, which blocked the 64MB buddy allocation for dropbear SSH.
+    //
+    // Each 4KB page is allocated and mapped individually.
+    let num_pages_chirho = (size_chirho + 4095) / 4096;
 
-    // Allocate a `Vec<u8>` and leak it so the memory is never freed while
-    // the task is alive.  We record the base pointer and the size in the
-    // task descriptor so a future `destroy_task` path can deallocate it.
-    let stack_vec_chirho = vec![0u8; size_chirho];
-    let ptr_chirho = stack_vec_chirho.as_ptr() as u64;
-    core::mem::forget(stack_vec_chirho);
-    ptr_chirho
+    // Find a free virtual address range for the stack.
+    // Use a simple bump allocator for stack addresses.
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_STACK_ADDR_CHIRHO: AtomicU64 = AtomicU64::new(0x4666_0000_0000);
+    let base_vaddr_chirho = NEXT_STACK_ADDR_CHIRHO.fetch_add(
+        (num_pages_chirho as u64 + 1) * 4096, // +1 guard page
+        Ordering::SeqCst,
+    );
+
+    // Map pages using the global mapper + frame allocator.
+    let mut mg_chirho = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.lock();
+    let mut ag_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+
+    if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+        use x86_64::structures::paging::{
+            FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
+        };
+        use x86_64::VirtAddr;
+
+        let flags_chirho = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+
+        for i_chirho in 0..num_pages_chirho {
+            let page_addr_chirho = base_vaddr_chirho + (i_chirho as u64) * 4096;
+            let page_chirho: Page<Size4KiB> =
+                Page::containing_address(VirtAddr::new(page_addr_chirho));
+
+            if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
+                let _ = unsafe {
+                    mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
+                }
+                .map(|flush_chirho| flush_chirho.flush());
+
+                // Also map in current per-process PT.
+                let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
+                let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                    current_pml4_chirho,
+                    page_addr_chirho,
+                    frame_chirho.start_address().as_u64(),
+                    flags_chirho,
+                );
+            }
+        }
+
+        // Zero the stack.
+        unsafe {
+            core::ptr::write_bytes(base_vaddr_chirho as *mut u8, 0, num_pages_chirho * 4096);
+        }
+    }
+
+    base_vaddr_chirho
 }
 
 // ---------------------------------------------------------------------------

@@ -17,15 +17,17 @@ use x86_64::VirtAddr;
 /// Virtual address where the kernel heap begins.
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
-/// Size of the kernel heap in bytes (256 MiB).
-pub const HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
+/// Total mapped heap: 32MB fast + 256MB buddy = 288MB.
+/// buddy-alloc limits max alloc to ~region/4 due to metadata.
+/// 256MB buddy → max alloc ~64MB. For dropbear SSH (needs 64MB),
+/// this is tight. TODO: increase if dropbear still OOMs.
+pub const HEAP_SIZE_CHIRHO: usize = 288 * 1024 * 1024;
 
-/// Fast allocator region (first 1 MiB of heap — for small objects).
-/// Keep small so buddy allocator gets maximum contiguous space.
-const FAST_HEAP_SIZE_CHIRHO: usize = 1 * 1024 * 1024;
+/// Fast allocator: 32 MiB for small/medium objects.
+const FAST_HEAP_SIZE_CHIRHO: usize = 32 * 1024 * 1024;
 
-/// Buddy allocator region (remaining heap — handles all sizes including 64MB+).
-const BUDDY_HEAP_SIZE_CHIRHO: usize = HEAP_SIZE_CHIRHO - FAST_HEAP_SIZE_CHIRHO;
+/// Buddy allocator: 256 MiB.
+const BUDDY_HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
 
 /// Global heap allocator — buddy-alloc crate with fast+buddy dual allocator.
 /// NonThreadsafeAlloc is wrapped in a const constructor; we handle thread
@@ -39,7 +41,7 @@ static ALLOCATOR_CHIRHO: NonThreadsafeAlloc = unsafe {
     let buddy_param_chirho = BuddyAllocParam::new(
         (HEAP_START_CHIRHO + FAST_HEAP_SIZE_CHIRHO) as *const u8,
         BUDDY_HEAP_SIZE_CHIRHO,
-        16, // leaf_size: minimum allocation unit (16 bytes)
+        4096, // leaf_size: page-sized blocks (small allocs use fast allocator)
     );
     NonThreadsafeAlloc::new(fast_param_chirho, buddy_param_chirho)
 };
