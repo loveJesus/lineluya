@@ -1444,7 +1444,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_DUP_CHIRHO => crate::fs_chirho::sys_dup_chirho(arg0_chirho),
         SYS_DUP2_CHIRHO => crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho),
         SYS_PAUSE_CHIRHO => -EINTR_CHIRHO,
-        SYS_NANOSLEEP_CHIRHO => 0,             // instant return (no timer yet)
+        SYS_NANOSLEEP_CHIRHO => sys_clock_nanosleep_chirho(
+            1, // CLOCK_MONOTONIC
+            0, // relative
+            arg0_chirho,
+            arg1_chirho,
+        ),
         SYS_GETITIMER_CHIRHO | SYS_SETITIMER_CHIRHO => -ENOSYS_CHIRHO,
         SYS_ALARM_CHIRHO => 0,                  // return 0 (no previous alarm)
         SYS_GETPID_CHIRHO => sys_getpid_chirho(),
@@ -1960,6 +1965,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
     // Store the return value so the caller (assembly stub) can put it in rax.
     frame_chirho.rax_chirho = result_chirho as u64;
+
+    // --- Preemptive scheduling: check reschedule flag on syscall return ---
+    // If the timer interrupt has expired the current task's time slice,
+    // NEED_RESCHED_ATOMIC_CHIRHO will be set.  Calling schedule_chirho()
+    // here performs a context switch to the next runnable task before
+    // returning to userspace.  This is the key mechanism that enables
+    // real fork() (parent continues, child runs separately) and prevents
+    // any single task from monopolizing the CPU.
+    if crate::scheduler_chirho::need_resched_chirho() {
+        crate::scheduler_chirho::schedule_chirho();
+    }
+
     result_chirho
 }
 
