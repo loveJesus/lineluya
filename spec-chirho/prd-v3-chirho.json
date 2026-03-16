@@ -184,14 +184,14 @@
       "id_chirho": "P5-004",
       "title_chirho": "dropbear SSH server runs (pre-installed on disk)",
       "status_chirho": "code-written",
-      "notes_chirho": "Pre-installed via disk builder. PTY subsystem verified production-ready. Needs networking + QEMU test.",
+      "notes_chirho": "dropbear 2025.88 on disk. PTY production-ready. VirtIO-net ISR ack fixed. Needs networking (DHCP) + QEMU test.",
       "priority_chirho": "high"
     },
     {
       "id_chirho": "P5-005",
       "title_chirho": "python3 runs (pre-installed on disk)",
       "status_chirho": "code-written",
-      "notes_chirho": "Pre-installed via disk builder. /proc/self/exe tracking added. Needs QEMU test.",
+      "notes_chirho": "python3.12 + libpython3.12.so + libffi + gdbm + xz + mpdecimal + libbz2 + stdlib (775 files) on disk. All .so symlinks. Needs QEMU test.",
       "priority_chirho": "high"
     },
     {
