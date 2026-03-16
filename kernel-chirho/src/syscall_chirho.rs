@@ -1306,9 +1306,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let arg3_chirho = frame_chirho.r10_chirho;
 
     // Syscall trace (disabled — enable for debugging)
-    if syscall_nr_chirho != 0 && syscall_nr_chirho != 7 {
-        crate::serial_println_chirho!("[SC] nr={}", syscall_nr_chirho);
-     }
+    // Syscall trace disabled for production
+    // if syscall_nr_chirho != 0 && syscall_nr_chirho != 7 {
+    //     crate::serial_println_chirho!("[SC] nr={}", syscall_nr_chirho);
+    // }
     let arg4_chirho = frame_chirho.r8_chirho;
     let _arg5_chirho = frame_chirho.r9_chirho;
 
@@ -2356,6 +2357,7 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         alloc::string::String::from("SHELL=/bin/sh"),
         alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
         alloc::string::String::from("PYTHONHOME=/usr"),
+        alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
     ];
     let loaded_chirho = crate::exec_chirho::load_elf_into_memory_chirho(
         crate::exec_chirho::BUSYBOX_ELF_CHIRHO

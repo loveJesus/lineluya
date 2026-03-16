@@ -2807,10 +2807,11 @@ pub fn sys_sendto_chirho(
                 .map(|a_chirho| a_chirho.addr_chirho)
                 .unwrap_or(get_interface_ip_chirho(0));
 
-            crate::serial_println_chirho!(
-                "[NET] socket write: {} bytes on socket_idx={} state={:?}",
-                data_chirho.len(), socket_idx_chirho, socket_chirho.tcb_chirho.state_chirho
-            );
+            // Debug logging disabled for performance
+            // crate::serial_println_chirho!(
+            //     "[NET] socket write: {} bytes state={:?}",
+            //     data_chirho.len(), socket_chirho.tcb_chirho.state_chirho
+            // );
             if let Some(seg_chirho) = socket_chirho.tcb_chirho.make_data_segment_chirho(
                 local_port_chirho, remote_port_chirho, &data_chirho,
             ) {
