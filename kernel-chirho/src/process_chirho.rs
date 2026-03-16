@@ -204,11 +204,14 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
     // --- 6. Add the child to the scheduler run queue ---
     crate::scheduler_chirho::add_task_chirho(child_pid_chirho);
 
-    // --- 7. vfork semantics: return 0 to run the child path immediately ---
-    // BusyBox ash depends on this: fork returns 0, child calls execve,
-    // sys_exit re-launches the shell. This is the only way to run
-    // programs without preemptive scheduling.
-    0i64
+    // --- 7. Return child PID to parent (real fork semantics) ---
+    // The child is now on the scheduler run queue with rax=0 in its saved
+    // syscall frame.  When the scheduler picks it, it resumes via
+    // fork_child_return_chirho → SYSRET with rax=0 (child sees fork()=0).
+    // The parent continues here with fork() returning the child PID.
+    // The reschedule check at syscall_dispatch_chirho exit will context-switch
+    // to the child when the parent's time slice expires.
+    child_pid_chirho as i64
 }
 
 // ===========================================================================

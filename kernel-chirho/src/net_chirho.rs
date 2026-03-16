@@ -2924,77 +2924,70 @@ pub fn sys_recvfrom_chirho(
             return 0; // EOF — peer closed
         }
 
-        // Poll network for incoming TCP data (blocking recv)
-        let local_port_chirho = socket_chirho.local_addr_chirho.map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
-        let remote_port_chirho = socket_chirho.remote_addr_chirho.map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
         drop(table_chirho); // Release lock for network polling
 
-        for poll_chirho in 0..50_000_000u32 {
-            core::hint::spin_loop();
+        // Poll network: receive packets through the standard path which
+        // runs the TCP state machine, updates rcv_nxt, sends ACKs, and
+        // buffers payload data in recv_buf_chirho.  After each poll round,
+        // re-acquire the socket table lock and check if data arrived.
+        for _poll_round_chirho in 0..500_000u32 {
+            // Process all pending packets through the standard RX path.
+            // This calls deliver_tcp_from_frame_chirho which properly:
+            //   1. Runs process_segment_chirho (updates TCB + rcv_nxt)
+            //   2. Buffers payload into recv_buf_chirho
+            //   3. Sends ACK responses
+            poll_network_chirho();
 
-            let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
-            if let Some(dev_chirho) = devs_chirho.get_mut(0) {
-                if let Some(raw_chirho) = dev_chirho.recv_packet_chirho() {
-                    if let Some(eth_chirho) = EthernetFrameChirho::parse_chirho(&raw_chirho) {
-                        if eth_chirho.ethertype_chirho == ETHERTYPE_IPV4_CHIRHO {
-                            if let Some(ip_chirho) = Ipv4HeaderChirho::parse_chirho(&eth_chirho.payload_chirho) {
-                                if ip_chirho.protocol_chirho == IP_PROTO_TCP_CHIRHO {
-                                    let hdr_len_chirho = (ip_chirho.ihl_chirho as usize) * 4;
-                                    if let Some(seg_chirho) = TcpSegmentChirho::parse_chirho(
-                                        &eth_chirho.payload_chirho[hdr_len_chirho..],
-                                    ) {
-                                        // Log only data packets (skip pure ACKs)
-                                        if !seg_chirho.payload_chirho.is_empty() {
-                                            crate::serial_println_chirho!(
-                                                "[NET] recv: {}B from port {}",
-                                                seg_chirho.payload_chirho.len(),
-                                                seg_chirho.src_port_chirho,
-                                            );
-                                        }
-                                        if seg_chirho.dst_port_chirho == local_port_chirho
-                                            && seg_chirho.src_port_chirho == remote_port_chirho
-                                            && !seg_chirho.payload_chirho.is_empty()
-                                        {
-                                            drop(devs_chirho);
-                                            // ACK the data
-                                            let src_ip_chirho = get_interface_ip_chirho(0);
-                                            let new_ack_chirho = seg_chirho.seq_num_chirho
-                                                .wrapping_add(seg_chirho.payload_chirho.len() as u32);
-                                            tcp_send_ack_chirho(
-                                                src_ip_chirho, ip_chirho.src_ip_chirho,
-                                                local_port_chirho, remote_port_chirho,
-                                                seg_chirho.ack_num_chirho, new_ack_chirho,
-                                            );
-
-                                            // Copy data to user buffer
-                                            let copy_len_chirho = core::cmp::min(
-                                                len_chirho as usize,
-                                                seg_chirho.payload_chirho.len(),
-                                            );
-                                            if buf_chirho != 0 {
-                                                let ptr_chirho = buf_chirho as *mut u8;
-                                                for i_chirho in 0..copy_len_chirho {
-                                                    unsafe {
-                                                        core::ptr::write_volatile(
-                                                            ptr_chirho.add(i_chirho),
-                                                            seg_chirho.payload_chirho[i_chirho],
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                            return copy_len_chirho as i64;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // Check if data arrived in the socket's receive buffer.
+            let mut table_recheck_chirho = SOCKET_TABLE_CHIRHO.lock();
+            if let Some(ref sock_recheck_chirho) = table_recheck_chirho
+                .get(socket_idx_chirho)
+                .and_then(|s_chirho| s_chirho.as_ref())
+            {
+                if !sock_recheck_chirho.recv_buf_chirho.is_empty() {
+                    // Data available — fall through to the copy-out path below.
+                    // We need to re-bind socket_chirho so the code below works.
+                    drop(table_recheck_chirho);
+                    break;
+                }
+                // Check if peer closed while we were polling.
+                let tcp_state_chirho = sock_recheck_chirho.tcb_chirho.state_chirho;
+                if tcp_state_chirho == TcpStateChirho::CloseWaitChirho
+                    || tcp_state_chirho == TcpStateChirho::ClosedChirho
+                {
+                    return 0; // EOF
                 }
             }
-            drop(devs_chirho);
+            drop(table_recheck_chirho);
+
+            core::hint::spin_loop();
         }
 
-        return 0; // Timeout — no data
+        // After polling, re-acquire the lock and fall through to copy-out.
+        let mut table_final_chirho = SOCKET_TABLE_CHIRHO.lock();
+        let socket_final_chirho = match table_final_chirho
+            .get_mut(socket_idx_chirho)
+            .and_then(|s_chirho| s_chirho.as_mut())
+        {
+            Some(s_chirho) => s_chirho,
+            None => return 0,
+        };
+
+        if socket_final_chirho.recv_buf_chirho.is_empty() {
+            return 0; // Timeout — no data arrived
+        }
+
+        // Copy buffered data to userspace.
+        let count_chirho = core::cmp::min(len_chirho as usize, socket_final_chirho.recv_buf_chirho.len());
+        if buf_chirho != 0 && count_chirho > 0 {
+            let ptr_chirho = buf_chirho as *mut u8;
+            for i_chirho in 0..count_chirho {
+                let byte_chirho = socket_final_chirho.recv_buf_chirho.pop_front().unwrap();
+                unsafe { core::ptr::write_volatile(ptr_chirho.add(i_chirho), byte_chirho) };
+            }
+        }
+        crate::serial_println_chirho!("[NET] recvfrom (polled) -> {}", count_chirho);
+        return count_chirho as i64;
     }
 
     let count_chirho = core::cmp::min(len_chirho as usize, socket_chirho.recv_buf_chirho.len());
@@ -4450,9 +4443,16 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
             );
 
             // Deliver payload data to the receive buffer.
-            if !segment_chirho.payload_chirho.is_empty()
-                && sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
-            {
+            // Accept data in Established, CloseWait (FIN+data segment
+            // transitions state before we reach here), and FinWait2
+            // (peer can still send data after we sent FIN).
+            let can_receive_chirho = matches!(
+                sock_chirho.tcb_chirho.state_chirho,
+                TcpStateChirho::EstablishedChirho
+                | TcpStateChirho::CloseWaitChirho
+                | TcpStateChirho::FinWait2Chirho
+            );
+            if !segment_chirho.payload_chirho.is_empty() && can_receive_chirho {
                 for byte_chirho in &segment_chirho.payload_chirho {
                     sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
                 }
