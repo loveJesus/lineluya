@@ -47,8 +47,18 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
     unsafe fn alloc(&self, layout_chirho: core::alloc::Layout) -> *mut u8 {
         let size_chirho = layout_chirho.size();
 
-        // Log allocations > 1MB with last syscall number.
+        // Log allocations > 1MB with syscall + PID.
         if size_chirho > 1024 * 1024 {
+            // Print PID
+            let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(99);
+            let pid_msg_chirho = b"pid=";
+            for &b_chirho in pid_msg_chirho {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+            let pd_chirho = b'0' + (pid_chirho % 10) as u8;
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(pd_chirho);
             // Print last syscall nr for context
             let last_sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO
                 .load(core::sync::atomic::Ordering::Relaxed);
