@@ -3689,11 +3689,24 @@ fn sys_fstatat_chirho(
         return sys_fstat_chirho(dirfd_chirho as u64, statbuf_chirho);
     }
 
-    // Handle AT_FDCWD (-100): prepend "/" for relative paths.
-    let resolved_path_chirho = if !path_str_chirho.starts_with('/') && dirfd_chirho == -100 {
-        let mut full_chirho = alloc::string::String::from("/");
-        full_chirho.push_str(&path_str_chirho);
-        full_chirho
+    // Handle relative paths: resolve against dirfd
+    let resolved_path_chirho = if !path_str_chirho.starts_with('/') {
+        if dirfd_chirho == -100 { // AT_FDCWD
+            let mut full_chirho = alloc::string::String::from("/");
+            full_chirho.push_str(&path_str_chirho);
+            full_chirho
+        } else {
+            // Resolve relative to dirfd's path
+            match crate::fs_chirho::get_fd_path_chirho(dirfd_chirho as u64) {
+                Some(dp_chirho) => {
+                    let mut p_chirho = dp_chirho;
+                    if !p_chirho.ends_with('/') { p_chirho.push('/'); }
+                    p_chirho.push_str(&path_str_chirho);
+                    p_chirho
+                }
+                None => path_str_chirho,
+            }
+        }
     } else {
         path_str_chirho
     };
@@ -4805,14 +4818,27 @@ fn sys_faccessat_real_chirho(
         Err(_) => return -EFAULT_CHIRHO,
     };
 
-    // Handle relative paths with AT_FDCWD
+    // Handle relative paths: resolve against dirfd
     let full_path_chirho = if !pathname_chirho.starts_with('/') {
         if dirfd_chirho == -100 { // AT_FDCWD
             let mut p_chirho = alloc::string::String::from("/");
             p_chirho.push_str(&pathname_chirho);
             p_chirho
         } else {
-            pathname_chirho
+            // Resolve relative to dirfd's path
+            match crate::fs_chirho::get_fd_path_chirho(dirfd_chirho as u64) {
+                Some(dp_chirho) => {
+                    let mut p_chirho = dp_chirho;
+                    if !p_chirho.ends_with('/') { p_chirho.push('/'); }
+                    p_chirho.push_str(&pathname_chirho);
+                    p_chirho
+                }
+                None => {
+                    let mut p_chirho = alloc::string::String::from("/");
+                    p_chirho.push_str(&pathname_chirho);
+                    p_chirho
+                }
+            }
         }
     } else {
         pathname_chirho
