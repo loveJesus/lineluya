@@ -1490,6 +1490,24 @@ pub fn read_pci_bar_chirho(device_chirho: &PciDeviceChirho, bar_index_chirho: u8
 // Kernel initialization entry point
 // ============================================================================
 
+/// Acknowledge a VirtIO PCI interrupt by reading the ISR status register.
+/// Reading ISR automatically clears it on the device side.
+/// Called from the interrupt handler (IRQ 11, vector 43).
+pub fn ack_virtio_interrupt_chirho() {
+    // Read ISR from all known VirtIO I/O base addresses.
+    // Each VirtIO device has ISR at iobase + 0x13.
+    // We store the I/O bases during PCI scan.
+    let bases_chirho = VIRTIO_IO_BASES_CHIRHO.lock();
+    for &base_chirho in bases_chirho.iter() {
+        let transport_chirho = VirtioIoTransportChirho::new_chirho(base_chirho);
+        let _isr_chirho = transport_chirho.read_isr_chirho();
+    }
+}
+
+/// Known VirtIO I/O port base addresses (populated during PCI scan).
+static VIRTIO_IO_BASES_CHIRHO: spin::Mutex<alloc::vec::Vec<u16>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+
 /// Initialize VirtIO subsystem: scan PCI bus, log findings, and attempt to
 /// probe any VirtIO-blk devices found.  If a block device is successfully
 /// initialised, read sector 0 and log the first 16 bytes as a smoke test
@@ -1536,6 +1554,7 @@ pub fn init_virtio_chirho() {
                         io_base_chirho
                     );
                     enable_io_and_busmaster_chirho(dev_chirho);
+                    VIRTIO_IO_BASES_CHIRHO.lock().push(io_base_chirho);
                     crate::net_chirho::probe_virtio_net_io_chirho(io_base_chirho);
                 } else {
                     // MMIO transport — log but skip (crashes in UEFI)
@@ -1585,6 +1604,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
 
         // Enable I/O space access + bus mastering in PCI command register.
         enable_io_and_busmaster_chirho(pci_dev_chirho);
+        VIRTIO_IO_BASES_CHIRHO.lock().push(io_base_chirho);
 
         match VirtioBlkDeviceChirho::probe_io_chirho(io_base_chirho) {
             Some(blk_dev_chirho) => {
