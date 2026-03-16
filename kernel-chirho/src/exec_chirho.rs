@@ -1183,9 +1183,11 @@ pub fn exec_init_chirho() {
     };
     let envp_chirho = alloc::vec![
         alloc::string::String::from("HOME=/root"),
-        alloc::string::String::from("PATH=/bin:/sbin"),
+        alloc::string::String::from("PATH=/mnt/bin:/mnt/sbin:/mnt/usr/bin:/mnt/usr/sbin:/bin:/sbin"),
         alloc::string::String::from("TERM=linux"),
         alloc::string::String::from("PS1=lineluya# "),
+        alloc::string::String::from("LD_LIBRARY_PATH=/mnt/lib:/mnt/usr/lib"),
+        alloc::string::String::from("SHELL=/bin/sh"),
     ];
     let user_rsp_chirho = setup_user_stack_with_args_chirho(
         &loaded_chirho,
