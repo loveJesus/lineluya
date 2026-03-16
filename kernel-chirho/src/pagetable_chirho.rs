@@ -53,6 +53,11 @@ pub const COW_BIT_CHIRHO: u64 = 1 << 9;
 /// `PHYS_MEM_OFFSET_CHIRHO + phys_addr`.
 static PHYS_MEM_OFFSET_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
+/// Physical address of the boot PML4. Saved at boot so the page fault
+/// handler can lazily migrate user-space mappings from the boot PT to
+/// per-process page tables.
+static BOOT_PML4_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
 /// Store the physical memory offset. Called once during kernel init.
 pub fn set_phys_mem_offset_chirho(offset_chirho: u64) {
     PHYS_MEM_OFFSET_CHIRHO.store(offset_chirho, Ordering::Release);
@@ -61,6 +66,32 @@ pub fn set_phys_mem_offset_chirho(offset_chirho: u64) {
 /// Retrieve the physical memory offset.
 pub fn phys_mem_offset_chirho() -> u64 {
     PHYS_MEM_OFFSET_CHIRHO.load(Ordering::Acquire)
+}
+
+/// Save the boot PML4 physical address. Called once at boot before any
+/// per-process page tables are created.
+pub fn save_boot_pml4_chirho() {
+    let (frame_chirho, _) = Cr3::read();
+    BOOT_PML4_PHYS_CHIRHO.store(frame_chirho.start_address().as_u64(), Ordering::Release);
+}
+
+/// Look up a virtual address in the BOOT page table. If mapped, returns
+/// (physical_address, flags). Used by the page fault handler for lazy
+/// migration of user-space pages to per-process page tables.
+pub fn lookup_in_boot_pt_chirho(vaddr_chirho: u64) -> Option<(u64, PageTableFlags)> {
+    let boot_pml4_chirho = BOOT_PML4_PHYS_CHIRHO.load(Ordering::Acquire);
+    if boot_pml4_chirho == 0 {
+        return None;
+    }
+    let boot_pml4_phys_chirho = PhysAddr::new(boot_pml4_chirho);
+
+    // Walk the boot PT to find the mapping.
+    let pte_ptr_chirho = walk_page_table_chirho(boot_pml4_phys_chirho, VirtAddr::new(vaddr_chirho))?;
+    let pte_chirho = unsafe { &*pte_ptr_chirho };
+    if pte_chirho.is_unused() {
+        return None;
+    }
+    Some((pte_chirho.addr().as_u64(), pte_chirho.flags()))
 }
 
 /// Convert a physical address to a virtual address using the stored offset.
@@ -205,28 +236,23 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
         }
     }
 
-    // Also copy any other non-user lower-half entries that the bootloader
-    // set up (e.g., framebuffer identity mappings, UEFI runtime services).
-    // We identify these by checking if they're NOT in typical user ranges
-    // (0x400000..0x800000000000 for user code/heap/stack).
-    let phys_pml4_idx2_chirho = if phys_offset_chirho != 0 {
-        ((phys_offset_chirho >> 39) & 0x1FF) as usize
-    } else {
-        usize::MAX
-    };
+    // Copy ALL non-zero lower-half entries from the boot PML4.
+    // The bootloader places critical mappings in the lower half:
+    //   PML4[0]: possible identity mapping for boot structures
+    //   PML4[2]: kernel binary (virtual_address_offset = 0x10000000000)
+    //   PML4[5]: physical memory window (phys_mem_offset = 0x28000000000)
+    // Without ALL of these, the kernel code, page tables, and physical
+    // memory are inaccessible after CR3 switch, causing triple faults.
+    //
+    // User-space program mappings (ELF code, heap, stack) are NOT in
+    // the boot PML4's lower half — they're added per-process by execve
+    // and the page fault handler's lazy migration.
     for i_chirho in 0..KERNEL_PML4_START_CHIRHO {
-        if new_pml4_chirho[i_chirho].is_unused() && !current_pml4_chirho[i_chirho].is_unused() {
-            // Only copy entries that map very low addresses (bootloader/fw)
-            // or the physical memory window.  Skip entries that look like
-            // they map user program addresses (will be set up per-process).
-            let vaddr_base_chirho = (i_chirho as u64) << 39;
-            // Skip typical user-space ranges (above 4 GiB user VA)
-            if vaddr_base_chirho < 0x1_0000_0000 || i_chirho == phys_pml4_idx2_chirho {
-                new_pml4_chirho[i_chirho].set_addr(
-                    current_pml4_chirho[i_chirho].addr(),
-                    current_pml4_chirho[i_chirho].flags(),
-                );
-            }
+        if !current_pml4_chirho[i_chirho].is_unused() {
+            new_pml4_chirho[i_chirho].set_addr(
+                current_pml4_chirho[i_chirho].addr(),
+                current_pml4_chirho[i_chirho].flags(),
+            );
         }
     }
 

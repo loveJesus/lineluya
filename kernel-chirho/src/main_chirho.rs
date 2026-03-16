@@ -158,6 +158,8 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
 
     // Store the physical memory offset globally for the page table module.
     pagetable_chirho::set_phys_mem_offset_chirho(physical_memory_offset_chirho);
+    // Save the boot PML4 address for lazy page migration.
+    pagetable_chirho::save_boot_pml4_chirho();
 
     // Initialize the frame allocator with the memory map from the bootloader
     let mut frame_allocator_chirho =

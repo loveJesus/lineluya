@@ -282,17 +282,98 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
     // page table operations. CANNOT use mm_chirho.mmap (would deadlock
     // if the mm locks are already held by the faulting syscall).
     let is_user_chirho = error_code_chirho.contains(PageFaultErrorCode::USER_MODE);
+    let is_write_chirho = error_code_chirho.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+    let is_present_chirho = error_code_chirho.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+
+    // Handle kernel-mode faults on user-space addresses.
+    // The kernel legitimately accesses user memory during ELF loading
+    // (copy_nonoverlapping), stack setup, and data copying. Treat these
+    // the same as user-mode faults: lazy migration + allocation.
+    if !is_user_chirho {
+        if let Ok(fault_addr_chirho) = Cr2::read() {
+            let page_vaddr_chirho = fault_addr_chirho.as_u64() & !0xFFF;
+            if page_vaddr_chirho < 0x8000_0000_0000 {
+                use x86_64::structures::paging::{
+                    FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
+                };
+
+                let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
+                let rw_flags_chirho = PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE;
+
+                // Try lazy migration from boot PT first.
+                if let Some((phys_chirho, _boot_flags_chirho)) =
+                    crate::pagetable_chirho::lookup_in_boot_pt_chirho(page_vaddr_chirho)
+                {
+                    // If it was a write-protection fault, also update boot PT flags.
+                    if is_present_chirho {
+                        let page_chirho: Page<Size4KiB> = Page::containing_address(fault_addr_chirho);
+                        if let Some(ref mut mapper_chirho) = *crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.lock() {
+                            let _ = unsafe { mapper_chirho.update_flags(page_chirho, rw_flags_chirho) }
+                                .map(|f_chirho| f_chirho.flush());
+                        }
+                    }
+                    let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                        current_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
+                    );
+                    x86_64::instructions::tlb::flush(fault_addr_chirho);
+                    return;
+                }
+
+                // Not in boot PT — allocate a new frame.
+                let page_chirho: Page<Size4KiB> = Page::containing_address(fault_addr_chirho);
+                let mut mg_chirho = loop {
+                    if let Some(g_chirho) = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock() { break g_chirho; }
+                    core::hint::spin_loop();
+                };
+                let mut ag_chirho = loop {
+                    if let Some(g_chirho) = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() { break g_chirho; }
+                    core::hint::spin_loop();
+                };
+                if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+                    if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
+                        let phys_chirho = frame_chirho.start_address().as_u64();
+                        let _ = unsafe { mapper_chirho.map_to(page_chirho, frame_chirho, rw_flags_chirho, alloc_chirho) }
+                            .map(|f_chirho| f_chirho.flush());
+                        let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                            current_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
+                        );
+                        x86_64::instructions::tlb::flush(fault_addr_chirho);
+                        unsafe { core::ptr::write_bytes(page_vaddr_chirho as *mut u8, 0, 4096); }
+                        return;
+                    }
+                }
+            }
+        }
+    }
 
     if is_user_chirho {
         if let Ok(fault_addr_chirho) = Cr2::read() {
-            // Map the faulting page directly via the global mapper.
-            // Use try_lock to avoid deadlock — if the lock is held,
-            // we can't map the page and must halt.
             use x86_64::structures::paging::{
                 FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
             };
             use x86_64::VirtAddr;
 
+            let page_vaddr_chirho = fault_addr_chirho.as_u64() & !0xFFF;
+
+            // --- Lazy page migration from boot PT ---
+            let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
+            if let Some((phys_chirho, boot_flags_chirho)) =
+                crate::pagetable_chirho::lookup_in_boot_pt_chirho(page_vaddr_chirho)
+            {
+                if crate::pagetable_chirho::map_page_in_pt_chirho(
+                    current_pml4_chirho,
+                    page_vaddr_chirho,
+                    phys_chirho,
+                    boot_flags_chirho,
+                ).is_ok() {
+                    x86_64::instructions::tlb::flush(fault_addr_chirho);
+                    return; // Retry — page now mapped from boot PT
+                }
+            }
+
+            // --- Normal page fault: allocate a new frame ---
             let page_chirho: Page<Size4KiB> =
                 Page::containing_address(fault_addr_chirho);
 
@@ -300,9 +381,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 | PageTableFlags::WRITABLE
                 | PageTableFlags::USER_ACCESSIBLE;
 
-            // Spin-wait for mapper and allocator locks. User-mode page
-            // faults MUST be resolved — spinning is safe since the lock
-            // holders are kernel threads that will release promptly.
+            // Spin-wait for mapper and allocator locks.
             let mut mg_chirho = loop {
                 if let Some(g_chirho) = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock() {
                     break g_chirho;
@@ -315,25 +394,38 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 }
                 core::hint::spin_loop();
             };
-            if true {
-                if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
-                    if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
-                        let map_result_chirho = unsafe {
-                            mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
-                        };
-                        if let Ok(flush_chirho) = map_result_chirho {
-                            flush_chirho.flush();
-                            // Zero the page
-                            unsafe {
-                                core::ptr::write_bytes(
-                                    (page_chirho.start_address().as_u64()) as *mut u8,
-                                    0,
-                                    4096,
-                                );
-                            }
-                            return; // Retry the faulting instruction
-                        }
+            if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+                if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
+                    let frame_phys_chirho = frame_chirho.start_address().as_u64();
+
+                    // Map in the boot PML4 (via global mapper).
+                    let map_result_chirho = unsafe {
+                        mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
+                    };
+                    if let Ok(flush_chirho) = map_result_chirho {
+                        flush_chirho.flush();
                     }
+
+                    // ALSO map in the current (per-process) PML4.
+                    // Without this, the page exists in the boot PML4 but
+                    // not the current PML4, causing infinite page faults.
+                    let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                        current_pml4_chirho,
+                        page_vaddr_chirho,
+                        frame_phys_chirho,
+                        flags_chirho,
+                    );
+                    x86_64::instructions::tlb::flush(fault_addr_chirho);
+
+                    // Zero the page.
+                    unsafe {
+                        core::ptr::write_bytes(
+                            (page_chirho.start_address().as_u64()) as *mut u8,
+                            0,
+                            4096,
+                        );
+                    }
+                    return;
                 }
             }
         }
