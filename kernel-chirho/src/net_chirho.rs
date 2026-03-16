@@ -2932,9 +2932,6 @@ pub fn sys_recvfrom_chirho(
         for poll_chirho in 0..50_000_000u32 {
             core::hint::spin_loop();
 
-            // Only poll every 100 iterations to reduce lock contention
-            if poll_chirho % 100 != 0 { continue; }
-
             let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
             if let Some(dev_chirho) = devs_chirho.get_mut(0) {
                 if let Some(raw_chirho) = dev_chirho.recv_packet_chirho() {
@@ -2946,11 +2943,14 @@ pub fn sys_recvfrom_chirho(
                                     if let Some(seg_chirho) = TcpSegmentChirho::parse_chirho(
                                         &eth_chirho.payload_chirho[hdr_len_chirho..],
                                     ) {
-                                        crate::serial_println_chirho!(
-                                            "[NET] recv: TCP src={} dst={} flags={:#x} payload={}B",
-                                            seg_chirho.src_port_chirho, seg_chirho.dst_port_chirho,
-                                            seg_chirho.flags_chirho, seg_chirho.payload_chirho.len()
-                                        );
+                                        // Log only data packets (skip pure ACKs)
+                                        if !seg_chirho.payload_chirho.is_empty() {
+                                            crate::serial_println_chirho!(
+                                                "[NET] recv: {}B from port {}",
+                                                seg_chirho.payload_chirho.len(),
+                                                seg_chirho.src_port_chirho,
+                                            );
+                                        }
                                         if seg_chirho.dst_port_chirho == local_port_chirho
                                             && seg_chirho.src_port_chirho == remote_port_chirho
                                             && !seg_chirho.payload_chirho.is_empty()
