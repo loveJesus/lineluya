@@ -22,7 +22,7 @@ use spin::Mutex;
 
 use crate::vfs_chirho::{
     DentryChirho, FileChirho, FileOpsChirho, InodeChirho, InodeOpsChirho,
-    S_IFDIR_CHIRHO, S_IFREG_CHIRHO, SEEK_CUR_CHIRHO, SEEK_END_CHIRHO, SEEK_SET_CHIRHO,
+    S_IFDIR_CHIRHO, S_IFLNK_CHIRHO, S_IFREG_CHIRHO, SEEK_CUR_CHIRHO, SEEK_END_CHIRHO, SEEK_SET_CHIRHO,
     StatfsChirho, SuperOpsChirho, SuperblockChirho,
 };
 use crate::syscall_chirho::{
@@ -54,6 +54,8 @@ pub enum TmpfsDataChirho {
     FileChirho(Vec<u8>),
     /// Directory: list of `(name, child_inode)` pairs.
     DirChirho(Vec<(String, Arc<Mutex<InodeChirho>>)>),
+    /// Symbolic link: target path string.
+    SymlinkChirho(String),
 }
 
 /// Helper: downcast `fs_data_chirho` to `&Mutex<TmpfsDataChirho>`.
@@ -109,7 +111,9 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
                                         TmpfsDataChirho::FileChirho(content_chirho) => {
                                             TmpfsDataChirho::FileChirho(content_chirho.clone())
                                         }
-                                        // No other variants currently
+                                        TmpfsDataChirho::SymlinkChirho(target_chirho) => {
+                                            TmpfsDataChirho::SymlinkChirho(target_chirho.clone())
+                                        }
                                     };
                                     drop(inner_chirho);
                                     Some(Box::new(Mutex::new(cloned_data_chirho)) as Box<dyn core::any::Any + Send>)
@@ -331,9 +335,81 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
 
     fn readlink_chirho(
         &self,
-        _inode_chirho: &InodeChirho,
+        inode_chirho: &InodeChirho,
     ) -> Result<String, i64> {
-        Err(-EINVAL_CHIRHO)
+        // Check S_IFLNK
+        if inode_chirho.mode_chirho & 0xF000 != 0xA000 {
+            return Err(-EINVAL_CHIRHO);
+        }
+        let data_lock_chirho = get_tmpfs_data_chirho(inode_chirho)?;
+        let data_chirho = data_lock_chirho.lock();
+        match &*data_chirho {
+            TmpfsDataChirho::SymlinkChirho(target_chirho) => {
+                Ok(target_chirho.clone())
+            }
+            _ => Err(-EINVAL_CHIRHO),
+        }
+    }
+
+    fn symlink_chirho(
+        &self,
+        parent_chirho: &InodeChirho,
+        name_chirho: &str,
+        target_chirho: &str,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        let data_lock_chirho = get_tmpfs_data_chirho(parent_chirho)?;
+        let mut data_chirho = data_lock_chirho.lock();
+
+        match &mut *data_chirho {
+            TmpfsDataChirho::DirChirho(entries_chirho) => {
+                // Check for duplicate
+                for (n_chirho, _) in entries_chirho.iter() {
+                    if n_chirho == name_chirho {
+                        return Err(-EEXIST_CHIRHO);
+                    }
+                }
+
+                let ino_chirho = alloc_ino_chirho();
+                let new_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+                    ino_chirho,
+                    mode_chirho: S_IFLNK_CHIRHO | 0o777, // symlinks are always rwxrwxrwx
+                    uid_chirho: 0,
+                    gid_chirho: 0,
+                    size_chirho: target_chirho.len() as u64,
+                    nlink_chirho: 1,
+                    atime_chirho: 0,
+                    mtime_chirho: 0,
+                    ctime_chirho: 0,
+                    ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+                    fs_data_chirho: new_tmpfs_fs_data_chirho(
+                        TmpfsDataChirho::SymlinkChirho(String::from(target_chirho)),
+                    ),
+                }));
+
+                entries_chirho.push((String::from(name_chirho), new_inode_chirho.clone()));
+                if entries_chirho.len() > 200 {
+                    crate::serial_println_chirho!(
+                        "[TMPFS] dir has {} entries after adding '{}'",
+                        entries_chirho.len(), name_chirho,
+                    );
+                }
+
+                Ok(Arc::new(InodeChirho {
+                    ino_chirho,
+                    mode_chirho: S_IFLNK_CHIRHO | 0o777,
+                    uid_chirho: 0,
+                    gid_chirho: 0,
+                    size_chirho: target_chirho.len() as u64,
+                    nlink_chirho: 1,
+                    atime_chirho: 0,
+                    mtime_chirho: 0,
+                    ctime_chirho: 0,
+                    ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+                    fs_data_chirho: None,
+                }))
+            }
+            _ => Err(-ENOTDIR_CHIRHO),
+        }
     }
 }
 
@@ -371,6 +447,20 @@ impl FileOpsChirho for TmpfsFileOpsChirho {
                 Ok(to_read_chirho)
             }
             TmpfsDataChirho::DirChirho(_) => Err(-EISDIR_CHIRHO),
+            TmpfsDataChirho::SymlinkChirho(target_chirho) => {
+                // Reading a symlink returns its target content.
+                let pos_chirho = file_chirho.pos_chirho as usize;
+                let target_bytes_chirho = target_chirho.as_bytes();
+                if pos_chirho >= target_bytes_chirho.len() {
+                    return Ok(0);
+                }
+                let available_chirho = target_bytes_chirho.len() - pos_chirho;
+                let to_read_chirho = buf_chirho.len().min(available_chirho);
+                buf_chirho[..to_read_chirho]
+                    .copy_from_slice(&target_bytes_chirho[pos_chirho..pos_chirho + to_read_chirho]);
+                file_chirho.pos_chirho += to_read_chirho as u64;
+                Ok(to_read_chirho)
+            }
         }
     }
 
@@ -401,6 +491,7 @@ impl FileOpsChirho for TmpfsFileOpsChirho {
                     Ok(content_chirho.len() as u64) // Return new content size
                 }
                 TmpfsDataChirho::DirChirho(_) => Err(-EISDIR_CHIRHO),
+                TmpfsDataChirho::SymlinkChirho(_) => Err(-EINVAL_CHIRHO),
             }
             // inode_chirho lock dropped here
         }?;

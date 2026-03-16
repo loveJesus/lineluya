@@ -132,6 +132,18 @@ pub trait InodeOpsChirho: Send + Sync {
         &self,
         inode_chirho: &InodeChirho,
     ) -> Result<String, i64>;
+
+    /// Create a symbolic link in `parent_chirho` with name `name_chirho`
+    /// pointing to `target_chirho`.
+    fn symlink_chirho(
+        &self,
+        parent_chirho: &InodeChirho,
+        name_chirho: &str,
+        target_chirho: &str,
+    ) -> Result<Arc<InodeChirho>, i64> {
+        let _ = (parent_chirho, name_chirho, target_chirho);
+        Err(-38) // ENOSYS
+    }
 }
 
 // ---------------------------------------------------------------------------

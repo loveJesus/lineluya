@@ -353,6 +353,9 @@ fn clone_fs_data_chirho(
             TmpfsDataChirho::FileChirho(content_chirho) => {
                 TmpfsDataChirho::FileChirho(content_chirho.clone())
             }
+            TmpfsDataChirho::SymlinkChirho(target_chirho) => {
+                TmpfsDataChirho::SymlinkChirho(target_chirho.clone())
+            }
         };
         drop(inner_chirho);
         return Some(Box::new(Mutex::new(cloned_chirho)) as Box<dyn core::any::Any + Send>);

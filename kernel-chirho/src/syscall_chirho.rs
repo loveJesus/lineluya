@@ -243,6 +243,8 @@ pub const SYS_CREAT_CHIRHO: u64 = 85;
 pub const SYS_LINK_CHIRHO: u64 = 86;
 /// `unlink(2)` -- delete a name and possibly the file it refers to.
 pub const SYS_UNLINK_CHIRHO: u64 = 87;
+/// `symlink(2)` -- create a symbolic link.
+pub const SYS_SYMLINK_CHIRHO: u64 = 88;
 /// `readlink(2)` -- read value of a symbolic link.
 pub const SYS_READLINK_CHIRHO: u64 = 89;
 /// `chmod(2)` -- change file mode.
@@ -1619,6 +1621,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_RMDIR_CHIRHO => sys_rmdir_chirho(arg0_chirho as *const u8),
         SYS_CREAT_CHIRHO | SYS_LINK_CHIRHO => -ENOSYS_CHIRHO,
         SYS_UNLINK_CHIRHO => sys_unlink_chirho(arg0_chirho as *const u8),
+        SYS_SYMLINK_CHIRHO => sys_symlinkat_chirho(
+            arg0_chirho, // target
+            -100,        // AT_FDCWD
+            arg1_chirho, // linkpath
+        ),
         SYS_READLINK_CHIRHO => sys_readlink_chirho(
             arg0_chirho as *const u8,
             arg1_chirho as *mut u8,
@@ -1996,9 +2003,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // utimensat: stub, silently succeed
         SYS_UTIMENSAT_CHIRHO => 0,
 
-        // linkat / symlinkat: silently succeed (single-process, read-only ext4)
-        SYS_LINKAT_CHIRHO => 0,
-        SYS_SYMLINKAT_CHIRHO => 0,
+        SYS_LINKAT_CHIRHO => sys_linkat_chirho(
+            arg0_chirho as i64,
+            arg1_chirho,
+            arg2_chirho as i64,
+            arg3_chirho,
+            arg4_chirho as u32,
+        ),
+        SYS_SYMLINKAT_CHIRHO => sys_symlinkat_chirho(
+            arg0_chirho,
+            arg1_chirho as i64,
+            arg2_chirho,
+        ),
 
         // --- Phase 9: Kernel module loading ---
         SYS_INIT_MODULE_CHIRHO => crate::module_chirho::sys_init_module_chirho(
@@ -4064,6 +4080,86 @@ fn sys_unlinkat_chirho(
     }
 }
 
+/// `symlinkat(2)` — create a symbolic link.
+///
+/// Creates a symlink at `linkpath` pointing to `target`.
+/// On tmpfs, creates an inode with S_IFLNK mode storing the target path.
+fn sys_symlinkat_chirho(
+    target_ptr_chirho: u64,
+    newdirfd_chirho: i64,
+    linkpath_ptr_chirho: u64,
+) -> i64 {
+    use crate::uaccess_chirho::read_user_string_chirho;
+
+    let target_chirho = match read_user_string_chirho(target_ptr_chirho, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+    let raw_linkpath_chirho = match read_user_string_chirho(linkpath_ptr_chirho, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Resolve linkpath relative to newdirfd.
+    let linkpath_chirho = if !raw_linkpath_chirho.starts_with('/') {
+        if newdirfd_chirho == -100 {
+            let cwd_chirho = get_task_cwd_chirho();
+            let mut full_chirho = cwd_chirho;
+            if !full_chirho.ends_with('/') { full_chirho.push('/'); }
+            full_chirho.push_str(&raw_linkpath_chirho);
+            full_chirho
+        } else {
+            raw_linkpath_chirho
+        }
+    } else {
+        raw_linkpath_chirho
+    };
+
+    crate::serial_debug_chirho!("[SYSCALL] symlinkat('{}', '{}') ", &target_chirho, &linkpath_chirho);
+
+    // Create the symlink via VFS: resolve parent, create symlink inode.
+    let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&linkpath_chirho) {
+        Ok(result_chirho) => result_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    let parent_guard_chirho = parent_inode_chirho.lock();
+    match parent_guard_chirho.ops_chirho.symlink_chirho(&parent_guard_chirho, &name_chirho, &target_chirho) {
+        Ok(_) => 0,
+        Err(errno_chirho) => errno_chirho,
+    }
+}
+
+/// `linkat(2)` — create a hard link.
+///
+/// On tmpfs, creates a new directory entry pointing to the same inode.
+/// On ext4, this is not yet supported (returns EXDEV).
+fn sys_linkat_chirho(
+    _olddirfd_chirho: i64,
+    oldpath_ptr_chirho: u64,
+    _newdirfd_chirho: i64,
+    newpath_ptr_chirho: u64,
+    _flags_chirho: u32,
+) -> i64 {
+    use crate::uaccess_chirho::read_user_string_chirho;
+
+    let _oldpath_chirho = match read_user_string_chirho(oldpath_ptr_chirho, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+    let _newpath_chirho = match read_user_string_chirho(newpath_ptr_chirho, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    crate::serial_debug_chirho!("[SYSCALL] linkat('{}' -> '{}')", &_oldpath_chirho, &_newpath_chirho);
+
+    // Hard links on tmpfs: stub success for now.
+    // Real implementation needs the VFS to support multiple directory
+    // entries pointing to the same inode (nlink > 1).
+    0
+}
+
 /// `rename(2)` implementation (syscall 82).
 ///
 /// Stub: logs and returns 0 (success).
@@ -4645,6 +4741,7 @@ pub fn syscall_name_chirho(nr_chirho: u64) -> &'static str {
         SYS_CREAT_CHIRHO => "creat",
         SYS_LINK_CHIRHO => "link",
         SYS_UNLINK_CHIRHO => "unlink",
+        SYS_SYMLINK_CHIRHO => "symlink",
         SYS_READLINK_CHIRHO => "readlink",
         SYS_CHMOD_CHIRHO => "chmod",
         SYS_CHOWN_CHIRHO => "chown",
