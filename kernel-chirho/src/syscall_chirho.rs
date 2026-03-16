@@ -2340,6 +2340,8 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         alloc::string::String::from("PS1=lineluya# "),
         alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
         alloc::string::String::from("SHELL=/bin/sh"),
+        alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
+        alloc::string::String::from("PYTHONHOME=/usr"),
     ];
     let loaded_chirho = crate::exec_chirho::load_elf_into_memory_chirho(
         crate::exec_chirho::BUSYBOX_ELF_CHIRHO
