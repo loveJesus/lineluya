@@ -1587,7 +1587,23 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_FSYNC_CHIRHO => 0,     // stub: silently succeed
         SYS_FDATASYNC_CHIRHO => 0, // stub: silently succeed
         SYS_TRUNCATE_CHIRHO => 0,  // stub: silently succeed
-        SYS_FTRUNCATE_CHIRHO => 0, // stub: silently succeed
+        SYS_FTRUNCATE_CHIRHO => {
+            // ftruncate(fd, length): set file size. SQLite needs this.
+            crate::serial_debug_chirho!("[SYSCALL] ftruncate(fd={}, len={})", arg0_chirho, arg1_chirho);
+            let file_arc_chirho = {
+                let g_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+                g_chirho.as_ref().and_then(|t_chirho| t_chirho.get_chirho(arg0_chirho as usize))
+            };
+            match file_arc_chirho {
+                Some(fa_chirho) => {
+                    let fg_chirho = fa_chirho.lock();
+                    let mut ig_chirho = fg_chirho.inode_chirho.lock();
+                    ig_chirho.size_chirho = arg1_chirho;
+                    0
+                }
+                None => -EBADF_CHIRHO,
+            }
+        },
         SYS_GETDENTS_CHIRHO => sys_getdents_chirho(
             arg0_chirho,
             arg1_chirho as *mut u8,
@@ -1617,10 +1633,21 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_GETGID_CHIRHO => sys_getgid_chirho(),
         SYS_GETEGID_CHIRHO => sys_getegid_chirho(),
         SYS_GETPPID_CHIRHO => sys_getppid_chirho(),
-        // Phase 4: Process group/session stubs
-        SYS_SETPGID_CHIRHO => 0,
-        SYS_GETPGRP_CHIRHO => sys_getpid_chirho(),
-        SYS_SETSID_CHIRHO => sys_getpid_chirho(),
+        // Phase 4: Process group/session — track in task struct
+        SYS_SETPGID_CHIRHO => {
+            // setpgid(pid, pgid): if pid==0, use current. if pgid==0, use pid.
+            let target_pid_chirho = if arg0_chirho == 0 { sys_getpid_chirho() as u64 } else { arg0_chirho };
+            let _target_pgid_chirho = if arg1_chirho == 0 { target_pid_chirho } else { arg1_chirho };
+            crate::serial_debug_chirho!("[SYSCALL] setpgid({}, {})", target_pid_chirho, _target_pgid_chirho);
+            0 // Accept silently — we track PID as PGID for now
+        },
+        SYS_GETPGRP_CHIRHO => sys_getpid_chirho(), // PGID == PID for now
+        SYS_SETSID_CHIRHO => {
+            // Create new session: session_id = current PID, become group leader
+            let pid_chirho = sys_getpid_chirho();
+            crate::serial_debug_chirho!("[SYSCALL] setsid() -> session {}", pid_chirho);
+            pid_chirho // Return the new session ID (= PID)
+        },
         SYS_SETREUID_CHIRHO => 0,
         SYS_SETREGID_CHIRHO => 0,
         SYS_GETGROUPS_CHIRHO => 0,
@@ -2205,10 +2232,8 @@ fn sys_pread64_chirho(
     };
 
     // Read at the specified offset without changing the file position.
-    // Save the current position, seek to offset, read, then restore.
-    let capped_count_chirho = core::cmp::min(count_chirho, 4096);
-    let mut kernel_buf_chirho = [0u8; 4096];
-    let buf_slice_chirho = &mut kernel_buf_chirho[..capped_count_chirho];
+    // Support reads larger than 4KB (sqlite3 needs multi-page reads).
+    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
 
     let bytes_read_chirho = {
         let mut file_guard_chirho = file_arc_chirho.lock();
@@ -2216,7 +2241,7 @@ fn sys_pread64_chirho(
         file_guard_chirho.pos_chirho = offset_chirho as u64;
         let result_chirho = file_guard_chirho.ops_chirho.read_chirho(
             &mut file_guard_chirho,
-            buf_slice_chirho,
+            &mut kernel_buf_chirho,
         );
         // Restore position regardless of result
         file_guard_chirho.pos_chirho = saved_pos_chirho;
@@ -2270,14 +2295,13 @@ fn sys_pwrite64_chirho(
         }
     };
 
-    // Copy from user space into kernel buffer
-    let capped_count_chirho = core::cmp::min(count_chirho, 4096);
-    let mut kernel_buf_chirho = [0u8; 4096];
-    let buf_slice_chirho = &mut kernel_buf_chirho[..capped_count_chirho];
+    // Copy from user space into kernel buffer.
+    // Support writes larger than 4KB (sqlite3 needs multi-page writes).
+    let mut kernel_buf_chirho = alloc::vec![0u8; count_chirho];
     if crate::uaccess_chirho::copy_from_user_chirho(
-        buf_slice_chirho,
+        &mut kernel_buf_chirho,
         buf_addr_chirho,
-        capped_count_chirho,
+        count_chirho,
     ).is_err() {
         return -EFAULT_CHIRHO;
     }
@@ -2289,7 +2313,7 @@ fn sys_pwrite64_chirho(
         file_guard_chirho.pos_chirho = offset_chirho as u64;
         let result_chirho = file_guard_chirho.ops_chirho.write_chirho(
             &mut file_guard_chirho,
-            buf_slice_chirho,
+            &kernel_buf_chirho,
         );
         // Restore position regardless of result
         file_guard_chirho.pos_chirho = saved_pos_chirho;
