@@ -390,12 +390,11 @@ pub fn resolve_path_chirho(
         let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
         for mount_chirho in mounts_chirho.iter() {
             let mount_path_chirho = &mount_chirho.path_chirho;
-            // Special case: "/" matches all absolute paths
+            // Special case: "/" matches all absolute paths.
+            // Later mounts at "/" override earlier ones (ext4 over tmpfs).
             if mount_path_chirho == "/" {
-                if mount_prefix_len_chirho == 0 {
-                    mount_prefix_len_chirho = 1;
-                    current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
-                }
+                mount_prefix_len_chirho = 1;
+                current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
                 continue;
             }
             // Normal mount: path must start with mount_path and be
@@ -707,6 +706,12 @@ pub fn resolve_parent_live_chirho(
         let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
         for mount_chirho in mounts_chirho.iter() {
             let mp_chirho = &mount_chirho.path_chirho;
+            // Use >= so later mounts at "/" override earlier ones (ext4 over tmpfs)
+            if mp_chirho == "/" {
+                mount_prefix_len_chirho = 1;
+                current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
+                continue;
+            }
             if path_chirho.starts_with(mp_chirho.as_str())
                 && mp_chirho.len() > mount_prefix_len_chirho
                 && (path_chirho.len() == mp_chirho.len()
@@ -786,7 +791,16 @@ fn create_file_at_path_chirho(
 ) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
     // Create the file in the parent directory
     {
-        let (parent_inode_chirho, name_chirho) = resolve_parent_live_chirho(path_chirho)?;
+        let (parent_inode_chirho, name_chirho) = match resolve_parent_live_chirho(path_chirho) {
+            Ok(result_chirho) => result_chirho,
+            Err(e_chirho) => {
+                crate::serial_println_chirho!(
+                    "[FS] create_file_at_path: resolve_parent failed for '{}': {}",
+                    path_chirho, e_chirho
+                );
+                return Err(e_chirho);
+            }
+        };
         let parent_guard_chirho = parent_inode_chirho.lock();
         let _new_chirho = parent_guard_chirho.ops_chirho.create_chirho(
             &parent_guard_chirho,
@@ -886,7 +900,12 @@ pub fn sys_openat_chirho(
         Ok(result_chirho) => result_chirho,
         Err(errno_chirho) => {
             // If O_CREAT is set and the file doesn't exist, create it
+            crate::serial_println_chirho!(
+                "[FS] open: path={} err={} flags={:#x}",
+                pathname_chirho, errno_chirho, flags_chirho
+            );
             if flags_chirho & O_CREAT_CHIRHO != 0 && errno_chirho == -ENOENT_CHIRHO {
+                crate::serial_println_chirho!("[FS] O_CREAT: creating {}", pathname_chirho);
                 match create_file_at_path_chirho(&pathname_chirho, mode_chirho) {
                     Ok(result_chirho) => result_chirho,
                     Err(e_chirho) => return e_chirho,
