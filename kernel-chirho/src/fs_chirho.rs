@@ -592,6 +592,33 @@ fn resolve_path_depth_chirho(
                 }
             }
 
+            // Symlink following for tmpfs inodes.
+            // Check if the child is a symlink — if so, follow it.
+            {
+                let child_guard_chirho = child_arc_chirho.lock();
+                if child_guard_chirho.mode_chirho & 0xF000 == 0xA000 {
+                    // S_IFLNK — follow the symlink
+                    if let Ok(target_chirho) = child_guard_chirho.ops_chirho.readlink_chirho(&child_guard_chirho) {
+                        drop(child_guard_chirho); // Release lock before recursion
+                        let resolved_target_chirho = if target_chirho.starts_with('/') {
+                            target_chirho
+                        } else {
+                            let parent_path_chirho = path_chirho.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
+                            let mut full_chirho = String::from(parent_path_chirho);
+                            full_chirho.push('/');
+                            full_chirho.push_str(&target_chirho);
+                            full_chirho
+                        };
+                        let mut remaining_path_chirho = resolved_target_chirho;
+                        for rest_idx_chirho in (idx_chirho + 1)..remaining_components_chirho.len() {
+                            remaining_path_chirho.push('/');
+                            remaining_path_chirho.push_str(remaining_components_chirho[rest_idx_chirho]);
+                        }
+                        return resolve_path_depth_chirho(&remaining_path_chirho, symlink_depth_chirho + 1);
+                    }
+                }
+            }
+
             if is_last_chirho {
                 let file_ops_chirho = {
                     let guard_chirho = child_arc_chirho.lock();
