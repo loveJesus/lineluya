@@ -2319,9 +2319,11 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
     ];
     let shell_envp_chirho = [
         alloc::string::String::from("HOME=/root"),
-        alloc::string::String::from("PATH=/bin:/sbin"),
+        alloc::string::String::from("PATH=/mnt/bin:/mnt/sbin:/mnt/usr/bin:/mnt/usr/sbin:/bin:/sbin"),
         alloc::string::String::from("TERM=linux"),
         alloc::string::String::from("PS1=lineluya# "),
+        alloc::string::String::from("LD_LIBRARY_PATH=/mnt/lib:/mnt/usr/lib"),
+        alloc::string::String::from("SHELL=/bin/sh"),
     ];
     let loaded_chirho = crate::exec_chirho::load_elf_into_memory_chirho(
         crate::exec_chirho::BUSYBOX_ELF_CHIRHO
@@ -3077,9 +3079,25 @@ fn sys_clock_gettime_chirho(
                 tv_nsec_chirho: total_ns_chirho % 1_000_000_000,
             }
         }
+        // CLOCK_PROCESS_CPUTIME_ID (2), CLOCK_THREAD_CPUTIME_ID (3),
+        // CLOCK_MONOTONIC_RAW (4), CLOCK_BOOTTIME (7), CLOCK_MONOTONIC_COARSE (6)
+        // — all treated as monotonic for simplicity.
+        2 | 3 | 4 | 6 | 7 => {
+            let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            let total_ns_chirho = ticks_chirho as i64 * 10_000_000;
+            TimespecChirho {
+                tv_sec_chirho: total_ns_chirho / 1_000_000_000,
+                tv_nsec_chirho: total_ns_chirho % 1_000_000_000,
+            }
+        }
         _ => {
-            // Unsupported clock ID -- return EINVAL.
-            return -EINVAL_CHIRHO;
+            // Unknown clock ID -- treat as monotonic rather than failing.
+            let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            let total_ns_chirho = ticks_chirho as i64 * 10_000_000;
+            TimespecChirho {
+                tv_sec_chirho: total_ns_chirho / 1_000_000_000,
+                tv_nsec_chirho: total_ns_chirho % 1_000_000_000,
+            }
         }
     };
 
