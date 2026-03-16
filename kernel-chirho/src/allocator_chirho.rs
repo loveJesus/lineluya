@@ -17,8 +17,8 @@ use x86_64::VirtAddr;
 /// Virtual address where the kernel heap begins.
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
-/// Size of the kernel heap in bytes (128 MiB — needed for page cache + loading large binaries).
-pub const HEAP_SIZE_CHIRHO: usize = 128 * 1024 * 1024;
+/// Size of the kernel heap in bytes (256 MiB — needed for page cache + SSH server + large binaries).
+pub const HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
 
 /// Global heap allocator.
 #[global_allocator]
