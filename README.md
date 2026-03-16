@@ -44,44 +44,47 @@ Lineluya is an ambitious, ground-up rewrite of the Linux kernel in Rust. It aims
 | **Modern Design** | Built from scratch with modern OS research (EEVDF scheduler, framekernel patterns from Asterinas) |
 | **For Glory** | Every file begins with John 3:16. This is worship in code. |
 
-### Current Status: v3.1.0 — "Clearing the Land"
+### Current Status: v3.2.0 — "Clearing the Land"
 
-The kernel boots in QEMU, runs **Alpine Linux's BusyBox v1.37.0** via **musl 1.2.5 dynamic linker**, reading from a real **ext4 filesystem** on a **VirtIO-blk** disk:
+The kernel boots in QEMU, runs **real Alpine Linux programs** via **musl 1.2.5 dynamic linker** with **DHCP networking**, reading from a **512MB ext4 rootfs** on **VirtIO-blk**:
 
 ```
-lineluya# /mnt/bin/busybox ls /mnt
+lineluya# echo hello
+hello
+
+lineluya# ls /
 bin   dev   etc   home   lib   lost+found   media   mnt
 opt   proc   root   run   sbin   srv   sys   tmp   usr   var
 
-lineluya# /mnt/bin/busybox uname -a
-Lineluya lineluya 0.1.0 #1 SMP x86_64 Linux
+lineluya# sqlite3 :memory: "SELECT 316, 42+1;"
+316|43
 
-lineluya# /mnt/bin/busybox cat /mnt/etc/hostname
-lineluya-chirho
+lineluya# apk --version
+apk-tools 2.14.6, compiled for x86_64.
 
-lineluya# /mnt/bin/busybox --help
-BusyBox v1.37.0 (2024-11-19 21:09:16 UTC) multi-call binary.
-Currently defined functions:
-  [, [[, acpid, ash, awk, base64, cat, chmod, cp, date, dd, df,
-  dmesg, echo, find, grep, gzip, head, hostname, id, ifconfig,
-  init, ip, kill, less, ln, login, ls, mkdir, mount, mv, ping,
-  ps, pwd, rm, sed, sh, sleep, stat, su, sync, tar, top, touch,
-  uname, umount, vi, wget, whoami, ...  (200+ applets)
+lineluya# id
+uid=0(root) gid=0(root)
+
+lineluya# date
+Sun Mar 15 00:00:00 UTC 2026
+
+lineluya# cat /etc/hostname
+localhost
 ```
 
-**What works:**
-- BusyBox shell with 15+ built-in commands (echo, date, ls, cat, mkdir, hostname, id, pwd, uname)
+**Verified working in QEMU (x86_64):**
+- **SQLite 3.51.2** — executes SQL queries from ext4 disk (dynamically linked)
+- **apk-tools 2.14.6** — Alpine package manager runs
+- **DHCP networking** — IP=10.0.2.15, GW=10.0.2.2, DNS=10.0.2.3 via VirtIO-net
+- BusyBox shell with color `ls`, cat, date, id, echo, uname (200+ applets)
 - Pixel framebuffer console (1280x800, green-on-black, UEFI)
-- VirtIO-blk I/O port driver reading 256MB Alpine ext4 disk
-- ext4 filesystem: superblock, group descriptors, inodes, extent trees, directory entries
-- musl 1.2.5 dynamic linker: TLS setup, ELF relocation, symbol resolution
-- Alpine BusyBox v1.37.0 applets: ls, cat, uname, id, whoami (dynamically linked)
-- VFS: tmpfs, procfs (18 entries), devfs, ext4 mounts
-- Kernel-side R_X86_64_RELATIVE relocations for PIE executables
-- PIE (ET_DYN) and static (ET_EXEC) ELF loading
-- Fork/exec/exit cycle (vfork semantics with shell re-exec)
-- SSE/SSE2 enabled, full IDT exception handlers
-- 75+ kernel modules, 50,000+ lines of Rust
+- VirtIO-blk + VirtIO-net I/O port drivers
+- ext4 mounted at `/` with symlink following
+- musl 1.2.5: full ELF loading with GLOB_DAT/JUMP_SLOT symbol resolution
+- 75+ syscalls, 60+ kernel symbol exports for .ko module loading
+- VFS: ext4 at /, tmpfs at /tmp, procfs, devtmpfs, sysfs
+- Fork/exec/exit cycle with shell re-exec
+- 60,000+ lines of Rust across 75+ kernel modules
 
 ### Architecture
 
