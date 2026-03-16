@@ -1594,16 +1594,82 @@ impl Ext4MountChirho {
             entry_bytes_chirho.push(0);
         }
 
-        // Append to directory data.
-        dir_data_chirho.extend_from_slice(&entry_bytes_chirho);
+        // Find the last entry in the directory data and adjust its rec_len
+        // to make room, then append the new entry.
+        // Strategy: find the last entry, shrink its rec_len to its actual size,
+        // and give the remaining space to the new entry.
+        let bs_chirho = self.block_size_chirho as usize;
+        let dir_len_chirho = dir_data_chirho.len();
 
-        // For a full implementation we would:
-        // 1. Find the last entry in the directory block and adjust its rec_len
-        //    to fill the gap between it and the new entry.
-        // 2. If no space in existing blocks, allocate a new block.
-        // Here we just log that the entry was built.
+        // Find the last entry in the last block
+        let last_block_start_chirho = (dir_len_chirho / bs_chirho) * bs_chirho;
+        if last_block_start_chirho >= dir_len_chirho {
+            // Empty dir or no space
+            dir_data_chirho.extend_from_slice(&entry_bytes_chirho);
+            self.write_file_data_chirho(dir_ino_chirho, &dir_data_chirho)?;
+            // Update dir inode size
+            let mut dir_inode_update_chirho = self.read_inode_chirho(dir_ino_chirho)
+                .ok_or("failed re-read dir inode")?;
+            dir_inode_update_chirho.i_size_lo_chirho = dir_data_chirho.len() as u32;
+            self.write_inode_chirho(dir_ino_chirho, &dir_inode_update_chirho)?;
+        } else {
+            // Walk entries in the last block to find the last one
+            let mut off_chirho = last_block_start_chirho;
+            let mut last_entry_off_chirho = off_chirho;
+            while off_chirho + 8 <= dir_len_chirho {
+                let rl_chirho = u16::from_le_bytes(
+                    dir_data_chirho[off_chirho + 4..off_chirho + 6]
+                        .try_into().unwrap_or([0; 2])
+                ) as usize;
+                if rl_chirho == 0 { break; }
+                last_entry_off_chirho = off_chirho;
+                off_chirho += rl_chirho;
+            }
+
+            // Compute the actual size of the last entry
+            let last_name_len_chirho = dir_data_chirho[last_entry_off_chirho + 6] as usize;
+            let last_actual_len_chirho = ((8 + last_name_len_chirho + 3) / 4) * 4;
+            let old_rec_len_chirho = u16::from_le_bytes(
+                dir_data_chirho[last_entry_off_chirho + 4..last_entry_off_chirho + 6]
+                    .try_into().unwrap_or([0; 2])
+            ) as usize;
+
+            let space_after_chirho = old_rec_len_chirho - last_actual_len_chirho;
+            if space_after_chirho >= rec_len_chirho as usize {
+                // Enough space: shrink last entry, insert new one
+                let new_last_rec_len_chirho = last_actual_len_chirho as u16;
+                dir_data_chirho[last_entry_off_chirho + 4] = new_last_rec_len_chirho as u8;
+                dir_data_chirho[last_entry_off_chirho + 5] = (new_last_rec_len_chirho >> 8) as u8;
+
+                // New entry gets remaining space
+                let new_entry_off_chirho = last_entry_off_chirho + last_actual_len_chirho;
+                let new_rec_len_final_chirho = (old_rec_len_chirho - last_actual_len_chirho) as u16;
+                entry_bytes_chirho[4] = new_rec_len_final_chirho as u8;
+                entry_bytes_chirho[5] = (new_rec_len_final_chirho >> 8) as u8;
+
+                // Write into existing data
+                let end_chirho = new_entry_off_chirho + entry_bytes_chirho.len();
+                if end_chirho <= dir_data_chirho.len() {
+                    dir_data_chirho[new_entry_off_chirho..end_chirho]
+                        .copy_from_slice(&entry_bytes_chirho);
+                }
+            } else {
+                // No space in current block: append entry to dir data
+                dir_data_chirho.extend_from_slice(&entry_bytes_chirho);
+            }
+
+            // Write updated directory data back to disk
+            self.write_file_data_chirho(dir_ino_chirho, &dir_data_chirho)?;
+
+            // Update dir inode size
+            let mut dir_inode_update_chirho = self.read_inode_chirho(dir_ino_chirho)
+                .ok_or("failed re-read dir inode")?;
+            dir_inode_update_chirho.i_size_lo_chirho = dir_data_chirho.len() as u32;
+            self.write_inode_chirho(dir_ino_chirho, &dir_inode_update_chirho)?;
+        }
+
         crate::serial_println_chirho!(
-            "[EXT4] Added dir entry '{}' (ino={}) to dir ino={}",
+            "[EXT4] Dir entry '{}' (ino={}) written to dir ino={}",
             name_chirho, child_ino_chirho, dir_ino_chirho
         );
 
