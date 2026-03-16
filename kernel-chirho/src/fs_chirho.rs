@@ -708,10 +708,12 @@ pub fn resolve_parent_live_chirho(
         let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
         for mount_chirho in mounts_chirho.iter() {
             let mp_chirho = &mount_chirho.path_chirho;
-            // Use >= so later mounts at "/" override earlier ones (ext4 over tmpfs)
+            // "/" matches all paths but only if no longer mount was found
             if mp_chirho == "/" {
-                mount_prefix_len_chirho = 1;
-                current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
+                if mount_prefix_len_chirho <= 1 {
+                    mount_prefix_len_chirho = 1;
+                    current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
+                }
                 continue;
             }
             if path_chirho.starts_with(mp_chirho.as_str())
