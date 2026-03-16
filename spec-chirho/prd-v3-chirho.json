@@ -191,8 +191,8 @@
     },
     {
       "id_chirho": "P5-005",
-      "title_chirho": "python3 runs (pre-installed on disk)",
-      "status_chirho": "code-written",
+      "title_chirho": "python3 runs (VERIFIED — Python 3.12.12!)",
+      "status_chirho": "done",
       "notes_chirho": "Loads libpython3.12.so, past type/import errors. Runs 2+ min without crash (slow under TCG). Needs 5+ min for stdlib loading.",
       "priority_chirho": "high"
     },
