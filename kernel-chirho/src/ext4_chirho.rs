@@ -1856,27 +1856,35 @@ impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
             .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
             .ok_or(-9i64)?; // EBADF
 
+        let file_size_chirho = inode_guard_chirho.size_chirho;
         let mount_chirho = fs_data_chirho.mount_chirho.lock();
         let ext4_inode_chirho = mount_chirho
             .read_inode_chirho(fs_data_chirho.ino_chirho)
             .ok_or(-5i64)?; // EIO
 
+        let pos_chirho = file_chirho.pos_chirho as usize;
+        if pos_chirho as u64 >= file_size_chirho {
+            return Ok(0); // EOF
+        }
+
+        let available_chirho = (file_size_chirho as usize) - pos_chirho;
+        let to_read_chirho = core::cmp::min(buf_chirho.len(), available_chirho);
+
+        // Read file data via extent tree. For performance, the ext4 mount
+        // has a block cache that avoids re-reading sectors from VirtIO.
         let file_data_chirho = mount_chirho
             .read_file_data_chirho(&ext4_inode_chirho)
             .ok_or(-5i64)?; // EIO
 
-        let pos_chirho = file_chirho.pos_chirho as usize;
-        if pos_chirho >= file_data_chirho.len() {
-            return Ok(0); // EOF
+        let actual_available_chirho = core::cmp::min(to_read_chirho, file_data_chirho.len().saturating_sub(pos_chirho));
+        if actual_available_chirho == 0 {
+            return Ok(0);
         }
+        buf_chirho[..actual_available_chirho]
+            .copy_from_slice(&file_data_chirho[pos_chirho..pos_chirho + actual_available_chirho]);
+        file_chirho.pos_chirho += actual_available_chirho as u64;
 
-        let available_chirho = file_data_chirho.len() - pos_chirho;
-        let to_read_chirho = core::cmp::min(buf_chirho.len(), available_chirho);
-        buf_chirho[..to_read_chirho]
-            .copy_from_slice(&file_data_chirho[pos_chirho..pos_chirho + to_read_chirho]);
-        file_chirho.pos_chirho += to_read_chirho as u64;
-
-        Ok(to_read_chirho)
+        Ok(actual_available_chirho)
     }
 
     fn write_chirho(
