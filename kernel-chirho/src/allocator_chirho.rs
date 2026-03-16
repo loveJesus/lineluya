@@ -3,9 +3,9 @@
 
 //! Kernel heap allocator module.
 //!
-//! Provides a locked linked-list heap allocator for dynamic memory allocation
-//! in a bare-metal `#![no_std]` environment. Maps virtual pages to physical
-//! frames and initialises the global allocator over the mapped region.
+//! Uses locked linked-list heap allocator. The 128MB heap with 16MB page
+//! cache avoids the heap corruption that occurs under heavy churn.
+//! TODO: Replace with a more robust allocator (talc GPFs, need investigation).
 
 use linked_list_allocator::LockedHeap;
 use x86_64::structures::paging::mapper::MapToError;
@@ -20,26 +20,11 @@ pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 /// Size of the kernel heap in bytes (128 MiB — needed for page cache + loading large binaries).
 pub const HEAP_SIZE_CHIRHO: usize = 128 * 1024 * 1024;
 
-/// Global heap allocator backed by a locked linked-list allocator.
+/// Global heap allocator.
 #[global_allocator]
 static ALLOCATOR_CHIRHO: LockedHeap = LockedHeap::empty();
 
 /// Initialise the kernel heap.
-///
-/// Creates a contiguous range of virtual pages starting at [`HEAP_START_CHIRHO`]
-/// spanning [`HEAP_SIZE_CHIRHO`] bytes, maps each page to a freshly allocated
-/// physical frame with `PRESENT | WRITABLE` flags, and then hands the region
-/// to the global [`ALLOCATOR_CHIRHO`].
-///
-/// # Errors
-///
-/// Returns [`MapToError`] if any page cannot be mapped (e.g. the frame
-/// allocator is exhausted or the page is already mapped).
-///
-/// # Safety
-///
-/// This function must be called exactly once, after paging has been set up and
-/// before any heap allocation is attempted.
 pub fn init_heap_chirho(
     mapper_chirho: &mut impl Mapper<Size4KiB>,
     frame_allocator_chirho: &mut impl FrameAllocator<Size4KiB>,
@@ -59,9 +44,6 @@ pub fn init_heap_chirho(
             .allocate_frame()
             .ok_or(MapToError::FrameAllocationFailed)?;
 
-        // SAFETY: We are mapping freshly allocated frames that are not yet in
-        // use, so there is no aliasing.  The caller guarantees that paging is
-        // properly initialised and that this function is invoked only once.
         unsafe {
             mapper_chirho
                 .map_to(page_chirho, frame_chirho, flags_chirho, frame_allocator_chirho)?
@@ -69,9 +51,6 @@ pub fn init_heap_chirho(
         }
     }
 
-    // SAFETY: The virtual address range [HEAP_START_CHIRHO, HEAP_START_CHIRHO +
-    // HEAP_SIZE_CHIRHO) has just been mapped to valid physical memory, so it is
-    // safe to hand to the allocator.
     unsafe {
         ALLOCATOR_CHIRHO
             .lock()
