@@ -1042,6 +1042,11 @@ fn read_user_string_array_chirho(array_ptr_chirho: u64) -> Result<Vec<String>, i
 ///
 /// Returns `Some(Vec<u8>)` with the full file contents on success,
 /// or `None` if the file cannot be found or read.
+/// Public wrapper for reading a file from VFS (used by ko_loader modprobe).
+pub fn try_read_file_pub_chirho(path_chirho: &str) -> Option<Vec<u8>> {
+    try_read_file_chirho(path_chirho)
+}
+
 fn try_read_file_chirho(path_chirho: &str) -> Option<Vec<u8>> {
     use crate::vfs_chirho::FileChirho;
 
