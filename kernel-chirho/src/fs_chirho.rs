@@ -1117,16 +1117,21 @@ pub fn read_file_data_at_offset_chirho(
 }
 
 pub fn sys_close_real_chirho(fd_chirho: u64) -> i64 {
-    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-        Some(t_chirho) => t_chirho,
-        None => return -EBADF_CHIRHO,
+    let result_chirho = {
+        let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+            Some(t_chirho) => t_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        match fd_table_chirho.close_chirho(fd_chirho as usize) {
+            Ok(()) => 0i64,
+            Err(errno_chirho) => errno_chirho,
+        }
     };
-
-    match fd_table_chirho.close_chirho(fd_chirho as usize) {
-        Ok(()) => 0,
-        Err(errno_chirho) => errno_chirho,
-    }
+    // Drop the fd_table lock BEFORE returning — if dealloc triggers
+    // ext4 inode drop which tries to use serial (mutex), the lock
+    // ordering could cause issues.
+    result_chirho
 }
 
 /// `dup(2)` -- duplicate a file descriptor.
