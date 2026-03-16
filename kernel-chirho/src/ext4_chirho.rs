@@ -711,8 +711,9 @@ impl Ext4MountChirho {
     /// Checks the page cache first; on miss, reads from the block device
     /// and caches the result.
     #[allow(dead_code)]
-    /// Copy a cached block directly into a destination buffer (no heap alloc).
-    /// Returns the number of bytes copied.
+    /// Copy a cached block directly into a destination buffer.
+    /// On cache hit: zero-copy from cache to dest (no heap alloc).
+    /// On cache miss: read into dest, then copy to cache (ONE alloc, kept in cache).
     pub fn read_block_into_chirho(&self, block_nr_chirho: u64, dest_chirho: &mut [u8]) -> Option<usize> {
         // Check page cache first — zero-copy from cache to dest
         {
@@ -723,11 +724,40 @@ impl Ext4MountChirho {
                 return Some(copy_len_chirho);
             }
         }
-        // Cache miss — read from disk and insert into cache, then copy
-        let block_chirho = self.read_block_cached_chirho(block_nr_chirho)?;
-        let copy_len_chirho = core::cmp::min(block_chirho.len(), dest_chirho.len());
-        dest_chirho[..copy_len_chirho].copy_from_slice(&block_chirho[..copy_len_chirho]);
-        Some(copy_len_chirho)
+
+        // Cache miss — read directly into dest buffer (no intermediate Vec)
+        let bs_chirho = self.block_size_chirho as usize;
+        let sectors_per_block_chirho = bs_chirho / 512;
+        let start_sector_chirho = block_nr_chirho * sectors_per_block_chirho as u64;
+        let read_len_chirho = core::cmp::min(bs_chirho, dest_chirho.len());
+
+        // Zero the dest first
+        dest_chirho[..read_len_chirho].fill(0);
+
+        let registry_chirho = &crate::block_chirho::BLOCK_REGISTRY_CHIRHO;
+        if registry_chirho
+            .read_block_chirho(
+                self.device_id_chirho as usize,
+                start_sector_chirho,
+                &mut dest_chirho[..read_len_chirho],
+            )
+            .is_err()
+        {
+            return None;
+        }
+
+        // Insert into cache (ONE allocation — stays in cache, never freed during boot)
+        {
+            let mut cache_chirho = PAGE_CACHE_CHIRHO.lock();
+            let cache_copy_chirho = dest_chirho[..read_len_chirho].to_vec();
+            cache_chirho.insert_chirho(
+                self.device_id_chirho,
+                block_nr_chirho,
+                cache_copy_chirho,
+            );
+        }
+
+        Some(read_len_chirho)
     }
 
     pub fn read_block_cached_chirho(&self, block_nr_chirho: u64) -> Option<Vec<u8>> {
