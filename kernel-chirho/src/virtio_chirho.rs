@@ -1141,49 +1141,51 @@ impl VirtioBlkDeviceChirho {
         let d1_chirho = vq_chirho.alloc_desc_chirho().ok_or(-12i64)?;
         let d2_chirho = vq_chirho.alloc_desc_chirho().ok_or(-12i64)?;
 
-        // Use a SINGLE contiguous block request struct (like Linux/reference impls).
-        // Layout: { type: u32, reserved: u32, sector: u64, data: [u8; 512], status: u8 }
-        // All three descriptors point into this one allocation at different offsets.
+        // Use a SINGLE contiguous block request struct.
+        // Layout: { type: u32, reserved: u32, sector: u64, data: [u8; N], status: u8 }
+        // Data size = buf_chirho.len() (512 for single sector, 4096 for full block).
+        let data_size_chirho = buf_chirho.len();
         #[repr(C, packed)]
         struct BlkReqFullChirho {
             type_chirho: u32,
             reserved_chirho: u32,
             sector_chirho: u64,
-            data_chirho: [u8; 512],
-            status_chirho: u8,
+            // data follows at offset 16 — variable length in the DMA buffer
+            // status follows at offset 16 + data_size
         }
 
-        // Use a SINGLE fixed physical page for all DMA requests (reused).
-        // The previous bump allocator leaked 4KB per read, exhausting
-        // physical memory after ~4000 reads (16MB).
-        let req_phys_chirho: u64 = 0x900000; // 9MB physical — one page, reused every read
+        // DMA buffer at fixed physical address (reused per request).
+        // Layout: [header 16 bytes][data N bytes][status 1 byte]
+        // N = data_size_chirho (512 for single sector, up to 4096 for block)
+        let req_phys_chirho: u64 = 0x900000; // 9MB physical — 2 pages available
         let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let req_ptr_chirho = (req_phys_chirho + phys_off_chirho) as *mut BlkReqFullChirho;
+        let req_virt_chirho = (req_phys_chirho + phys_off_chirho) as *mut u8;
+
+        // Write header
         unsafe {
-            ptr::write_volatile(req_ptr_chirho, BlkReqFullChirho {
-                type_chirho: if is_write_chirho { VIRTIO_BLK_T_OUT_CHIRHO } else { VIRTIO_BLK_T_IN_CHIRHO },
-                reserved_chirho: 0,
-                sector_chirho,
-                data_chirho: [0u8; 512],
-                status_chirho: 0xFF,
-            });
+            ptr::write_volatile(req_virt_chirho as *mut u32,
+                if is_write_chirho { VIRTIO_BLK_T_OUT_CHIRHO } else { VIRTIO_BLK_T_IN_CHIRHO });
+            ptr::write_volatile(req_virt_chirho.add(4) as *mut u32, 0); // reserved
+            ptr::write_volatile(req_virt_chirho.add(8) as *mut u64, sector_chirho);
+            // Zero the data area
+            ptr::write_bytes(req_virt_chirho.add(16), 0, data_size_chirho);
+            // Set status to 0xFF
+            ptr::write_volatile(req_virt_chirho.add(16 + data_size_chirho), 0xFF);
         }
 
-        // Copy write data into the request
+        // Copy write data
         if is_write_chirho {
             unsafe {
-                ptr::copy_nonoverlapping(buf_chirho.as_ptr(), (*req_ptr_chirho).data_chirho.as_mut_ptr(), buf_chirho.len().min(512));
+                ptr::copy_nonoverlapping(buf_chirho.as_ptr(), req_virt_chirho.add(16), data_size_chirho);
             }
         }
 
-        // Descriptor addresses: all offsets from req_phys
-        let header_phys_chirho = req_phys_chirho; // type + reserved + sector = 16 bytes
-        let data_phys_chirho = req_phys_chirho + 16; // data starts at offset 16
-        let status_phys_chirho = req_phys_chirho + 16 + 512; // status at offset 528
+        let header_phys_chirho = req_phys_chirho;
+        let data_phys_chirho = req_phys_chirho + 16;
+        let status_phys_chirho = req_phys_chirho + 16 + data_size_chirho as u64;
 
-        // Virtual pointers for reading back results
-        let status_virt_chirho = unsafe { (req_ptr_chirho as *mut u8).add(528) };
-        let data_virt_chirho = unsafe { (req_ptr_chirho as *mut u8).add(16) };
+        let status_virt_chirho = unsafe { req_virt_chirho.add(16 + data_size_chirho) };
+        let data_virt_chirho = unsafe { req_virt_chirho.add(16) };
 
         // Debug logging removed for performance
 
@@ -1303,7 +1305,7 @@ impl VirtioBlkDeviceChirho {
         // Copy read data back from the contiguous request struct
         if !is_write_chirho && final_status_chirho == VIRTIO_BLK_S_OK_CHIRHO {
             unsafe {
-                ptr::copy_nonoverlapping(data_virt_chirho, buf_chirho.as_mut_ptr(), buf_chirho.len().min(512));
+                ptr::copy_nonoverlapping(data_virt_chirho, buf_chirho.as_mut_ptr(), buf_chirho.len());
             }
         }
 
