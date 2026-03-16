@@ -23,7 +23,7 @@ set -euo pipefail
 ALPINE_VERSION_CHIRHO="${ALPINE_VERSION_CHIRHO:-3.21}"
 ALPINE_MINOR_CHIRHO="${ALPINE_MINOR_CHIRHO:-0}"
 ALPINE_ARCH_CHIRHO="x86_64"
-DISK_SIZE_CHIRHO="${DISK_SIZE_CHIRHO:-256M}"
+DISK_SIZE_CHIRHO="${DISK_SIZE_CHIRHO:-512M}"
 
 SCRIPT_DIR_CHIRHO="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR_CHIRHO="$(dirname "$SCRIPT_DIR_CHIRHO")"
@@ -287,6 +287,51 @@ if [ -f /mnt-chirho/etc/shadow ]; then
     sed -i "s|^root:.*:|root:::|" /mnt-chirho/etc/shadow
 fi
 
+# ---------------------------------------------------------------
+# P5: Pre-install Alpine packages for Lineluya testing
+# These bypass the need for networking (apk) inside the kernel.
+# ---------------------------------------------------------------
+echo "[DOCKER] Installing P5 packages into rootfs..."
+
+# Set up Alpine repos inside the rootfs
+mkdir -p /mnt-chirho/etc/apk
+cat > /mnt-chirho/etc/apk/repositories << '\''REPOS_CHIRHO'\''
+https://dl-cdn.alpinelinux.org/alpine/v3.21/main
+https://dl-cdn.alpinelinux.org/alpine/v3.21/community
+REPOS_CHIRHO
+
+# Install packages into rootfs using apk --root
+# Copy host apk keys so signature verification works
+cp -a /etc/apk/keys /mnt-chirho/etc/apk/ 2>/dev/null || true
+
+apk --root /mnt-chirho --initdb \
+    --keys-dir /mnt-chirho/etc/apk/keys \
+    --repositories-file /mnt-chirho/etc/apk/repositories \
+    add \
+    sqlite sqlite-libs \
+    python3 \
+    dropbear dropbear-scp \
+    2>&1 | tail -5
+
+echo "[DOCKER] P5 packages installed into rootfs."
+
+# Create a test Python script
+cat > /mnt-chirho/root/hello_chirho.py << '\''PYTEST_CHIRHO'\''
+# For God so loved the world that he gave his only begotten Son,
+# that whoever believes in him should not perish but have eternal life. - John 3:16
+print("Hallelujah! Python3 runs on Lineluya!")
+print("For God so loved the world - John 3:16")
+PYTEST_CHIRHO
+
+# Create a test SQLite script
+cat > /mnt-chirho/root/test_chirho.sql << '\''SQLTEST_CHIRHO'\''
+-- For God so loved the world that he gave his only begotten Son,
+-- that whoever believes in him should not perish but have eternal life. - John 3:16
+CREATE TABLE praise_chirho (id_chirho INTEGER PRIMARY KEY, msg_chirho TEXT);
+INSERT INTO praise_chirho VALUES (1, 'Hallelujah! SQLite runs on Lineluya!');
+SELECT * FROM praise_chirho;
+SQLTEST_CHIRHO
+
 sync
 umount /mnt-chirho
 echo "[DOCKER] rootfs populated and configured."
@@ -403,6 +448,8 @@ print_summary_chirho() {
     echo "  Image path:       $IMAGE_PATH_CHIRHO"
     echo "  Root device:      /dev/vda (VirtIO-blk)"
     echo "  Hostname:         lineluya-chirho"
+    echo ""
+    echo "  Pre-installed: sqlite3, python3, dropbear"
     echo ""
     echo "  QEMU usage:"
     echo "    qemu-system-x86_64 \\"
