@@ -17,20 +17,17 @@ use x86_64::VirtAddr;
 /// Virtual address where the kernel heap begins.
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
-/// Total mapped heap: 32MB fast + 512MB buddy = 544MB.
-pub const HEAP_SIZE_CHIRHO: usize = 544 * 1024 * 1024;
+/// Total mapped heap: 32MB fast + 256MB buddy = 288MB.
+pub const HEAP_SIZE_CHIRHO: usize = 288 * 1024 * 1024;
 
 /// Fast allocator: 32 MiB for small/medium objects.
 const FAST_HEAP_SIZE_CHIRHO: usize = 32 * 1024 * 1024;
 
-/// Buddy allocator: 512 MiB.
-const BUDDY_HEAP_SIZE_CHIRHO: usize = 512 * 1024 * 1024;
+/// Buddy allocator: 256 MiB.
+const BUDDY_HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
 
-/// Global heap allocator — buddy-alloc crate with fast+buddy dual allocator.
-/// NonThreadsafeAlloc is wrapped in a const constructor; we handle thread
-/// safety via the kernel's single-CPU model + interrupt disabling.
-#[global_allocator]
-static ALLOCATOR_CHIRHO: NonThreadsafeAlloc = unsafe {
+/// Inner allocator from buddy-alloc crate.
+static INNER_ALLOC_CHIRHO: NonThreadsafeAlloc = unsafe {
     let fast_param_chirho = FastAllocParam::new(
         HEAP_START_CHIRHO as *const u8,
         FAST_HEAP_SIZE_CHIRHO,
@@ -38,10 +35,71 @@ static ALLOCATOR_CHIRHO: NonThreadsafeAlloc = unsafe {
     let buddy_param_chirho = BuddyAllocParam::new(
         (HEAP_START_CHIRHO + FAST_HEAP_SIZE_CHIRHO) as *const u8,
         BUDDY_HEAP_SIZE_CHIRHO,
-        4096, // leaf_size: page-sized blocks (small allocs use fast allocator)
+        4096,
     );
     NonThreadsafeAlloc::new(fast_param_chirho, buddy_param_chirho)
 };
+
+/// Wrapper that logs large allocations for debugging.
+struct TracingAllocChirho;
+
+unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
+    unsafe fn alloc(&self, layout_chirho: core::alloc::Layout) -> *mut u8 {
+        let size_chirho = layout_chirho.size();
+
+        // Log allocations > 1MB to find the Vec doubling to 64MB.
+        if size_chirho > 1024 * 1024 {
+            // Also print align to distinguish different callers
+            let align_chirho = layout_chirho.align();
+            let align_msg_chirho = b" align=";
+            for &b_chirho in align_msg_chirho {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+            let mut ad_chirho = [0u8; 10]; let mut an_chirho = align_chirho; let mut ai_chirho = 0;
+            if an_chirho == 0 { ad_chirho[0] = b'0'; ai_chirho = 1; }
+            else { while an_chirho > 0 { ad_chirho[ai_chirho] = b'0' + (an_chirho % 10) as u8; an_chirho /= 10; ai_chirho += 1; } }
+            for j_chirho in (0..ai_chirho).rev() {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(ad_chirho[j_chirho]);
+            }
+            // Raw serial to avoid recursion
+            let msg_chirho = b"[ALLOC] large: ";
+            for &b_chirho in msg_chirho {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+            // Print size in decimal
+            let mut digits_chirho = [0u8; 20];
+            let mut n_chirho = size_chirho;
+            let mut i_chirho = 0usize;
+            while n_chirho > 0 {
+                digits_chirho[i_chirho] = b'0' + (n_chirho % 10) as u8;
+                n_chirho /= 10;
+                i_chirho += 1;
+            }
+            for j_chirho in (0..i_chirho).rev() {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(digits_chirho[j_chirho]);
+            }
+            let nl_chirho = b"\r\n";
+            for &b_chirho in nl_chirho {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
+
+        INNER_ALLOC_CHIRHO.alloc(layout_chirho)
+    }
+
+    unsafe fn dealloc(&self, ptr_chirho: *mut u8, layout_chirho: core::alloc::Layout) {
+        INNER_ALLOC_CHIRHO.dealloc(ptr_chirho, layout_chirho)
+    }
+}
+
+/// Global heap allocator with tracing for large allocations.
+#[global_allocator]
+static ALLOCATOR_CHIRHO: TracingAllocChirho = TracingAllocChirho;
 
 /// Initialise the kernel heap by mapping pages.
 ///
