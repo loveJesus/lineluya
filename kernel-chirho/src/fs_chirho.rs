@@ -15,7 +15,7 @@ use spin::Mutex;
 
 use crate::vfs_chirho::{
     FdTableChirho, FileChirho, FileOpsChirho, InodeChirho,
-    O_DIRECTORY_CHIRHO, O_RDONLY_CHIRHO, O_WRONLY_CHIRHO,
+    O_CREAT_CHIRHO, O_DIRECTORY_CHIRHO, O_RDONLY_CHIRHO, O_WRONLY_CHIRHO,
     S_IFCHR_CHIRHO, S_IFDIR_CHIRHO, SuperblockChirho,
 };
 use crate::syscall_chirho::{
@@ -751,6 +751,26 @@ pub fn resolve_parent_live_chirho(
     Ok((current_chirho, final_name_chirho))
 }
 
+/// Create a new file at the given path using the parent directory's create op.
+/// Used when open() is called with O_CREAT on a non-existent path.
+fn create_file_at_path_chirho(
+    path_chirho: &str,
+    mode_chirho: u32,
+) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
+    // Create the file in the parent directory
+    {
+        let (parent_inode_chirho, name_chirho) = resolve_parent_live_chirho(path_chirho)?;
+        let parent_guard_chirho = parent_inode_chirho.lock();
+        let _new_chirho = parent_guard_chirho.ops_chirho.create_chirho(
+            &parent_guard_chirho,
+            &name_chirho,
+            mode_chirho | 0o100000, // S_IFREG
+        )?;
+    }
+    // Now resolve the newly created file through the normal VFS path
+    resolve_path_chirho(path_chirho)
+}
+
 // ============================================================================
 // Syscall implementations
 // ============================================================================
@@ -837,7 +857,17 @@ pub fn sys_openat_chirho(
     // Resolve the path
     let (inode_chirho, file_ops_chirho) = match resolve_path_chirho(&pathname_chirho) {
         Ok(result_chirho) => result_chirho,
-        Err(errno_chirho) => return errno_chirho,
+        Err(errno_chirho) => {
+            // If O_CREAT is set and the file doesn't exist, create it
+            if flags_chirho & O_CREAT_CHIRHO != 0 && errno_chirho == -ENOENT_CHIRHO {
+                match create_file_at_path_chirho(&pathname_chirho, mode_chirho) {
+                    Ok(result_chirho) => result_chirho,
+                    Err(e_chirho) => return e_chirho,
+                }
+            } else {
+                return errno_chirho;
+            }
+        }
     };
 
     // Check O_DIRECTORY: if set, the inode must be a directory
