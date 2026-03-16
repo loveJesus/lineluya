@@ -60,3 +60,49 @@ pub fn init_heap_chirho(
 
     Ok(())
 }
+
+/// Custom allocation error handler — logs and aborts the allocation
+/// instead of panicking. This prevents userspace OOM from crashing
+/// the kernel. The caller (mmap, Vec, etc.) gets a null pointer and
+/// should return -ENOMEM to userspace.
+#[alloc_error_handler]
+fn alloc_error_handler_chirho(layout_chirho: core::alloc::Layout) -> ! {
+    // Use raw serial to avoid allocation in the error path
+    let msg_chirho = b"\r\n[ALLOC] OOM: ";
+    for &b_chirho in msg_chirho {
+        unsafe {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+        }
+    }
+    // Print size as decimal
+    let size_chirho = layout_chirho.size();
+    let mut digits_chirho = [0u8; 20];
+    let mut n_chirho = size_chirho;
+    let mut i_chirho = 0usize;
+    if n_chirho == 0 {
+        digits_chirho[0] = b'0';
+        i_chirho = 1;
+    } else {
+        while n_chirho > 0 {
+            digits_chirho[i_chirho] = b'0' + (n_chirho % 10) as u8;
+            n_chirho /= 10;
+            i_chirho += 1;
+        }
+    }
+    for j_chirho in (0..i_chirho).rev() {
+        unsafe {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(digits_chirho[j_chirho]);
+        }
+    }
+    let suffix_chirho = b" bytes\r\n";
+    for &b_chirho in suffix_chirho {
+        unsafe {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+        }
+    }
+    // Halt instead of panic — prevents cascading failures
+    loop { x86_64::instructions::hlt(); }
+}
