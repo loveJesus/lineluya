@@ -136,79 +136,106 @@ impl BuddyAllocatorChirho {
         let mut current_order_chirho = found_order_chirho;
         while current_order_chirho > order_chirho {
             current_order_chirho -= 1;
-            // The buddy (second half) goes to the free list.
             let buddy_addr_chirho = block_chirho as usize + (1usize << current_order_chirho);
+            // Bounds check buddy address.
+            if buddy_addr_chirho >= self.base_chirho + self.size_chirho {
+                break;
+            }
             let buddy_node_chirho = buddy_addr_chirho as *mut FreeNodeChirho;
             let buddy_idx_chirho = current_order_chirho - MIN_ORDER_CHIRHO;
-            unsafe {
-                (*buddy_node_chirho).next_chirho = self.free_lists_chirho[buddy_idx_chirho];
-                self.free_lists_chirho[buddy_idx_chirho] = buddy_node_chirho;
+            if buddy_idx_chirho < NUM_ORDERS_CHIRHO {
+                unsafe {
+                    (*buddy_node_chirho).next_chirho = self.free_lists_chirho[buddy_idx_chirho];
+                    self.free_lists_chirho[buddy_idx_chirho] = buddy_node_chirho;
+                }
             }
+        }
+
+        // Bounds check: ensure the block is within the heap.
+        let block_addr_chirho = block_chirho as usize;
+        if block_addr_chirho < self.base_chirho
+            || block_addr_chirho >= self.base_chirho + self.size_chirho
+        {
+            return ptr::null_mut(); // Corrupted free list
         }
 
         block_chirho as *mut u8
     }
 
-    /// Deallocate a block and merge with buddy if possible.
+    /// Deallocate a block — return to free list with safe merge.
+    ///
+    /// Only merges at large orders (>= 20, 1MB+) where the free lists
+    /// are short and corruption risk is low. Small-order free lists can
+    /// have thousands of entries; traversing them for buddy search is
+    /// slow and the intrusive FreeNodeChirho gets corrupted by stale data.
     pub fn dealloc_chirho(&mut self, ptr_chirho: *mut u8, layout_chirho: Layout) {
         if !self.initialized_chirho || ptr_chirho.is_null() {
             return;
         }
 
+        let addr_chirho = ptr_chirho as usize;
+        if addr_chirho < self.base_chirho || addr_chirho >= self.base_chirho + self.size_chirho {
+            return;
+        }
+
         let size_chirho = layout_chirho.size().max(layout_chirho.align());
         let mut order_chirho = Self::size_to_order_chirho(size_chirho);
-        let mut addr_chirho = ptr_chirho as usize;
+        let mut merge_addr_chirho = addr_chirho;
 
-        // Try to merge with buddy blocks.
-        while order_chirho < MAX_ORDER_CHIRHO {
+        if order_chirho > MAX_ORDER_CHIRHO {
+            return;
+        }
+
+        // Merge only at large orders (>= 20 = 1MB) where free lists are short.
+        const MERGE_THRESHOLD_CHIRHO: usize = 20;
+        while order_chirho >= MERGE_THRESHOLD_CHIRHO && order_chirho < MAX_ORDER_CHIRHO {
             let block_size_chirho = 1usize << order_chirho;
-            // Buddy address: flip the bit at the current order.
-            let buddy_addr_chirho = addr_chirho ^ block_size_chirho;
+            let buddy_addr_chirho = merge_addr_chirho ^ block_size_chirho;
 
-            // Check if buddy is within heap bounds.
-            if buddy_addr_chirho < self.base_chirho || buddy_addr_chirho >= self.base_chirho + self.size_chirho {
+            if buddy_addr_chirho < self.base_chirho
+                || buddy_addr_chirho >= self.base_chirho + self.size_chirho
+            {
                 break;
             }
 
-            // Search for the buddy in the free list at this order.
             let idx_chirho = order_chirho - MIN_ORDER_CHIRHO;
             if idx_chirho >= NUM_ORDERS_CHIRHO {
                 break;
             }
-            let mut found_buddy_chirho = false;
-            let mut prev_chirho: *mut FreeNodeChirho = ptr::null_mut();
-            let mut current_chirho = self.free_lists_chirho[idx_chirho];
 
-            while !current_chirho.is_null() {
-                if current_chirho as usize == buddy_addr_chirho {
-                    // Found the buddy! Remove it from the free list.
+            // Search for buddy in free list (short list at large orders).
+            let mut found_chirho = false;
+            let mut prev_chirho: *mut FreeNodeChirho = ptr::null_mut();
+            let mut cur_chirho = self.free_lists_chirho[idx_chirho];
+
+            while !cur_chirho.is_null() {
+                if cur_chirho as usize == buddy_addr_chirho {
                     unsafe {
                         if prev_chirho.is_null() {
-                            self.free_lists_chirho[idx_chirho] = (*current_chirho).next_chirho;
+                            self.free_lists_chirho[idx_chirho] = (*cur_chirho).next_chirho;
                         } else {
-                            (*prev_chirho).next_chirho = (*current_chirho).next_chirho;
+                            (*prev_chirho).next_chirho = (*cur_chirho).next_chirho;
                         }
                     }
-                    found_buddy_chirho = true;
+                    found_chirho = true;
                     break;
                 }
-                prev_chirho = current_chirho;
-                current_chirho = unsafe { (*current_chirho).next_chirho };
+                prev_chirho = cur_chirho;
+                cur_chirho = unsafe { (*cur_chirho).next_chirho };
             }
 
-            if !found_buddy_chirho {
-                break; // Buddy not free — can't merge.
+            if !found_chirho {
+                break;
             }
 
-            // Merge: the combined block starts at the lower address.
-            addr_chirho = addr_chirho.min(buddy_addr_chirho);
+            merge_addr_chirho = merge_addr_chirho.min(buddy_addr_chirho);
             order_chirho += 1;
         }
 
-        // Add the (possibly merged) block to the free list.
+        // Add to free list at the final order.
         let idx_chirho = order_chirho - MIN_ORDER_CHIRHO;
         if idx_chirho < NUM_ORDERS_CHIRHO {
-            let node_chirho = addr_chirho as *mut FreeNodeChirho;
+            let node_chirho = merge_addr_chirho as *mut FreeNodeChirho;
             unsafe {
                 (*node_chirho).next_chirho = self.free_lists_chirho[idx_chirho];
                 self.free_lists_chirho[idx_chirho] = node_chirho;

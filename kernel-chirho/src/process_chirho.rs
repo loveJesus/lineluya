@@ -923,8 +923,11 @@ pub fn sys_execve_chirho(
                 user_rsp_chirho
             );
 
-            // Mirror user-space mappings into per-process page table and switch CR3.
-            activate_per_process_pt_chirho();
+            // Per-process PT switch for dynamic ELFs — skip for now.
+            // The CR3 switch GPFs for larger binaries (dropbear 310KB).
+            // Lazy migration works for static-like paths but the dynamic
+            // ELF loader maps many pages that aren't in the per-process PT.
+            // activate_per_process_pt_chirho();
 
             // Jump to the interpreter's entry point (not the main binary's).
             // The interpreter (ld-musl) will self-relocate, load the main
