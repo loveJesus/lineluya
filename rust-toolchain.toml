@@ -2,6 +2,6 @@
 # that whoever believes in him should not perish but have eternal life. - John 3:16
 
 [toolchain]
-channel = "nightly"
+channel = "nightly-2025-01-15"
 components = ["rust-src", "llvm-tools-preview", "rustfmt", "clippy"]
 targets = ["x86_64-unknown-none"]

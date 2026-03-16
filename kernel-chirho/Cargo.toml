@@ -14,7 +14,7 @@ path = "src/main_chirho.rs"
 
 [dependencies]
 bootloader_api = "0.11"
-x86_64 = { version = "0.15", features = ["instructions"] }
+x86_64 = { version = "=0.15.4", features = ["instructions"] }
 spin = "0.9"
 
 pc-keyboard = "0.8"

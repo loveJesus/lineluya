@@ -1410,7 +1410,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho as *const IoVecChirho,
             arg2_chirho as i32,
         ),
-        SYS_ACCESS_CHIRHO => sys_access_chirho(),
+        SYS_ACCESS_CHIRHO => sys_faccessat_real_chirho(-100, arg0_chirho, arg1_chirho as u32, 0),
         SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
         SYS_SELECT_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
         SYS_SCHED_YIELD_CHIRHO => {
