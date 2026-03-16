@@ -7,6 +7,8 @@
 //! page fault, general protection fault) and hardware interrupts (timer, keyboard) via the
 //! 8259 PIC. Keyboard scancodes are decoded using the `pc_keyboard` crate.
 
+extern crate alloc;
+
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use spin::Mutex;
 
@@ -337,7 +339,25 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
         }
     }
 
-    // Could not handle the page fault — log and halt.
+    // Could not handle the page fault.
+    // If it's a user-mode fault, recover by re-launching the shell.
+    if is_user_chirho {
+        if let Ok(fault_addr_chirho) = Cr2::read() {
+            crate::serial_println_chirho!(
+                "[EXCEPTION] Unrecoverable user page fault at {:#x} — terminating process",
+                fault_addr_chirho.as_u64(),
+            );
+        }
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            let pid_chirho = task_arc_chirho.lock().pid_chirho;
+            crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+        }
+        let shell_argv_chirho = [alloc::string::String::from("sh")];
+        let shell_envp_chirho = [alloc::string::String::from("HOME=/root")];
+        crate::process_chirho::exec_shell_with_args_chirho(&shell_argv_chirho, &shell_envp_chirho);
+    }
+
+    // Kernel-mode page fault — log and halt.
     x86_64::instructions::interrupts::disable();
     {
         use x86_64::registers::control::Cr2;
@@ -409,12 +429,55 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
     stack_frame_chirho: InterruptStackFrame,
     error_code_chirho: u64,
 ) {
+    // Check if this GPF occurred in user mode (CS RPL == 3).
+    let cs_chirho = stack_frame_chirho.code_segment.0;
+    let is_user_chirho = (cs_chirho & 0x3) == 3;
+
+    if is_user_chirho {
+        // User-mode GPF — terminate the process gracefully (like SIGSEGV)
+        // and re-launch the shell. This prevents the kernel from halting
+        // when a user program executes an invalid instruction.
+        crate::serial_println_chirho!(
+            "[EXCEPTION] User-mode GPF at {:#x} (error_code={}) — terminating process",
+            stack_frame_chirho.instruction_pointer.as_u64(),
+            error_code_chirho,
+        );
+
+        // Remove current task from scheduler.
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            let pid_chirho = task_arc_chirho.lock().pid_chirho;
+            crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+        }
+
+        // Re-launch the shell (same as sys_exit behavior).
+        // We can't return normally from an interrupt handler that
+        // caused a fault, so we re-exec the shell directly.
+        crate::serial_println_chirho!("[EXCEPTION] Re-launching shell after user-mode GPF");
+
+        let shell_argv_chirho = [alloc::string::String::from("sh")];
+        let shell_envp_chirho = [
+            alloc::string::String::from("HOME=/root"),
+            alloc::string::String::from("PATH=/bin:/sbin:/usr/bin:/usr/sbin"),
+            alloc::string::String::from("TERM=linux"),
+            alloc::string::String::from("PS1=lineluya# "),
+            alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
+            alloc::string::String::from("SHELL=/bin/sh"),
+            alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
+            alloc::string::String::from("PYTHONHOME=/usr"),
+            alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
+        ];
+
+        crate::process_chirho::exec_shell_with_args_chirho(&shell_argv_chirho, &shell_envp_chirho);
+        // exec_shell_with_args_chirho should not return, but if it does:
+        loop { x86_64::instructions::hlt(); }
+    }
+
     crate::serial_println_chirho!(
         "[EXCEPTION] GENERAL PROTECTION FAULT (error code: {})\n{:#?}",
         error_code_chirho,
         stack_frame_chirho
     );
-    // GPFs in kernel space are non-recoverable in this simple kernel.
+    // Kernel-mode GPF — non-recoverable.
     loop {
         x86_64::instructions::hlt();
     }
