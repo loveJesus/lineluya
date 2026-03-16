@@ -1976,23 +1976,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // or use vfork semantics where the child must run to completion first.
     // Once per-process page tables with CR3 switching are implemented,
     // fork can safely preempt.
-    // Preemptive scheduling: check reschedule flag on syscall return.
-    // Currently disabled pending per-process page table isolation —
-    // with shared page tables, context-switching during vfork-child
-    // execution corrupts the parent's address space.
-    // TODO: Re-enable once CR3 switching is implemented.
-    //
-    // let skip_resched_chirho = matches!(
-    //     syscall_nr_chirho,
-    //     SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO | SYS_CLONE_CHIRHO | SYS_EXECVE_CHIRHO
-    //     | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO
-    // );
-    // if !skip_resched_chirho && crate::scheduler_chirho::need_resched_chirho() {
-    //     crate::scheduler_chirho::schedule_chirho();
-    // }
-    // NOTE: need_resched flag is set by timer but not acted upon yet.
-    // Once per-process page tables are working, re-enable the context
-    // switch on syscall return.
+    // Preemptive scheduling: disabled — requires map_page_in_pt_chirho()
+    // to populate per-process page tables before CR3 can be switched safely.
+    // The scheduler infrastructure + per-process PTs are ready; what's
+    // missing is the ability to map ELF segments into a non-current PT.
+    // TODO: Implement map_page_in_pt_chirho(pml4_phys, vaddr, paddr, flags)
+    // then re-enable: schedule_chirho() on need_resched_chirho().
 
     result_chirho
 }
