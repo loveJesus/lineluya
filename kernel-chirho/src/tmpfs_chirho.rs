@@ -367,30 +367,39 @@ impl FileOpsChirho for TmpfsFileOpsChirho {
         file_chirho: &mut FileChirho,
         buf_chirho: &[u8],
     ) -> Result<usize, i64> {
-        let inode_chirho = file_chirho.inode_chirho.lock();
-        let data_lock_chirho = get_tmpfs_data_chirho(&inode_chirho)?;
-        let mut data_chirho = data_lock_chirho.lock();
+        // Get tmpfs data and write content.
+        let new_size_chirho = {
+            let inode_chirho = file_chirho.inode_chirho.lock();
+            let data_lock_chirho = get_tmpfs_data_chirho(&inode_chirho)?;
+            let mut data_chirho = data_lock_chirho.lock();
 
-        match &mut *data_chirho {
-            TmpfsDataChirho::FileChirho(content_chirho) => {
-                let pos_chirho = file_chirho.pos_chirho as usize;
+            match &mut *data_chirho {
+                TmpfsDataChirho::FileChirho(content_chirho) => {
+                    let pos_chirho = file_chirho.pos_chirho as usize;
 
-                // Extend if writing beyond current length
-                if pos_chirho + buf_chirho.len() > content_chirho.len() {
-                    content_chirho.resize(pos_chirho + buf_chirho.len(), 0);
+                    // Extend if writing beyond current length
+                    if pos_chirho + buf_chirho.len() > content_chirho.len() {
+                        content_chirho.resize(pos_chirho + buf_chirho.len(), 0);
+                    }
+
+                    content_chirho[pos_chirho..pos_chirho + buf_chirho.len()]
+                        .copy_from_slice(buf_chirho);
+                    file_chirho.pos_chirho += buf_chirho.len() as u64;
+
+                    Ok(content_chirho.len() as u64) // Return new content size
                 }
-
-                content_chirho[pos_chirho..pos_chirho + buf_chirho.len()]
-                    .copy_from_slice(buf_chirho);
-                file_chirho.pos_chirho += buf_chirho.len() as u64;
-
-                // Note: inode_chirho is behind a spin::MutexGuard from
-                // file_chirho.inode_chirho.lock(), so we cannot borrow it
-                // mutably again here.  size_chirho update is deferred.
-                Ok(buf_chirho.len())
+                TmpfsDataChirho::DirChirho(_) => Err(-EISDIR_CHIRHO),
             }
-            TmpfsDataChirho::DirChirho(_) => Err(-EISDIR_CHIRHO),
+            // inode_chirho lock dropped here
+        }?;
+
+        // Update inode size (lock released above, safe to re-lock)
+        {
+            let mut inode_chirho = file_chirho.inode_chirho.lock();
+            inode_chirho.size_chirho = new_size_chirho;
         }
+
+        Ok(buf_chirho.len())
     }
 
     fn seek_chirho(
