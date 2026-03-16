@@ -236,40 +236,38 @@ impl MmChirho {
         // are not yet implemented.
         map_anonymous_pages_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho)?;
 
-        // For file-backed mappings, copy file data into the mapped region.
-        // Seek to the requested offset first (musl maps ELF segments at
-        // specific file offsets via the mmap offset parameter).
-        // Read in a loop since sys_read_real caps at 4096 bytes per call.
+        // For file-backed mappings, read the file data ONCE and copy it
+        // into the mapped region. The old approach (read in 4K loop via
+        // sys_read_real) was O(n²) because each read re-loaded the entire
+        // file from ext4. Now we read the file's data directly from the
+        // VFS and memcpy it in one shot.
         if has_file_chirho {
-            let saved_pos_chirho = crate::fs_chirho::sys_lseek_chirho(
-                fd_chirho as u64, 0, 1, // SEEK_CUR
+            crate::serial_println_chirho!(
+                "[MMAP] file-backed: fd={} offset={:#x} len={:#x} -> addr={:#x}",
+                fd_chirho, _offset_chirho, aligned_len_chirho, map_addr_chirho
             );
-            let _ = crate::fs_chirho::sys_lseek_chirho(
+            let file_data_chirho = crate::fs_chirho::read_file_data_at_offset_chirho(
                 fd_chirho as u64,
-                _offset_chirho as i64,
-                0, // SEEK_SET
+                _offset_chirho,
+                aligned_len_chirho,
             );
-            let total_to_read_chirho = aligned_len_chirho.min(4 * 1024 * 1024) as usize;
-            let mut bytes_done_chirho: usize = 0;
-            while bytes_done_chirho < total_to_read_chirho {
-                let chunk_chirho = core::cmp::min(4096, total_to_read_chirho - bytes_done_chirho);
-                let n_chirho = crate::fs_chirho::sys_read_real_chirho(
-                    fd_chirho as u64,
-                    map_addr_chirho + bytes_done_chirho as u64,
-                    chunk_chirho,
+            crate::serial_println_chirho!(
+                "[MMAP] read_file_data returned: {}",
+                if file_data_chirho.is_some() { "Some" } else { "None" }
+            );
+            if let Some(data_chirho) = file_data_chirho {
+                let copy_len_chirho = core::cmp::min(data_chirho.len(), aligned_len_chirho as usize);
+                crate::serial_println_chirho!(
+                    "[MMAP] copying {} bytes to {:#x}",
+                    copy_len_chirho, map_addr_chirho
                 );
-                if n_chirho <= 0 {
-                    break; // EOF or error
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        data_chirho.as_ptr(),
+                        map_addr_chirho as *mut u8,
+                        copy_len_chirho,
+                    );
                 }
-                bytes_done_chirho += n_chirho as usize;
-            }
-            // Restore file position.
-            if saved_pos_chirho >= 0 {
-                let _ = crate::fs_chirho::sys_lseek_chirho(
-                    fd_chirho as u64,
-                    saved_pos_chirho,
-                    0, // SEEK_SET
-                );
             }
         }
 
