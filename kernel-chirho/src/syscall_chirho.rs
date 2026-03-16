@@ -4083,8 +4083,10 @@ fn sys_sysinfo_chirho(info_chirho: *mut SysinfoChirho) -> i64 {
     let si_chirho = SysinfoChirho {
         uptime_chirho: uptime_secs_chirho,
         loads_chirho: [0; 3],
-        totalram_chirho: 512 * 1024 * 1024,  // 512 MB
-        freeram_chirho: 256 * 1024 * 1024,   // 256 MB
+        totalram_chirho: 128 * 1024 * 1024,  // Report 128 MB total
+        freeram_chirho: 64 * 1024 * 1024,    // Report 64 MB free
+        // Modest values prevent musl/dropbear from trying to
+        // allocate huge buffers (was 512/256MB → 64MB alloc OOM)
         sharedram_chirho: 0,
         bufferram_chirho: 0,
         totalswap_chirho: 0,

@@ -681,10 +681,12 @@ impl PageCacheChirho {
 }
 
 /// Global page cache instance (protected by a spinlock).
-/// 256 entries × 4KB = 1MB cache. Reduced from 4096 (16MB) to avoid
-/// fragmenting the buddy allocator's 256MB region.
+/// Page cache disabled to avoid BTreeMap heap fragmentation that
+/// causes the 64MB OOM. BTreeMap internal nodes use align=8 allocations
+/// that double from 2MB→4MB→...→64MB during heavy file I/O.
+/// TODO: Replace BTreeMap with a fixed-size array cache.
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
-    spin::Mutex::new(PageCacheChirho::new_chirho(256));
+    spin::Mutex::new(PageCacheChirho::new_chirho(0));
 
 // ===========================================================================
 // A4-009: ext4 read-only VFS integration
@@ -857,7 +859,9 @@ impl Ext4MountChirho {
             return None;
         }
 
-        let mut data_chirho = Vec::new();
+        // Pre-allocate to avoid Vec doubling (which caused 64MB OOM:
+        // 7MB→14MB→28MB→...→64MB from repeated reallocation).
+        let mut data_chirho = Vec::with_capacity(file_size_chirho);
         let block_copy_chirho = inode_chirho.i_block_chirho;
 
         // Depth 0 = leaf extents directly in i_block.
