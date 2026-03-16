@@ -3100,14 +3100,23 @@ fn sys_getcwd_chirho(buf_chirho: *mut u8, size_chirho: usize) -> i64 {
     if buf_chirho.is_null() {
         return -EFAULT_CHIRHO;
     }
-    if size_chirho < 2 {
+
+    let cwd_chirho = get_task_cwd_chirho();
+    let cwd_bytes_chirho = cwd_chirho.as_bytes();
+    let needed_chirho = cwd_bytes_chirho.len() + 1; // +1 for NUL
+
+    if size_chirho < needed_chirho {
         return -ERANGE_CHIRHO;
     }
 
-    // SAFETY: Caller guarantees buf_chirho is writable for size_chirho bytes.
+    // Copy CWD to user buffer.
     unsafe {
-        *buf_chirho = b'/';
-        *buf_chirho.add(1) = 0; // NUL terminator
+        core::ptr::copy_nonoverlapping(
+            cwd_bytes_chirho.as_ptr(),
+            buf_chirho,
+            cwd_bytes_chirho.len(),
+        );
+        *buf_chirho.add(cwd_bytes_chirho.len()) = 0; // NUL terminator
     }
 
     // Linux getcwd returns the buf pointer on success (cast to long).
@@ -4002,12 +4011,60 @@ fn sys_renameat2_chirho(
 
 /// `chdir(2)` implementation (syscall 80).
 ///
-/// Stub: logs and returns 0 (success).
+/// Changes the current working directory of the calling process.
+/// The path must exist and be a directory.
 fn sys_chdir_chirho(
-    _path_chirho: *const u8,
+    path_ptr_chirho: *const u8,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] chdir(path) -> 0 (stub)");
+    let path_chirho = match crate::uaccess_chirho::read_user_string_chirho(path_ptr_chirho as u64, 4096) {
+        Ok(s_chirho) => s_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+
+    // Make the path absolute if relative.
+    let abs_path_chirho = if path_chirho.starts_with('/') {
+        path_chirho
+    } else {
+        // Prepend CWD.
+        let cwd_chirho = get_task_cwd_chirho();
+        let mut full_chirho = cwd_chirho;
+        if !full_chirho.ends_with('/') {
+            full_chirho.push('/');
+        }
+        full_chirho.push_str(&path_chirho);
+        full_chirho
+    };
+
+    // Verify the path exists and is a directory.
+    match crate::fs_chirho::resolve_path_chirho(&abs_path_chirho) {
+        Ok((inode_chirho, _ops_chirho)) => {
+            let mode_chirho = inode_chirho.lock().mode_chirho;
+            if mode_chirho & 0o170000 != 0o040000 {
+                // Not a directory.
+                return -ENOTDIR_CHIRHO;
+            }
+        }
+        Err(errno_chirho) => return errno_chirho,
+    }
+
+    // Update the task's CWD.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        task_arc_chirho.lock().cwd_chirho = abs_path_chirho.clone();
+    }
+
+    crate::serial_debug_chirho!("[SYSCALL] chdir('{}') -> 0", &abs_path_chirho);
     0
+}
+
+/// Get the current task's working directory.
+fn get_task_cwd_chirho() -> alloc::string::String {
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let task_chirho = task_arc_chirho.lock();
+        if !task_chirho.cwd_chirho.is_empty() {
+            return task_chirho.cwd_chirho.clone();
+        }
+    }
+    alloc::string::String::from("/")
 }
 
 /// `getdents64(2)` implementation (syscall 217).

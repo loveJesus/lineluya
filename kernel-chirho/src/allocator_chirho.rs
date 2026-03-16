@@ -18,7 +18,10 @@ use x86_64::VirtAddr;
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
 /// Total mapped heap: 32MB fast + 256MB buddy = 288MB.
-/// Works with QEMU -m 1G (default).
+/// Works with QEMU -m 512M.
+/// NOTE: dropbear needs QEMU -m 4G with 1GB buddy due to a mystery
+/// Vec<align=8> growing to 128MB+ during ext4 path resolution.
+/// TODO: Find and fix the root cause of the unbounded a=8 allocs.
 pub const HEAP_SIZE_CHIRHO: usize = 288 * 1024 * 1024;
 
 /// Fast allocator: 32 MiB for small/medium objects.
@@ -63,30 +66,14 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
             return core::ptr::null_mut();
         }
 
-        // Log allocations > 32MB for debugging.
-        if size_chirho > 32 * 1024 * 1024 {
-            let msg_chirho = b"\r\n[ALLOC] large: ";
-            for &b_chirho in msg_chirho {
-                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
-            }
-            let mut digits_chirho = [0u8; 20];
-            let mut n_chirho = size_chirho;
-            let mut i_chirho = 0usize;
-            while n_chirho > 0 {
-                digits_chirho[i_chirho] = b'0' + (n_chirho % 10) as u8;
-                n_chirho /= 10;
-                i_chirho += 1;
-            }
-            for j_chirho in (0..i_chirho).rev() {
-                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(digits_chirho[j_chirho]);
-            }
-            let nl_chirho = b"\r\n";
-            for &b_chirho in nl_chirho {
-                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
-                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
-            }
+        // Log allocations > 1MB with syscall# for debugging.
+        if size_chirho > 1 * 1024 * 1024 {
+            let sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO
+                .load(core::sync::atomic::Ordering::Relaxed);
+            crate::serial_println_chirho!(
+                "[ALLOC] {}B a={} sc={}",
+                size_chirho, layout_chirho.align(), sc_chirho,
+            );
         }
 
         INNER_ALLOC_CHIRHO.alloc(layout_chirho)

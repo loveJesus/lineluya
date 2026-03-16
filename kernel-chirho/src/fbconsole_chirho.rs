@@ -217,6 +217,9 @@ pub struct FbConsoleChirho {
     bg_chirho: (u8, u8, u8),
     /// Whether the console is initialized.
     ready_chirho: bool,
+    /// ANSI escape sequence parser state.
+    /// false = normal, true = inside ESC[...X sequence (skip until letter).
+    in_ansi_chirho: bool,
 }
 
 unsafe impl Send for FbConsoleChirho {}
@@ -238,6 +241,7 @@ impl FbConsoleChirho {
             fg_chirho: (0x00, 0xff, 0x41),  // Green on black (terminal style)
             bg_chirho: (0x0a, 0x0a, 0x0a),
             ready_chirho: false,
+            in_ansi_chirho: false,
         }
     }
 
@@ -370,11 +374,39 @@ impl FbConsoleChirho {
     }
 
     /// Write a single byte to the console.
+    ///
+    /// Filters ANSI escape sequences (ESC[...m, ESC[...H, etc.) so that
+    /// BusyBox color output doesn't render as garbage on the framebuffer.
     pub fn write_byte_chirho(&mut self, byte_chirho: u8) {
         if !self.ready_chirho {
             return;
         }
+
+        // ANSI escape sequence state machine:
+        // ESC (0x1B) starts a sequence, skip bytes until a letter terminates it.
+        if self.in_ansi_chirho {
+            // Letters A-Z, a-z terminate the ANSI sequence.
+            if byte_chirho.is_ascii_alphabetic() {
+                self.in_ansi_chirho = false;
+            }
+            // Either way, skip this byte (it's part of the escape sequence).
+            return;
+        }
+
         match byte_chirho {
+            0x00 => {
+                // NUL — silently ignore (don't advance cursor).
+            }
+            0x1B => {
+                // ESC — start of ANSI escape sequence.
+                self.in_ansi_chirho = true;
+            }
+            0x08 => {
+                // Backspace — move cursor left one column.
+                if self.col_chirho > 0 {
+                    self.col_chirho -= 1;
+                }
+            }
             b'\n' => {
                 self.col_chirho = 0;
                 self.row_chirho += 1;
@@ -389,6 +421,9 @@ impl FbConsoleChirho {
             b'\t' => {
                 let next_tab_chirho = (self.col_chirho + 8) & !7;
                 self.col_chirho = next_tab_chirho.min(self.max_col_chirho - 1);
+            }
+            0x01..=0x06 | 0x0E..=0x1A | 0x1C..=0x1F | 0x7F => {
+                // Other control characters — silently ignore.
             }
             _ => {
                 self.draw_char_chirho(byte_chirho);

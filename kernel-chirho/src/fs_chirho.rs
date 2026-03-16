@@ -879,7 +879,20 @@ pub fn sys_openat_chirho(
     let pathname_chirho = if !raw_pathname_chirho.starts_with('/') {
         if dirfd_chirho == AT_FDCWD_CHIRHO {
             // AT_FDCWD: resolve relative to current working directory.
-            let mut full_path_chirho = alloc::string::String::from("/");
+            let cwd_chirho = if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                let t_chirho = task_arc_chirho.lock();
+                if !t_chirho.cwd_chirho.is_empty() {
+                    t_chirho.cwd_chirho.clone()
+                } else {
+                    alloc::string::String::from("/")
+                }
+            } else {
+                alloc::string::String::from("/")
+            };
+            let mut full_path_chirho = cwd_chirho;
+            if !full_path_chirho.ends_with('/') {
+                full_path_chirho.push('/');
+            }
             full_path_chirho.push_str(&raw_pathname_chirho);
             full_path_chirho
         } else {

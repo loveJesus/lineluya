@@ -242,6 +242,9 @@ pub struct TaskChirho {
     /// creation time; fork() duplicates it for the child.
     pub fd_table_chirho: Option<crate::vfs_chirho::FdTableChirho>,
 
+    /// Current working directory (absolute path).
+    pub cwd_chirho: alloc::string::String,
+
     // -- Scheduling ---------------------------------------------------------
 
     /// Scheduling priority.  Lower values indicate higher priority (like
@@ -361,6 +364,7 @@ impl TaskChirho {
             signal_state_chirho: crate::signal_chirho::SignalStateChirho::new_chirho(),
             brk_chirho: 0,
             brk_start_chirho: 0,
+            cwd_chirho: alloc::string::String::from("/"),
         }
     }
 
@@ -425,6 +429,7 @@ impl TaskChirho {
             signal_state_chirho: crate::signal_chirho::SignalStateChirho::new_chirho(),
             brk_chirho: 0,
             brk_start_chirho: 0,
+            cwd_chirho: alloc::string::String::from("/"),
         }
     }
 

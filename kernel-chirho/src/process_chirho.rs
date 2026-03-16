@@ -241,6 +241,7 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             signal_state_chirho: crate::signal_chirho::SignalStateChirho::new_chirho(),
             brk_chirho: parent_chirho.brk_chirho,
             brk_start_chirho: parent_chirho.brk_start_chirho,
+            cwd_chirho: parent_chirho.cwd_chirho.clone(),
         }
     };
 
@@ -388,6 +389,7 @@ pub fn sys_clone_chirho(
             signal_state_chirho: crate::signal_chirho::SignalStateChirho::new_chirho(),
             brk_chirho: parent_chirho.brk_chirho,
             brk_start_chirho: parent_chirho.brk_start_chirho,
+            cwd_chirho: parent_chirho.cwd_chirho.clone(),
         }
     };
 
