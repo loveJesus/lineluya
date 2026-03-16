@@ -66,13 +66,14 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
             return core::ptr::null_mut();
         }
 
-        // Log allocations > 1MB with syscall# for debugging.
+        // Log allocations > 1MB with syscall name for debugging.
         if size_chirho > 1 * 1024 * 1024 {
             let sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO
                 .load(core::sync::atomic::Ordering::Relaxed);
+            let sc_name_chirho = crate::syscall_chirho::syscall_name_chirho(sc_chirho);
             crate::serial_println_chirho!(
-                "[ALLOC] {}B a={} sc={}",
-                size_chirho, layout_chirho.align(), sc_chirho,
+                "[ALLOC] {}B a={} sc={}({})",
+                size_chirho, layout_chirho.align(), sc_chirho, sc_name_chirho,
             );
         }
 
@@ -80,6 +81,13 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
     }
 
     unsafe fn dealloc(&self, ptr_chirho: *mut u8, layout_chirho: core::alloc::Layout) {
+        // Track large deallocations to detect leaks vs. Vec doubling.
+        if layout_chirho.size() > 1024 * 1024 && layout_chirho.align() == 8 {
+            crate::serial_println_chirho!(
+                "[DEALLOC] {}B a=8",
+                layout_chirho.size(),
+            );
+        }
         INNER_ALLOC_CHIRHO.dealloc(ptr_chirho, layout_chirho)
     }
 }

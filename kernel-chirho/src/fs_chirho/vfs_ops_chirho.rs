@@ -80,10 +80,15 @@ pub fn init_fs_chirho() {
         let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
         if let Some(ref root_inode_arc_chirho) = root_dentry_chirho.inode_chirho {
             let root_inode_chirho = root_inode_arc_chirho.lock();
-            // Create /dev, /proc, /tmp
+            // Create standard directories on tmpfs root.
+            // These take precedence over ext4 entries when the tmpfs
+            // live walk finds them first, avoiding ext4 path resolution
+            // overhead for common directories.
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "dev", 0o755);
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "proc", 0o555);
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "tmp", 0o1777);
+            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "run", 0o755);
+            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "var", 0o755);
             // Create /bin and /sbin for BusyBox applet lookups
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "bin", 0o755);
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "sbin", 0o755);
@@ -139,13 +144,13 @@ pub fn init_fs_chirho() {
         });
     }
 
-    // 5c. Mount tmpfs on /tmp (writable temp storage even when / is ext4 read-only)
-    let tmp_sb_chirho = crate::tmpfs_chirho::mount_tmpfs_chirho();
-    {
+    // 5c. Mount tmpfs on /tmp, /run, /var (writable storage even when / is ext4 read-only)
+    for dir_chirho in &["/tmp", "/run", "/var"] {
+        let sb_chirho = crate::tmpfs_chirho::mount_tmpfs_chirho();
         let mut mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
         mounts_chirho.push(MountPointChirho {
-            path_chirho: String::from("/tmp"),
-            superblock_chirho: tmp_sb_chirho,
+            path_chirho: String::from(*dir_chirho),
+            superblock_chirho: sb_chirho,
         });
     }
 
