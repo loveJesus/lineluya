@@ -175,19 +175,13 @@ impl MmChirho {
             return Err(-EINVAL_CHIRHO);
         }
 
-        // We only support anonymous private mappings for now.
         let is_anonymous_chirho = (flags_chirho & MAP_ANONYMOUS_CHIRHO) != 0;
-        let is_private_chirho = (flags_chirho & MAP_PRIVATE_CHIRHO) != 0;
+        let _is_private_chirho = (flags_chirho & MAP_PRIVATE_CHIRHO) != 0;
 
-        if !is_anonymous_chirho || !is_private_chirho {
-            // File-backed or shared mappings are not yet supported.
-            if fd_chirho >= 0 {
-                return Err(-ENOSYS_CHIRHO);
-            }
-            if !is_private_chirho && !is_anonymous_chirho {
-                return Err(-EINVAL_CHIRHO);
-            }
-        }
+        // For file-backed mappings (fd >= 0), we treat them as anonymous
+        // private mappings and copy the file data in afterward.  This is
+        // a simplification — real Linux would fault pages in lazily.
+        let has_file_chirho = fd_chirho >= 0 && !is_anonymous_chirho;
 
         // Round length up to page boundary.
         let aligned_len_chirho = align_up_page_chirho(len_chirho);
@@ -219,6 +213,24 @@ impl MmChirho {
         // TEMPORARY: We use the kernel mapper because per-process page tables
         // are not yet implemented.
         map_anonymous_pages_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho)?;
+
+        // For file-backed mappings, copy file data into the mapped region.
+        if has_file_chirho {
+            let read_len_chirho = aligned_len_chirho.min(1024 * 1024) as usize; // cap at 1MB
+            let bytes_chirho = crate::fs_chirho::sys_read_real_chirho(
+                fd_chirho as u64,
+                map_addr_chirho,
+                read_len_chirho,
+            );
+            if bytes_chirho > 0 {
+                // Seek the fd back to where it was + offset (simple approach)
+                let _ = crate::fs_chirho::sys_lseek_chirho(
+                    fd_chirho as u64,
+                    _offset_chirho as i64,
+                    0, // SEEK_SET
+                );
+            }
+        }
 
         // Record the VMA.
         let vma_chirho = VmaChirho {

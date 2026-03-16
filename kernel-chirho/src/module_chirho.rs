@@ -27,18 +27,54 @@ pub fn sys_init_module_chirho(
     )
 }
 
-/// `finit_module(2)` stub — load a kernel module from a file descriptor.
+/// `finit_module(2)` — load a kernel module from a file descriptor.
 ///
-/// Not yet implemented; returns `-ENOSYS`.
+/// Reads the entire .ko ELF from the fd into a kernel buffer, then
+/// delegates to init_module for the actual loading/relocation/init.
 pub fn sys_finit_module_chirho(
-    _fd_chirho: u64,
-    _params_ptr_chirho: u64,
+    fd_chirho: u64,
+    params_ptr_chirho: u64,
     _flags_chirho: u64,
 ) -> i64 {
+    use alloc::vec;
+
     crate::serial_println_chirho!(
-        "[MODULE] finit_module() -- not yet implemented (use init_module)"
+        "[MODULE] finit_module(fd={}, params={:#x})",
+        fd_chirho, params_ptr_chirho
     );
-    -ENOSYS_CHIRHO
+
+    // Get the file size via fstat-like approach. Read up to 4MB max.
+    const MAX_KO_SIZE_CHIRHO: usize = 4 * 1024 * 1024;
+    let mut ko_buf_chirho = vec![0u8; MAX_KO_SIZE_CHIRHO];
+
+    // Read the .ko file from the fd into our buffer.
+    let bytes_read_chirho = crate::fs_chirho::sys_read_real_chirho(
+        fd_chirho,
+        ko_buf_chirho.as_mut_ptr() as u64,
+        MAX_KO_SIZE_CHIRHO,
+    );
+
+    if bytes_read_chirho <= 0 {
+        crate::serial_println_chirho!(
+            "[MODULE] finit_module: failed to read from fd {}: {}",
+            fd_chirho, bytes_read_chirho
+        );
+        return -ENOSYS_CHIRHO;
+    }
+
+    ko_buf_chirho.truncate(bytes_read_chirho as usize);
+
+    crate::serial_println_chirho!(
+        "[MODULE] finit_module: read {} bytes from fd {}",
+        bytes_read_chirho, fd_chirho
+    );
+
+    // Delegate to init_module with the buffer pointer and length.
+    crate::ko_loader_chirho::sys_init_module_impl_chirho(
+        ko_buf_chirho.as_ptr() as u64,
+        bytes_read_chirho as u64,
+        params_ptr_chirho,
+    )
 }
 
 /// `delete_module(2)` — unload a kernel module by name.
