@@ -682,24 +682,27 @@ extern "x86-interrupt" fn invalid_opcode_handler_chirho(
     stack_frame_chirho: InterruptStackFrame,
 ) {
     let rip_chirho = stack_frame_chirho.instruction_pointer.as_u64();
-    // Dump 16 bytes at the faulting RIP to see what instruction caused #UD
-    let mut bytes_chirho = [0u8; 16];
-    for i_chirho in 0..16usize {
-        bytes_chirho[i_chirho] = unsafe {
-            core::ptr::read_volatile((rip_chirho + i_chirho as u64) as *const u8)
-        };
+    let cs_chirho = stack_frame_chirho.code_segment.0;
+    let is_user_chirho = (cs_chirho & 0x3) == 3;
+
+    crate::serial_println_chirho!(
+        "[EXCEPTION] INVALID OPCODE (#UD) at {:#x} ({})",
+        rip_chirho,
+        if is_user_chirho { "user" } else { "kernel" },
+    );
+
+    if is_user_chirho {
+        // User-mode #UD — terminate process and re-launch shell.
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            let pid_chirho = task_arc_chirho.lock().pid_chirho;
+            crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+        }
+        let shell_argv_chirho = [alloc::string::String::from("sh")];
+        let shell_envp_chirho = [alloc::string::String::from("HOME=/root")];
+        crate::process_chirho::exec_shell_with_args_chirho(&shell_argv_chirho, &shell_envp_chirho);
     }
-    crate::serial_println_chirho!(
-        "[EXCEPTION] INVALID OPCODE (#UD) at {:#x}",
-        rip_chirho
-    );
-    crate::serial_println_chirho!(
-        "  bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-        bytes_chirho[0], bytes_chirho[1], bytes_chirho[2], bytes_chirho[3],
-        bytes_chirho[4], bytes_chirho[5], bytes_chirho[6], bytes_chirho[7],
-        bytes_chirho[8], bytes_chirho[9], bytes_chirho[10], bytes_chirho[11],
-        bytes_chirho[12], bytes_chirho[13], bytes_chirho[14], bytes_chirho[15]
-    );
+
+    // Kernel-mode #UD — halt.
     loop { x86_64::instructions::hlt(); }
 }
 
