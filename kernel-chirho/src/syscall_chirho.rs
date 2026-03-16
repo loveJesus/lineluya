@@ -2363,6 +2363,24 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
     // Remove from scheduler run queue.
     crate::scheduler_chirho::remove_task_chirho(pid_chirho);
 
+    // Deliver SIGCHLD to the parent process.
+    {
+        let task_list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+        // Find parent PID from the exiting task.
+        let ppid_chirho = task_list_chirho.iter()
+            .find(|t_chirho| t_chirho.lock().pid_chirho == pid_chirho)
+            .map(|t_chirho| t_chirho.lock().ppid_chirho)
+            .unwrap_or(0);
+        // Set SIGCHLD pending on the parent.
+        if ppid_chirho > 0 {
+            if let Some(parent_arc_chirho) = task_list_chirho.iter()
+                .find(|t_chirho| t_chirho.lock().pid_chirho == ppid_chirho)
+            {
+                parent_arc_chirho.lock().pending_signals_chirho |= 1u64 << 17; // SIGCHLD = 17
+            }
+        }
+    }
+
     // With vfork semantics, the exiting process IS the shell.
     // Re-exec the shell so the user gets a new prompt.
     crate::serial_println_chirho!("[SYSCALL] exit: re-launching shell after vfork-child exit");
@@ -3395,10 +3413,19 @@ fn sys_fcntl_chirho(
         F_GETFD_CHIRHO => 0, // no close-on-exec set
         F_SETFD_CHIRHO => 0, // silently accept
         F_GETFL_CHIRHO => {
+            // Return the file's open flags from the VFS file table.
+            let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+            if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
+                if let Some(Some(ref file_arc_chirho)) = fd_table_chirho.fds_chirho.get(fd_chirho as usize) {
+                    let file_chirho = file_arc_chirho.lock();
+                    return file_chirho.flags_chirho as i64;
+                }
+            }
+            // Fallback for stdin/stdout/stderr
             match fd_chirho {
                 0 => 0,     // O_RDONLY
                 1 | 2 => 1, // O_WRONLY
-                _ => 0,
+                _ => 0x8000, // O_LARGEFILE default
             }
         }
         F_SETFL_CHIRHO => 0, // silently accept
