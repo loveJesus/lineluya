@@ -218,7 +218,7 @@ populate_image_darwin_chirho() {
         abs_tarball_chirho="$(cd "$(dirname "$tarball_path_chirho")" && pwd)/$(basename "$tarball_path_chirho")"
 
         # Generate the inittab / fstab / hostname content in-line for Docker
-        docker run --rm --privileged \
+        docker run --rm --privileged --platform linux/amd64 \
             -v "$abs_image_chirho:/work-chirho/disk-chirho.img" \
             -v "$abs_tarball_chirho:/work-chirho/rootfs-chirho.tar.gz" \
             alpine:latest /bin/sh -c '

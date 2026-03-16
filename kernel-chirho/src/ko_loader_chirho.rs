@@ -165,6 +165,12 @@ const R_X86_64_PLT32_CHIRHO: u32 = 4;
 /// to the symbol (no GOT indirection needed in a monolithic kernel image).
 const R_X86_64_GOTPCREL_CHIRHO: u32 = 9;
 
+/// `R_X86_64_REX_GOTPCRELX` — relaxed GOT-relative (GCC 7+, KASLR).
+const R_X86_64_REX_GOTPCRELX_CHIRHO: u32 = 42;
+
+/// `R_X86_64_GOTPCRELX` — relaxed GOT-relative (GCC 7+, KASLR).
+const R_X86_64_GOTPCRELX_CHIRHO: u32 = 41;
+
 /// `R_X86_64_NONE` — no relocation.
 #[allow(dead_code)]
 const R_X86_64_NONE_CHIRHO: u32 = 0;
@@ -1819,7 +1825,12 @@ fn apply_single_relocation_chirho(
         // In a monolithic kernel there is no GOT; we resolve directly to
         // the symbol address using the same formula as PC32.
         // ---------------------------------------------------------------
-        R_X86_64_GOTPCREL_CHIRHO => {
+        R_X86_64_GOTPCREL_CHIRHO
+        | R_X86_64_GOTPCRELX_CHIRHO
+        | R_X86_64_REX_GOTPCRELX_CHIRHO => {
+            // GOTPCREL and its relaxed variants (GCC 7+, KASLR-aware).
+            // In a monolithic kernel there is no GOT; we resolve directly to
+            // the symbol address using the same formula as PC32.
             if offset_chirho + 4 > mem_chirho.len() {
                 return Err(KoErrorChirho::RelocationOverflowChirho);
             }
@@ -2707,4 +2718,168 @@ pub fn sys_delete_module_impl_chirho(name_ptr_chirho: u64, _flags_chirho: u64) -
     );
 
     0 // Success
+}
+
+// ===========================================================================
+// Module dependency resolution (modprobe-style)
+// ===========================================================================
+
+/// Module dependency entry: a module name and its required dependencies.
+#[derive(Clone)]
+pub struct ModDepEntryChirho {
+    /// Module name (e.g., "virtio_blk").
+    pub name_chirho: String,
+    /// Filesystem path to the .ko file.
+    pub path_chirho: String,
+    /// List of dependency module names (must be loaded first).
+    pub deps_chirho: Vec<String>,
+}
+
+/// In-memory module dependency database — equivalent to `modules.dep`.
+/// Populated by scanning `/lib/modules/<version>/` or manually.
+static MODULE_DEPS_CHIRHO: Mutex<Vec<ModDepEntryChirho>> = Mutex::new(Vec::new());
+
+/// Register a module dependency entry (e.g., from parsing modules.dep).
+pub fn register_moddep_chirho(entry_chirho: ModDepEntryChirho) {
+    MODULE_DEPS_CHIRHO.lock().push(entry_chirho);
+}
+
+/// Resolve and load a module and all its dependencies (modprobe semantics).
+///
+/// Recursively loads dependencies before loading the requested module.
+/// Returns 0 on success, negative errno on failure.
+pub fn modprobe_chirho(name_chirho: &str) -> i64 {
+    crate::serial_println_chirho!("[MODPROBE] Loading module '{}'...", name_chirho);
+
+    // Check if already loaded.
+    {
+        let loaded_chirho = LOADED_MODULES_CHIRHO.lock();
+        for m_chirho in loaded_chirho.iter() {
+            if m_chirho.name_chirho == name_chirho
+                && m_chirho.state_chirho == ModuleStateChirho::LoadedChirho
+            {
+                crate::serial_println_chirho!(
+                    "[MODPROBE] '{}' already loaded",
+                    name_chirho
+                );
+                return 0;
+            }
+        }
+    }
+
+    // Look up in dependency database.
+    let entry_chirho = {
+        let deps_chirho = MODULE_DEPS_CHIRHO.lock();
+        deps_chirho
+            .iter()
+            .find(|e_chirho| e_chirho.name_chirho == name_chirho)
+            .cloned()
+    };
+
+    if let Some(dep_entry_chirho) = entry_chirho {
+        // Load dependencies first (recursive).
+        for dep_name_chirho in &dep_entry_chirho.deps_chirho {
+            let result_chirho = modprobe_chirho(dep_name_chirho);
+            if result_chirho != 0 {
+                crate::serial_println_chirho!(
+                    "[MODPROBE] Failed to load dependency '{}' for '{}'",
+                    dep_name_chirho,
+                    name_chirho
+                );
+                return result_chirho;
+            }
+        }
+
+        // Load the .ko file from the filesystem path.
+        crate::serial_println_chirho!(
+            "[MODPROBE] Loading '{}' from '{}'",
+            name_chirho,
+            dep_entry_chirho.path_chirho
+        );
+
+        match crate::process_chirho::try_read_file_pub_chirho(&dep_entry_chirho.path_chirho) {
+            Some(ko_data_chirho) => {
+                let result_chirho = load_and_init_module_chirho(&ko_data_chirho);
+                match result_chirho {
+                    Ok(module_chirho) => {
+                        let mut loaded_chirho = LOADED_MODULES_CHIRHO.lock();
+                        loaded_chirho.push(module_chirho);
+                        crate::serial_println_chirho!(
+                            "[MODPROBE] '{}' loaded successfully",
+                            name_chirho
+                        );
+                        0
+                    }
+                    Err(err_chirho) => {
+                        crate::serial_println_chirho!(
+                            "[MODPROBE] Failed to load '{}': {:?}",
+                            name_chirho,
+                            err_chirho
+                        );
+                        err_chirho.to_errno_chirho()
+                    }
+                }
+            }
+            None => {
+                crate::serial_println_chirho!(
+                    "[MODPROBE] Could not read '{}' from filesystem",
+                    dep_entry_chirho.path_chirho
+                );
+                -ENOENT_CHIRHO
+            }
+        }
+    } else {
+        crate::serial_println_chirho!(
+            "[MODPROBE] Module '{}' not found in dependency database",
+            name_chirho
+        );
+        -ENOENT_CHIRHO
+    }
+}
+
+/// Parse a `modules.dep` file from the filesystem and populate the
+/// dependency database.
+///
+/// Format: `path/to/module.ko: dep1.ko dep2.ko ...`
+pub fn parse_modules_dep_chirho(content_chirho: &str) {
+    for line_chirho in content_chirho.lines() {
+        let line_chirho = line_chirho.trim();
+        if line_chirho.is_empty() || line_chirho.starts_with('#') {
+            continue;
+        }
+        if let Some(colon_idx_chirho) = line_chirho.find(':') {
+            let path_chirho = line_chirho[..colon_idx_chirho].trim();
+            let deps_str_chirho = line_chirho[colon_idx_chirho + 1..].trim();
+
+            // Extract module name from path (e.g., "virtio_blk.ko" from path).
+            let name_chirho = path_chirho
+                .rsplit('/')
+                .next()
+                .unwrap_or(path_chirho)
+                .trim_end_matches(".ko");
+
+            let deps_chirho: Vec<String> = if deps_str_chirho.is_empty() {
+                Vec::new()
+            } else {
+                deps_str_chirho
+                    .split_whitespace()
+                    .map(|d_chirho| {
+                        String::from(
+                            d_chirho
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or(d_chirho)
+                                .trim_end_matches(".ko"),
+                        )
+                    })
+                    .collect()
+            };
+
+            register_moddep_chirho(ModDepEntryChirho {
+                name_chirho: String::from(name_chirho),
+                path_chirho: String::from(path_chirho),
+                deps_chirho,
+            });
+        }
+    }
 }
