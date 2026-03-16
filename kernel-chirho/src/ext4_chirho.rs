@@ -2037,11 +2037,51 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
 
     fn create_chirho(
         &self,
-        _parent_chirho: &crate::vfs_chirho::InodeChirho,
-        _name_chirho: &str,
-        _mode_chirho: u32,
+        parent_chirho: &crate::vfs_chirho::InodeChirho,
+        name_chirho: &str,
+        mode_chirho: u32,
     ) -> Result<Arc<crate::vfs_chirho::InodeChirho>, i64> {
-        Err(-30) // EROFS — read-only filesystem
+        // Use the ext4 create_file_chirho implementation.
+        let fs_data_chirho = parent_chirho
+            .fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
+            .ok_or(-9i64)?; // EBADF
+
+        let mount_chirho = fs_data_chirho.mount_chirho.clone();
+        let parent_ino_chirho = fs_data_chirho.ino_chirho;
+        let mount_guard_chirho = mount_chirho.lock();
+
+        match mount_guard_chirho.create_file_chirho(parent_ino_chirho, name_chirho, mode_chirho as u16) {
+            Ok(new_ino_chirho) => {
+                crate::serial_println_chirho!(
+                    "[EXT4] Created file '{}' inode={}",
+                    name_chirho, new_ino_chirho
+                );
+                // Create a VFS inode for the new file.
+                let new_inode_chirho = Arc::new(crate::vfs_chirho::InodeChirho {
+                    ino_chirho: new_ino_chirho as u64,
+                    mode_chirho: mode_chirho | 0o100000, // S_IFREG
+                    uid_chirho: 0,
+                    gid_chirho: 0,
+                    size_chirho: 0,
+                    nlink_chirho: 1,
+                    atime_chirho: 0,
+                    mtime_chirho: 0,
+                    ctime_chirho: 0,
+                    ops_chirho: &EXT4_INODE_OPS_CHIRHO,
+                    fs_data_chirho: Some(alloc::boxed::Box::new(Ext4FsDataChirho {
+                        ino_chirho: new_ino_chirho,
+                        mount_chirho: fs_data_chirho.mount_chirho.clone(),
+                    })),
+                });
+                Ok(new_inode_chirho)
+            }
+            Err(msg_chirho) => {
+                crate::serial_println_chirho!("[EXT4] create_file failed: {}", msg_chirho);
+                Err(-28) // ENOSPC
+            }
+        }
     }
 
     fn mkdir_chirho(
@@ -2050,7 +2090,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
         _name_chirho: &str,
         _mode_chirho: u32,
     ) -> Result<Arc<crate::vfs_chirho::InodeChirho>, i64> {
-        Err(-30) // EROFS
+        Err(-30) // EROFS — mkdir not yet implemented for ext4
     }
 
     fn unlink_chirho(
@@ -2058,7 +2098,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
         _parent_chirho: &crate::vfs_chirho::InodeChirho,
         _name_chirho: &str,
     ) -> Result<(), i64> {
-        Err(-30) // EROFS
+        Err(-30) // EROFS — unlink not yet implemented for ext4
     }
 
     fn rmdir_chirho(
@@ -2066,7 +2106,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
         _parent_chirho: &crate::vfs_chirho::InodeChirho,
         _name_chirho: &str,
     ) -> Result<(), i64> {
-        Err(-30) // EROFS
+        Err(-30) // EROFS — rmdir not yet implemented for ext4
     }
 
     fn readlink_chirho(
