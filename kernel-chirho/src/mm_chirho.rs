@@ -247,18 +247,10 @@ impl MmChirho {
         // file from ext4. Now we read the file's data directly from the
         // VFS and memcpy it in one shot.
         if has_file_chirho {
-            crate::serial_println_chirho!(
-                "[MMAP] file-backed: fd={} offset={:#x} len={:#x} -> addr={:#x}",
-                fd_chirho, _offset_chirho, aligned_len_chirho, map_addr_chirho
-            );
             let file_data_chirho = crate::fs_chirho::read_file_data_at_offset_chirho(
                 fd_chirho as u64,
                 _offset_chirho,
                 aligned_len_chirho,
-            );
-            crate::serial_println_chirho!(
-                "[MMAP] read_file_data returned: {}",
-                if file_data_chirho.is_some() { "Some" } else { "None" }
             );
             if let Some(data_chirho) = file_data_chirho {
                 let copy_len_chirho = core::cmp::min(data_chirho.len(), aligned_len_chirho as usize);
