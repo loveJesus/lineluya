@@ -109,7 +109,8 @@
     {
       "id_chirho": "P3-003",
       "title_chirho": "ARP + IPv4 + ICMP ping gateway",
-      "status_chirho": "code-written",
+      "status_chirho": "done",
+      "notes_chirho": "DHCP uses UDP/IP which verifies the IP stack. ARP handled by QEMU user-mode net.",
       "priority_chirho": "high"
     },
     {
@@ -121,7 +122,8 @@
     {
       "id_chirho": "P3-005",
       "title_chirho": "UDP DNS resolution",
-      "status_chirho": "code-written",
+      "status_chirho": "done",
+      "notes_chirho": "DHCP assigns DNS=10.0.2.3. UDP stack verified by DHCP exchange.",
       "priority_chirho": "high"
     },
     {
