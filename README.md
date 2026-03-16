@@ -46,7 +46,7 @@ Lineluya is an ambitious, ground-up rewrite of the Linux kernel in Rust. It aims
 
 ### Current Status: v3.2.0 — "Clearing the Land"
 
-![Lineluya kernel booting in QEMU](docs-chirho/screenshot-boot-chirho.png)
+![Lineluya running sqlite3, Python, Dropbear, apk](docs-chirho/screenshot-demo-chirho.png)
 
 The kernel boots in QEMU, runs **real Alpine Linux programs** via **musl 1.2.5 dynamic linker** with **DHCP networking** and **TCP connections**, reading from a **512MB ext4 rootfs** on **VirtIO-blk**:
 
