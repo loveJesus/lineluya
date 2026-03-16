@@ -1190,6 +1190,7 @@ pub fn exec_init_chirho() {
         alloc::string::String::from("SHELL=/bin/sh"),
         alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
         alloc::string::String::from("PYTHONHOME=/usr"),
+        alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
     ];
     let user_rsp_chirho = setup_user_stack_with_args_chirho(
         &loaded_chirho,
