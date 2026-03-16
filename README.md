@@ -72,12 +72,21 @@ Sun Mar 15 00:00:00 UTC 2026
 
 lineluya# cat /etc/hostname
 localhost
+lineluya# python3 --version
+Python 3.12.12
+
+lineluya# /usr/sbin/dropbear -V
+Dropbear v2025.88
 ```
 
 **Verified working in QEMU (x86_64):**
-- **SQLite 3.51.2** — executes SQL queries from ext4 disk (dynamically linked)
+- **SQLite 3.51.2** — executes SQL queries (dynamically linked via musl)
+- **Python 3.12.12** — CPython runs, outputs version
+- **Dropbear SSH v2025.88** — SSH server binary loads and runs
 - **apk-tools 2.14.6** — Alpine package manager runs
-- **DHCP networking** — IP=10.0.2.15, GW=10.0.2.2, DNS=10.0.2.3 via VirtIO-net
+- **TCP networking** — 3-way handshake verified, HTTP GET/response in PCAP
+- **DHCP** — IP=10.0.2.15, GW=10.0.2.2, DNS=10.0.2.3 via VirtIO-net
+- **Linux .ko module loading** — ELF relocations, 81 kernel symbol exports
 - BusyBox shell with color `ls`, cat, date, id, echo, uname (200+ applets)
 - Pixel framebuffer console (1280x800, green-on-black, UEFI)
 - VirtIO-blk + VirtIO-net I/O port drivers
