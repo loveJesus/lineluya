@@ -681,11 +681,11 @@ impl PageCacheChirho {
 }
 
 /// Global page cache instance (protected by a spinlock).
-/// Small page cache: 32 entries for recently read blocks.
-/// Speeds up Python's stdlib import (reads same directories repeatedly).
-/// buddy-alloc crate handles BTreeMap allocations correctly.
+/// Page cache entries. BTreeMap grows under heavy I/O (dropbear loads
+/// many .so files). Set to 0 to avoid the 64MB OOM during heavy open().
+/// TODO: Replace BTreeMap with fixed-size array for cache.
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
-    spin::Mutex::new(PageCacheChirho::new_chirho(32));
+    spin::Mutex::new(PageCacheChirho::new_chirho(0));
 
 // ===========================================================================
 // A4-009: ext4 read-only VFS integration
