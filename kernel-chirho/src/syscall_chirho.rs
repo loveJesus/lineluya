@@ -256,6 +256,8 @@ pub const SYS_FUTEX_CHIRHO: u64 = 202;
 pub const SYS_SET_TID_ADDRESS_CHIRHO: u64 = 218;
 /// `clock_gettime(2)` -- retrieve the time of the specified clock.
 pub const SYS_CLOCK_GETTIME_CHIRHO: u64 = 228;
+/// `clock_getres(2)` -- get clock resolution.
+pub const SYS_CLOCK_GETRES_CHIRHO: u64 = 229;
 /// `exit_group(2)` -- exit all threads in a process.
 pub const SYS_EXIT_GROUP_CHIRHO: u64 = 231;
 /// `openat(2)` -- open file relative to directory fd.
@@ -1583,6 +1585,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg0_chirho,
             arg1_chirho as *mut TimespecChirho,
         ),
+        // clock_getres(2): musl calls this during __libc_start_main
+        SYS_CLOCK_GETRES_CHIRHO => {
+            // Return 1ns resolution for all clocks
+            if arg1_chirho != 0 {
+                let res_chirho = TimespecChirho {
+                    tv_sec_chirho: 0,
+                    tv_nsec_chirho: 1, // 1 nanosecond
+                };
+                unsafe { core::ptr::write(arg1_chirho as *mut TimespecChirho, res_chirho); }
+            }
+            0
+        },
         SYS_EXIT_GROUP_CHIRHO => sys_exit_group_chirho(arg0_chirho as i32),
         SYS_OPENAT_CHIRHO => crate::fs_chirho::sys_openat_chirho(
             arg0_chirho as i64,  // dirfd
