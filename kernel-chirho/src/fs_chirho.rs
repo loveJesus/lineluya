@@ -1069,6 +1069,53 @@ pub fn sys_write_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho:
 }
 
 /// `close(2)` -- close a file descriptor.
+/// Read file data from an fd at a specific offset, returning a Vec<u8>.
+/// Used by mmap to bulk-read file contents instead of the O(n²) 4K loop.
+pub fn read_file_data_at_offset_chirho(
+    fd_chirho: u64,
+    offset_chirho: u64,
+    max_len_chirho: u64,
+) -> Option<alloc::vec::Vec<u8>> {
+    let file_arc_chirho = {
+        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        let fd_table_chirho = fd_table_guard_chirho.as_ref()?;
+        fd_table_chirho.get_chirho(fd_chirho as usize)?
+    };
+
+    let mut file_guard_chirho = file_arc_chirho.lock();
+
+    // Get file size
+    let file_size_chirho = {
+        let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+        inode_guard_chirho.size_chirho
+    };
+
+    // Calculate how much to read
+    let start_chirho = offset_chirho as usize;
+    if start_chirho as u64 >= file_size_chirho {
+        return Some(alloc::vec::Vec::new());
+    }
+    let available_chirho = (file_size_chirho as usize) - start_chirho;
+    let to_read_chirho = core::cmp::min(available_chirho, max_len_chirho as usize);
+
+    // Save position, seek to offset, read, restore
+    let saved_pos_chirho = file_guard_chirho.pos_chirho;
+    file_guard_chirho.pos_chirho = offset_chirho;
+
+    let mut buf_chirho = alloc::vec![0u8; to_read_chirho];
+    match file_guard_chirho.ops_chirho.read_chirho(&mut file_guard_chirho, &mut buf_chirho) {
+        Ok(n_chirho) => {
+            buf_chirho.truncate(n_chirho);
+            file_guard_chirho.pos_chirho = saved_pos_chirho;
+            Some(buf_chirho)
+        }
+        Err(_) => {
+            file_guard_chirho.pos_chirho = saved_pos_chirho;
+            None
+        }
+    }
+}
+
 pub fn sys_close_real_chirho(fd_chirho: u64) -> i64 {
     let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
     let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
