@@ -1673,10 +1673,23 @@ pub fn init_networking_chirho() {
     // A3-005: set up default routing table.
     init_routing_table_chirho();
 
-    // P3-002: Skip VirtIO-net probe for now — it hangs accessing
-    // unmapped MMIO addresses in UEFI boot mode. Networking will be
-    // enabled once VirtIO-net I/O port transport is implemented.
-    // probe_virtio_net_chirho();
+    // P3-002: VirtIO-net I/O port devices are probed during init_virtio_chirho
+    // (which runs before init_networking_chirho). Any VirtIO-net NIC found
+    // via I/O BAR is already registered in NET_DEVICES_CHIRHO at this point.
+    // Set loopback IP and run DHCP if a real NIC is present.
+    set_interface_ip_chirho(0, LOOPBACK_IP_CHIRHO);
+
+    let nic_count_chirho = {
+        let devs_chirho = NET_DEVICES_CHIRHO.lock();
+        devs_chirho.len()
+    };
+
+    if nic_count_chirho > 1 {
+        crate::serial_println_chirho!("[NET] Running DHCP on interface 1 ({} interfaces total)...", nic_count_chirho);
+        let _dhcp_result_chirho = dhcp_discover_chirho(1);
+    } else {
+        crate::serial_println_chirho!("[NET] No NIC found yet, skipping DHCP ({} interfaces)", nic_count_chirho);
+    }
 }
 
 // ============================================================================
@@ -3426,8 +3439,9 @@ pub fn gen_proc_net_udp_chirho() -> alloc::string::String {
 // ============================================================================
 
 use crate::virtio_chirho::{
-    VirtioMmioTransportChirho, VirtQueueChirho, VringDescChirho,
-    VRING_DESC_F_WRITE_CHIRHO as VNET_DESC_F_WRITE_CHIRHO,
+    VirtioMmioTransportChirho, VirtioIoTransportChirho, VirtQueueChirho,
+    VringDescChirho, VringUsedElemChirho,
+    VRING_DESC_F_NEXT_CHIRHO, VRING_DESC_F_WRITE_CHIRHO as VNET_DESC_F_WRITE_CHIRHO,
 };
 use core::ptr;
 use core::sync::atomic::{fence, Ordering as NetOrdering};
@@ -5115,6 +5129,7 @@ pub fn sys_sendto_real_chirho(
 // ============================================================================
 
 /// Probe VirtIO-net devices from PCI + MMIO and register them as network interfaces.
+#[allow(dead_code)]
 pub fn probe_virtio_net_chirho() {
     crate::serial_println_chirho!("[VNET] Probing for VirtIO-net devices...");
 
@@ -5182,6 +5197,604 @@ pub fn probe_virtio_net_chirho() {
     }
 
     crate::serial_println_chirho!("[VNET] VirtIO-net probe complete ({} interfaces total)", nic_count_chirho);
+}
+
+// ============================================================================
+// P3-003: VirtIO-net I/O port transport driver
+// ============================================================================
+
+/// Legacy VirtIO queue alignment (4096 bytes = page size).
+const VIRTIO_NET_LEGACY_QUEUE_ALIGN_CHIRHO: usize = 4096;
+
+/// Bump allocator for VirtIO-net DMA memory — starts at 10MB physical.
+/// Separate from VirtIO-blk's allocator (8MB) and request buffer (9MB).
+static NET_VRING_PHYS_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0xA0_0000); // 10MB physical
+
+/// Fixed physical page for VirtIO-net TX DMA requests (reused).
+const NET_TX_DMA_PHYS_CHIRHO: u64 = 0xB0_0000; // 11MB physical — one page, reused
+
+/// VirtIO-net device driver backed by legacy PCI I/O port transport.
+///
+/// Queue 0 = receiveq (device -> driver), Queue 1 = transmitq (driver -> device).
+/// Uses the same I/O port register offsets as VirtIO-blk (they share the
+/// legacy transport layout).
+pub struct VirtioNetIoDeviceChirho {
+    /// I/O port transport for register access.
+    transport_chirho: VirtioIoTransportChirho,
+    /// MAC address read from device config space (offset 0x14, 6 bytes).
+    mac_addr_chirho: [u8; 6],
+    /// MTU (always 1500 for standard Ethernet).
+    mtu_val_chirho: usize,
+    /// Whether the device has been successfully initialized.
+    initialized_chirho: bool,
+    /// Receive virtqueue (queue index 0) — tracking structure.
+    rx_vq_chirho: VirtQueueChirho,
+    /// Transmit virtqueue (queue index 1) — tracking structure.
+    tx_vq_chirho: VirtQueueChirho,
+    /// Physical base address of the RX vring DMA region.
+    rx_vq_phys_base_chirho: u64,
+    /// Physical base address of the TX vring DMA region.
+    tx_vq_phys_base_chirho: u64,
+    /// Pre-allocated RX buffers in contiguous physical memory.
+    /// Each buffer holds VIRTIO_NET_HDR_SIZE + MAX_FRAME_SIZE bytes.
+    /// Index matches descriptor index.
+    rx_buf_phys_base_chirho: u64,
+    /// Number of RX buffers allocated.
+    rx_buf_count_chirho: u16,
+    /// Software receive queue: frames popped from the used ring.
+    sw_rx_queue_chirho: VecDeque<Vec<u8>>,
+}
+
+// SAFETY: The device is single-threaded at init; afterwards access is behind
+// NET_DEVICES_CHIRHO Mutex.
+unsafe impl Send for VirtioNetIoDeviceChirho {}
+
+impl VirtioNetIoDeviceChirho {
+    /// Allocate a contiguous DMA region from the net bump allocator.
+    /// Returns (physical_address, virtual_address).
+    fn alloc_dma_chirho(size_bytes_chirho: usize) -> (u64, usize) {
+        let pages_chirho = ((size_bytes_chirho + 4095) / 4096) as u64;
+        let phys_chirho = NET_VRING_PHYS_NEXT_CHIRHO.fetch_add(
+            pages_chirho * 4096,
+            core::sync::atomic::Ordering::SeqCst,
+        );
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let virt_chirho = (phys_chirho + phys_offset_chirho) as usize;
+        // Zero the region
+        unsafe {
+            core::ptr::write_bytes(virt_chirho as *mut u8, 0, size_bytes_chirho);
+        }
+        (phys_chirho, virt_chirho)
+    }
+
+    /// Set up a single legacy virtqueue: allocate contiguous DMA, write PFN.
+    /// Returns (VirtQueueChirho, phys_base, queue_size).
+    fn setup_legacy_queue_chirho(
+        transport_chirho: &VirtioIoTransportChirho,
+        queue_idx_chirho: u16,
+    ) -> Option<(VirtQueueChirho, u64, u16)> {
+        transport_chirho.select_queue_chirho(queue_idx_chirho);
+        let queue_size_chirho = transport_chirho.read_queue_size_chirho();
+        if queue_size_chirho == 0 {
+            crate::serial_println_chirho!(
+                "    [VNET-IO] Queue {} size is 0, aborting",
+                queue_idx_chirho
+            );
+            return None;
+        }
+        crate::serial_println_chirho!(
+            "    [VNET-IO] Queue {} max size = {}",
+            queue_idx_chirho,
+            queue_size_chirho
+        );
+
+        // Use the device's queue size (legacy VirtIO requires it).
+        let actual_size_chirho = queue_size_chirho;
+
+        // Compute the legacy vring layout size.
+        let desc_table_bytes_chirho = (actual_size_chirho as usize) * 16;
+        let avail_ring_bytes_chirho = 4 + (actual_size_chirho as usize) * 2 + 2;
+        let avail_end_chirho = desc_table_bytes_chirho + avail_ring_bytes_chirho;
+        let used_ring_offset_chirho =
+            (avail_end_chirho + VIRTIO_NET_LEGACY_QUEUE_ALIGN_CHIRHO - 1)
+                & !(VIRTIO_NET_LEGACY_QUEUE_ALIGN_CHIRHO - 1);
+        let used_ring_bytes_chirho = 4 + (actual_size_chirho as usize) * 8 + 2;
+        let total_bytes_chirho = used_ring_offset_chirho + used_ring_bytes_chirho;
+
+        // Allocate contiguous physical DMA memory.
+        let (phys_base_chirho, virt_base_chirho) = Self::alloc_dma_chirho(total_bytes_chirho);
+
+        crate::serial_println_chirho!(
+            "    [VNET-IO] Queue {} virt={:#x} phys={:#x} size={} total_bytes={}",
+            queue_idx_chirho,
+            virt_base_chirho,
+            phys_base_chirho,
+            actual_size_chirho,
+            total_bytes_chirho
+        );
+
+        // Write the queue PFN to the device.
+        let pfn_chirho = (phys_base_chirho >> 12) as u32;
+        transport_chirho.write_queue_pfn_chirho(pfn_chirho);
+
+        let vq_chirho = VirtQueueChirho::new_chirho(actual_size_chirho);
+
+        Some((vq_chirho, phys_base_chirho, actual_size_chirho))
+    }
+
+    /// Probe and initialize a VirtIO-net device via legacy PCI I/O port transport.
+    ///
+    /// `io_base_chirho` is the I/O port base address (BAR0 & 0xFFFC).
+    ///
+    /// Legacy VirtIO initialization sequence:
+    ///   1. Reset device (status = 0)
+    ///   2. Set ACKNOWLEDGE (status |= 1)
+    ///   3. Set DRIVER (status |= 2)
+    ///   4. Negotiate features (accept MAC feature bit 5)
+    ///   5. Set up virtqueue 0 (RX) and virtqueue 1 (TX)
+    ///   6. Set FEATURES_OK (status |= 8)
+    ///   7. Set DRIVER_OK (status |= 4)
+    ///   8. Read MAC address from device config
+    ///   9. Pre-populate RX buffers
+    ///
+    /// Returns `None` if the device cannot be initialized.
+    pub fn probe_io_chirho(io_base_chirho: u16) -> Option<Self> {
+        let transport_chirho = VirtioIoTransportChirho::new_chirho(io_base_chirho);
+
+        crate::serial_println_chirho!(
+            "    [VNET-IO] Probing VirtIO-net at I/O base {:#06x}",
+            io_base_chirho
+        );
+
+        // Step 1: Reset the device.
+        transport_chirho.reset_chirho();
+
+        // Step 2: Acknowledge.
+        let mut status_chirho: u8 = 1; // VIRTIO_STATUS_ACKNOWLEDGE
+        transport_chirho.write_status_chirho(status_chirho);
+
+        // Step 3: Driver.
+        status_chirho |= 2; // VIRTIO_STATUS_DRIVER
+        transport_chirho.write_status_chirho(status_chirho);
+
+        // Step 4: Feature negotiation.
+        let device_features_chirho = transport_chirho.read_device_features_chirho();
+        crate::serial_println_chirho!(
+            "    [VNET-IO] Device features = {:#010x}",
+            device_features_chirho
+        );
+        // Accept bit 5 (VIRTIO_NET_F_MAC) so device exposes MAC in config,
+        // plus basic ring features (bits 0-4).
+        // Bit 0 = VIRTIO_NET_F_CSUM, Bit 1 = VIRTIO_NET_F_GUEST_CSUM, etc.
+        // We accept bits 0-5 (including F_MAC = bit 5) as the blk driver does.
+        let accepted_chirho = device_features_chirho & 0x3F;
+        transport_chirho.write_guest_features_chirho(accepted_chirho);
+
+        // Step 5: Set up RX queue (queue 0).
+        let (rx_vq_chirho, rx_phys_base_chirho, rx_size_chirho) =
+            Self::setup_legacy_queue_chirho(&transport_chirho, 0)?;
+
+        // Set up TX queue (queue 1).
+        let (tx_vq_chirho, tx_phys_base_chirho, _tx_size_chirho) =
+            Self::setup_legacy_queue_chirho(&transport_chirho, 1)?;
+
+        // Step 6: Set FEATURES_OK.
+        status_chirho |= 8; // FEATURES_OK
+        transport_chirho.write_status_chirho(status_chirho);
+        let verify_status_chirho = transport_chirho.read_status_chirho();
+        if verify_status_chirho & 8 == 0 {
+            crate::serial_println_chirho!(
+                "    [VNET-IO] WARNING: FEATURES_OK not accepted by device"
+            );
+        }
+
+        // Step 7: DRIVER_OK — device is live.
+        status_chirho = verify_status_chirho | 4; // VIRTIO_STATUS_DRIVER_OK
+        transport_chirho.write_status_chirho(status_chirho);
+
+        let final_status_chirho = transport_chirho.read_status_chirho();
+        crate::serial_println_chirho!(
+            "    [VNET-IO] Device status after init = {:#04x}",
+            final_status_chirho
+        );
+
+        // Step 8: Read MAC address from device config at offset 0x14 (6 bytes).
+        // In legacy I/O port transport, device config starts at IO_BASE + 0x14.
+        let mut mac_chirho = [0u8; 6];
+        for i_chirho in 0..6u16 {
+            mac_chirho[i_chirho as usize] = transport_chirho.read_config8_chirho(i_chirho);
+        }
+
+        crate::serial_println_chirho!(
+            "    [VNET-IO] MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            mac_chirho[0], mac_chirho[1], mac_chirho[2],
+            mac_chirho[3], mac_chirho[4], mac_chirho[5],
+        );
+
+        // Step 9: Pre-populate RX buffers in contiguous physical memory.
+        // Each buffer = VIRTIO_NET_HDR_SIZE + MAX_FRAME_SIZE bytes.
+        let buf_size_chirho = VIRTIO_NET_HDR_SIZE_CHIRHO + MAX_FRAME_SIZE_CHIRHO;
+        // Use up to RX_RING_SIZE or queue_size, whichever is smaller.
+        let num_rx_bufs_chirho = core::cmp::min(
+            RX_RING_SIZE_CHIRHO as u16,
+            rx_size_chirho,
+        );
+        let total_rx_buf_bytes_chirho = (num_rx_bufs_chirho as usize) * buf_size_chirho;
+        let (rx_buf_phys_chirho, rx_buf_virt_chirho) =
+            Self::alloc_dma_chirho(total_rx_buf_bytes_chirho);
+
+        crate::serial_println_chirho!(
+            "    [VNET-IO] RX buffers: {} x {} bytes at phys {:#x}",
+            num_rx_bufs_chirho, buf_size_chirho, rx_buf_phys_chirho
+        );
+
+        // Post each RX buffer as a single descriptor to the RX vring.
+        let mut rx_vq_mut_chirho = rx_vq_chirho;
+        let rx_vring_virt_chirho = (rx_phys_base_chirho
+            + crate::pagetable_chirho::phys_mem_offset_chirho()) as usize;
+        let desc_base_chirho = rx_vring_virt_chirho as *mut VringDescChirho;
+
+        let desc_table_bytes_chirho = (rx_vq_mut_chirho.size_chirho as usize) * 16;
+        let avail_base_chirho =
+            (rx_vring_virt_chirho + desc_table_bytes_chirho) as *mut u16;
+
+        for i_chirho in 0..num_rx_bufs_chirho {
+            let buf_phys_chirho =
+                rx_buf_phys_chirho + (i_chirho as u64) * (buf_size_chirho as u64);
+
+            if let Some(desc_idx_chirho) = rx_vq_mut_chirho.alloc_desc_chirho() {
+                // Write descriptor directly into DMA-shared memory.
+                let desc_chirho = VringDescChirho {
+                    addr_chirho: buf_phys_chirho,
+                    len_chirho: buf_size_chirho as u32,
+                    flags_chirho: VNET_DESC_F_WRITE_CHIRHO, // device-writable
+                    next_chirho: 0,
+                };
+                unsafe {
+                    ptr::write_volatile(desc_base_chirho.add(desc_idx_chirho as usize), desc_chirho);
+                }
+                // Also track in our software vq.
+                rx_vq_mut_chirho.desc_chirho[desc_idx_chirho as usize] = desc_chirho;
+
+                // Update avail ring in shared memory.
+                let avail_idx_chirho = rx_vq_mut_chirho.avail_idx_chirho;
+                let ring_slot_chirho =
+                    (avail_idx_chirho % rx_vq_mut_chirho.size_chirho) as usize;
+                unsafe {
+                    let ring_ptr_chirho = avail_base_chirho.add(2 + ring_slot_chirho);
+                    ptr::write_volatile(ring_ptr_chirho, desc_idx_chirho);
+                    fence(NetOrdering::Release);
+                    let idx_ptr_chirho = avail_base_chirho.add(1);
+                    ptr::write_volatile(
+                        idx_ptr_chirho,
+                        avail_idx_chirho.wrapping_add(1),
+                    );
+                }
+                rx_vq_mut_chirho.avail_idx_chirho =
+                    avail_idx_chirho.wrapping_add(1);
+            }
+        }
+
+        // Notify device that RX buffers are available (queue 0).
+        fence(NetOrdering::SeqCst);
+        transport_chirho.notify_queue_chirho(0);
+
+        crate::serial_println_chirho!(
+            "    [VNET-IO] Initialized — {} RX bufs posted, device ready",
+            num_rx_bufs_chirho
+        );
+
+        Some(Self {
+            transport_chirho,
+            mac_addr_chirho: mac_chirho,
+            mtu_val_chirho: 1500,
+            initialized_chirho: true,
+            rx_vq_chirho: rx_vq_mut_chirho,
+            tx_vq_chirho,
+            rx_vq_phys_base_chirho: rx_phys_base_chirho,
+            tx_vq_phys_base_chirho: tx_phys_base_chirho,
+            rx_buf_phys_base_chirho: rx_buf_phys_chirho,
+            rx_buf_count_chirho: num_rx_bufs_chirho,
+            sw_rx_queue_chirho: VecDeque::new(),
+        })
+    }
+
+    /// Poll the RX used ring for received frames and move them to the
+    /// software receive queue.
+    fn poll_rx_io_chirho(&mut self) {
+        let rx_vring_virt_chirho = (self.rx_vq_phys_base_chirho
+            + crate::pagetable_chirho::phys_mem_offset_chirho()) as usize;
+        let queue_size_chirho = self.rx_vq_chirho.size_chirho as usize;
+
+        // Compute used ring location in DMA memory.
+        let desc_table_bytes_chirho = queue_size_chirho * 16;
+        let avail_ring_bytes_chirho = 4 + queue_size_chirho * 2 + 2;
+        let avail_end_chirho = desc_table_bytes_chirho + avail_ring_bytes_chirho;
+        let used_ring_offset_chirho =
+            (avail_end_chirho + VIRTIO_NET_LEGACY_QUEUE_ALIGN_CHIRHO - 1)
+                & !(VIRTIO_NET_LEGACY_QUEUE_ALIGN_CHIRHO - 1);
+        let used_base_chirho =
+            (rx_vring_virt_chirho + used_ring_offset_chirho) as *mut u16;
+
+        // Read device's used idx.
+        let device_used_idx_chirho: u16 = unsafe {
+            ptr::read_volatile(used_base_chirho.add(1))
+        };
+
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let buf_size_chirho = VIRTIO_NET_HDR_SIZE_CHIRHO + MAX_FRAME_SIZE_CHIRHO;
+
+        while self.rx_vq_chirho.last_used_idx_chirho != device_used_idx_chirho {
+            let ring_idx_chirho =
+                (self.rx_vq_chirho.last_used_idx_chirho % self.rx_vq_chirho.size_chirho)
+                    as usize;
+
+            // Read used element: each is { id: u32, len: u32 } = 8 bytes.
+            // Used ring layout: [flags:u16][idx:u16][elem0:8bytes][elem1:8bytes]...
+            let used_elem_base_chirho = unsafe {
+                (used_base_chirho as *const u8).add(4) as *const VringUsedElemChirho
+            };
+            let elem_chirho: VringUsedElemChirho = unsafe {
+                ptr::read_volatile(used_elem_base_chirho.add(ring_idx_chirho))
+            };
+            let desc_id_chirho = elem_chirho.id_chirho as usize;
+            let bytes_written_chirho = elem_chirho.len_chirho as usize;
+
+            if bytes_written_chirho > VIRTIO_NET_HDR_SIZE_CHIRHO
+                && (desc_id_chirho as u16) < self.rx_buf_count_chirho
+            {
+                // Read the frame from DMA buffer (skip virtio-net header).
+                let buf_virt_chirho = (self.rx_buf_phys_base_chirho
+                    + (desc_id_chirho as u64) * (buf_size_chirho as u64)
+                    + phys_offset_chirho) as *const u8;
+                let frame_len_chirho =
+                    bytes_written_chirho - VIRTIO_NET_HDR_SIZE_CHIRHO;
+                let mut frame_data_chirho = alloc::vec![0u8; frame_len_chirho];
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        buf_virt_chirho.add(VIRTIO_NET_HDR_SIZE_CHIRHO),
+                        frame_data_chirho.as_mut_ptr(),
+                        frame_len_chirho,
+                    );
+                }
+                self.sw_rx_queue_chirho.push_back(frame_data_chirho);
+            }
+
+            // Re-post the buffer to the RX queue.
+            let desc_base_chirho =
+                rx_vring_virt_chirho as *mut VringDescChirho;
+            let avail_base_chirho =
+                (rx_vring_virt_chirho + desc_table_bytes_chirho) as *mut u16;
+
+            let buf_phys_chirho = self.rx_buf_phys_base_chirho
+                + (desc_id_chirho as u64) * (buf_size_chirho as u64);
+            unsafe {
+                ptr::write_volatile(
+                    desc_base_chirho.add(desc_id_chirho),
+                    VringDescChirho {
+                        addr_chirho: buf_phys_chirho,
+                        len_chirho: buf_size_chirho as u32,
+                        flags_chirho: VNET_DESC_F_WRITE_CHIRHO,
+                        next_chirho: 0,
+                    },
+                );
+
+                let avail_idx_chirho = self.rx_vq_chirho.avail_idx_chirho;
+                let slot_chirho =
+                    (avail_idx_chirho % self.rx_vq_chirho.size_chirho) as usize;
+                ptr::write_volatile(
+                    avail_base_chirho.add(2 + slot_chirho),
+                    desc_id_chirho as u16,
+                );
+                fence(NetOrdering::Release);
+                ptr::write_volatile(
+                    avail_base_chirho.add(1),
+                    avail_idx_chirho.wrapping_add(1),
+                );
+            }
+            self.rx_vq_chirho.avail_idx_chirho =
+                self.rx_vq_chirho.avail_idx_chirho.wrapping_add(1);
+
+            self.rx_vq_chirho.last_used_idx_chirho =
+                self.rx_vq_chirho.last_used_idx_chirho.wrapping_add(1);
+        }
+
+        // Notify device about re-posted RX buffers.
+        if !self.sw_rx_queue_chirho.is_empty() {
+            self.transport_chirho.notify_queue_chirho(0);
+        }
+    }
+
+    /// Transmit a raw Ethernet frame through VirtIO-net I/O port transport.
+    ///
+    /// Builds a 2-descriptor chain in the TX vring DMA memory:
+    ///   desc 0: virtio-net header (10 bytes, device-readable)
+    ///   desc 1: ethernet frame data (device-readable)
+    fn transmit_frame_io_chirho(&mut self, frame_chirho: &[u8]) {
+        if !self.initialized_chirho {
+            return;
+        }
+
+        let tx_vring_virt_chirho = (self.tx_vq_phys_base_chirho
+            + crate::pagetable_chirho::phys_mem_offset_chirho()) as usize;
+        let queue_size_chirho = self.tx_vq_chirho.size_chirho as usize;
+
+        // Compute shared memory layout pointers.
+        let desc_table_bytes_chirho = queue_size_chirho * 16;
+        let desc_base_chirho = tx_vring_virt_chirho as *mut VringDescChirho;
+        let avail_base_chirho =
+            (tx_vring_virt_chirho + desc_table_bytes_chirho) as *mut u16;
+        let avail_end_chirho = desc_table_bytes_chirho + 4 + queue_size_chirho * 2 + 2;
+        let used_ring_offset_chirho =
+            (avail_end_chirho + VIRTIO_NET_LEGACY_QUEUE_ALIGN_CHIRHO - 1)
+                & !(VIRTIO_NET_LEGACY_QUEUE_ALIGN_CHIRHO - 1);
+        let used_base_chirho =
+            (tx_vring_virt_chirho + used_ring_offset_chirho) as *mut u16;
+
+        // Allocate 2 descriptors (header + data).
+        if self.tx_vq_chirho.num_free_chirho < 2 {
+            crate::serial_println_chirho!("[VNET-IO] TX: no free descriptors");
+            return;
+        }
+        let d0_chirho = match self.tx_vq_chirho.alloc_desc_chirho() {
+            Some(d_chirho) => d_chirho,
+            None => return,
+        };
+        let d1_chirho = match self.tx_vq_chirho.alloc_desc_chirho() {
+            Some(d_chirho) => d_chirho,
+            None => {
+                self.tx_vq_chirho.free_desc_chirho(d0_chirho);
+                return;
+            }
+        };
+
+        // Build the TX DMA buffer: [virtio-net-header (10 bytes)][frame data]
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let tx_dma_virt_chirho = (NET_TX_DMA_PHYS_CHIRHO + phys_offset_chirho) as *mut u8;
+
+        // Write virtio-net header (10 bytes, all zeros = no offload).
+        unsafe {
+            ptr::write_bytes(tx_dma_virt_chirho, 0, VIRTIO_NET_HDR_SIZE_CHIRHO);
+        }
+
+        // Write frame data after the header.
+        let frame_len_chirho = core::cmp::min(frame_chirho.len(), MAX_FRAME_SIZE_CHIRHO);
+        unsafe {
+            ptr::copy_nonoverlapping(
+                frame_chirho.as_ptr(),
+                tx_dma_virt_chirho.add(VIRTIO_NET_HDR_SIZE_CHIRHO),
+                frame_len_chirho,
+            );
+        }
+
+        let hdr_phys_chirho = NET_TX_DMA_PHYS_CHIRHO;
+        let data_phys_chirho = NET_TX_DMA_PHYS_CHIRHO + VIRTIO_NET_HDR_SIZE_CHIRHO as u64;
+
+        // Descriptor 0: virtio-net header (device-readable, chained).
+        unsafe {
+            ptr::write_volatile(
+                desc_base_chirho.add(d0_chirho as usize),
+                VringDescChirho {
+                    addr_chirho: hdr_phys_chirho,
+                    len_chirho: VIRTIO_NET_HDR_SIZE_CHIRHO as u32,
+                    flags_chirho: VRING_DESC_F_NEXT_CHIRHO,
+                    next_chirho: d1_chirho,
+                },
+            );
+        }
+
+        // Descriptor 1: frame data (device-readable, end of chain).
+        unsafe {
+            ptr::write_volatile(
+                desc_base_chirho.add(d1_chirho as usize),
+                VringDescChirho {
+                    addr_chirho: data_phys_chirho,
+                    len_chirho: frame_len_chirho as u32,
+                    flags_chirho: 0,
+                    next_chirho: 0,
+                },
+            );
+        }
+
+        // Update available ring in shared memory.
+        let avail_idx_chirho = self.tx_vq_chirho.avail_idx_chirho;
+        let ring_slot_chirho =
+            (avail_idx_chirho % self.tx_vq_chirho.size_chirho) as usize;
+        unsafe {
+            ptr::write_volatile(avail_base_chirho.add(2 + ring_slot_chirho), d0_chirho);
+            fence(NetOrdering::Release);
+            ptr::write_volatile(
+                avail_base_chirho.add(1),
+                avail_idx_chirho.wrapping_add(1),
+            );
+        }
+        self.tx_vq_chirho.avail_idx_chirho = avail_idx_chirho.wrapping_add(1);
+        fence(NetOrdering::SeqCst);
+
+        // Notify device (queue 1 = TX).
+        self.transport_chirho.notify_queue_chirho(1);
+
+        // Poll the used ring for TX completion (busy-wait).
+        let last_used_chirho = self.tx_vq_chirho.last_used_idx_chirho;
+        let mut spins_chirho: u32 = 0;
+        loop {
+            let used_idx_chirho = unsafe {
+                ptr::read_volatile(used_base_chirho.add(1))
+            };
+            if used_idx_chirho != last_used_chirho {
+                self.tx_vq_chirho.last_used_idx_chirho = used_idx_chirho;
+                break;
+            }
+            core::hint::spin_loop();
+            spins_chirho += 1;
+            if spins_chirho > 500_000 {
+                crate::serial_println_chirho!(
+                    "[VNET-IO] TX timeout after {} spins",
+                    spins_chirho
+                );
+                break;
+            }
+        }
+
+        // Free descriptors.
+        self.tx_vq_chirho.free_desc_chirho(d0_chirho);
+        self.tx_vq_chirho.free_desc_chirho(d1_chirho);
+    }
+}
+
+impl NetDeviceChirho for VirtioNetIoDeviceChirho {
+    fn send_packet_chirho(&mut self, data_chirho: &[u8]) {
+        if !self.initialized_chirho {
+            return;
+        }
+        crate::serial_println_chirho!("[VNET-IO] TX: {} bytes", data_chirho.len());
+        self.transmit_frame_io_chirho(data_chirho);
+    }
+
+    fn recv_packet_chirho(&mut self) -> Option<Vec<u8>> {
+        self.poll_rx_io_chirho();
+        self.sw_rx_queue_chirho.pop_front()
+    }
+
+    fn mac_address_chirho(&self) -> [u8; 6] {
+        self.mac_addr_chirho
+    }
+
+    fn mtu_chirho(&self) -> usize {
+        self.mtu_val_chirho
+    }
+}
+
+/// Entry point called from `init_virtio_chirho` when a VirtIO-net PCI device
+/// with an I/O BAR is detected.  Probes the device, registers it in
+/// `NET_DEVICES_CHIRHO`, and logs the result.
+pub fn probe_virtio_net_io_chirho(io_base_chirho: u16) {
+    crate::serial_println_chirho!(
+        "[VNET-IO] Probing VirtIO-net I/O at base {:#06x}",
+        io_base_chirho
+    );
+
+    match VirtioNetIoDeviceChirho::probe_io_chirho(io_base_chirho) {
+        Some(net_dev_chirho) => {
+            let mac_chirho = net_dev_chirho.mac_addr_chirho;
+            let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
+            devs_chirho.push(Box::new(net_dev_chirho));
+            let idx_chirho = devs_chirho.len() - 1;
+            crate::serial_println_chirho!(
+                "[VNET-IO] Registered VirtIO-net (I/O) as interface {} — MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                idx_chirho,
+                mac_chirho[0], mac_chirho[1], mac_chirho[2],
+                mac_chirho[3], mac_chirho[4], mac_chirho[5],
+            );
+        }
+        None => {
+            crate::serial_println_chirho!(
+                "[VNET-IO] Probe failed at I/O base {:#06x}",
+                io_base_chirho
+            );
+        }
+    }
 }
 
 // ============================================================================
