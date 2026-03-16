@@ -1348,8 +1348,33 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         },
         SYS_WRITE_CHIRHO => {
             if arg0_chirho == 1 || arg0_chirho == 2 {
-                // stdout/stderr → direct serial write (no VFS, no heap, no locks)
-                sys_write_chirho(arg0_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
+                // Check if stdout/stderr has been redirected (via dup2).
+                // Compare the file ops pointer against the boot console ops.
+                // If different, the fd was redirected to a file.
+                let redirected_chirho = {
+                    let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+                    if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
+                        if let Some(Some(ref file_arc_chirho)) =
+                            fd_table_chirho.fds_chirho.get(arg0_chirho as usize)
+                        {
+                            let file_chirho = file_arc_chirho.lock();
+                            let ops_ptr_chirho = file_chirho.ops_chirho
+                                as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
+                            let console_ptr_chirho = &crate::devtmpfs_chirho::DEV_CONSOLE_OPS_CHIRHO
+                                as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
+                            ops_ptr_chirho != console_ptr_chirho
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if redirected_chirho {
+                    crate::fs_chirho::sys_write_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
+                } else {
+                    sys_write_chirho(arg0_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
+                }
             } else {
                 // Check if it's a socket fd — if so, route to sendto
                 if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
