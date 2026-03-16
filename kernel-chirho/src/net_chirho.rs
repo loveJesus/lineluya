@@ -1676,17 +1676,20 @@ pub fn init_networking_chirho() {
     // P3-002: VirtIO-net I/O port devices are probed during init_virtio_chirho
     // (which runs before init_networking_chirho). Any VirtIO-net NIC found
     // via I/O BAR is already registered in NET_DEVICES_CHIRHO at this point.
-    // Set loopback IP and run DHCP if a real NIC is present.
-    set_interface_ip_chirho(0, LOOPBACK_IP_CHIRHO);
-
+    // Set loopback IP on the last interface (just pushed above).
     let nic_count_chirho = {
         let devs_chirho = NET_DEVICES_CHIRHO.lock();
         devs_chirho.len()
     };
 
+    // Loopback is always the LAST device (just pushed above).
+    set_interface_ip_chirho(nic_count_chirho - 1, LOOPBACK_IP_CHIRHO);
+
     if nic_count_chirho > 1 {
-        crate::serial_println_chirho!("[NET] Running DHCP on interface 1 ({} interfaces total)...", nic_count_chirho);
-        let _dhcp_result_chirho = dhcp_discover_chirho(1);
+        // VirtIO-net was registered BEFORE loopback (during init_virtio),
+        // so it's at index 0. Run DHCP on interface 0 (the VirtIO NIC).
+        crate::serial_println_chirho!("[NET] Running DHCP on interface 0 (VirtIO NIC) ({} interfaces total)...", nic_count_chirho);
+        let _dhcp_result_chirho = dhcp_discover_chirho(0);
     } else {
         crate::serial_println_chirho!("[NET] No NIC found yet, skipping DHCP ({} interfaces)", nic_count_chirho);
     }
