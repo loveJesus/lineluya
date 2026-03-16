@@ -4,10 +4,10 @@
 # === Stage 1: Toolchain + bootloader tool (CACHED — rarely changes) ===
 FROM rust:latest AS toolchain-chirho
 
-RUN rustup install nightly-2025-01-15 \
-    && rustup default nightly-2025-01-15 \
-    && rustup component add rust-src llvm-tools-preview --toolchain nightly-2025-01-15 \
-    && rustup target add x86_64-unknown-none --toolchain nightly-2025-01-15
+RUN rustup install nightly-2026-03-10 \
+    && rustup default nightly-2026-03-10 \
+    && rustup component add rust-src llvm-tools-preview --toolchain nightly-2026-03-10 \
+    && rustup target add x86_64-unknown-none --toolchain nightly-2026-03-10
 
 # Pre-build the bootloader disk image tool (this takes ~30s and never changes)
 RUN mkdir -p /image-builder-chirho/src \
@@ -34,7 +34,7 @@ RUN mkdir -p kernel-chirho/src kernel-core-chirho/src xtask-chirho/src \
     && echo 'fn main(){}' > xtask-chirho/src/main_chirho.rs
 
 # Build dependencies only (this layer is cached until Cargo.toml changes)
-RUN cd kernel-chirho && cargo +nightly-2025-01-15 build --release 2>&1 | tail -3 || true
+RUN cd kernel-chirho && cargo +nightly-2026-03-10 build --release 2>&1 | tail -3 || true
 
 # === Stage 3: Build kernel (only this layer rebuilds on code changes) ===
 FROM deps-chirho AS build-chirho
@@ -45,13 +45,13 @@ COPY kernel-core-chirho/src kernel-core-chirho/src
 COPY userspace-chirho userspace-chirho
 
 # Build hello-chirho userspace binary
-RUN cd userspace-chirho/hello-chirho && cargo +nightly-2025-01-15 build --release 2>&1 | tail -3
+RUN cd userspace-chirho/hello-chirho && cargo +nightly-2026-03-10 build --release 2>&1 | tail -3
 
 # Force rebuild by touching source files (cargo fingerprints are from Stage 2 stubs)
 RUN touch kernel-chirho/src/main_chirho.rs kernel-core-chirho/src/lib.rs
 
 # Build the kernel
-RUN cd kernel-chirho && cargo +nightly-2025-01-15 build --release 2>&1 | tail -3
+RUN cd kernel-chirho && cargo +nightly-2026-03-10 build --release 2>&1 | tail -3
 
 # Create disk images using the pre-built tool from stage 1
 RUN /image-builder-chirho/target/release/image-builder-chirho \
