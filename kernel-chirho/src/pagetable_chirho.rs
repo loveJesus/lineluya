@@ -545,3 +545,164 @@ pub fn get_current_pml4_phys_chirho() -> PhysAddr {
     let (frame_chirho, _flags_chirho) = Cr3::read();
     frame_chirho.start_address()
 }
+
+/// Mirror all user-space page mappings from the current (active) page table
+/// into a target page table.
+///
+/// Walks the current PML4's user-space entries (0..255) and for every
+/// present leaf PTE, creates the same mapping in `target_pml4_phys_chirho`.
+/// This allows execve to load ELF segments using the global mapper (which
+/// maps into the current CR3) and then transfer all mappings to a per-process
+/// page table before switching CR3.
+///
+/// Returns the number of pages mirrored.
+pub fn mirror_user_mappings_chirho(target_pml4_phys_chirho: PhysAddr) -> usize {
+    let (current_pml4_frame_chirho, _) = Cr3::read();
+    let source_pml4_phys_chirho = current_pml4_frame_chirho.start_address();
+
+    let source_pml4_chirho = unsafe { table_from_phys_chirho(source_pml4_phys_chirho) };
+    let mut count_chirho: usize = 0;
+
+    for pml4_idx_chirho in 0..KERNEL_PML4_START_CHIRHO {
+        if source_pml4_chirho[pml4_idx_chirho].is_unused() {
+            continue;
+        }
+        let pdpt_phys_chirho = source_pml4_chirho[pml4_idx_chirho].addr();
+        let pdpt_chirho = unsafe { table_from_phys_chirho(pdpt_phys_chirho) };
+
+        for pdpt_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+            if pdpt_chirho[pdpt_idx_chirho].is_unused() {
+                continue;
+            }
+            if pdpt_chirho[pdpt_idx_chirho].flags().contains(PageTableFlags::HUGE_PAGE) {
+                continue; // Skip 1 GiB huge pages
+            }
+            let pd_phys_chirho = pdpt_chirho[pdpt_idx_chirho].addr();
+            let pd_chirho = unsafe { table_from_phys_chirho(pd_phys_chirho) };
+
+            for pd_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+                if pd_chirho[pd_idx_chirho].is_unused() {
+                    continue;
+                }
+                if pd_chirho[pd_idx_chirho].flags().contains(PageTableFlags::HUGE_PAGE) {
+                    continue; // Skip 2 MiB huge pages
+                }
+                let pt_phys_chirho = pd_chirho[pd_idx_chirho].addr();
+                let pt_chirho = unsafe { table_from_phys_chirho(pt_phys_chirho) };
+
+                for pt_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+                    if pt_chirho[pt_idx_chirho].is_unused() {
+                        continue;
+                    }
+                    let page_phys_chirho = pt_chirho[pt_idx_chirho].addr();
+                    let flags_chirho = pt_chirho[pt_idx_chirho].flags();
+
+                    // Only mirror USER_ACCESSIBLE pages (skip kernel-only)
+                    if !flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) {
+                        continue;
+                    }
+
+                    let vaddr_chirho = ((pml4_idx_chirho as u64) << 39)
+                        | ((pdpt_idx_chirho as u64) << 30)
+                        | ((pd_idx_chirho as u64) << 21)
+                        | ((pt_idx_chirho as u64) << 12);
+
+                    if map_page_in_pt_chirho(
+                        target_pml4_phys_chirho,
+                        vaddr_chirho,
+                        page_phys_chirho.as_u64(),
+                        flags_chirho,
+                    )
+                    .is_ok()
+                    {
+                        count_chirho += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    count_chirho
+}
+
+// ============================================================================
+// map_page_in_pt_chirho — map a page in a SPECIFIC page table
+// ============================================================================
+
+/// Map a 4 KiB virtual page to a physical frame in a specific page table.
+///
+/// Unlike the global mapper (which maps into the current CR3 page table),
+/// this function can populate any PML4, making it suitable for preparing
+/// a per-process address space before switching CR3.
+///
+/// Intermediate page table levels (PDPT, PD, PT) are allocated on demand
+/// from the frame allocator.
+///
+/// Returns `Ok(())` on success, or `Err(())` on OOM or failure.
+pub fn map_page_in_pt_chirho(
+    pml4_phys_chirho: PhysAddr,
+    vaddr_chirho: u64,
+    paddr_chirho: u64,
+    flags_chirho: PageTableFlags,
+) -> Result<(), ()> {
+    let addr_chirho = vaddr_chirho;
+    let pml4_idx_chirho = ((addr_chirho >> 39) & 0x1FF) as usize;
+    let pdpt_idx_chirho = ((addr_chirho >> 30) & 0x1FF) as usize;
+    let pd_idx_chirho = ((addr_chirho >> 21) & 0x1FF) as usize;
+    let pt_idx_chirho = ((addr_chirho >> 12) & 0x1FF) as usize;
+
+    let intermediate_flags_chirho = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE;
+
+    // Level 4: PML4 → ensure PDPT exists
+    let pml4_chirho = unsafe { table_from_phys_chirho(pml4_phys_chirho) };
+    if pml4_chirho[pml4_idx_chirho].is_unused() {
+        let frame_chirho = alloc_frame_chirho().ok_or(())?;
+        zero_frame_chirho(frame_chirho);
+        pml4_chirho[pml4_idx_chirho].set_addr(frame_chirho, intermediate_flags_chirho);
+    }
+    let pdpt_phys_chirho = pml4_chirho[pml4_idx_chirho].addr();
+
+    // Level 3: PDPT → ensure PD exists
+    let pdpt_chirho = unsafe { table_from_phys_chirho(pdpt_phys_chirho) };
+    if pdpt_chirho[pdpt_idx_chirho].is_unused() {
+        let frame_chirho = alloc_frame_chirho().ok_or(())?;
+        zero_frame_chirho(frame_chirho);
+        pdpt_chirho[pdpt_idx_chirho].set_addr(frame_chirho, intermediate_flags_chirho);
+    }
+    let pd_phys_chirho = pdpt_chirho[pdpt_idx_chirho].addr();
+
+    // Level 2: PD → ensure PT exists
+    let pd_chirho = unsafe { table_from_phys_chirho(pd_phys_chirho) };
+    if pd_chirho[pd_idx_chirho].is_unused() {
+        let frame_chirho = alloc_frame_chirho().ok_or(())?;
+        zero_frame_chirho(frame_chirho);
+        pd_chirho[pd_idx_chirho].set_addr(frame_chirho, intermediate_flags_chirho);
+    }
+    let pt_phys_chirho = pd_chirho[pd_idx_chirho].addr();
+
+    // Level 1: PT → set the leaf entry
+    let pt_chirho = unsafe { table_from_phys_chirho(pt_phys_chirho) };
+    pt_chirho[pt_idx_chirho].set_addr(
+        PhysAddr::new(paddr_chirho),
+        flags_chirho,
+    );
+
+    Ok(())
+}
+
+/// Allocate a single physical frame from the global frame allocator.
+fn alloc_frame_chirho() -> Option<PhysAddr> {
+    let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+    let frame_chirho = alloc_lock_chirho.as_mut()?.allocate_frame()?;
+    Some(frame_chirho.start_address())
+}
+
+/// Zero a physical frame via the physical memory window.
+fn zero_frame_chirho(phys_chirho: PhysAddr) {
+    let virt_chirho = phys_to_virt_chirho(phys_chirho);
+    unsafe {
+        core::ptr::write_bytes(virt_chirho.as_mut_ptr::<u8>(), 0, 4096);
+    }
+}

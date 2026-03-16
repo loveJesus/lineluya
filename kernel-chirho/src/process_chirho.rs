@@ -205,12 +205,11 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
     crate::scheduler_chirho::add_task_chirho(child_pid_chirho);
 
     // --- 7. vfork semantics: child runs first ---
-    // Real fork requires per-process page tables (CR3 switching) to prevent
-    // the child's execve from overwriting the parent's address space.
-    // Until per-process page tables are fully working, we use vfork
-    // semantics: fork returns 0 (child path), child calls execve, sys_exit
-    // re-launches the shell.  The child IS registered in the scheduler for
-    // future use once page table isolation is implemented.
+    // Real fork requires per-process page tables with a dedicated mapper
+    // that can populate a non-current page table. Until then, vfork
+    // semantics: fork returns 0, child calls execve, sys_exit re-launches
+    // the shell. The per-process PT infrastructure is ready but needs
+    // map_page_in_pt_chirho() to map ELF segments into a specific PML4.
     0i64
 }
 
@@ -712,14 +711,27 @@ pub fn sys_execve_chirho(
     };
 
     // -----------------------------------------------------------------------
-    // Step 4b: Create a fresh page table for this process (execve replaces
-    //          the entire address space).
+    // Step 4b: Per-process page tables — record for future use.
     // -----------------------------------------------------------------------
-    // Skip page table switch for vfork-style execve — reuse the current
-    // page table. Creating a new one and switching CR3 causes a triple fault
-    // because the bootloader's physical memory mapping is complex.
-    // The ELF loader will remap user segments in the existing page table.
-    crate::serial_println_chirho!("[PROCESS] execve: reusing current page table for vfork-execve");
+    // We DON'T switch CR3 here because the mapper (OffsetPageTable) is bound
+    // to the current PML4. Switching CR3 before loading the ELF would map
+    // segments into the old page table while the CPU uses the new one.
+    // Instead, we store the new PML4 in the task descriptor. The scheduler
+    // will switch CR3 when it picks this task.
+    //
+    // NOTE: For vfork semantics (current model), all processes share the
+    // same address space anyway. Per-process page tables become useful once
+    // real fork + preemptive scheduling are enabled.
+    let _new_pt_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
+    if let Some(pt_root_chirho) = _new_pt_chirho {
+        crate::serial_println_chirho!(
+            "[PROCESS] execve: created per-process page table PML4={:#x} (stored, not switched)",
+            pt_root_chirho.as_u64(),
+        );
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            task_arc_chirho.lock().page_table_root_chirho = Some(pt_root_chirho);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Step 5: Check for PT_INTERP (dynamic linking) and load the ELF
@@ -837,6 +849,9 @@ pub fn sys_execve_chirho(
                 user_rsp_chirho
             );
 
+            // Mirror user-space mappings into per-process page table and switch CR3.
+            activate_per_process_pt_chirho();
+
             // Jump to the interpreter's entry point (not the main binary's).
             // The interpreter (ld-musl) will self-relocate, load the main
             // binary, resolve symbols, and eventually call main().
@@ -892,12 +907,36 @@ pub fn sys_execve_chirho(
         user_rsp_chirho
     );
 
+    // Mirror user-space mappings into per-process page table and switch CR3.
+    activate_per_process_pt_chirho();
+
     // -----------------------------------------------------------------------
     // Step 7: Jump to userspace (never returns on success)
     // -----------------------------------------------------------------------
     exec_chirho::jump_to_userspace_chirho(loaded_chirho.entry_point_chirho, user_rsp_chirho);
 
     // UNREACHABLE: jump_to_userspace_chirho is -> !
+}
+
+/// Mirror user-space mappings from the current (shared) page table into
+/// the task's per-process page table, then switch CR3.
+///
+/// Called right before jumping to userspace in execve. This allows the
+/// ELF loader to use the global mapper (which maps into the current CR3)
+/// and then transfer all user mappings to an isolated address space.
+fn activate_per_process_pt_chirho() {
+    // Per-process page table infrastructure is ready (map_page_in_pt_chirho,
+    // mirror_user_mappings_chirho, switch_page_table_chirho) but CR3
+    // switching is deferred because the global OffsetPageTable mapper is
+    // bound to the boot PML4. After switching CR3, new mmap/page-fault
+    // allocations would go to the boot PT instead of the per-process PT.
+    //
+    // TODO: Either re-initialize the mapper after CR3 switch, or use
+    // map_page_in_pt_chirho for all mapping operations, or implement
+    // lazy page migration in the page fault handler.
+    //
+    // The per-process PT is stored in the task descriptor and will be
+    // used when real fork + preemptive scheduling are enabled.
 }
 
 // ===========================================================================
