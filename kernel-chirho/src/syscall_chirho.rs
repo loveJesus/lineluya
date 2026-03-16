@@ -3370,6 +3370,7 @@ fn fill_stat_from_inode_chirho(
     st_chirho: &mut StatChirho,
     inode_chirho: &crate::vfs_chirho::InodeChirho,
 ) {
+    st_chirho.st_dev_chirho = 0x0801; // major 8, minor 1 (sda1 equivalent)
     st_chirho.st_ino_chirho = inode_chirho.ino_chirho;
     st_chirho.st_mode_chirho = inode_chirho.mode_chirho;
     st_chirho.st_nlink_chirho = inode_chirho.nlink_chirho as u64;
