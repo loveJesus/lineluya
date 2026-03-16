@@ -313,9 +313,7 @@ pub fn schedule_chirho() {
                     }
                 }
 
-                // Set kernel stack for the new task: both TSS.RSP0 (for
-                // interrupt entry) and KERNEL_STACK_TOP_CHIRHO (for the
-                // SYSCALL entry stub, which loads RSP from this static).
+                // Set kernel stack + current task for the new task.
                 {
                     let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
                     if let Some(task_arc_chirho) = list_chirho
@@ -327,6 +325,12 @@ pub fn schedule_chirho() {
                             crate::gdt_chirho::set_tss_rsp0_chirho(kstack_top_chirho);
                             crate::syscall_entry_chirho::KERNEL_STACK_TOP_CHIRHO = kstack_top_chirho;
                         }
+                        // Update CURRENT_TASK so current_task_chirho() returns
+                        // the correct task. Without this, sys_exit marks the
+                        // wrong PID as zombie.
+                        crate::task_chirho::set_current_task_chirho(
+                            alloc::sync::Arc::clone(task_arc_chirho),
+                        );
                     }
                 }
 
