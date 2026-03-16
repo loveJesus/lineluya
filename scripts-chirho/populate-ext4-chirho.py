@@ -195,6 +195,8 @@ def install_packages_chirho(img_path_chirho):
         "python3-3.12.12-r0",
         # dropbear SSH
         "dropbear-2025.88-r1",
+        # apk-tools: libapk is in the minirootfs already
+        # (v3.21 repo needed for 2.14.6, not on v3.23 mirror)
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir_chirho:
