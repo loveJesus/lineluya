@@ -30,6 +30,38 @@ const PCI_VENDOR_NONE_CHIRHO: u16 = 0xFFFF;
 // PCI config-space register offsets
 // ============================================================================
 
+/// Typed PCI configuration space register offsets.
+///
+/// Replaces raw hex offsets with a typed enum for clarity.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub enum PciConfigRegisterChirho {
+    /// Vendor ID / Device ID.
+    VendorDeviceChirho = 0x00,
+    /// Command / Status.
+    CommandStatusChirho = 0x04,
+    /// Revision ID / Class Code.
+    ClassRevChirho = 0x08,
+    /// Cache Line / Latency / Header Type / BIST.
+    HeaderChirho = 0x0C,
+    /// BAR0.
+    Bar0Chirho = 0x10,
+    /// BAR1.
+    Bar1Chirho = 0x14,
+    /// BAR2.
+    Bar2Chirho = 0x18,
+    /// BAR3.
+    Bar3Chirho = 0x1C,
+    /// BAR4.
+    Bar4Chirho = 0x20,
+    /// BAR5.
+    Bar5Chirho = 0x24,
+    /// Capabilities Pointer (header type 0).
+    CapPtrChirho = 0x34,
+    /// Interrupt Line / Pin.
+    InterruptChirho = 0x3C,
+}
+
 /// Vendor ID / Device ID (offset 0x00).
 const PCI_REG_VENDOR_DEVICE_CHIRHO: u8 = 0x00;
 /// Command / Status (offset 0x04).

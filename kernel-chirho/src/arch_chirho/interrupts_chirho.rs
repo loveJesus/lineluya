@@ -81,6 +81,52 @@ impl ChainedPicsChirho {
 }
 
 // ---------------------------------------------------------------------------
+// LAPIC register typed access (A2-AUDIT-010)
+// ---------------------------------------------------------------------------
+
+/// LAPIC register offsets from base address 0xFEE0_0000.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum LapicRegisterChirho {
+    IdChirho = 0x020,
+    VersionChirho = 0x030,
+    TprChirho = 0x080,
+    EoiChirho = 0x0B0,
+    SpuriousChirho = 0x0F0,
+    IcrLowChirho = 0x300,
+    IcrHighChirho = 0x310,
+    TimerLvtChirho = 0x320,
+    TimerInitCountChirho = 0x380,
+    TimerCurrentCountChirho = 0x390,
+    TimerDivideChirho = 0x3E0,
+}
+
+const LAPIC_BASE_CHIRHO: u64 = 0xFEE0_0000;
+
+/// Write a value to a LAPIC register, accounting for the physical memory
+/// offset used by the bootloader's identity-mapped higher-half mapping.
+#[inline(always)]
+fn write_lapic_reg_chirho(phys_offset_chirho: u64, reg_chirho: LapicRegisterChirho, val_chirho: u32) {
+    unsafe {
+        core::ptr::write_volatile(
+            (phys_offset_chirho + LAPIC_BASE_CHIRHO + reg_chirho as u64) as *mut u32,
+            val_chirho,
+        );
+    }
+}
+
+/// Read a value from a LAPIC register, accounting for the physical memory
+/// offset used by the bootloader's identity-mapped higher-half mapping.
+#[inline(always)]
+fn read_lapic_reg_chirho(phys_offset_chirho: u64, reg_chirho: LapicRegisterChirho) -> u32 {
+    unsafe {
+        core::ptr::read_volatile(
+            (phys_offset_chirho + LAPIC_BASE_CHIRHO + reg_chirho as u64) as *const u32,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PIC configuration constants
 // ---------------------------------------------------------------------------
 
@@ -282,6 +328,9 @@ enum FaultDispositionChirho {
     KillTaskChirho,
     /// Kernel-mode fault that can't be resolved — panic.
     PanicKernelChirho,
+    /// Fault requires deferred repair (e.g., COW page copy, demand paging).
+    /// The repair will be done outside the fault handler context.
+    QueueDeferredRepairChirho,
 }
 
 /// Fault source classification for clearer dispatch.
@@ -634,13 +683,10 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     }
 }
 
-/// Write LAPIC End-Of-Interrupt register.
-/// The LAPIC EOI register is at physical address 0xFEE0_00B0.
+/// Write LAPIC End-Of-Interrupt register via typed enum (A2-AUDIT-010).
 #[inline(always)]
 unsafe fn write_lapic_eoi_chirho(phys_offset_chirho: u64) {
-    const LAPIC_EOI_PHYS_CHIRHO: u64 = 0xFEE0_00B0;
-    let lapic_eoi_chirho = (phys_offset_chirho + LAPIC_EOI_PHYS_CHIRHO) as *mut u32;
-    core::ptr::write_volatile(lapic_eoi_chirho, 0);
+    write_lapic_reg_chirho(phys_offset_chirho, LapicRegisterChirho::EoiChirho, 0);
 }
 
 /// PS/2 keyboard interrupt handler (IRQ 1).
@@ -709,21 +755,18 @@ pub fn init_local_apic_chirho() {
     // Enable the Local APIC by setting bit 8 (APIC Software Enable) in the
     // Spurious Interrupt Vector Register (SVR) at offset 0xF0.
     let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-    let lapic_base_chirho = phys_offset_chirho + 0xFEE0_0000u64;
 
     unsafe {
-        let svr_chirho = (lapic_base_chirho + 0xF0) as *mut u32;
-        let current_chirho = core::ptr::read_volatile(svr_chirho);
-        // Set bit 8 (enable) and set spurious vector to 0xFF
-        core::ptr::write_volatile(svr_chirho, current_chirho | 0x1FF);
+        // Read current SVR, set bit 8 (enable) and spurious vector to 0xFF
+        let current_chirho = read_lapic_reg_chirho(phys_offset_chirho, LapicRegisterChirho::SpuriousChirho);
+        write_lapic_reg_chirho(phys_offset_chirho, LapicRegisterChirho::SpuriousChirho, current_chirho | 0x1FF);
 
         // Set Task Priority Register to 0 (accept all interrupts)
-        let tpr_chirho = (lapic_base_chirho + 0x80) as *mut u32;
-        core::ptr::write_volatile(tpr_chirho, 0);
+        write_lapic_reg_chirho(phys_offset_chirho, LapicRegisterChirho::TprChirho, 0);
 
         crate::serial_println_chirho!(
             "[LAPIC] Enabled (SVR={:#x})",
-            core::ptr::read_volatile(svr_chirho)
+            read_lapic_reg_chirho(phys_offset_chirho, LapicRegisterChirho::SpuriousChirho)
         );
     }
 }

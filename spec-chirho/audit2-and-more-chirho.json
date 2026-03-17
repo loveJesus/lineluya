@@ -580,9 +580,9 @@
         {
           "id_chirho": "A2-ARCH-004",
           "title_chirho": "Extend FaultDispositionChirho with QueueDeferredRepairChirho variant",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low",
-          "notes_chirho": "Currently: ResumeNow, KillTask. Add deferred repair for recoverable faults."
+          "notes_chirho": "Added QueueDeferredRepairChirho variant for COW/demand paging. Foundation for future fault handling."
         },
         {
           "id_chirho": "A2-ARCH-005",
@@ -650,9 +650,9 @@
         {
           "id_chirho": "A2-DRIVERS-001",
           "title_chirho": "PciConfigRegisterChirho enum — typed PCI config space access",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Replace raw config-space offsets (0x00, 0x04, etc.) with typed register enum."
+          "notes_chirho": "PciConfigRegisterChirho enum with 12 register variants. Existing named constants kept for compatibility."
         },
         {
           "id_chirho": "A2-DRIVERS-002",
