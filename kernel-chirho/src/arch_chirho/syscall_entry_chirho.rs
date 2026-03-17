@@ -266,6 +266,17 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         crate::signal_chirho::check_fatal_signals_on_return_chirho();
     }
 
+    // Preemptive scheduling on syscall return boundary.
+    // If the timer set need_resched while this task was in userspace,
+    // do the context switch HERE (not inside the timer handler, which
+    // would corrupt the interrupt frame).
+    if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho
+        && crate::scheduler_chirho::need_resched_chirho()
+    {
+        crate::scheduler_chirho::schedule_chirho();
+        crate::scheduler_chirho::reset_time_slice_chirho();
+    }
+
     result_chirho
 }
 
