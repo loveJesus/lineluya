@@ -393,9 +393,9 @@ pub fn schedule_chirho() {
                     if new_rip_chirho < 0x1000_0000_000 || new_rip_chirho > 0x2000_0000_000
                         || !stack_ok_chirho {
                         crate::serial_println_chirho!(
-                            "[SCHED] ABORT switch {:?}->{}: rip={:#x} rsp={:#x} stack_ret={:#x} stack_ok={}",
+                            "[SCHED] ABORT switch {:?}->{}: rip={:#x} rsp={:#x} stack_ok={}",
                             old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
-                            stack_top_ret_chirho, stack_ok_chirho
+                            stack_ok_chirho
                         );
                         return; // Don't switch to corrupted context
                     }
