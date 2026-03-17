@@ -1175,11 +1175,23 @@ pub fn set_current_exe_path_chirho(path_chirho: &[u8]) {
 }
 
 /// Set the initial program break (called by exec after loading ELF).
+/// Updates both the global fallback AND the current task's per-process brk.
 /// Last syscall number for post-mortem debugging.
 pub static LAST_SYSCALL_NR_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 pub fn set_brk_chirho(addr_chirho: u64) {
+    // Always keep the global as a fallback for PID 0 / init context
     CURRENT_BRK_CHIRHO.store(addr_chirho, core::sync::atomic::Ordering::SeqCst);
+
+    // Also set the per-process brk on the current task (A2-AUDIT-003)
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_chirho = task_arc_chirho.lock();
+        task_chirho.brk_chirho = addr_chirho;
+        // If brk_start was never initialised, set it to the same value
+        if task_chirho.brk_start_chirho == 0 {
+            task_chirho.brk_start_chirho = addr_chirho;
+        }
+    }
 }
 
 // ============================================================================
@@ -2496,22 +2508,14 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
     // Remove from scheduler run queue.
     crate::scheduler_chirho::remove_task_chirho(pid_chirho);
 
-    // Deliver SIGCHLD to the parent process.
+    // Deliver SIGCHLD to the parent process (A2-PROC-005).
+    // Use the centralized signal delivery helper which also enqueues
+    // SignalInfoChirho and wakes blocked parents.
     {
-        let task_list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
-        // Find parent PID from the exiting task.
-        let ppid_chirho = task_list_chirho.iter()
-            .find(|t_chirho| t_chirho.lock().pid_chirho == pid_chirho)
+        let ppid_chirho = crate::task_chirho::find_task_by_pid_chirho(pid_chirho)
             .map(|t_chirho| t_chirho.lock().ppid_chirho)
             .unwrap_or(0);
-        // Set SIGCHLD pending on the parent.
-        if ppid_chirho > 0 {
-            if let Some(parent_arc_chirho) = task_list_chirho.iter()
-                .find(|t_chirho| t_chirho.lock().pid_chirho == ppid_chirho)
-            {
-                parent_arc_chirho.lock().pending_signals_chirho |= 1u64 << 17; // SIGCHLD = 17
-            }
-        }
+        crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
     }
 
     // Wake any parent sleeping in wait4 on the child-exit wait queue.
@@ -2578,13 +2582,33 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
     sys_exit_chirho(code_chirho)
 }
 
-/// `brk(2)` implementation.
+/// `brk(2)` implementation — per-process program break (A2-AUDIT-003).
 ///
 /// If `addr_chirho` is 0, returns the current break.  Otherwise, attempts to
-/// set the break to `addr_chirho`.  Currently a stub that tracks the value
-/// atomically but does not actually map or unmap any memory.
+/// set the break to `addr_chirho`.  When expanding, new pages are mapped via
+/// the memory manager.
+///
+/// Uses the current task's `brk_chirho` field for per-process isolation.
+/// Falls back to the global `CURRENT_BRK_CHIRHO` for PID 0 (init/idle tasks
+/// that run before any user process exists).
 fn sys_brk_chirho(addr_chirho: u64) -> i64 {
-    let old_brk_chirho = CURRENT_BRK_CHIRHO.load(Ordering::SeqCst);
+    // Try to read the per-process brk from the current task
+    let (old_brk_chirho, is_per_process_chirho) =
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            let task_chirho = task_arc_chirho.lock();
+            let pid_chirho = task_chirho.pid_chirho;
+            let brk_val_chirho = task_chirho.brk_chirho;
+            drop(task_chirho);
+            if pid_chirho == 0 || brk_val_chirho == 0 {
+                // PID 0 (idle) or uninitialised brk — use global fallback
+                (CURRENT_BRK_CHIRHO.load(Ordering::SeqCst), false)
+            } else {
+                (brk_val_chirho, true)
+            }
+        } else {
+            // No current task — very early boot, use global
+            (CURRENT_BRK_CHIRHO.load(Ordering::SeqCst), false)
+        };
 
     if addr_chirho == 0 {
         return old_brk_chirho as i64;
@@ -2616,6 +2640,14 @@ fn sys_brk_chirho(addr_chirho: u64) -> i64 {
         }
     }
 
+    // Update per-process brk on the current task
+    if is_per_process_chirho {
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            task_arc_chirho.lock().brk_chirho = addr_chirho;
+        }
+    }
+
+    // Always keep the global in sync as a fallback
     CURRENT_BRK_CHIRHO.store(addr_chirho, Ordering::SeqCst);
     addr_chirho as i64
 }

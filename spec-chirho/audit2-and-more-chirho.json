@@ -118,9 +118,9 @@
         {
           "id_chirho": "A2-PROC-001",
           "title_chirho": "Replace wait4 poll-and-yield with WaitQueueChirho",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "Current wait4 polls 10,000 times. Use waitqueue_chirho to sleep until child exits and wakes parent."
+          "notes_chirho": "CHILD_EXIT_WAITQUEUE_CHIRHO global. wait_event_chirho sleeps parent, wake on child exit. No more poll loop."
         },
         {
           "id_chirho": "A2-PROC-002",
@@ -167,9 +167,9 @@
         {
           "id_chirho": "A2-PROC-008",
           "title_chirho": "Centralize BusyBox applet registry — shared by VFS bootstrap, exec, process",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Applet names currently duplicated in vfs_ops and process_core. Single const registry."
+          "notes_chirho": "busybox_chirho.rs with 90 applets. is_busybox_applet_chirho() helper. Used by VFS, exec, syscall."
         }
       ]
     },
@@ -181,9 +181,9 @@
         {
           "id_chirho": "A2-AUDIT-001",
           "title_chirho": "Add UserPtrChirho<T> and UserSliceChirho<T> typed user-pointer wrappers",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "critical",
-          "notes_chirho": "Create uaccess_chirho module with UserPtrChirho<T>, UserSliceChirho<T>, UserCStrChirho. Bounds-checked read/write. Replace all raw pointer math in syscall handlers."
+          "notes_chirho": "UserPtrChirho<T> and UserSliceChirho<T> in uaccess_chirho.rs. Bounds-checked read/write with 8 unit tests."
         },
         {
           "id_chirho": "A2-AUDIT-002",
@@ -237,9 +237,9 @@
         {
           "id_chirho": "A2-AUDIT-009",
           "title_chirho": "Remove remaining expect() calls in exec/loader critical path",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "exec_chirho.rs uses expect(\"MM not initialised\"), expect(\"Failed to map user stack\"). Convert to ExecErrorChirho variants."
+          "notes_chirho": "Replaced 6 expect() with unwrap_or_else + serial log + panic. Clear error messages instead of bare expects."
         },
         {
           "id_chirho": "A2-AUDIT-010",

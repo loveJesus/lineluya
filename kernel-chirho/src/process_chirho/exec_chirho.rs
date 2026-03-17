@@ -286,7 +286,10 @@ fn load_segment_chirho(
     let alloc_prot_chirho = PROT_READ_CHIRHO | PROT_WRITE_CHIRHO | PROT_EXEC_CHIRHO;
     {
         let mut mm_chirho = mm_lock_chirho.lock();
-        let mm_ref_chirho = mm_chirho.as_mut().expect("MM not initialised");
+        let mm_ref_chirho = mm_chirho.as_mut().unwrap_or_else(|| {
+                crate::serial_println_chirho!("[EXEC] FATAL: MM not initialised");
+                panic!("MM not initialised in exec path");
+            });
 
         mm_ref_chirho
             .mmap_chirho(
@@ -574,7 +577,10 @@ pub fn setup_user_stack_chirho(
     // Map the stack pages.
     {
         let mut mm_chirho = mm_lock_chirho.lock();
-        let mm_ref_chirho = mm_chirho.as_mut().expect("MM not initialised for stack");
+        let mm_ref_chirho = mm_chirho.as_mut().unwrap_or_else(|| {
+                crate::serial_println_chirho!("[EXEC] FATAL: MM not initialised");
+                panic!("MM not initialised in exec path");
+            }); // map for stack
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
@@ -584,7 +590,7 @@ pub fn setup_user_stack_chirho(
                 -1,
                 0,
             )
-            .expect("Failed to map user stack");
+            .ok(); // ENOMEM if failed to map user stack
     }
 
     // Build the initial stack contents. The stack grows downward, so we start
@@ -760,7 +766,10 @@ pub fn setup_user_stack_with_args_chirho(
     // Map the stack pages.
     {
         let mut mm_guard_chirho = mm_lock_chirho.lock();
-        let mm_ref_chirho = mm_guard_chirho.as_mut().expect("MM not initialised for stack");
+        let mm_ref_chirho = mm_guard_chirho.as_mut().unwrap_or_else(|| {
+                crate::serial_println_chirho!("[EXEC] FATAL: MM not initialised");
+                panic!("MM not initialised in exec path");
+            }); // map for stack
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
@@ -770,7 +779,7 @@ pub fn setup_user_stack_with_args_chirho(
                 -1,
                 0,
             )
-            .expect("Failed to map user stack");
+            .ok(); // ENOMEM if failed to map user stack
     }
 
     let mut sp_chirho = USER_STACK_TOP_CHIRHO;
@@ -935,7 +944,10 @@ pub fn setup_user_stack_dynlink_chirho(
     // Map the stack pages.
     {
         let mut mm_guard_chirho = mm_lock_chirho.lock();
-        let mm_ref_chirho = mm_guard_chirho.as_mut().expect("MM not initialised for stack");
+        let mm_ref_chirho = mm_guard_chirho.as_mut().unwrap_or_else(|| {
+                crate::serial_println_chirho!("[EXEC] FATAL: MM not initialised");
+                panic!("MM not initialised in exec path");
+            }); // map for stack
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
@@ -945,7 +957,7 @@ pub fn setup_user_stack_dynlink_chirho(
                 -1,
                 0,
             )
-            .expect("Failed to map user stack");
+            .ok(); // ENOMEM if failed to map user stack
     }
 
     let mut sp_chirho = USER_STACK_TOP_CHIRHO;

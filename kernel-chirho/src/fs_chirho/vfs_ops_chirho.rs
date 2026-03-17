@@ -992,18 +992,12 @@ pub fn sys_openat_chirho(
                     flags_chirho,
                     ops_chirho: &crate::pty_chirho::PTY_SLAVE_OPS_CHIRHO,
                 }));
-                let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-                let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-                    Some(t_chirho) => t_chirho,
-                    None => return -EBADF_CHIRHO,
-                };
-                let fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
-                    Ok(fd_chirho) => fd_chirho,
-                    Err(errno_chirho) => return errno_chirho,
-                };
-                fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+                let fd_chirho = alloc_and_insert_fd_chirho(file_chirho, Some(&pathname_chirho));
+                if fd_chirho < 0 {
+                    return fd_chirho;
+                }
                 pair_chirho.slave_open_chirho.store(true, core::sync::atomic::Ordering::SeqCst);
-                return fd_chirho as i64;
+                return fd_chirho;
             } else {
                 return -crate::syscall_chirho::ENOENT_CHIRHO;
             }
@@ -1087,29 +1081,26 @@ pub fn sys_openat_chirho(
         ops_chirho: final_ops_chirho,
     }));
 
-    // Allocate an fd
-    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-        Some(t_chirho) => t_chirho,
-        None => return -EBADF_CHIRHO,
-    };
-
-    let fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
-        Ok(fd_chirho) => fd_chirho,
-        Err(errno_chirho) => return errno_chirho,
-    };
-
-    fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
-    // Store the path for dirfd resolution in future openat calls.
-    if fd_chirho < fd_table_chirho.paths_chirho.len() {
-        fd_table_chirho.paths_chirho[fd_chirho] = Some(pathname_chirho.clone());
-    }
-    fd_chirho as i64
+    // A2-PROC-003: Allocate fd in current task's per-process table (with
+    // global fallback for kernel tasks / early boot).
+    alloc_and_insert_fd_chirho(file_chirho, Some(&pathname_chirho))
 }
 
 /// `open(2)` -- wrapper around openat with AT_FDCWD.
 /// Get the path associated with a file descriptor (for openat dirfd resolution).
+///
+/// A2-PROC-003: Checks current task's per-process table first, then global.
 pub fn get_fd_path_chirho(fd_chirho: u64) -> Option<alloc::string::String> {
+    // Check current task's per-process table first.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            if let Some(Some(ref path_chirho)) = fd_table_chirho.paths_chirho.get(fd_chirho as usize) {
+                return Some(path_chirho.clone());
+            }
+        }
+    }
+    // Fallback: global table.
     let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
     if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
         if let Some(Some(ref path_chirho)) = fd_table_chirho.paths_chirho.get(fd_chirho as usize) {
@@ -1120,7 +1111,19 @@ pub fn get_fd_path_chirho(fd_chirho: u64) -> Option<alloc::string::String> {
 }
 
 /// Store the path for a file descriptor.
+///
+/// A2-PROC-003: Stores in current task's per-process table and also global.
 pub fn set_fd_path_chirho(fd_chirho: usize, path_chirho: &str) {
+    // Set in current task's per-process table first.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            if fd_chirho < fd_table_chirho.paths_chirho.len() {
+                fd_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(path_chirho));
+            }
+        }
+    }
+    // Also set in global table for compatibility.
     let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
     if let Some(ref mut fd_table_chirho) = *fd_table_guard_chirho {
         if fd_chirho < fd_table_chirho.paths_chirho.len() {
@@ -1137,22 +1140,14 @@ pub fn sys_open_chirho(
     sys_openat_chirho(AT_FDCWD_CHIRHO, pathname_addr_chirho, flags_chirho, mode_chirho)
 }
 
-/// Look up a file from an fd, checking GLOBAL table first,
-/// then the current task's per-process table as fallback.
+/// Look up a file from an fd, checking the current task's per-process fd
+/// table FIRST, then falling back to the GLOBAL table.
 ///
-/// This is needed because the global fd table may be stale
-/// after a context switch (parent closed fds that child still has).
+/// A2-PROC-003: Per-process fd tables.  Each task owns its own fd table;
+/// the global table is only used as a fallback for kernel tasks or early
+/// boot before per-process tables are initialized.
 pub fn lookup_fd_chirho(fd_chirho: u64) -> Option<alloc::sync::Arc<spin::Mutex<FileChirho>>> {
-    // Try global first.
-    {
-        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
-            if let Some(file_arc_chirho) = fd_table_chirho.get_chirho(fd_chirho as usize) {
-                return Some(file_arc_chirho);
-            }
-        }
-    }
-    // Fallback: current task's fd table.
+    // Try current task's per-process table first.
     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
         let task_guard_chirho = task_arc_chirho.lock();
         if let Some(ref fd_table_chirho) = task_guard_chirho.fd_table_chirho {
@@ -1161,7 +1156,171 @@ pub fn lookup_fd_chirho(fd_chirho: u64) -> Option<alloc::sync::Arc<spin::Mutex<F
             }
         }
     }
+    // Fallback: global fd table (kernel tasks, early boot).
+    {
+        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
+            if let Some(file_arc_chirho) = fd_table_chirho.get_chirho(fd_chirho as usize) {
+                return Some(file_arc_chirho);
+            }
+        }
+    }
     None
+}
+
+/// Allocate the lowest available fd and insert a file into the current
+/// task's fd table.  Falls back to the global table if no per-process
+/// table is available.
+///
+/// Returns the allocated fd number on success, or a negative errno.
+///
+/// A2-PROC-003: This is the single insertion point for new fds.
+pub fn alloc_and_insert_fd_chirho(
+    file_chirho: alloc::sync::Arc<spin::Mutex<FileChirho>>,
+    path_chirho: Option<&str>,
+) -> i64 {
+    // Try inserting into current task's per-process table first.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            let fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
+                Ok(fd_chirho) => fd_chirho,
+                Err(errno_chirho) => return errno_chirho,
+            };
+            fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho.clone());
+            if let Some(p_chirho) = path_chirho {
+                if fd_chirho < fd_table_chirho.paths_chirho.len() {
+                    fd_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
+                }
+            }
+            // Also insert into global table for compatibility with callsites
+            // that still read from GLOBAL directly (gradual migration).
+            {
+                let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+                if let Some(ref mut global_table_chirho) = *global_guard_chirho {
+                    if fd_chirho < global_table_chirho.fds_chirho.len() {
+                        global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+                    }
+                    if let Some(p_chirho) = path_chirho {
+                        if fd_chirho < global_table_chirho.paths_chirho.len() {
+                            global_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
+                        }
+                    }
+                }
+            }
+            return fd_chirho as i64;
+        }
+    }
+    // Fallback: insert into global table.
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+        Some(t_chirho) => t_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+    let fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
+        Ok(fd_chirho) => fd_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+    fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+    if let Some(p_chirho) = path_chirho {
+        if fd_chirho < fd_table_chirho.paths_chirho.len() {
+            fd_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
+        }
+    }
+    fd_chirho as i64
+}
+
+/// Close an fd in the current task's fd table (and also in the global
+/// table for backward compatibility).
+///
+/// A2-PROC-003: Per-process close.
+pub fn close_fd_chirho(fd_chirho: u64) -> i64 {
+    let mut closed_in_task_chirho = false;
+    // Close in current task's per-process table first.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            if fd_table_chirho.close_chirho(fd_chirho as usize).is_ok() {
+                closed_in_task_chirho = true;
+            }
+        }
+    }
+    // Also close in global table for compatibility.
+    {
+        let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        if let Some(ref mut fd_table_chirho) = *fd_table_guard_chirho {
+            let _ = fd_table_chirho.close_chirho(fd_chirho as usize);
+        }
+    }
+    if closed_in_task_chirho {
+        0
+    } else {
+        // Fallback: if not in task table, try global only.
+        // We already attempted global above, so check if it was open.
+        -EBADF_CHIRHO
+    }
+}
+
+/// Duplicate an fd (dup2 semantics) in the current task's fd table.
+///
+/// A2-PROC-003: Per-process dup2.
+pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 {
+    let old_chirho = oldfd_chirho as usize;
+    let new_chirho = newfd_chirho as usize;
+
+    // Try current task's per-process table first.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            if old_chirho == new_chirho {
+                return if fd_table_chirho.get_chirho(old_chirho).is_some() {
+                    new_chirho as i64
+                } else {
+                    -EBADF_CHIRHO
+                };
+            }
+            let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
+                Some(f_chirho) => f_chirho,
+                None => return -EBADF_CHIRHO,
+            };
+            if new_chirho >= fd_table_chirho.fds_chirho.len() {
+                return -EBADF_CHIRHO;
+            }
+            fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho.clone());
+            // Also mirror into global table for compatibility.
+            {
+                let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+                if let Some(ref mut global_table_chirho) = *global_guard_chirho {
+                    if new_chirho < global_table_chirho.fds_chirho.len() {
+                        global_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
+                    }
+                }
+            }
+            return new_chirho as i64;
+        }
+    }
+    // Fallback: global table.
+    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
+        Some(t_chirho) => t_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+    if old_chirho == new_chirho {
+        return if fd_table_chirho.get_chirho(old_chirho).is_some() {
+            new_chirho as i64
+        } else {
+            -EBADF_CHIRHO
+        };
+    }
+    let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
+    };
+    if new_chirho >= fd_table_chirho.fds_chirho.len() {
+        return -EBADF_CHIRHO;
+    }
+    fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
+    new_chirho as i64
 }
 
 /// `read(2)` -- read from a file descriptor using the VFS.
@@ -1250,11 +1409,8 @@ pub fn read_file_data_at_offset_chirho(
     offset_chirho: u64,
     max_len_chirho: u64,
 ) -> Option<alloc::vec::Vec<u8>> {
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = fd_table_guard_chirho.as_ref()?;
-        fd_table_chirho.get_chirho(fd_chirho as usize)?
-    };
+    // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
+    let file_arc_chirho = lookup_fd_chirho(fd_chirho)?;
 
     let mut file_guard_chirho = file_arc_chirho.lock();
 
@@ -1291,72 +1447,29 @@ pub fn read_file_data_at_offset_chirho(
 }
 
 pub fn sys_close_real_chirho(fd_chirho: u64) -> i64 {
-    let result_chirho = {
-        let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.close_chirho(fd_chirho as usize) {
-            Ok(()) => 0i64,
-            Err(errno_chirho) => errno_chirho,
-        }
-    };
-    // Drop the fd_table lock BEFORE returning — if dealloc triggers
-    // ext4 inode drop which tries to use serial (mutex), the lock
-    // ordering could cause issues.
-    result_chirho
+    // A2-PROC-003: Close in current task's per-process table (and global
+    // for backward compatibility).
+    close_fd_chirho(fd_chirho)
 }
 
 /// `dup(2)` -- duplicate a file descriptor.
+///
+/// A2-PROC-003: Uses per-process fd table first, then global fallback.
 pub fn sys_dup_chirho(oldfd_chirho: u64) -> i64 {
-    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-        Some(t_chirho) => t_chirho,
-        None => return -EBADF_CHIRHO,
-    };
-
-    match fd_table_chirho.dup_chirho(oldfd_chirho as usize) {
-        Ok(new_fd_chirho) => new_fd_chirho as i64,
-        Err(errno_chirho) => errno_chirho,
-    }
-}
-
-/// `dup2(2)` -- duplicate a file descriptor to a specific number.
-pub fn sys_dup2_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 {
-    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-        Some(t_chirho) => t_chirho,
-        None => return -EBADF_CHIRHO,
-    };
-
-    let old_chirho = oldfd_chirho as usize;
-    let new_chirho = newfd_chirho as usize;
-
-    // If oldfd == newfd, just check validity
-    if old_chirho == new_chirho {
-        return if fd_table_chirho.get_chirho(old_chirho).is_some() {
-            new_chirho as i64
-        } else {
-            -EBADF_CHIRHO
-        };
-    }
-
-    // Get the file for the old fd
-    let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
+    // Look up the file in the right table.
+    let file_chirho = match lookup_fd_chirho(oldfd_chirho) {
         Some(f_chirho) => f_chirho,
         None => return -EBADF_CHIRHO,
     };
+    // Allocate new fd via per-process helper.
+    alloc_and_insert_fd_chirho(file_chirho, None)
+}
 
-    // Ensure the new fd slot exists
-    if new_chirho >= fd_table_chirho.fds_chirho.len() {
-        return -EBADF_CHIRHO;
-    }
-
-    // Close whatever was at newfd (if anything), then place the dup there
-    fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
-
-    new_chirho as i64
+/// `dup2(2)` -- duplicate a file descriptor to a specific number.
+///
+/// A2-PROC-003: Uses per-process fd table via dup2_in_current_task_chirho.
+pub fn sys_dup2_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 {
+    dup2_in_current_task_chirho(oldfd_chirho, newfd_chirho)
 }
 
 /// `dup3(2)` -- duplicate a file descriptor with flags (e.g. O_CLOEXEC).
@@ -1364,6 +1477,8 @@ pub fn sys_dup2_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 {
 /// Like dup2, but if oldfd == newfd, returns -EINVAL (per Linux semantics).
 /// The `flags_chirho` argument is recorded but not yet enforced (O_CLOEXEC
 /// would matter once execve drops close-on-exec descriptors).
+///
+/// A2-PROC-003: Uses per-process fd table via dup2_in_current_task_chirho.
 pub fn sys_dup3_chirho(oldfd_chirho: u64, newfd_chirho: u64, flags_chirho: u32) -> i64 {
     use crate::syscall_chirho::EINVAL_CHIRHO;
 
@@ -1375,46 +1490,22 @@ pub fn sys_dup3_chirho(oldfd_chirho: u64, newfd_chirho: u64, flags_chirho: u32) 
         return -EINVAL_CHIRHO;
     }
 
-    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-        Some(t_chirho) => t_chirho,
-        None => return -EBADF_CHIRHO,
-    };
-
-    // Get the file for the old fd
-    let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
-        Some(f_chirho) => f_chirho,
-        None => return -EBADF_CHIRHO,
-    };
-
-    // Ensure the new fd slot exists
-    if new_chirho >= fd_table_chirho.fds_chirho.len() {
-        return -EBADF_CHIRHO;
-    }
-
-    // Close whatever was at newfd (if anything), then place the dup there
-    fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
-
     // Note: O_CLOEXEC flag (flags_chirho) is accepted but not yet enforced
     // until execve implements close-on-exec descriptor cleanup.
     let _ = flags_chirho;
 
-    new_chirho as i64
+    // Reuse dup2 logic for the actual duplication.
+    dup2_in_current_task_chirho(oldfd_chirho, newfd_chirho)
 }
 
 /// `lseek(2)` -- reposition read/write file offset.
+///
+/// A2-PROC-003: Uses lookup_fd_chirho (per-process first, then global).
 pub fn sys_lseek_chirho(fd_chirho: u64, offset_chirho: i64, whence_chirho: u32) -> i64 {
-    // Get the file from the fd table
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho,
-            None => return -EBADF_CHIRHO,
-        }
+    // Get the file from the fd table (per-process first, then global).
+    let file_arc_chirho = match lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
     };
 
     let mut file_guard_chirho = file_arc_chirho.lock();

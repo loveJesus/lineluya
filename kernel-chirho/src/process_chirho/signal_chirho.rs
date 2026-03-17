@@ -352,18 +352,43 @@ pub fn send_signal_chirho(pid_chirho: u64, signo_chirho: u32) -> Result<(), i64>
     // with the fields already on TaskChirho).
     task_chirho.pending_signals_chirho |= 1u64 << signo_chirho;
 
+    // Also enqueue into the full signal state for rt_sigaction-aware
+    // processes (A2-PROC-005).
+    task_chirho.signal_state_chirho.pending_chirho.add_chirho(SignalInfoChirho {
+        signo_chirho,
+        code_chirho: SI_USER_CHIRHO,
+        pid_chirho: crate::task_chirho::current_task_chirho()
+            .map(|t_chirho| t_chirho.lock().pid_chirho)
+            .unwrap_or(0),
+    });
+
     // If the signal is SIGCONT, wake a stopped/blocked task.
     if signo_chirho == SIGCONT_CHIRHO {
+        if task_chirho.state_chirho == TaskStateChirho::StoppedChirho {
+            task_chirho.state_chirho = TaskStateChirho::ReadyChirho;
+        }
         task_chirho.wake_chirho();
     }
 
-    // For SIGKILL, ensure the task becomes runnable so the scheduler can
-    // reap it.
-    if signo_chirho == SIGKILL_CHIRHO
-        && task_chirho.state_chirho == TaskStateChirho::BlockedChirho
-    {
-        task_chirho.wake_chirho();
+    // For fatal signals (SIGKILL, SIGTERM, SIGHUP, SIGPIPE, etc.),
+    // wake blocked/sleeping tasks so the signal can be checked on the
+    // next syscall return boundary.
+    let is_wakeup_signal_chirho = signo_chirho == SIGKILL_CHIRHO
+        || default_action_chirho(signo_chirho) == DefaultActionChirho::TermChirho
+        || default_action_chirho(signo_chirho) == DefaultActionChirho::CoreChirho;
+    if is_wakeup_signal_chirho {
+        if task_chirho.state_chirho == TaskStateChirho::BlockedChirho
+            || task_chirho.state_chirho == TaskStateChirho::SleepingChirho
+        {
+            task_chirho.state_chirho = TaskStateChirho::ReadyChirho;
+        }
     }
+
+    crate::serial_println_chirho!(
+        "[SIGNAL] signal {} sent to PID {} via kill()",
+        signo_chirho,
+        pid_chirho
+    );
 
     Ok(())
 }
@@ -702,4 +727,225 @@ pub fn sys_rt_sigsuspend_chirho(_mask_ptr_chirho: u64) -> i64 {
 /// Stub: returns 0 (success) without doing anything.
 pub fn sys_sigaltstack_chirho(_ss_chirho: u64, _old_ss_chirho: u64) -> i64 {
     0
+}
+
+// ============================================================================
+// A2-PROC-005: Signal delivery infrastructure
+// ============================================================================
+
+/// Send SIGCHLD to a parent process when a child exits.
+///
+/// This is called from `sys_exit_chirho` (which already sets the pending bit)
+/// and also wakes blocked parents so they can reap via `wait4`.
+///
+/// # Arguments
+///
+/// * `parent_pid_chirho` — PID of the parent process to receive SIGCHLD.
+/// * `child_pid_chirho`  — PID of the exiting child (for the SignalInfo sender field).
+pub fn deliver_sigchld_chirho(parent_pid_chirho: u64, child_pid_chirho: u64) {
+    if parent_pid_chirho == 0 {
+        return; // init has no parent to notify
+    }
+
+    if let Some(parent_arc_chirho) = find_task_by_pid_chirho(parent_pid_chirho) {
+        let mut parent_chirho = parent_arc_chirho.lock();
+
+        // Set the pending bit for SIGCHLD (signal 17).
+        parent_chirho.pending_signals_chirho |= 1u64 << SIGCHLD_CHIRHO;
+
+        // Also enqueue into the full signal state for processes using
+        // rt_sigaction to inspect siginfo.
+        parent_chirho.signal_state_chirho.pending_chirho.add_chirho(SignalInfoChirho {
+            signo_chirho: SIGCHLD_CHIRHO,
+            code_chirho: SI_KERNEL_CHIRHO,
+            pid_chirho: child_pid_chirho,
+        });
+
+        // Wake the parent if it is blocked (e.g. in wait4).
+        if parent_chirho.state_chirho == TaskStateChirho::BlockedChirho
+            || parent_chirho.state_chirho == TaskStateChirho::SleepingChirho
+        {
+            parent_chirho.state_chirho = TaskStateChirho::ReadyChirho;
+        }
+
+        crate::serial_println_chirho!(
+            "[SIGNAL] SIGCHLD delivered to PID {} (child PID {} exited)",
+            parent_pid_chirho,
+            child_pid_chirho
+        );
+    }
+}
+
+/// Send SIGPIPE to the current (writing) task.
+///
+/// Called when a write to a pipe whose read end is closed occurs.
+/// The signal is set pending on the current task so it will be checked
+/// on the next syscall return boundary.
+pub fn deliver_sigpipe_to_current_chirho() {
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_chirho = task_arc_chirho.lock();
+
+        // Check the signal disposition — if SIGPIPE is ignored or has a
+        // handler, the process won't be killed (matches Linux semantics).
+        let idx_chirho = SIGPIPE_CHIRHO as usize;
+        let action_chirho = &task_chirho.signal_state_chirho.actions_chirho[idx_chirho];
+
+        match action_chirho {
+            SignalActionChirho::IgnoreChirho => {
+                // Process explicitly ignores SIGPIPE — do not set pending.
+                return;
+            }
+            _ => {}
+        }
+
+        task_chirho.pending_signals_chirho |= 1u64 << SIGPIPE_CHIRHO;
+        task_chirho.signal_state_chirho.pending_chirho.add_chirho(SignalInfoChirho {
+            signo_chirho: SIGPIPE_CHIRHO,
+            code_chirho: SI_KERNEL_CHIRHO,
+            pid_chirho: 0, // kernel-generated
+        });
+
+        crate::serial_println_chirho!(
+            "[SIGNAL] SIGPIPE pending on PID {} (write to broken pipe)",
+            task_chirho.pid_chirho
+        );
+    }
+}
+
+/// Check for fatal pending signals on the current task and terminate it
+/// if necessary.
+///
+/// This is called from the syscall return path (in
+/// `syscall_dispatch_wrapper_chirho`) to enforce default-kill signal
+/// semantics for SIGTERM, SIGHUP, SIGPIPE, SIGKILL, etc.
+///
+/// # Returns
+///
+/// `true` if the task was terminated (caller should not return to userspace).
+/// `false` if no fatal signal is pending and normal return should continue.
+pub fn check_fatal_signals_on_return_chirho() -> bool {
+    let (pid_chirho, ppid_chirho, signo_opt_chirho) = {
+        let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+            Some(t_chirho) => t_chirho,
+            None => return false,
+        };
+
+        let mut task_chirho = task_arc_chirho.lock();
+
+        // Fast path: no pending signals at all.
+        if task_chirho.pending_signals_chirho == 0 {
+            return false;
+        }
+
+        // Find the first deliverable signal (pending AND not blocked, or
+        // unblockable).
+        let signo_chirho = match check_pending_signals_chirho(&mut task_chirho) {
+            Some(s_chirho) => s_chirho,
+            None => return false,
+        };
+
+        // Determine what to do based on the signal's disposition.
+        let idx_chirho = signo_chirho as usize;
+        if idx_chirho < MAX_SIGNAL_CHIRHO as usize {
+            let action_chirho = &task_chirho.signal_state_chirho.actions_chirho[idx_chirho];
+            match action_chirho {
+                SignalActionChirho::IgnoreChirho => {
+                    // Signal is explicitly ignored — dequeue and continue.
+                    task_chirho
+                        .signal_state_chirho
+                        .pending_chirho
+                        .dequeue_chirho(signo_chirho);
+                    return false;
+                }
+                SignalActionChirho::HandlerChirho { .. } => {
+                    // We don't support user-space signal handlers yet.
+                    // For now, treat as default action for safety.
+                    // A full implementation would set up a signal frame
+                    // on the user stack and trampoline to the handler.
+                }
+                SignalActionChirho::DefaultChirho => {
+                    // Fall through to default action handling below.
+                }
+            }
+        }
+
+        // Check the default action for this signal.
+        let default_chirho = default_action_chirho(signo_chirho);
+        match default_chirho {
+            DefaultActionChirho::IgnoreChirho => {
+                // Default is ignore (e.g. SIGCHLD, SIGURG, SIGWINCH).
+                task_chirho
+                    .signal_state_chirho
+                    .pending_chirho
+                    .dequeue_chirho(signo_chirho);
+                return false;
+            }
+            DefaultActionChirho::ContChirho => {
+                // SIGCONT: just continue (task is already running).
+                task_chirho
+                    .signal_state_chirho
+                    .pending_chirho
+                    .dequeue_chirho(signo_chirho);
+                return false;
+            }
+            DefaultActionChirho::StopChirho => {
+                // SIGSTOP/SIGTSTP: stop the task.
+                task_chirho.state_chirho = TaskStateChirho::StoppedChirho;
+                task_chirho
+                    .signal_state_chirho
+                    .pending_chirho
+                    .dequeue_chirho(signo_chirho);
+                crate::serial_println_chirho!(
+                    "[SIGNAL] PID {} stopped by signal {}",
+                    task_chirho.pid_chirho,
+                    signo_chirho
+                );
+                // Task should be descheduled by the scheduler.
+                return false;
+            }
+            DefaultActionChirho::TermChirho | DefaultActionChirho::CoreChirho => {
+                // Fatal signal — terminate the process.
+                let pid_chirho = task_chirho.pid_chirho;
+                let ppid_chirho = task_chirho.ppid_chirho;
+                // Set exit code to 128 + signo (standard Unix convention).
+                let exit_code_chirho = 128 + signo_chirho as i32;
+                task_chirho.exit_code_chirho = exit_code_chirho;
+                task_chirho.state_chirho = TaskStateChirho::ZombieChirho;
+
+                crate::serial_println_chirho!(
+                    "[SIGNAL] PID {} killed by signal {} (exit_code={})",
+                    pid_chirho,
+                    signo_chirho,
+                    exit_code_chirho
+                );
+
+                (pid_chirho, ppid_chirho, Some(signo_chirho))
+            }
+        }
+    };
+
+    // If we terminated the task, clean up outside the task lock.
+    if let Some(signo_chirho) = signo_opt_chirho {
+        // Remove from scheduler run queue.
+        crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+
+        // Send SIGCHLD to parent.
+        deliver_sigchld_chirho(ppid_chirho, pid_chirho);
+
+        // Wake any parent sleeping in wait4.
+        crate::process_chirho::wake_child_exit_waitqueue_chirho();
+
+        crate::serial_println_chirho!(
+            "[SIGNAL] PID {} removed from scheduler after signal {}",
+            pid_chirho,
+            signo_chirho
+        );
+
+        // Yield to let the scheduler pick the next task.
+        crate::scheduler_chirho::yield_current_chirho();
+
+        return true;
+    }
+
+    false
 }

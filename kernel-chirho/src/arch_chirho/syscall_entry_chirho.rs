@@ -219,6 +219,10 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
 ) -> i64 {
     let frame_chirho = &mut *frame_ptr_chirho;
     let saved_rcx_chirho = frame_chirho.rcx_chirho;
+
+    // Save the syscall number before dispatch overwrites rax with the result.
+    let syscall_nr_chirho = frame_chirho.rax_chirho;
+
     let result_chirho = crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho);
 
     // Validate that RCX (user return address) wasn't corrupted by the dispatch.
@@ -230,6 +234,23 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         );
         // Restore the correct RCX to prevent SYSRET to garbage.
         frame_chirho.rcx_chirho = saved_rcx_chirho;
+    }
+
+    // A2-PROC-005: Check for fatal pending signals on syscall return.
+    // If a fatal signal (SIGTERM, SIGHUP, SIGPIPE, SIGKILL, etc.) is
+    // pending and not blocked, terminate the task before returning to
+    // userspace.  This is the primary signal enforcement point.
+    //
+    // Skip check for exit/exit_group syscalls — the task is already
+    // terminating and we must not re-enter the exit path.
+    // Also skip for fork/clone/execve which have their own return paths.
+    let is_exit_syscall_chirho = syscall_nr_chirho == 60 || syscall_nr_chirho == 231;
+    let is_lifecycle_syscall_chirho = syscall_nr_chirho == 57   // fork
+        || syscall_nr_chirho == 58   // vfork
+        || syscall_nr_chirho == 56   // clone
+        || syscall_nr_chirho == 59;  // execve
+    if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho {
+        crate::signal_chirho::check_fatal_signals_on_return_chirho();
     }
 
     result_chirho

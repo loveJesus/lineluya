@@ -259,6 +259,11 @@ impl FileOpsChirho for PipeWriteOpsChirho {
 
         if pipe_chirho.closed_read_chirho {
             // Read end closed => broken pipe.
+            // Deliver SIGPIPE to the writing task (A2-PROC-005).
+            // Must drop the pipe lock before touching the task lock to
+            // avoid potential lock-ordering issues.
+            drop(pipe_chirho);
+            crate::signal_chirho::deliver_sigpipe_to_current_chirho();
             return Err(-EPIPE_CHIRHO);
         }
 
@@ -350,40 +355,27 @@ pub fn create_pipe_chirho() -> (Arc<Mutex<FileChirho>>, Arc<Mutex<FileChirho>>) 
 // Syscall entry points
 // ---------------------------------------------------------------------------
 
-/// Internal helper: create a pipe and install both ends into the global
-/// fd table, writing the two fd numbers to the user-space `int[2]` array
-/// at `fds_ptr_chirho`.
+/// Internal helper: create a pipe and install both ends into the current
+/// task's per-process fd table, writing the two fd numbers to the
+/// user-space `int[2]` array at `fds_ptr_chirho`.
+///
+/// A2-PROC-003: Uses alloc_and_insert_fd_chirho for per-process tables.
 fn pipe_common_chirho(fds_ptr_chirho: u64) -> i64 {
-    use crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO;
-
     // 1. Create the pipe (read_end, write_end).
     let (read_file_chirho, write_file_chirho) = create_pipe_chirho();
 
-    // 2. Install into the global fd table.
-    let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-        Some(t_chirho) => t_chirho,
-        None => return -EBADF_CHIRHO,
-    };
+    // 2. Install into the current task's fd table (with global fallback).
+    let read_fd_chirho = crate::fs_chirho::alloc_and_insert_fd_chirho(read_file_chirho, None);
+    if read_fd_chirho < 0 {
+        return read_fd_chirho;
+    }
 
-    let read_fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
-        Ok(fd_chirho) => fd_chirho,
-        Err(e_chirho) => return e_chirho,
-    };
-    fd_table_chirho.fds_chirho[read_fd_chirho] = Some(read_file_chirho);
-
-    let write_fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
-        Ok(fd_chirho) => fd_chirho,
-        Err(e_chirho) => {
-            // Roll back the read fd.
-            fd_table_chirho.fds_chirho[read_fd_chirho] = None;
-            return e_chirho;
-        }
-    };
-    fd_table_chirho.fds_chirho[write_fd_chirho] = Some(write_file_chirho);
-
-    // Drop the lock before writing to userspace.
-    drop(fd_table_guard_chirho);
+    let write_fd_chirho = crate::fs_chirho::alloc_and_insert_fd_chirho(write_file_chirho, None);
+    if write_fd_chirho < 0 {
+        // Roll back the read fd.
+        crate::fs_chirho::close_fd_chirho(read_fd_chirho as u64);
+        return write_fd_chirho;
+    }
 
     // 3. Write the two fd numbers to user space as int[2] (i32[2]).
     let fds_array_chirho: [i32; 2] = [read_fd_chirho as i32, write_fd_chirho as i32];
@@ -401,11 +393,8 @@ fn pipe_common_chirho(fds_ptr_chirho: u64) -> i64 {
     .is_err()
     {
         // Roll back both fds on write failure.
-        let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        if let Some(t_chirho) = fd_table_guard_chirho.as_mut() {
-            t_chirho.fds_chirho[read_fd_chirho] = None;
-            t_chirho.fds_chirho[write_fd_chirho] = None;
-        }
+        crate::fs_chirho::close_fd_chirho(read_fd_chirho as u64);
+        crate::fs_chirho::close_fd_chirho(write_fd_chirho as u64);
         return -EFAULT_CHIRHO;
     }
 
