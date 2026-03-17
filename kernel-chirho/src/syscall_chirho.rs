@@ -5505,7 +5505,9 @@ fn sys_read_stdin_chirho(buf_addr_chirho: u64, count_chirho: usize) -> i64 {
             }
             return 1;
         }
-        core::hint::spin_loop();
+        // Yield to scheduler so other tasks (e.g., dropbear daemon) can run
+        // while we wait for keyboard input.
+        crate::scheduler_chirho::yield_current_chirho();
     }
 }
 
