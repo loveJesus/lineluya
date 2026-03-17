@@ -841,28 +841,10 @@ pub fn sys_execve_chirho(
     // -----------------------------------------------------------------------
     // Step 4: Obtain the ELF binary data
     // -----------------------------------------------------------------------
-    // Handle /proc/self/fd/N — resolve to the actual file path.
-    // Dropbear uses execve("/proc/self/fd/5") to re-exec itself after fork.
-    // Under QEMU TCG this triggers a slow dynamic linker, but the
-    // no-pushback scheduler lets PID 4 run alone without crashing.
-    let resolved_filename_chirho = if filename_str_chirho.starts_with("/proc/self/fd/") {
-        let fd_str_chirho = &filename_str_chirho["/proc/self/fd/".len()..];
-        if let Ok(fd_num_chirho) = fd_str_chirho.parse::<u64>() {
-            if let Some(path_chirho) = crate::fs_chirho::get_fd_path_chirho(fd_num_chirho) {
-                crate::serial_println_chirho!(
-                    "[PROCESS] execve: resolved /proc/self/fd/{} -> '{}'",
-                    fd_num_chirho, path_chirho
-                );
-                path_chirho
-            } else {
-                filename_str_chirho.clone()
-            }
-        } else {
-            filename_str_chirho.clone()
-        }
-    } else {
-        filename_str_chirho.clone()
-    };
+    // /proc/self/fd/N — NOT resolved (re-exec disabled).
+    // Dynamic linker under QEMU TCG takes 10+ minutes. Let dropbear
+    // run without re-exec. The in-kernel SSH relay forwards Unix→TCP.
+    let resolved_filename_chirho = filename_str_chirho.clone();
 
     // Try to resolve the file via the VFS first. If that fails, fall back to
     // the embedded hello-chirho binary (useful for early testing before the

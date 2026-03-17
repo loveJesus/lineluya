@@ -2766,6 +2766,10 @@ pub fn sys_sendto_chirho(
             .map(|s| s.family_chirho == 1)
             .unwrap_or(false);
         if is_unix_chirho && !data_chirho.is_empty() {
+            crate::serial_println_chirho!(
+                "[NET] SSH-RELAY check: {} bytes from Unix socket (is_unix={})",
+                data_chirho.len(), is_unix_chirho
+            );
             // Find an established TCP socket on port 2222
             let mut tcp_idx_chirho: Option<usize> = None;
             let mut tcp_info_chirho: Option<(u16, u32, u32)> = None; // (remote_port, remote_ip, src_ip)
