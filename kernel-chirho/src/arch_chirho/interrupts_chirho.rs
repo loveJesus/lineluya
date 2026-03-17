@@ -612,9 +612,25 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         PICS_CHIRHO
             .lock()
             .notify_end_of_interrupt(InterruptIndexChirho::TimerChirho.as_u8_chirho());
-        // LAPIC EOI
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         write_lapic_eoi_chirho(phys_offset_chirho);
+    }
+
+    // Preemptive scheduling: if need_resched is set and the interrupted
+    // code was in USER MODE, do a context switch now.
+    // The x86-interrupt prologue saved ALL registers, so it's safe to
+    // call schedule_chirho() here — the context switch saves/restores
+    // callee-saved registers, and the epilogue restores the rest.
+    //
+    // We only preempt user mode to avoid complexity with nested kernel
+    // locks and stack state. Kernel-mode preemption would require
+    // tracking lock depth.
+    let interrupted_cs_chirho = _stack_frame_chirho.code_segment.0;
+    let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
+
+    if was_user_mode_chirho && crate::scheduler_chirho::need_resched_chirho() {
+        crate::scheduler_chirho::schedule_chirho();
+        crate::scheduler_chirho::reset_time_slice_chirho();
     }
 }
 
