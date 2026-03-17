@@ -2070,18 +2070,51 @@ impl FileOpsChirho for SocketFileOpsChirho {
             .and_then(|s_chirho| s_chirho.as_mut())
             .ok_or(-EBADF_CHIRHO)?;
 
-        // For SOCK_STREAM, read from receive buffer
+        // For SOCK_STREAM, read from receive buffer.
+        // If buffer is empty and connection is alive, block until data arrives.
         if socket_chirho.recv_buf_chirho.is_empty() {
             if socket_chirho.state_chirho == SocketStateChirho::ClosedChirho
                 || socket_chirho.tcb_chirho.state_chirho == TcpStateChirho::CloseWaitChirho
                 || socket_chirho.tcb_chirho.state_chirho == TcpStateChirho::ClosedChirho
             {
-                return Ok(0); // EOF
+                return Ok(0); // EOF — connection closed.
             }
-            if socket_chirho.nonblock_chirho {
-                return Err(-EAGAIN_CHIRHO);
+            // Connection is still alive but no data yet.
+            // Block: poll network + yield in a loop until data arrives.
+            drop(table_chirho);
+            for _wait_chirho in 0..500u32 {
+                x86_64::instructions::interrupts::enable_and_hlt();
+                poll_network_chirho();
+                // Yield to other tasks so incoming data gets processed.
+                if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                    crate::scheduler_chirho::schedule_chirho();
+                    // Reset time slice after returning from yield to prevent
+                    // the post-syscall resched check from crashing.
+                    crate::scheduler_chirho::reset_time_slice_chirho();
+                }
+                // Re-check recv_buf.
+                let table2_chirho = SOCKET_TABLE_CHIRHO.lock();
+                if let Some(Some(ref sock2_chirho)) = table2_chirho.get(socket_idx_chirho) {
+                    if !sock2_chirho.recv_buf_chirho.is_empty() {
+                        // Data arrived! Read it below.
+                        drop(table2_chirho);
+                        let mut table3_chirho = SOCKET_TABLE_CHIRHO.lock();
+                        let sock3_chirho = table3_chirho.get_mut(socket_idx_chirho)
+                            .and_then(|s_chirho| s_chirho.as_mut())
+                            .ok_or(-EBADF_CHIRHO)?;
+                        let count_chirho = core::cmp::min(buf_chirho.len(), sock3_chirho.recv_buf_chirho.len());
+                        for i_chirho in 0..count_chirho {
+                            buf_chirho[i_chirho] = sock3_chirho.recv_buf_chirho.pop_front().unwrap();
+                        }
+                        return Ok(count_chirho);
+                    }
+                    if sock2_chirho.tcb_chirho.state_chirho == TcpStateChirho::ClosedChirho {
+                        return Ok(0); // Connection closed while waiting.
+                    }
+                }
             }
-            return Ok(0); // No data yet, non-blocking return
+            // Timed out waiting for data.
+            return Err(-EAGAIN_CHIRHO);
         }
 
         let count_chirho = core::cmp::min(buf_chirho.len(), socket_chirho.recv_buf_chirho.len());

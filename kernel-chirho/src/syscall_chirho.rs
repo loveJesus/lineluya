@@ -3083,6 +3083,7 @@ fn sys_poll_chirho(
             // Yield to other runnable tasks (fork children).
             if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                 crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
             }
             // Re-check pollfds
             for pfd_chirho in pollfds_chirho.iter() {
@@ -3225,6 +3226,7 @@ fn sys_select_chirho(
             // the CPU and the child never runs.
             if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                 crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
             }
 
             let count_chirho = write_ready_fds_chirho(
@@ -3373,6 +3375,7 @@ fn sys_epoll_wait_chirho(
             crate::net_chirho::poll_network_chirho();
             if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                 crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
             }
         } else {
             return 0; // Non-blocking: return immediately.
