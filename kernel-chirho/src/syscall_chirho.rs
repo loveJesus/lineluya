@@ -2097,17 +2097,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         | SYS_EPOLL_WAIT_CHIRHO | SYS_EPOLL_PWAIT_CHIRHO
         | SYS_NANOSLEEP_CHIRHO | SYS_CLOCK_NANOSLEEP_CHIRHO
     );
-    // Reset time slice after blocking syscalls.
-    if is_blocking_chirho {
-        crate::scheduler_chirho::reset_time_slice_chirho();
-    }
-    // Skip resched for blocking + lifecycle syscalls.
-    // The fork child gets CPU time from schedule calls in HLT loops.
-    if !skip_resched_chirho && !is_blocking_chirho
-        && crate::scheduler_chirho::need_resched_chirho()
-    {
-        crate::scheduler_chirho::schedule_chirho();
-    }
+    // Cooperative scheduling only. Preemptive reschedule at syscall
+    // boundaries is DISABLED because the context switch crashes (#UD)
+    // when called from various kernel paths. Tasks yield cooperatively
+    // via select/poll/read HLT loops which call schedule_chirho()
+    // directly when other tasks are runnable.
+    //
+    // Always reset time slice to prevent stale need_resched from
+    // accumulating across syscalls.
+    crate::scheduler_chirho::reset_time_slice_chirho();
 
     result_chirho
 }

@@ -254,6 +254,7 @@ pub fn schedule_chirho() {
                 if old_pid_chirho == Some(next_chirho) {
                     scheduler_chirho.current_pid_chirho = Some(next_chirho);
                     scheduler_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
+                    crate::serial_debug_chirho!("[SCHED] same task {:?}, no switch", old_pid_chirho);
                     return;
                 }
 
@@ -327,26 +328,9 @@ pub fn schedule_chirho() {
                         }
                         crate::syscall_entry_chirho::set_kernel_stack_top_chirho(kstack_top_chirho);
 
-                        // Save/restore per-process fd tables on context switch.
-                        // MUST happen BEFORE set_current_task so we save the
-                        // OLD task's fd table, not the new one.
-                        {
-                            let mut global_fd_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-
-                            // Save current global fd table back to the OLD task.
-                            if let Some(old_task_chirho) = crate::task_chirho::current_task_chirho() {
-                                let mut old_guard_chirho = old_task_chirho.lock();
-                                if let Some(ref global_table_chirho) = *global_fd_chirho {
-                                    old_guard_chirho.fd_table_chirho = Some(global_table_chirho.clone_table_chirho());
-                                }
-                            }
-
-                            // Load NEW task's fd table into the global slot.
-                            let new_guard_chirho = task_arc_chirho.lock();
-                            if let Some(ref fd_table_chirho) = new_guard_chirho.fd_table_chirho {
-                                *global_fd_chirho = Some(fd_table_chirho.clone_table_chirho());
-                            }
-                        }
+                        // FD table swap temporarily disabled to test if it causes
+                        // the context switch #UD crash. The lookup_fd_chirho
+                        // fallback in VFS handles per-task fds without swapping.
 
                         // NOW update CURRENT_TASK.
                         crate::task_chirho::set_current_task_chirho(
@@ -358,7 +342,13 @@ pub fn schedule_chirho() {
                 if old_ctx_ptr_chirho.is_null() || new_ctx_ptr_chirho.is_null() {
                     return;
                 }
+                // Log the context RIP values for debugging context switch crashes.
                 unsafe {
+                    let new_rip_chirho = (*new_ctx_ptr_chirho).rip_chirho;
+                    crate::serial_println_chirho!(
+                        "[SCHED] switch {:?}->{}: new_rip={:#x}",
+                        old_pid_chirho, next_chirho, new_rip_chirho,
+                    );
                     switch_context_chirho(old_ctx_ptr_chirho, new_ctx_ptr_chirho);
                 }
             }
