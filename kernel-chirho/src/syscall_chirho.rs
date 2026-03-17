@@ -1333,6 +1333,22 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
+
+    // Log all syscalls from PID >= 2 (dropbear + children) to trace fork flow
+    static POST_ACCEPT_ARMED_CHIRHO: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    if syscall_nr_chirho == 43 || syscall_nr_chirho == 288 {
+        POST_ACCEPT_ARMED_CHIRHO.store(true, core::sync::atomic::Ordering::SeqCst);
+    }
+    if POST_ACCEPT_ARMED_CHIRHO.load(core::sync::atomic::Ordering::SeqCst) {
+        let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if pid_chirho >= 2 {
+            crate::serial_println_chirho!(
+                "[SC] pid={} nr={}({})", pid_chirho, syscall_nr_chirho,
+                syscall_name_chirho(syscall_nr_chirho),
+            );
+        }
+    }
     // Temporary: log syscalls after accept (nr > 40 range)
     static AFTER_ACCEPT_CHIRHO: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
@@ -3059,6 +3075,10 @@ fn sys_poll_chirho(
         for _attempt_chirho in 0..1000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
+            // Yield to other runnable tasks (fork children).
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+            }
             // Re-check pollfds
             for pfd_chirho in pollfds_chirho.iter() {
                 if pfd_chirho.fd_chirho >= 0 {
@@ -3190,9 +3210,17 @@ fn sys_select_chirho(
         write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho)
     } else {
         // Block: HLT in a loop until something becomes ready.
+        // Also yield to other tasks (fork children) via schedule_chirho.
         for _attempt_chirho in 0..1000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
+
+            // Yield to other runnable tasks (e.g., fork children that need
+            // to write the SSH banner). Without this, the parent monopolizes
+            // the CPU and the child never runs.
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+            }
 
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
@@ -3337,6 +3365,10 @@ fn sys_epoll_wait_chirho(
         // Nothing ready — yield CPU, wait for interrupt.
         if timeout_chirho != 0 {
             x86_64::instructions::interrupts::enable_and_hlt();
+            crate::net_chirho::poll_network_chirho();
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+            }
         } else {
             return 0; // Non-blocking: return immediately.
         }

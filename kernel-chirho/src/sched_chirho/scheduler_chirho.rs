@@ -570,6 +570,20 @@ pub fn need_resched_chirho() -> bool {
     NEED_RESCHED_ATOMIC_CHIRHO.load(Ordering::Acquire)
 }
 
+/// Check if there are other runnable tasks in the run queue.
+///
+/// Used by blocking syscalls (select) to yield CPU to fork children
+/// that need to run. Without this, cooperative scheduling means the
+/// parent monopolizes the CPU in the HLT loop.
+pub fn has_runnable_tasks_chirho() -> bool {
+    if let Some(guard_chirho) = SCHEDULER_CHIRHO.try_lock() {
+        if let Some(ref sched_chirho) = *guard_chirho {
+            return sched_chirho.tasks_chirho.len() > 1;
+        }
+    }
+    false
+}
+
 /// Set the current running PID.  Called during boot to register PID 0
 /// with the scheduler so it participates in scheduling (gets pushed to
 /// the run queue when yielding).
