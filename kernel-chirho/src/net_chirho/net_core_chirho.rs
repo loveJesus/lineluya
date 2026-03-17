@@ -2085,11 +2085,9 @@ impl FileOpsChirho for SocketFileOpsChirho {
             for _wait_chirho in 0..500u32 {
                 x86_64::instructions::interrupts::enable_and_hlt();
                 poll_network_chirho();
-                // Yield to other tasks so incoming data gets processed.
-                if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                    crate::scheduler_chirho::schedule_chirho();
-                    crate::scheduler_chirho::reset_time_slice_chirho();
-                }
+                // Don't yield here — keep the CPU and wait for data.
+                // Yielding causes the task to go to the back of the queue
+                // and never get picked again (PID 0/2 monopolize).
                 // Re-check recv_buf.
                 let table2_chirho = SOCKET_TABLE_CHIRHO.lock();
                 if let Some(Some(ref sock2_chirho)) = table2_chirho.get(socket_idx_chirho) {
