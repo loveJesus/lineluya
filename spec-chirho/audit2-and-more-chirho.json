@@ -377,7 +377,7 @@
         {
           "id_chirho": "A2-X11-010",
           "title_chirho": "Install Xvfb + xterm + twm + fonts on Alpine disk image",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "apk add xvfb xterm twm font-misc-misc font-cursor-misc xauth. ~55MB total."
         },
@@ -440,7 +440,7 @@
         {
           "id_chirho": "A2-SOUND-006",
           "title_chirho": "Install mpg123 on Alpine disk — lightest MP3 player",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
           "notes_chirho": "apk add mpg123. Decodes mp3 to PCM, writes to /dev/dsp or ALSA. ~200KB binary."
         },
