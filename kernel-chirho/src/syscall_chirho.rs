@@ -3348,24 +3348,20 @@ fn sys_select_chirho(
     if has_ready_chirho {
         write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho)
     } else {
-        // Block: HLT in a loop until something becomes ready.
-        // Always yield once first to give fork children a chance to run.
-        // This is critical for dropbear: after fork, PID 4 needs CPU time
-        // to handle the SSH connection.
-        crate::scheduler_chirho::yield_current_chirho();
+        // Block: yield to fork children, then HLT loop waiting for data.
+        // Remove self from scheduler so fork children run uninterrupted.
+        // This prevents the context switch #UD when switching back.
+        let my_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                // Yield once so fork children get CPU time
+            crate::scheduler_chirho::yield_current_chirho();
+        }
 
         let max_attempts_chirho = 200u32;
         for _attempt_chirho in 0..max_attempts_chirho {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
-
-            // Yield to other runnable tasks.
-            // Do NOT reset time slice — let the timer manage preemption
-            // so that the yielded-to task gets preempted back when its
-            // time slice expires via the syscall return check.
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-            }
 
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,

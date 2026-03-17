@@ -266,14 +266,15 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         crate::signal_chirho::check_fatal_signals_on_return_chirho();
     }
 
-    // Preemptive scheduling on syscall return boundary.
-    // If the timer set need_resched while this task was in userspace,
-    // do the context switch HERE (not inside the timer handler, which
-    // would corrupt the interrupt frame).
+    // Preemptive scheduling on syscall return boundary — DISABLED.
+    // Calling schedule_chirho() here causes #UD when switching back to
+    // PID 3 (dropbear parent). The saved context gets corrupted.
+    // Tasks yield cooperatively via select/read/yield_current instead.
+    // TODO: fix the context save/restore to enable true preemption.
     if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho
         && crate::scheduler_chirho::need_resched_chirho()
     {
-        crate::scheduler_chirho::schedule_chirho();
+        // Just clear the flag — don't schedule.
         crate::scheduler_chirho::reset_time_slice_chirho();
     }
 
