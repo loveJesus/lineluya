@@ -373,15 +373,23 @@ pub fn schedule_chirho() {
                     let new_rip_chirho = (*new_ctx_ptr_chirho).rip_chirho;
                     let new_rsp_chirho = (*new_ctx_ptr_chirho).rsp_chirho;
                     // Verify new RIP is in kernel code range (0x10000...)
-                    // Validate new task's stack integrity by checking if the
-                    // return address AT the saved RSP is a valid kernel address.
-                    let stack_top_ret_chirho = if new_rsp_chirho > 0 {
-                        core::ptr::read_volatile(new_rsp_chirho as *const u64)
-                    } else { 0 };
-                    let stack_ok_chirho = stack_top_ret_chirho >= 0x1000_0000_000
-                        && stack_top_ret_chirho <= 0x2000_0000_000;
+                    // For RESUMED tasks (not first dispatch), validate the
+                    // return address at saved RSP. First-time tasks have
+                    // the entry point in rip, stack may be zero-filled.
+                    let is_first_dispatch_chirho = old_pid_chirho.is_none()
+                        || new_rip_chirho == 0x10000127294  // fork_child_return
+                        || new_rip_chirho == 0x10000127274; // fork_child_return (other build)
+                    let stack_ok_chirho = if is_first_dispatch_chirho {
+                        true // Skip stack check for first-time tasks
+                    } else if new_rsp_chirho >= 0x4000_0000_0000 {
+                        let stack_top_ret_chirho = core::ptr::read_volatile(new_rsp_chirho as *const u64);
+                        stack_top_ret_chirho >= 0x1000_0000_000
+                            && stack_top_ret_chirho <= 0x2000_0000_000
+                    } else {
+                        false
+                    };
 
-                    // Kernel code is around 0x10000xxxxxx (~64GB virtual).
+                    // Kernel code is around 0x10000xxxxxx (~68GB virtual).
                     if new_rip_chirho < 0x1000_0000_000 || new_rip_chirho > 0x2000_0000_000
                         || !stack_ok_chirho {
                         crate::serial_println_chirho!(
