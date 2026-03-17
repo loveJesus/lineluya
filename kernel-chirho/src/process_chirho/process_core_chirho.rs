@@ -877,10 +877,10 @@ pub fn sys_execve_chirho(
                 crate::exec_chirho::BUSYBOX_ELF_CHIRHO
             } else {
                 crate::serial_println_chirho!(
-                    "[PROCESS] execve: \"{}\" not found in VFS, falling back to embedded hello-chirho",
+                    "[PROCESS] execve: \"{}\" not found in VFS — returning ENOENT",
                     filename_str_chirho
                 );
-                HELLO_ELF_CHIRHO
+                return -ENOENT_CHIRHO;
             }
         }
     };
