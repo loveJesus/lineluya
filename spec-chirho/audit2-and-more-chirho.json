@@ -419,21 +419,21 @@
         {
           "id_chirho": "A2-SOUND-003",
           "title_chirho": "OSS ioctls — SNDCTL_DSP_SETFMT, SNDCTL_DSP_SPEED, SNDCTL_DSP_CHANNELS",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "Set sample format (16-bit LE), sample rate (44100), channels (2=stereo)."
         },
         {
           "id_chirho": "A2-SOUND-004",
           "title_chirho": "OSS write — PCM samples written to /dev/dsp play through sound card",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "critical",
           "notes_chirho": "Write 16-bit signed LE PCM samples. DMA transfer to AC97/HDA codec."
         },
         {
           "id_chirho": "A2-SOUND-005",
           "title_chirho": "AC97 controller driver — codec init, DMA buffer, stream descriptors",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "AC97 is simpler than HDA. BAR0 = mixer registers, BAR1 = bus master registers. Set up buffer descriptor list (BDL)."
         },
@@ -482,35 +482,35 @@
         {
           "id_chirho": "A2-LOOP-003",
           "title_chirho": "ioctl LOOP_SET_FD (0x4C00) — bind backing file to loop device",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "critical",
           "notes_chirho": "Associates an open file descriptor (disk image) with /dev/loopN. Core operation."
         },
         {
           "id_chirho": "A2-LOOP-004",
           "title_chirho": "ioctl LOOP_CLR_FD (0x4C01) — detach backing file",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "Disassociates the backing file. Used by umount/losetup -d."
         },
         {
           "id_chirho": "A2-LOOP-005",
           "title_chirho": "ioctl LOOP_SET_STATUS64 (0x4C04) — set loop device parameters",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "struct loop_info64: lo_offset, lo_sizelimit, lo_encrypt_type, lo_flags. Offset support enables partition mounting."
         },
         {
           "id_chirho": "A2-LOOP-006",
           "title_chirho": "ioctl LOOP_GET_STATUS64 (0x4C05) — get loop device parameters",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
           "notes_chirho": "Returns current loop_info64. Used by mount to check state."
         },
         {
           "id_chirho": "A2-LOOP-007",
           "title_chirho": "Loop device read/write — translate block I/O to file read/write",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "critical",
           "notes_chirho": "Read from /dev/loopN -> pread from backing file at offset. Write -> pwrite. Block size 512 or 4096."
         },
