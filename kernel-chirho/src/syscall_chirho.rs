@@ -1333,11 +1333,6 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
-    // Temporary: log every syscall from PID > 1 to trace dropbear flow
-    let cur_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-    if cur_pid_chirho > 1 {
-        crate::serial_debug_chirho!("[SC] pid={} nr={}", cur_pid_chirho, syscall_nr_chirho);
-    }
 
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => {
@@ -2062,6 +2057,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO | SYS_CLONE_CHIRHO | SYS_EXECVE_CHIRHO
         | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO | SYS_WAIT4_CHIRHO
         | SYS_SCHED_YIELD_CHIRHO
+        // Blocking syscalls consume their time slice in HLT loops.
+        // Don't reschedule — the task is already cooperative.
+        | SYS_SELECT_CHIRHO | SYS_POLL_CHIRHO | SYS_PPOLL_CHIRHO
+        | SYS_EPOLL_WAIT_CHIRHO | SYS_EPOLL_PWAIT_CHIRHO
+        | SYS_NANOSLEEP_CHIRHO | SYS_CLOCK_NANOSLEEP_CHIRHO
     );
     if !skip_resched_chirho && crate::scheduler_chirho::need_resched_chirho() {
         crate::scheduler_chirho::schedule_chirho();
@@ -3157,7 +3157,7 @@ fn sys_select_chirho(
                 }
             }
         }
-        if count_chirho > 0 {
+        if count_chirho > 0 && readfds_ptr_chirho != 0 {
             // Write the modified fd_set back to userspace.
             let _ = crate::uaccess_chirho::copy_to_user_chirho(
                 readfds_ptr_chirho, &out_fds_chirho[..set_size_chirho], set_size_chirho,
