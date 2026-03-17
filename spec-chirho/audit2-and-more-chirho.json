@@ -293,9 +293,9 @@
         {
           "id_chirho": "A2-AUDIT-017",
           "title_chirho": "Clean up net_chirho.rs.bak and syscall_chirho.rs.bak from src/",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low",
-          "notes_chirho": "Backup files pollute grep results. Move out or delete."
+          "notes_chirho": "Deleted net_chirho.rs.bak. No syscall .bak existed."
         },
         {
           "id_chirho": "A2-AUDIT-018",
@@ -538,16 +538,16 @@
         {
           "id_chirho": "A2-IOCTL-002",
           "title_chirho": "Route ioctl through FileOpsChirho::ioctl_chirho method on each device",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "Instead of giant switch in syscall_chirho.rs, each device's FileOps handles its own ioctls."
+          "notes_chirho": "sys_ioctl_real_chirho already calls file.ops.ioctl_chirho(cmd, arg) via VFS dispatch. PTY, TTY, socket each handle own ioctls."
         },
         {
           "id_chirho": "A2-IOCTL-003",
           "title_chirho": "Add ioctl_chirho to FileOpsChirho trait with default ENOTTY return",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "fn ioctl_chirho(&self, cmd: u64, arg: u64) -> i64 { -ENOTTY }. Override per device."
+          "notes_chirho": "Already in FileOpsChirho trait (vfs_chirho.rs line 204). Each device implements its own handler."
         }
       ]
     },
