@@ -1117,6 +1117,29 @@ fn activate_per_process_pt_chirho() {
 // Shell re-launch (used by sys_exit and fault handlers)
 // ===========================================================================
 
+/// Kill the current task and respawn the shell.
+///
+/// Called from fault handlers (#UD, #GP, page fault) when a user-mode task
+/// crashes unrecoverably. Removes the task from the scheduler, delivers
+/// SIGCHLD to the parent, and respawns the shell.
+///
+/// This function never returns.
+pub fn kill_and_respawn_shell_chirho(reason_chirho: &str) -> ! {
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let pid_chirho = task_arc_chirho.lock().pid_chirho;
+        let ppid_chirho = task_arc_chirho.lock().ppid_chirho;
+        crate::serial_println_chirho!(
+            "[PROCESS] kill_and_respawn: PID {} killed ({}), respawning shell",
+            pid_chirho, reason_chirho
+        );
+        crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+        crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
+    }
+    let argv_chirho = [alloc::string::String::from("sh")];
+    let envp_chirho = [alloc::string::String::from("HOME=/root")];
+    exec_shell_with_args_chirho(&argv_chirho, &envp_chirho)
+}
+
 /// Re-launch the BusyBox shell after a process exits or crashes.
 ///
 /// This function never returns — it loads BusyBox and jumps to userspace.

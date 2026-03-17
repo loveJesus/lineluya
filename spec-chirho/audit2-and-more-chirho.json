@@ -587,9 +587,9 @@
         {
           "id_chirho": "A2-ARCH-005",
           "title_chirho": "Move trap-driven shell relaunch from interrupt handler to process exit policy",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Invalid opcode handler currently removes task and relaunches shell. Should just kill task; init/process exit handles relaunch."
+          "notes_chirho": "kill_and_respawn_shell_chirho helper in process_core. All 3 fault handlers (#PF, #GP, #UD) use it. SIGCHLD delivered to parent."
         }
       ]
     },

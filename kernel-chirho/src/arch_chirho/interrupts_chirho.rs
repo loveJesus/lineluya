@@ -507,13 +507,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 fault_addr_chirho.as_u64(),
             );
         }
-        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-            let pid_chirho = task_arc_chirho.lock().pid_chirho;
-            crate::scheduler_chirho::remove_task_chirho(pid_chirho);
-        }
-        let shell_argv_chirho = [alloc::string::String::from("sh")];
-        let shell_envp_chirho = [alloc::string::String::from("HOME=/root")];
-        crate::process_chirho::exec_shell_with_args_chirho(&shell_argv_chirho, &shell_envp_chirho);
+        crate::process_chirho::kill_and_respawn_shell_chirho("unrecoverable page fault");
     }
 
     // Kernel-mode page fault — log and halt.
@@ -603,32 +597,7 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
         );
 
         // Remove current task from scheduler.
-        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-            let pid_chirho = task_arc_chirho.lock().pid_chirho;
-            crate::scheduler_chirho::remove_task_chirho(pid_chirho);
-        }
-
-        // Re-launch the shell (same as sys_exit behavior).
-        // We can't return normally from an interrupt handler that
-        // caused a fault, so we re-exec the shell directly.
-        crate::serial_println_chirho!("[EXCEPTION] Re-launching shell after user-mode GPF");
-
-        let shell_argv_chirho = [alloc::string::String::from("sh")];
-        let shell_envp_chirho = [
-            alloc::string::String::from("HOME=/root"),
-            alloc::string::String::from("PATH=/bin:/sbin:/usr/bin:/usr/sbin"),
-            alloc::string::String::from("TERM=linux"),
-            alloc::string::String::from("PS1=lineluya# "),
-            alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
-            alloc::string::String::from("SHELL=/bin/sh"),
-            alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
-            alloc::string::String::from("PYTHONHOME=/usr"),
-            alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
-        ];
-
-        crate::process_chirho::exec_shell_with_args_chirho(&shell_argv_chirho, &shell_envp_chirho);
-        // exec_shell_with_args_chirho should not return, but if it does:
-        loop { x86_64::instructions::hlt(); }
+        crate::process_chirho::kill_and_respawn_shell_chirho("user-mode GPF");
     }
 
     crate::serial_println_chirho!(
@@ -884,14 +853,7 @@ extern "x86-interrupt" fn invalid_opcode_handler_chirho(
     }
 
     if is_user_chirho {
-        // User-mode #UD — terminate process and re-launch shell.
-        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-            let pid_chirho = task_arc_chirho.lock().pid_chirho;
-            crate::scheduler_chirho::remove_task_chirho(pid_chirho);
-        }
-        let shell_argv_chirho = [alloc::string::String::from("sh")];
-        let shell_envp_chirho = [alloc::string::String::from("HOME=/root")];
-        crate::process_chirho::exec_shell_with_args_chirho(&shell_argv_chirho, &shell_envp_chirho);
+        crate::process_chirho::kill_and_respawn_shell_chirho("invalid opcode (#UD)");
     }
 
     // Kernel-mode #UD — halt.
