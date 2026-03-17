@@ -328,9 +328,9 @@
         {
           "id_chirho": "A2-X11-003",
           "title_chirho": "FB mmap — map framebuffer physical memory into userspace",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "Xorg mmap's /dev/fb0 to write pixels directly. Must map the real UEFI framebuffer physical address."
+          "notes_chirho": "FB mmap already implemented. mmap_chirho detects fb0, maps physical framebuffer via MappingKindChirho::FramebufferChirho."
         },
         {
           "id_chirho": "A2-X11-004",
@@ -342,37 +342,37 @@
         {
           "id_chirho": "A2-X11-005",
           "title_chirho": "evdev input — /dev/input/event1 (mouse) with relative motion events",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "Hook PS/2 mouse to produce EV_REL + EV_KEY events. Or use virtio-tablet for absolute."
+          "notes_chirho": "EvdevMouseOpsChirho at /dev/input/event1. Reports EV_REL + EV_KEY (mouse buttons). push_mouse_rel/button helpers."
         },
         {
           "id_chirho": "A2-X11-006",
           "title_chirho": "evdev ioctls — EVIOCGBIT, EVIOCGNAME, EVIOCGID for device capability query",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "Xorg evdev driver queries device capabilities on open."
+          "notes_chirho": "Both event0 (keyboard) and event1 (mouse) implement EVIOCGBIT, EVIOCGNAME, EVIOCGID."
         },
         {
           "id_chirho": "A2-X11-007",
           "title_chirho": "Unix domain sockets — verify /tmp/.X11-unix/X0 works for X protocol",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "AF_UNIX SOCK_STREAM. X clients connect here. Already partially implemented."
+          "notes_chirho": "AF_UNIX full impl: create, bind, listen, connect, accept, send, recv. SOCK_STREAM supported."
         },
         {
           "id_chirho": "A2-X11-008",
           "title_chirho": "mmap MAP_SHARED — shared memory between X server and clients",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "X11 MIT-SHM extension uses shared memory for fast blitting."
+          "notes_chirho": "MAP_SHARED_CHIRHO=0x01 accepted. FB mmap uses it correctly. /proc/self/maps shows s vs p."
         },
         {
           "id_chirho": "A2-X11-009",
           "title_chirho": "ftruncate — real implementation for memfd/shm setup",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "X server uses ftruncate to size shared memory segments."
+          "notes_chirho": "SYS_FTRUNCATE handled: looks up fd, sets inode.size_chirho = length. Returns 0/-EBADF."
         },
         {
           "id_chirho": "A2-X11-010",
