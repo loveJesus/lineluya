@@ -465,6 +465,13 @@ fn resolve_path_depth_chirho(
         }
     }
 
+    if debug_resolve_chirho {
+        crate::serial_println_chirho!(
+            "[VFS-DBG] mount walk result: prefix_len={}, has_sb={}",
+            mount_prefix_len_chirho, current_sb_chirho.is_some()
+        );
+    }
+
     // Determine starting inode and which components to walk
     let (start_inode_chirho, remaining_components_chirho) = if let Some(sb_chirho) = current_sb_chirho
     {

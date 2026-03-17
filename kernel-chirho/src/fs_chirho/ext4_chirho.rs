@@ -1290,7 +1290,15 @@ impl Ext4MountChirho {
         // Scan directory blocks sequentially instead of reading the
         // entire directory into a Vec. This avoids the 2MB→64MB Vec
         // doubling that caused OOM for large directories like /usr/lib.
+        let debug_lookup_chirho = name_chirho == "usr" || name_chirho == "sbin" || name_chirho == "dropbear";
         let inode_chirho = self.read_inode_chirho(dir_ino_chirho)?;
+        if debug_lookup_chirho {
+            let mode_copy_chirho = { inode_chirho.i_mode_chirho };
+            crate::serial_println_chirho!(
+                "[EXT4-DBG] lookup_in_dir: ino={} mode={:#o} is_dir={}",
+                dir_ino_chirho, mode_copy_chirho, inode_chirho.is_dir_chirho()
+            );
+        }
         if !inode_chirho.is_dir_chirho() {
             return None;
         }
@@ -1298,7 +1306,7 @@ impl Ext4MountChirho {
         let num_blocks_chirho = (dir_size_chirho + 4095) / 4096;
 
         // Debug: log root directory lookup details
-        let debug_lookup_chirho = dir_ino_chirho == 2 && (name_chirho == "usr" || name_chirho == "sbin");
+        let debug_lookup_chirho = name_chirho == "usr" || name_chirho == "sbin" || name_chirho == "dropbear";
         if debug_lookup_chirho {
             let flags_copy_chirho = { inode_chirho.i_flags_chirho };
             crate::serial_println_chirho!(
