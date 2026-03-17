@@ -93,7 +93,9 @@ pub fn wake_child_exit_waitqueue_chirho() {
 // ---------------------------------------------------------------------------
 
 /// Default kernel stack size (must match task_chirho.rs).
-const DEFAULT_KERNEL_STACK_SIZE_CHIRHO: usize = 16 * 1024;
+/// Kernel stack size per task — must match task_chirho.rs.
+/// 64KB for deep crypto call chains (SSH key exchange).
+const DEFAULT_KERNEL_STACK_SIZE_CHIRHO: usize = 64 * 1024;
 
 /// Maximum length of a filename path from userspace.
 const MAX_PATH_LEN_CHIRHO: usize = 4096;
