@@ -280,7 +280,16 @@ pub fn schedule_chirho() {
         }
 
         // 3. Pop the next task from the front.
+        let queue_len_chirho = scheduler_chirho.tasks_chirho.len();
         let next_pid_chirho = scheduler_chirho.tasks_chirho.pop_front();
+
+        // Debug: log scheduler decisions when PID 3+ is involved
+        if queue_len_chirho > 1 || (next_pid_chirho.is_some() && next_pid_chirho != old_pid_chirho) {
+            crate::serial_println_chirho!(
+                "[SCHED] queue_len={} old={:?} next={:?}",
+                queue_len_chirho, old_pid_chirho, next_pid_chirho
+            );
+        }
 
         match next_pid_chirho {
             None => {
