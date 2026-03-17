@@ -384,14 +384,14 @@
         {
           "id_chirho": "A2-X11-011",
           "title_chirho": "End-to-end Xvfb test: Xvfb :0 && DISPLAY=:0 xterm",
-          "status_chirho": "done",
+          "status_chirho": "todo",
           "priority_chirho": "high",
           "notes_chirho": "Xvfb needs no /dev/fb0. Just PTY + AF_UNIX + fork/exec."
         },
         {
           "id_chirho": "A2-X11-012",
           "title_chirho": "End-to-end Xorg fbdev test: Xorg :0 with real display",
-          "status_chirho": "done",
+          "status_chirho": "todo",
           "priority_chirho": "medium",
           "notes_chirho": "Needs FB ioctls + evdev + mmap. QEMU -vga std -display gtk."
         }
@@ -447,7 +447,7 @@
         {
           "id_chirho": "A2-SOUND-007",
           "title_chirho": "End-to-end MP3 test: mpg123 test.mp3 plays audio in QEMU",
-          "status_chirho": "done",
+          "status_chirho": "todo",
           "priority_chirho": "high",
           "notes_chirho": "QEMU -device AC97 -audiodev pa,id=snd0 (or coreaudio on macOS). Need test mp3 file on disk."
         },
@@ -517,7 +517,7 @@
         {
           "id_chirho": "A2-LOOP-008",
           "title_chirho": "End-to-end test: losetup /dev/loop0 image.img && mount /dev/loop0 /mnt",
-          "status_chirho": "done",
+          "status_chirho": "todo",
           "priority_chirho": "high",
           "notes_chirho": "Create ext4 image, bind to loop, mount, read files. Full stack test."
         }
