@@ -2766,9 +2766,13 @@ pub fn sys_sendto_chirho(
             .map(|s| s.family_chirho == 1)
             .unwrap_or(false);
         if is_unix_chirho && !data_chirho.is_empty() {
+            // Log first 40 bytes of data for debugging SSH banner
+            let preview_len_chirho = core::cmp::min(data_chirho.len(), 40);
+            let preview_chirho = core::str::from_utf8(&data_chirho[..preview_len_chirho])
+                .unwrap_or("<binary>");
             crate::serial_println_chirho!(
-                "[NET] SSH-RELAY check: {} bytes from Unix socket (is_unix={})",
-                data_chirho.len(), is_unix_chirho
+                "[NET] SSH-RELAY check: {} bytes from Unix socket: '{}'",
+                data_chirho.len(), preview_chirho
             );
             // Find an established TCP socket on port 2222
             let mut tcp_idx_chirho: Option<usize> = None;
