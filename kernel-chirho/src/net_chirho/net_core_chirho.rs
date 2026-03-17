@@ -4278,6 +4278,58 @@ pub static GATEWAY_IP_CHIRHO: Mutex<u32> = Mutex::new(0);
 
 /// Send an IPv4 packet (already built with IP header) through the network stack.
 ///
+/// SSH relay helper: forward data to the first established TCP connection
+/// on port 2222. Called from pipe write and Unix socket sendto.
+pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
+    if data_chirho.is_empty() { return; }
+    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    let mut info_chirho: Option<(usize, u16, u32, u32)> = None;
+    for (idx_chirho, slot_chirho) in table_chirho.iter().enumerate() {
+        if let Some(ref s_chirho) = slot_chirho {
+            if s_chirho.family_chirho == 2
+                && s_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+                && s_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(2222)
+            {
+                info_chirho = Some((
+                    idx_chirho,
+                    s_chirho.remote_addr_chirho.map(|a| a.port_chirho).unwrap_or(0),
+                    s_chirho.remote_addr_chirho.map(|a| a.addr_chirho).unwrap_or(0),
+                    get_interface_ip_chirho(0),
+                ));
+                break;
+            }
+        }
+    }
+    drop(table_chirho);
+    if let Some((idx_chirho, rport_chirho, rip_chirho, sip_chirho)) = info_chirho {
+        let mut t2_chirho = SOCKET_TABLE_CHIRHO.lock();
+        if let Some(Some(ref mut ts_chirho)) = t2_chirho.get_mut(idx_chirho) {
+            if let Some(seg_chirho) = ts_chirho.tcb_chirho.make_data_segment_chirho(
+                2222, rport_chirho, data_chirho,
+            ) {
+                let ck_chirho = seg_chirho.compute_checksum_chirho(sip_chirho, rip_chirho);
+                let mut sc_chirho = seg_chirho;
+                sc_chirho.checksum_chirho = ck_chirho;
+                let tb_chirho = sc_chirho.build_chirho();
+                let ih_chirho = Ipv4HeaderChirho {
+                    version_chirho: 4, ihl_chirho: 5, tos_chirho: 0,
+                    total_length_chirho: 20 + tb_chirho.len() as u16,
+                    id_chirho: 0, flags_chirho: 0x02, fragment_offset_chirho: 0,
+                    ttl_chirho: 64, protocol_chirho: IP_PROTO_TCP_CHIRHO,
+                    checksum_chirho: 0, src_ip_chirho: sip_chirho, dst_ip_chirho: rip_chirho,
+                };
+                let mut p_chirho = ih_chirho.build_chirho();
+                p_chirho.extend_from_slice(&tb_chirho);
+                drop(t2_chirho);
+                crate::serial_println_chirho!(
+                    "[NET] SSH-RELAY(pipe): {} bytes -> TCP port 2222", data_chirho.len()
+                );
+                let _ = send_ip_packet_chirho(&p_chirho);
+            }
+        }
+    }
+}
+
 /// Performs routing lookup, ARP resolution, wraps in Ethernet frame, and
 /// transmits via the correct NIC.
 pub fn send_ip_packet_chirho(ip_packet_chirho: &[u8]) -> Result<(), i64> {
