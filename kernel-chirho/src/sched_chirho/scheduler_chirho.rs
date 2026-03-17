@@ -369,12 +369,20 @@ pub fn schedule_chirho() {
                 if old_ctx_ptr_chirho.is_null() || new_ctx_ptr_chirho.is_null() {
                     return;
                 }
-                // Log the context RIP values for debugging context switch crashes.
                 unsafe {
                     let new_rip_chirho = (*new_ctx_ptr_chirho).rip_chirho;
+                    let new_rsp_chirho = (*new_ctx_ptr_chirho).rsp_chirho;
+                    // Verify new RIP is in kernel code range (0x10000...)
+                    if new_rip_chirho < 0x1000_0000_0000 || new_rip_chirho > 0x2000_0000_0000 {
+                        crate::serial_println_chirho!(
+                            "[SCHED] ABORT switch {:?}->{}: BAD rip={:#x} rsp={:#x}",
+                            old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho
+                        );
+                        return; // Don't switch to corrupted context
+                    }
                     crate::serial_println_chirho!(
-                        "[SCHED] switch {:?}->{}: new_rip={:#x}",
-                        old_pid_chirho, next_chirho, new_rip_chirho,
+                        "[SCHED] switch {:?}->{}: rip={:#x} rsp={:#x}",
+                        old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
                     );
                     switch_context_chirho(old_ctx_ptr_chirho, new_ctx_ptr_chirho);
                 }
