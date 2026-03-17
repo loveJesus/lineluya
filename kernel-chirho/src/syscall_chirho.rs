@@ -1333,6 +1333,16 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
+    // Temporary: log syscalls after accept (nr > 40 range)
+    static AFTER_ACCEPT_CHIRHO: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    if syscall_nr_chirho == 43 || syscall_nr_chirho == 288 { // accept/accept4
+        AFTER_ACCEPT_CHIRHO.store(true, core::sync::atomic::Ordering::SeqCst);
+    }
+    if AFTER_ACCEPT_CHIRHO.load(core::sync::atomic::Ordering::SeqCst) {
+        let name_chirho = syscall_name_chirho(syscall_nr_chirho);
+        crate::serial_println_chirho!("[POST-ACCEPT] nr={}({})", syscall_nr_chirho, name_chirho);
+    }
 
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => {

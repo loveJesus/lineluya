@@ -178,7 +178,21 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
     frame_ptr_chirho: *mut crate::syscall_chirho::SyscallFrameChirho,
 ) -> i64 {
     let frame_chirho = &mut *frame_ptr_chirho;
-    crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho)
+    let saved_rcx_chirho = frame_chirho.rcx_chirho;
+    let result_chirho = crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho);
+
+    // Validate that RCX (user return address) wasn't corrupted by the dispatch.
+    if frame_chirho.rcx_chirho != saved_rcx_chirho {
+        crate::serial_println_chirho!(
+            "[SYSRET-GUARD] RCX corrupted! was={:#x} now={:#x} sc={}",
+            saved_rcx_chirho, frame_chirho.rcx_chirho,
+            frame_chirho.rax_chirho,
+        );
+        // Restore the correct RCX to prevent SYSRET to garbage.
+        frame_chirho.rcx_chirho = saved_rcx_chirho;
+    }
+
+    result_chirho
 }
 
 // ============================================================================

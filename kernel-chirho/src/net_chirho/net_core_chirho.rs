@@ -2438,9 +2438,38 @@ pub fn sys_accept_chirho(
         // The pending connection is already a fully established socket in the table.
         // Register it as a new fd.
         drop(table_chirho); // Release table lock before allocating fd
-        match register_socket_fd_chirho(pending_idx_chirho as usize) {
+        let new_fd_result_chirho = register_socket_fd_chirho(pending_idx_chirho as usize);
+        match new_fd_result_chirho {
             Ok(new_fd_chirho) => {
                 crate::serial_println_chirho!("[NET] sys_accept -> fd={}", new_fd_chirho);
+
+                // Write peer address to user buffer if requested.
+                // struct sockaddr_in: { u16 family=2, u16 port, u32 addr, u8[8] zero }
+                if _addr_chirho != 0 {
+                    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+                    if let Some(Some(ref sock_chirho)) = table_chirho.get(pending_idx_chirho as usize) {
+                        if let Some(ref remote_chirho) = sock_chirho.remote_addr_chirho {
+                            let mut sa_chirho = [0u8; 16];
+                            sa_chirho[0] = 2; sa_chirho[1] = 0; // AF_INET
+                            sa_chirho[2] = (remote_chirho.port_chirho >> 8) as u8;
+                            sa_chirho[3] = (remote_chirho.port_chirho & 0xFF) as u8;
+                            sa_chirho[4..8].copy_from_slice(&remote_chirho.addr_chirho.to_be_bytes());
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(
+                                    sa_chirho.as_ptr(),
+                                    _addr_chirho as *mut u8,
+                                    16,
+                                );
+                            }
+                            if _addrlen_chirho != 0 {
+                                unsafe {
+                                    core::ptr::write(_addrlen_chirho as *mut u32, 16);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 return new_fd_chirho;
             }
             Err(e_chirho) => return e_chirho,

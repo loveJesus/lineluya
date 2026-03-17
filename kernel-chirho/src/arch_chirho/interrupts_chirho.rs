@@ -785,10 +785,26 @@ extern "x86-interrupt" fn invalid_opcode_handler_chirho(
     let is_user_chirho = (cs_chirho & 0x3) == 3;
 
     crate::serial_println_chirho!(
-        "[EXCEPTION] INVALID OPCODE (#UD) at {:#x} ({})",
-        rip_chirho,
+        "[EXCEPTION] INVALID OPCODE (#UD) at {:#x} (CS={:#x} {})",
+        rip_chirho, cs_chirho,
         if is_user_chirho { "user" } else { "kernel" },
     );
+    crate::serial_println_chirho!(
+        "  RSP={:#x} SS={:#x}",
+        stack_frame_chirho.stack_pointer.as_u64(),
+        stack_frame_chirho.stack_segment.0,
+    );
+    // Print bytes at the faulting address for diagnosis
+    if rip_chirho > 0x1000 {
+        let bytes_chirho = unsafe {
+            core::slice::from_raw_parts(rip_chirho as *const u8, 8)
+        };
+        crate::serial_println_chirho!(
+            "  Bytes at RIP: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+            bytes_chirho[0], bytes_chirho[1], bytes_chirho[2], bytes_chirho[3],
+            bytes_chirho[4], bytes_chirho[5], bytes_chirho[6], bytes_chirho[7],
+        );
+    }
 
     if is_user_chirho {
         // User-mode #UD — terminate process and re-launch shell.
