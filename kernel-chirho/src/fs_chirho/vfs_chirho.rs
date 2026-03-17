@@ -338,7 +338,12 @@ impl FdTableChirho {
 
     /// Allocate the lowest available file descriptor, returning its index.
     pub fn alloc_fd_chirho(&mut self) -> Result<usize, i64> {
-        for (idx_chirho, slot_chirho) in self.fds_chirho.iter().enumerate() {
+        // Skip fds 0-2 (stdin/stdout/stderr) to avoid overwriting
+        // dup2'd fds. Programs that need fds 0-2 use dup2 explicitly.
+        let start_chirho = if crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho >= 3).unwrap_or(false)
+        { 3 } else { 0 };
+        for (idx_chirho, slot_chirho) in self.fds_chirho.iter().enumerate().skip(start_chirho) {
             if slot_chirho.is_none() {
                 return Ok(idx_chirho);
             }
