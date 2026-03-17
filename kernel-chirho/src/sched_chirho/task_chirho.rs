@@ -32,7 +32,8 @@ use x86_64::PhysAddr;
 /// kernel thread stack while remaining modest enough for early boot.
 /// Kernel stack size per task. 64KB to handle deep call chains
 /// (e.g., dropbear SSH crypto: curve25519 + chacha20 + poly1305).
-const DEFAULT_KERNEL_STACK_SIZE_CHIRHO: usize = 64 * 1024;
+pub const KERNEL_STACK_SIZE_CHIRHO: usize = 64 * 1024;
+const DEFAULT_KERNEL_STACK_SIZE_CHIRHO: usize = KERNEL_STACK_SIZE_CHIRHO;
 
 /// Default time slice for newly created tasks (in timer ticks).
 const DEFAULT_TIME_SLICE_CHIRHO: u64 = 10;
