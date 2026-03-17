@@ -1398,11 +1398,24 @@ impl BlockDeviceChirho for VirtioBlkDeviceChirho {
         if buf_chirho.len() < SECTOR_SIZE_CHIRHO {
             return Err(-22); // EINVAL
         }
+        crate::serial_debug_chirho!(
+            "[VirtIO-blk] WRITE sector={} len={}",
+            block_nr_chirho,
+            buf_chirho.len()
+        );
         // The method needs a mutable slice for the descriptor chain, but for
         // writes the device only reads from it.  Copy into a temporary buffer.
         let mut tmp_chirho = vec![0u8; buf_chirho.len()];
         tmp_chirho.copy_from_slice(buf_chirho);
-        self.submit_and_wait_chirho(block_nr_chirho, &mut tmp_chirho, true)
+        let result_chirho = self.submit_and_wait_chirho(block_nr_chirho, &mut tmp_chirho, true);
+        if let Err(err_chirho) = &result_chirho {
+            crate::serial_println_chirho!(
+                "[VirtIO-blk] WRITE FAILED sector={} err={}",
+                block_nr_chirho,
+                err_chirho
+            );
+        }
+        result_chirho
     }
 
     fn block_size_chirho(&self) -> usize {

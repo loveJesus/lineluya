@@ -1482,7 +1482,7 @@ impl Ext4MountChirho {
     /// Write a single block to the underlying block device.
     ///
     /// The block data must be exactly `block_size_chirho` bytes.
-    #[allow(dead_code)]
+    /// Called by write_inode_chirho, write_file_data_chirho, and the VFS write path.
     pub fn write_block_chirho(&self, block_nr_chirho: u64, data_chirho: &[u8]) -> Result<(), Ext4ErrorChirho> {
         if self.mode_chirho == MountModeChirho::ReadOnlyChirho {
             return Err(Ext4ErrorChirho::ReadOnlyChirho);
@@ -1491,6 +1491,11 @@ impl Ext4MountChirho {
         if data_chirho.len() != bs_chirho {
             return Err(Ext4ErrorChirho::IoErrorChirho);
         }
+
+        crate::serial_debug_chirho!(
+            "[EXT4] write_block: block={} bs={} dev={}",
+            block_nr_chirho, bs_chirho, self.device_id_chirho
+        );
 
         let sectors_per_block_chirho = bs_chirho / 512;
         let start_sector_chirho = block_nr_chirho * sectors_per_block_chirho as u64;
@@ -1505,7 +1510,13 @@ impl Ext4MountChirho {
                     sector_chirho,
                     &data_chirho[offset_chirho..offset_chirho + 512],
                 )
-                .map_err(|_| Ext4ErrorChirho::IoErrorChirho)?;
+                .map_err(|err_chirho| {
+                    crate::serial_println_chirho!(
+                        "[EXT4] write_block FAILED: block={} sector={} err={}",
+                        block_nr_chirho, sector_chirho, err_chirho
+                    );
+                    Ext4ErrorChirho::IoErrorChirho
+                })?;
         }
 
         // Update the page cache entry for this block.
@@ -1518,7 +1529,9 @@ impl Ext4MountChirho {
     }
 
     /// Write an inode back to disk.
-    #[allow(dead_code)]
+    ///
+    /// Serializes the inode struct into the correct position within its
+    /// block group's inode table and writes the containing block.
     pub fn write_inode_chirho(&self, ino_chirho: u32, inode_chirho: &Ext4InodeChirho) -> Result<(), Ext4ErrorChirho> {
         let sb_inodes_per_group_chirho = self.sb_chirho.s_inodes_per_group_chirho;
         let (group_chirho, local_chirho) = inode_to_group_chirho(ino_chirho, sb_inodes_per_group_chirho);
@@ -1788,7 +1801,7 @@ impl Ext4MountChirho {
 
         // Allocate data blocks.
         let mut allocated_blocks_chirho: Vec<u64> = Vec::new();
-        for gd_chirho in &self.group_descs_chirho {
+        for (group_idx_chirho, gd_chirho) in self.group_descs_chirho.iter().enumerate() {
             if allocated_blocks_chirho.len() >= blocks_needed_chirho {
                 break;
             }
@@ -1799,12 +1812,9 @@ impl Ext4MountChirho {
             let mut bitmap_chirho = self.read_block_cached_chirho(bitmap_block_chirho)
                 .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
 
-            let group_idx_chirho = (&self.group_descs_chirho as *const Vec<Ext4GroupDescChirho>).cast::<()>();
-            let _ = group_idx_chirho; // prevent unused warning
-
             while allocated_blocks_chirho.len() < blocks_needed_chirho {
                 if let Some(blk_chirho) = alloc_block_in_group_chirho(
-                    &mut bitmap_chirho, 0, sb_blocks_per_group_chirho, sb_first_data_block_chirho,
+                    &mut bitmap_chirho, group_idx_chirho as u32, sb_blocks_per_group_chirho, sb_first_data_block_chirho,
                 ) {
                     allocated_blocks_chirho.push(blk_chirho);
                 } else {

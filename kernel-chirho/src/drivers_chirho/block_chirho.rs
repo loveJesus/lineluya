@@ -241,7 +241,9 @@ impl BlockDeviceRegistryChirho {
     }
 
     /// Write a single block (sector) to a registered device by index.
-    #[allow(dead_code)]
+    ///
+    /// Used by the ext4 write path (write_block_chirho) for sector-level
+    /// persistence through VirtIO-blk.
     pub fn write_block_chirho(
         &self,
         device_idx_chirho: usize,
