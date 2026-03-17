@@ -17,6 +17,7 @@ use crate::vfs_chirho::{
     FdTableChirho, FileChirho, FileOpsChirho, InodeChirho,
     O_CREAT_CHIRHO, O_DIRECTORY_CHIRHO, O_RDONLY_CHIRHO, O_WRONLY_CHIRHO,
     S_IFCHR_CHIRHO, S_IFDIR_CHIRHO, SuperblockChirho,
+    is_symlink_chirho,
 };
 use crate::syscall_chirho::{
     EBADF_CHIRHO, EFAULT_CHIRHO, ENOENT_CHIRHO, ENOTDIR_CHIRHO,
@@ -159,9 +160,12 @@ pub fn init_fs_chirho() {
         let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
         let mut fd_table_chirho = FdTableChirho::new_chirho(MAX_FDS_CHIRHO);
 
+        // Reserved inode number for the kernel console device.
+        const CONSOLE_INODE_CHIRHO: u64 = 9999;
+
         // Create a dummy console inode for stdin/stdout/stderr
         let console_inode_chirho = Arc::new(Mutex::new(InodeChirho {
-            ino_chirho: 9999,
+            ino_chirho: CONSOLE_INODE_CHIRHO,
             mode_chirho: S_IFCHR_CHIRHO | 0o666,
             uid_chirho: 0,
             gid_chirho: 0,
@@ -597,7 +601,7 @@ fn resolve_path_depth_chirho(
             // Check if the child is a symlink — if so, follow it.
             {
                 let child_guard_chirho = child_arc_chirho.lock();
-                if child_guard_chirho.mode_chirho & 0xF000 == 0xA000 {
+                if is_symlink_chirho(child_guard_chirho.mode_chirho) {
                     // S_IFLNK — follow the symlink
                     if let Ok(target_chirho) = child_guard_chirho.ops_chirho.readlink_chirho(&child_guard_chirho) {
                         drop(child_guard_chirho); // Release lock before recursion
@@ -639,7 +643,7 @@ fn resolve_path_depth_chirho(
                 Ok(child_inode_chirho) => {
                     // Symlink following: if the inode is a symlink, read
                     // the target and recursively resolve it.
-                    if child_inode_chirho.mode_chirho & 0xF000 == 0xA000 {
+                    if is_symlink_chirho(child_inode_chirho.mode_chirho) {
                         // S_IFLNK
                         if let Ok(target_chirho) = child_inode_chirho.ops_chirho.readlink_chirho(&child_inode_chirho) {
                             // Build the resolved path: if target is relative,
@@ -1175,12 +1179,15 @@ pub fn lookup_fd_chirho(fd_chirho: u64) -> Option<alloc::sync::Arc<spin::Mutex<F
 /// Returns the allocated fd number on success, or a negative errno.
 ///
 /// A2-PROC-003: This is the single insertion point for new fds.
+/// Lock ordering: task lock is dropped before GLOBAL lock is taken
+/// to prevent deadlocks.
 pub fn alloc_and_insert_fd_chirho(
     file_chirho: alloc::sync::Arc<spin::Mutex<FileChirho>>,
     path_chirho: Option<&str>,
 ) -> i64 {
     // Try inserting into current task's per-process table first.
-    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+    // Drop the task lock before taking the GLOBAL lock to avoid deadlock.
+    let task_result_chirho: Option<usize> = if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
         let mut task_guard_chirho = task_arc_chirho.lock();
         if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
             let fd_chirho = match fd_table_chirho.alloc_fd_chirho() {
@@ -1193,25 +1200,32 @@ pub fn alloc_and_insert_fd_chirho(
                     fd_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
                 }
             }
-            // Also insert into global table for compatibility with callsites
-            // that still read from GLOBAL directly (gradual migration).
-            {
-                let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-                if let Some(ref mut global_table_chirho) = *global_guard_chirho {
-                    if fd_chirho < global_table_chirho.fds_chirho.len() {
-                        global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
-                    }
-                    if let Some(p_chirho) = path_chirho {
-                        if fd_chirho < global_table_chirho.paths_chirho.len() {
-                            global_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
-                        }
-                    }
+            Some(fd_chirho)
+        } else {
+            None
+        }
+        // task_guard_chirho dropped here (end of scope)
+    } else {
+        None
+    };
+
+    if let Some(fd_chirho) = task_result_chirho {
+        // Mirror into global table for backward compat (task lock already released).
+        let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        if let Some(ref mut global_table_chirho) = *global_guard_chirho {
+            if fd_chirho < global_table_chirho.fds_chirho.len() {
+                global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+            }
+            if let Some(p_chirho) = path_chirho {
+                if fd_chirho < global_table_chirho.paths_chirho.len() {
+                    global_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
                 }
             }
-            return fd_chirho as i64;
         }
+        return fd_chirho as i64;
     }
-    // Fallback: insert into global table.
+
+    // Fallback: insert into global table only (kernel tasks, early boot).
     let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
     let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
         Some(t_chirho) => t_chirho,
@@ -1264,40 +1278,51 @@ pub fn close_fd_chirho(fd_chirho: u64) -> i64 {
 /// Duplicate an fd (dup2 semantics) in the current task's fd table.
 ///
 /// A2-PROC-003: Per-process dup2.
+/// Lock ordering: task lock is dropped before GLOBAL lock to prevent deadlocks.
 pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 {
     let old_chirho = oldfd_chirho as usize;
     let new_chirho = newfd_chirho as usize;
 
     // Try current task's per-process table first.
-    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-        let mut task_guard_chirho = task_arc_chirho.lock();
-        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
-            if old_chirho == new_chirho {
-                return if fd_table_chirho.get_chirho(old_chirho).is_some() {
-                    new_chirho as i64
-                } else {
-                    -EBADF_CHIRHO
-                };
-            }
-            let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
-                Some(f_chirho) => f_chirho,
-                None => return -EBADF_CHIRHO,
-            };
-            if new_chirho >= fd_table_chirho.fds_chirho.len() {
-                return -EBADF_CHIRHO;
-            }
-            fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho.clone());
-            // Also mirror into global table for compatibility.
-            {
-                let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-                if let Some(ref mut global_table_chirho) = *global_guard_chirho {
-                    if new_chirho < global_table_chirho.fds_chirho.len() {
-                        global_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
-                    }
+    // Extract the result and file Arc, then drop the task lock before
+    // taking the GLOBAL lock.
+    let task_dup_result_chirho: Option<Result<(usize, alloc::sync::Arc<spin::Mutex<FileChirho>>), i64>> =
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            let mut task_guard_chirho = task_arc_chirho.lock();
+            if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+                if old_chirho == new_chirho {
+                    return if fd_table_chirho.get_chirho(old_chirho).is_some() {
+                        new_chirho as i64
+                    } else {
+                        -EBADF_CHIRHO
+                    };
                 }
+                let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
+                    Some(f_chirho) => f_chirho,
+                    None => return -EBADF_CHIRHO,
+                };
+                if new_chirho >= fd_table_chirho.fds_chirho.len() {
+                    return -EBADF_CHIRHO;
+                }
+                fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho.clone());
+                Some(Ok((new_chirho, file_chirho)))
+            } else {
+                None
             }
-            return new_chirho as i64;
+            // task_guard_chirho dropped here
+        } else {
+            None
+        };
+
+    if let Some(Ok((fd_chirho, file_chirho))) = task_dup_result_chirho {
+        // Mirror into global table (task lock already released).
+        let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        if let Some(ref mut global_table_chirho) = *global_guard_chirho {
+            if fd_chirho < global_table_chirho.fds_chirho.len() {
+                global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+            }
         }
+        return fd_chirho as i64;
     }
     // Fallback: global table.
     let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();

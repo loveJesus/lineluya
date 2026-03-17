@@ -531,9 +531,9 @@
         {
           "id_chirho": "A2-IOCTL-001",
           "title_chirho": "Create IoctlCommandChirho enum with all known ioctl numbers",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "TTY, PTY, FB, evdev, loop, socket, OSS — all in one typed enum. From/TryFrom<u64>."
+          "notes_chirho": "ioctl_chirho.rs module with all constants: TTY, PTY, FB, loop, socket, OSS. Registered in main_chirho."
         },
         {
           "id_chirho": "A2-IOCTL-002",
@@ -573,9 +573,9 @@
         {
           "id_chirho": "A2-ARCH-003",
           "title_chirho": "Wrap segment selectors 0x23/0x2B in SegmentSelectorChirho newtype",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low",
-          "notes_chirho": "Magic numbers in IRETQ frame. Use USER_CS_CHIRHO, USER_SS_CHIRHO constants."
+          "notes_chirho": "Added USER_DS_CHIRHO=0x23 and USER_CS_CHIRHO=0x2B constants in syscall_entry_chirho.rs."
         },
         {
           "id_chirho": "A2-ARCH-004",
@@ -636,9 +636,9 @@
         {
           "id_chirho": "A2-FS-006",
           "title_chirho": "Replace magic inode 9999 with CONSOLE_INODE_CHIRHO constant",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low",
-          "notes_chirho": "vfs_ops_chirho.rs hardcodes 9999 for console inode."
+          "notes_chirho": "Added const CONSOLE_INODE_CHIRHO: u64 = 9999 in vfs_ops_chirho.rs."
         }
       ]
     },

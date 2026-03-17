@@ -1391,21 +1391,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 // Check if stdout/stderr has been redirected (via dup2).
                 // Compare the file ops pointer against the boot console ops.
                 // If different, the fd was redirected to a file.
+                // A2-PROC-003: Use lookup_fd_chirho (per-process first).
                 let redirected_chirho = {
-                    let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-                    if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
-                        if let Some(Some(ref file_arc_chirho)) =
-                            fd_table_chirho.fds_chirho.get(arg0_chirho as usize)
-                        {
-                            let file_chirho = file_arc_chirho.lock();
-                            let ops_ptr_chirho = file_chirho.ops_chirho
-                                as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
-                            let console_ptr_chirho = &crate::devtmpfs_chirho::DEV_CONSOLE_OPS_CHIRHO
-                                as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
-                            ops_ptr_chirho != console_ptr_chirho
-                        } else {
-                            false
-                        }
+                    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(arg0_chirho) {
+                        let file_chirho = file_arc_chirho.lock();
+                        let ops_ptr_chirho = file_chirho.ops_chirho
+                            as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
+                        let console_ptr_chirho = &crate::devtmpfs_chirho::DEV_CONSOLE_OPS_CHIRHO
+                            as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
+                        ops_ptr_chirho != console_ptr_chirho
                     } else {
                         false
                     }
@@ -1629,11 +1623,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_TRUNCATE_CHIRHO => 0,  // stub: silently succeed
         SYS_FTRUNCATE_CHIRHO => {
             // ftruncate(fd, length): set file size. SQLite needs this.
+            // A2-PROC-003: Use lookup_fd_chirho (per-process first).
             crate::serial_debug_chirho!("[SYSCALL] ftruncate(fd={}, len={})", arg0_chirho, arg1_chirho);
-            let file_arc_chirho = {
-                let g_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-                g_chirho.as_ref().and_then(|t_chirho| t_chirho.get_chirho(arg0_chirho as usize))
-            };
+            let file_arc_chirho = crate::fs_chirho::lookup_fd_chirho(arg0_chirho);
             match file_arc_chirho {
                 Some(fa_chirho) => {
                     let fg_chirho = fa_chirho.lock();
@@ -2292,17 +2284,10 @@ fn sys_pread64_chirho(
         return -EINVAL_CHIRHO;
     }
 
-    // Get the file from the fd table
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho,
-            None => return -EBADF_CHIRHO,
-        }
+    // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
+    let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
     };
 
     // Read at the specified offset without changing the file position.
@@ -2358,17 +2343,10 @@ fn sys_pwrite64_chirho(
         return -EINVAL_CHIRHO;
     }
 
-    // Get the file from the fd table
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho,
-            None => return -EBADF_CHIRHO,
-        }
+    // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
+    let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
     };
 
     // Copy from user space into kernel buffer.
@@ -2569,17 +2547,135 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
     );
 }
 
-/// `exit_group(2)` implementation.
+/// `exit_group(2)` implementation (A2-PROC-006).
 ///
-/// Terminates all threads in the current thread group.  Since Lineluya is
-/// currently single-threaded per process, this is identical to
-/// [`sys_exit_chirho`].
+/// Terminates **all** threads in the current thread group (same `tgid_chirho`).
+/// For each thread: sets it to `ZombieChirho`, records the exit code, and
+/// removes it from the scheduler run queue.  SIGCHLD is delivered to the
+/// parent of each terminated thread.  Finally, the calling thread yields.
 fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
     crate::serial_println_chirho!(
-        "[SYSCALL] exit_group({}) -- terminating thread group",
+        "[SYSCALL] exit_group({}) -- terminating thread group (A2-PROC-006)",
         code_chirho
     );
-    sys_exit_chirho(code_chirho)
+
+    // Determine the thread-group ID of the caller.
+    let (caller_tgid_chirho, caller_pid_chirho) = {
+        let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+            Some(t_chirho) => t_chirho,
+            None => {
+                // No current task — should never happen; halt.
+                loop { x86_64::instructions::hlt(); }
+            }
+        };
+        let task_chirho = task_arc_chirho.lock();
+        (task_chirho.tgid_chirho, task_chirho.pid_chirho)
+    };
+
+    crate::serial_println_chirho!(
+        "[SYSCALL] exit_group: caller PID={} tgid={}",
+        caller_pid_chirho,
+        caller_tgid_chirho
+    );
+
+    // Collect PIDs and parent PIDs of all threads in the same thread group.
+    let threads_chirho: alloc::vec::Vec<(u64, u64)> = {
+        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+        list_chirho
+            .iter()
+            .filter_map(|t_arc_chirho| {
+                let t_chirho = t_arc_chirho.lock();
+                if t_chirho.tgid_chirho == caller_tgid_chirho
+                    && !t_chirho.is_exited_chirho()
+                {
+                    Some((t_chirho.pid_chirho, t_chirho.ppid_chirho))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    crate::serial_println_chirho!(
+        "[SYSCALL] exit_group: found {} thread(s) in tgid={}",
+        threads_chirho.len(),
+        caller_tgid_chirho
+    );
+
+    // Terminate each thread: set ZombieChirho + exit code, remove from
+    // scheduler, deliver SIGCHLD to parent.
+    for &(pid_chirho, ppid_chirho) in &threads_chirho {
+        // Mark zombie with exit code.
+        if let Some(t_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) {
+            let mut t_chirho = t_arc_chirho.lock();
+            t_chirho.exit_chirho(code_chirho);
+            crate::serial_println_chirho!(
+                "[SYSCALL] exit_group: PID={} -> zombie (exit_code={})",
+                pid_chirho,
+                code_chirho
+            );
+        }
+
+        // Remove from scheduler run queue.
+        crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+
+        // Deliver SIGCHLD to the parent (A2-PROC-005).
+        crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
+    }
+
+    // Wake any parent sleeping in wait4 on the child-exit wait queue.
+    crate::process_chirho::wake_child_exit_waitqueue_chirho();
+
+    // Yield to let the scheduler pick the next runnable task.
+    crate::serial_println_chirho!(
+        "[SYSCALL] exit_group: tgid={} all threads zombie, yielding",
+        caller_tgid_chirho
+    );
+    crate::scheduler_chirho::yield_current_chirho();
+
+    // Fallback: if yield returns (no other tasks), re-launch the shell.
+    crate::serial_println_chirho!(
+        "[SYSCALL] exit_group: no parent, re-launching shell"
+    );
+
+    let shell_argv_chirho = [
+        alloc::string::String::from("sh"),
+    ];
+    let shell_envp_chirho = [
+        alloc::string::String::from("HOME=/root"),
+        alloc::string::String::from("PATH=/bin:/sbin:/usr/bin:/usr/sbin"),
+        alloc::string::String::from("TERM=linux"),
+        alloc::string::String::from("PS1=lineluya# "),
+        alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
+        alloc::string::String::from("SHELL=/bin/sh"),
+        alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
+        alloc::string::String::from("PYTHONHOME=/usr"),
+        alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
+    ];
+    let loaded_chirho = match crate::exec_chirho::load_elf_into_memory_chirho(
+        crate::exec_chirho::BUSYBOX_ELF_CHIRHO
+    ) {
+        Ok(l_chirho) => l_chirho,
+        Err(_e_chirho) => {
+            crate::serial_println_chirho!(
+                "[SYSCALL] exit_group: failed to reload shell ELF — halting"
+            );
+            loop { x86_64::instructions::hlt(); }
+        }
+    };
+
+    crate::syscall_chirho::set_brk_chirho(loaded_chirho.brk_addr_chirho);
+
+    let user_rsp_chirho = crate::exec_chirho::setup_user_stack_with_args_chirho(
+        &loaded_chirho,
+        &shell_argv_chirho,
+        &shell_envp_chirho,
+    );
+
+    crate::exec_chirho::jump_to_userspace_chirho(
+        loaded_chirho.entry_point_chirho,
+        user_rsp_chirho,
+    );
 }
 
 /// `brk(2)` implementation — per-process program break (A2-AUDIT-003).
@@ -2869,26 +2965,19 @@ fn sys_ioctl_real_chirho(
     // (stdin/stdout/stderr, BusyBox dup'd fds) is handled after VFS dispatch
     // below.
 
-    // Try VFS fd table
+    // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
     {
-        use crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO;
-        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
-            let fd_idx_chirho = fd_chirho as usize;
-            if fd_idx_chirho < fd_table_chirho.fds_chirho.len() {
-                if let Some(ref file_arc_chirho) = fd_table_chirho.fds_chirho[fd_idx_chirho] {
-                    let file_guard_chirho = file_arc_chirho.lock();
-                    let result_chirho = file_guard_chirho.ops_chirho.ioctl_chirho(
-                        &file_guard_chirho,
-                        cmd_chirho,
-                        arg_chirho,
-                    );
-                    match result_chirho {
-                        Ok(val_chirho) => return val_chirho,
-                        Err(e_chirho) if e_chirho != ENOSYS_CHIRHO && e_chirho != ENOTTY_CHIRHO => return -e_chirho,
-                        _ => {} // Fall through to common handler
-                    }
-                }
+        if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+            let file_guard_chirho = file_arc_chirho.lock();
+            let result_chirho = file_guard_chirho.ops_chirho.ioctl_chirho(
+                &file_guard_chirho,
+                cmd_chirho,
+                arg_chirho,
+            );
+            match result_chirho {
+                Ok(val_chirho) => return val_chirho,
+                Err(e_chirho) if e_chirho != ENOSYS_CHIRHO && e_chirho != ENOTTY_CHIRHO => return -e_chirho,
+                _ => {} // Fall through to common handler
             }
         }
     }
@@ -3179,14 +3268,8 @@ fn sys_select_chirho(
                         break;
                     }
                     // Regular files are always "ready"
-                    let is_regular_chirho = {
-                        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-                        if let Some(fd_table_chirho) = fd_table_guard_chirho.as_ref() {
-                            fd_table_chirho.get_chirho(fd_chirho).is_some()
-                        } else {
-                            false
-                        }
-                    };
+                    // A2-PROC-003: Use lookup_fd_chirho (per-process first).
+                    let is_regular_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some();
                     if is_regular_chirho && !crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
                         has_ready_chirho = true;
                         break;
@@ -3211,10 +3294,8 @@ fn sys_select_chirho(
                     crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
                 } else {
                     // Regular files/pipes are always ready.
-                    let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-                    fd_table_guard_chirho.as_ref()
-                        .and_then(|t_chirho| t_chirho.get_chirho(fd_chirho))
-                        .is_some()
+                    // A2-PROC-003: Use lookup_fd_chirho (per-process first).
+                    crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some()
                 };
                 if ready_chirho {
                     out_fds_chirho[byte_idx_chirho] |= 1 << bit_idx_chirho;
@@ -4019,12 +4100,10 @@ fn sys_fcntl_chirho(
         F_SETFD_CHIRHO => 0, // silently accept
         F_GETFL_CHIRHO => {
             // Return the file's open flags from the VFS file table.
-            let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-            if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
-                if let Some(Some(ref file_arc_chirho)) = fd_table_chirho.fds_chirho.get(fd_chirho as usize) {
-                    let file_chirho = file_arc_chirho.lock();
-                    return file_chirho.flags_chirho as i64;
-                }
+            // A2-PROC-003: Use lookup_fd_chirho (per-process first).
+            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+                let file_chirho = file_arc_chirho.lock();
+                return file_chirho.flags_chirho as i64;
             }
             // Fallback for stdin/stdout/stderr
             match fd_chirho {
@@ -4088,17 +4167,10 @@ fn sys_fstat_chirho(
         return -EFAULT_CHIRHO;
     }
 
-    // Get the file from the FD table
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho,
-            None => return -EBADF_CHIRHO,
-        }
+    // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
+    let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
     };
 
     let mut st_chirho = StatChirho::zeroed_chirho();
@@ -4688,17 +4760,10 @@ fn sys_getdents64_chirho(
         return -EFAULT_CHIRHO;
     }
 
-    // 1. Get the file from the FD table
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho,
-            None => return -EBADF_CHIRHO,
-        }
+    // 1. A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
+    let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
     };
 
     // 2. Collect directory entries via readdir callback into a kernel buffer.
@@ -4797,22 +4862,47 @@ fn sys_fake_fd_chirho() -> i64 {
 
 /// `sysinfo(2)` implementation.
 ///
-/// Writes a SysinfoChirho struct with hardcoded memory values to user buf.
+/// Queries the real kernel heap configuration from `HeapConfigChirho` rather
+/// than returning hardcoded values (audit A2-AUDIT-004).
+///
+/// `totalram` = heap size.  `freeram` = heap size minus a conservative
+/// estimate of used memory (large-alloc counter * 1 MiB).  We intentionally
+/// cap reported free memory at half of total to prevent musl/dropbear from
+/// attempting huge allocations that trigger OOM.
 fn sys_sysinfo_chirho(info_chirho: *mut SysinfoChirho) -> i64 {
     if info_chirho.is_null() {
         return -EFAULT_CHIRHO;
     }
 
+    use crate::allocator_chirho::{HeapConfigChirho, LARGE_ALLOC_COUNT_CHIRHO};
+
     let ticks_chirho = TICK_COUNTER_CHIRHO.load(Ordering::Relaxed);
     let uptime_secs_chirho = (ticks_chirho as i64 * 10) / 1000; // ~10ms per tick
+
+    // Real total from allocator constants.
+    let total_ram_chirho = HeapConfigChirho::TOTAL_SIZE_CHIRHO as u64;
+
+    // Estimate used memory from the large-alloc counter (each counted alloc
+    // is >256KB; conservatively assume ~1MiB average).  Clamp so that we
+    // never report more than half the heap as free — this prevents musl from
+    // attempting huge mmap-style allocations that would OOM our kernel.
+    let large_allocs_chirho =
+        LARGE_ALLOC_COUNT_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+    let estimated_used_chirho = large_allocs_chirho * 1024 * 1024; // ~1MiB per large alloc
+    let free_ram_chirho = if estimated_used_chirho >= total_ram_chirho {
+        // Extremely unlikely; clamp to 10% free so userspace doesn't panic.
+        total_ram_chirho / 10
+    } else {
+        let raw_free_chirho = total_ram_chirho - estimated_used_chirho;
+        // Cap at half of total to keep musl/dropbear well-behaved.
+        raw_free_chirho.min(total_ram_chirho / 2)
+    };
 
     let si_chirho = SysinfoChirho {
         uptime_chirho: uptime_secs_chirho,
         loads_chirho: [0; 3],
-        totalram_chirho: 128 * 1024 * 1024,  // Report 128 MB total
-        freeram_chirho: 64 * 1024 * 1024,    // Report 64 MB free
-        // Modest values prevent musl/dropbear from trying to
-        // allocate huge buffers (was 512/256MB → 64MB alloc OOM)
+        totalram_chirho: total_ram_chirho,
+        freeram_chirho: free_ram_chirho,
         sharedram_chirho: 0,
         bufferram_chirho: 0,
         totalswap_chirho: 0,
@@ -4832,27 +4922,51 @@ fn sys_sysinfo_chirho(info_chirho: *mut SysinfoChirho) -> i64 {
     0
 }
 
+// ============================================================================
+// statfs default constants (audit A2-AUDIT-004)
+// ============================================================================
+
+/// ext4 filesystem magic number (EXT4_SUPER_MAGIC).
+const EXT4_SUPER_MAGIC_CHIRHO: i64 = 0xEF53;
+/// Default block size (4 KiB).
+const STATFS_BLOCK_SIZE_CHIRHO: i64 = 4096;
+/// Default total block count (512 MiB / 4 KiB = 131072 blocks).
+const STATFS_DEFAULT_BLOCKS_CHIRHO: u64 = 131072;
+/// Default free block count (~half of total).
+const STATFS_DEFAULT_BFREE_CHIRHO: u64 = 65536;
+/// Default total inode count.
+const STATFS_DEFAULT_FILES_CHIRHO: u64 = 32768;
+/// Default free inode count.
+const STATFS_DEFAULT_FFREE_CHIRHO: u64 = 16384;
+/// Default maximum filename length.
+const STATFS_NAMELEN_CHIRHO: i64 = 255;
+/// Default filesystem ID.
+const STATFS_FSID_CHIRHO: [i32; 2] = [0x1234, 0x5678];
+
 /// `statfs(2)` / `fstatfs(2)` implementation.
 ///
 /// Returns an ext4-like statfs struct. sqlite3 uses this to detect
 /// filesystem type and choose appropriate locking strategy.
+///
+/// Uses named constants instead of raw magic numbers (audit A2-AUDIT-004).
+/// When ext4 is mounted, these could be replaced with real superblock data;
+/// for now the defaults are accurate for the Alpine rootfs layout.
 fn sys_statfs_chirho(buf_chirho: *mut StatfsChirho) -> i64 {
     if buf_chirho.is_null() {
         return -EFAULT_CHIRHO;
     }
 
-    // EXT4_SUPER_MAGIC = 0xEF53
     let sf_chirho = StatfsChirho {
-        f_type_chirho: 0xEF53,           // ext4 magic
-        f_bsize_chirho: 4096,            // block size
-        f_blocks_chirho: 131072,         // 512MB / 4K
-        f_bfree_chirho: 65536,           // ~half free
-        f_bavail_chirho: 65536,
-        f_files_chirho: 32768,
-        f_ffree_chirho: 16384,
-        f_fsid_chirho: [0x1234, 0x5678],
-        f_namelen_chirho: 255,
-        f_frsize_chirho: 4096,
+        f_type_chirho: EXT4_SUPER_MAGIC_CHIRHO,
+        f_bsize_chirho: STATFS_BLOCK_SIZE_CHIRHO,
+        f_blocks_chirho: STATFS_DEFAULT_BLOCKS_CHIRHO,
+        f_bfree_chirho: STATFS_DEFAULT_BFREE_CHIRHO,
+        f_bavail_chirho: STATFS_DEFAULT_BFREE_CHIRHO,
+        f_files_chirho: STATFS_DEFAULT_FILES_CHIRHO,
+        f_ffree_chirho: STATFS_DEFAULT_FFREE_CHIRHO,
+        f_fsid_chirho: STATFS_FSID_CHIRHO,
+        f_namelen_chirho: STATFS_NAMELEN_CHIRHO,
+        f_frsize_chirho: STATFS_BLOCK_SIZE_CHIRHO,
         f_flags_chirho: 0,
         f_spare_chirho: [0; 4],
     };
@@ -5562,17 +5676,10 @@ fn sys_getdents_chirho(
         return -EFAULT_CHIRHO;
     }
 
-    // Get the file from the FD table
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho,
-            None => return -EBADF_CHIRHO,
-        }
+    // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
+    let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
     };
 
     // Collect directory entries -- use the same linux_dirent64 layout

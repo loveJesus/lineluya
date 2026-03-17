@@ -24,6 +24,15 @@
 use core::arch::global_asm;
 
 // ============================================================================
+// Segment selector constants
+// ============================================================================
+
+/// User-mode data segment selector (GDT index 4, RPL 3).
+pub const USER_DS_CHIRHO: u64 = 0x23;
+/// User-mode code segment selector (GDT index 5, RPL 3, 64-bit).
+pub const USER_CS_CHIRHO: u64 = 0x2B;
+
+// ============================================================================
 // Static scratch storage (single-CPU only)
 // ============================================================================
 
