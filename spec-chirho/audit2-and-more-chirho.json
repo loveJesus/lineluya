@@ -209,9 +209,9 @@
         {
           "id_chirho": "A2-AUDIT-005",
           "title_chirho": "Split syscall_chirho.rs into per-subsystem dispatch modules",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "syscall_time_chirho, syscall_fs_chirho, syscall_termios_chirho, syscall_process_chirho, syscall_net_chirho. Keep dispatch table in main syscall_chirho."
+          "notes_chirho": "Cross-cutting concerns extracted: ioctl_chirho.rs, busybox_chirho.rs, net_types_chirho.rs, setsid/setpgid functions. Dispatch table remains in syscall_chirho as single entry point."
         },
         {
           "id_chirho": "A2-AUDIT-006",
