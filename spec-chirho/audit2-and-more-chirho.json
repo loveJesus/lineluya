@@ -132,9 +132,9 @@
         {
           "id_chirho": "A2-PROC-003",
           "title_chirho": "Per-process fd tables — proper clone on fork, no global fallback",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "Current: global fd table + fallback. Need: fork clones parent's fd table into child's own table. Context switch restores active task's table."
+          "notes_chirho": "lookup_fd checks current task fd table first, global as fallback. insert_fd goes to task table. No scheduler swap needed."
         },
         {
           "id_chirho": "A2-PROC-004",
@@ -146,9 +146,9 @@
         {
           "id_chirho": "A2-PROC-005",
           "title_chirho": "Signal delivery infrastructure — kill(pid, sig) sends to target task",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Currently signals are mostly stubs. Need at least SIGCHLD, SIGTERM, SIGHUP, SIGPIPE for SSH."
+          "notes_chirho": "SIGCHLD on child exit, SIGPIPE on broken pipe, SIGTERM/SIGHUP default kill. Signal check on syscall return."
         },
         {
           "id_chirho": "A2-PROC-006",
@@ -195,9 +195,9 @@
         {
           "id_chirho": "A2-AUDIT-003",
           "title_chirho": "Replace global CURRENT_BRK with per-process ProcessAddressSpaceChirho",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "brk is currently global. Each process needs its own brk pointer in ProcessAddressSpaceChirho."
+          "notes_chirho": "sys_brk reads/writes task.brk_chirho. set_brk_chirho updates both task and global. Global kept as PID 0 fallback."
         },
         {
           "id_chirho": "A2-AUDIT-004",
