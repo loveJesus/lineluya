@@ -2088,8 +2088,6 @@ impl FileOpsChirho for SocketFileOpsChirho {
                 // Yield to other tasks so incoming data gets processed.
                 if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                     crate::scheduler_chirho::schedule_chirho();
-                    // Reset time slice after returning from yield to prevent
-                    // the post-syscall resched check from crashing.
                     crate::scheduler_chirho::reset_time_slice_chirho();
                 }
                 // Re-check recv_buf.

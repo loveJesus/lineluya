@@ -2076,29 +2076,36 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Store the return value so the caller (assembly stub) can put it in rax.
     frame_chirho.rax_chirho = result_chirho as u64;
 
-    // Preemptive scheduling on syscall return.
-    // Skip for syscalls that modify process state or already did scheduling.
-    // After blocking syscalls (select, poll, etc.) the time slice is exhausted
-    // from HLT loops. Reset need_resched so the NEXT syscall (e.g., accept)
-    // doesn't trigger a context switch that crashes.
     let is_blocking_chirho = matches!(
         syscall_nr_chirho,
         SYS_SELECT_CHIRHO | SYS_POLL_CHIRHO | SYS_PPOLL_CHIRHO
         | SYS_EPOLL_WAIT_CHIRHO | SYS_EPOLL_PWAIT_CHIRHO
         | SYS_NANOSLEEP_CHIRHO | SYS_CLOCK_NANOSLEEP_CHIRHO
     );
-    if is_blocking_chirho {
-        // Reset the time slice — the task cooperatively yielded during the block.
-        crate::scheduler_chirho::reset_time_slice_chirho();
-    }
-
-    // Check for preemptive reschedule on non-lifecycle syscalls.
+    // Skip rescheduling after blocking and lifecycle syscalls.
+    // Blocking syscalls (select/poll) consume the time slice in HLT loops.
+    // schedule_chirho() at return boundary crashes (#UD) — the context
+    // switch doesn't handle being called from the syscall dispatch path.
+    // Instead, the fork child gets CPU time from schedule calls inside
+    // the HLT loops (added back below).
     let skip_resched_chirho = matches!(
         syscall_nr_chirho,
         SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO | SYS_CLONE_CHIRHO | SYS_EXECVE_CHIRHO
         | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO | SYS_WAIT4_CHIRHO
         | SYS_SCHED_YIELD_CHIRHO
-    ) || is_blocking_chirho;
+        | SYS_SELECT_CHIRHO | SYS_POLL_CHIRHO | SYS_PPOLL_CHIRHO
+        | SYS_EPOLL_WAIT_CHIRHO | SYS_EPOLL_PWAIT_CHIRHO
+        | SYS_NANOSLEEP_CHIRHO | SYS_CLOCK_NANOSLEEP_CHIRHO
+    );
+    // After blocking syscalls, explicitly trigger resched if there are
+    // runnable tasks. This is the ONLY safe place to context-switch
+    // (not inside HLT loops). Reset time slice afterward.
+    if is_blocking_chirho && crate::scheduler_chirho::has_runnable_tasks_chirho() {
+        crate::scheduler_chirho::schedule_chirho();
+        crate::scheduler_chirho::reset_time_slice_chirho();
+    } else if is_blocking_chirho {
+        crate::scheduler_chirho::reset_time_slice_chirho();
+    }
     if !skip_resched_chirho && crate::scheduler_chirho::need_resched_chirho() {
         crate::scheduler_chirho::schedule_chirho();
     }
@@ -3081,10 +3088,10 @@ fn sys_poll_chirho(
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
             // Yield to other runnable tasks (fork children).
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
-            }
+            // NOTE: Do NOT call schedule_chirho() here. Context switching
+            // from inside a syscall HLT loop crashes (#UD in kernel_main)
+            // because the context switch doesn't handle nested kernel stacks.
+            // Fork children get CPU time at syscall return boundaries.
             // Re-check pollfds
             for pfd_chirho in pollfds_chirho.iter() {
                 if pfd_chirho.fd_chirho >= 0 {
@@ -3216,18 +3223,25 @@ fn sys_select_chirho(
         write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho)
     } else {
         // Block: HLT in a loop until something becomes ready.
-        // Also yield to other tasks (fork children) via schedule_chirho.
-        for _attempt_chirho in 0..1000u32 {
+        // If there are other runnable tasks (fork children), limit the
+        // block to just a few iterations so this task returns quickly
+        // and the child can run at the syscall return boundary.
+        let max_attempts_chirho = if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+            5u32 // Short block — let the child run soon
+        } else {
+            1000u32 // Long block — no other tasks to run
+        };
+        for _attempt_chirho in 0..max_attempts_chirho {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
             // Yield to other runnable tasks (e.g., fork children that need
             // to write the SSH banner). Without this, the parent monopolizes
             // the CPU and the child never runs.
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
-            }
+            // NOTE: Do NOT call schedule_chirho() here. Context switching
+            // from inside a syscall HLT loop crashes (#UD in kernel_main)
+            // because the context switch doesn't handle nested kernel stacks.
+            // Fork children get CPU time at syscall return boundaries.
 
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
@@ -3373,10 +3387,10 @@ fn sys_epoll_wait_chirho(
         if timeout_chirho != 0 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
-            }
+            // NOTE: Do NOT call schedule_chirho() here. Context switching
+            // from inside a syscall HLT loop crashes (#UD in kernel_main)
+            // because the context switch doesn't handle nested kernel stacks.
+            // Fork children get CPU time at syscall return boundaries.
         } else {
             return 0; // Non-blocking: return immediately.
         }
