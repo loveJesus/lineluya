@@ -30,6 +30,17 @@ const FAST_HEAP_SIZE_CHIRHO: usize = 32 * 1024 * 1024;
 /// Buddy allocator: 256 MiB.
 const BUDDY_HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
 
+/// Kernel heap configuration. Centralizes all heap-related constants.
+pub struct HeapConfigChirho;
+
+impl HeapConfigChirho {
+    pub const START_CHIRHO: usize = HEAP_START_CHIRHO;
+    pub const TOTAL_SIZE_CHIRHO: usize = HEAP_SIZE_CHIRHO;
+    pub const FAST_SIZE_CHIRHO: usize = FAST_HEAP_SIZE_CHIRHO;
+    pub const BUDDY_SIZE_CHIRHO: usize = BUDDY_HEAP_SIZE_CHIRHO;
+    pub const BUDDY_LEAF_SIZE_CHIRHO: usize = 4096;
+}
+
 /// Global counter for large (>256KB) allocations.
 /// Used by diagnostic logging to correlate allocs with code sections.
 pub static LARGE_ALLOC_COUNT_CHIRHO: core::sync::atomic::AtomicU64 =

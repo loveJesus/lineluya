@@ -40,6 +40,19 @@ use x86_64::VirtAddr;
 // Public selector constants
 // ============================================================================
 
+// GDT Layout:
+//   Slot 0: Null descriptor        -> selector 0x00
+//   Slot 1: Kernel code (64-bit)   -> selector 0x08
+//   Slot 2: Kernel data            -> selector 0x10
+//   Slot 3: User code 32 (compat)  -> selector 0x18
+//   Slot 4: User data              -> selector 0x20 (RPL3 = 0x23)
+//   Slot 5: User code 64           -> selector 0x28 (RPL3 = 0x2B)
+//   Slot 6-7: TSS (16 bytes)       -> selector 0x30
+//
+// Each GDT slot is 8 bytes, so selector = slot_index * 8.
+// User-mode selectors have RPL bits [1:0] set to 3.
+// The TSS descriptor occupies two consecutive slots (system segment in long mode).
+
 /// Kernel code segment selector — GDT index 1, RPL 0.
 /// Used by SYSCALL entry (loaded via STAR[47:32]).
 pub const KERNEL_CS_CHIRHO: u16 = 0x08;

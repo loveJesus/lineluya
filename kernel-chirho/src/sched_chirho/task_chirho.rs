@@ -66,19 +66,50 @@ pub fn allocate_pid_chirho() -> u64 {
 
 /// Lifecycle states of a task.
 ///
+/// Each variant represents a distinct point in the task lifecycle:
+///
+/// - **`RunningChirho`** -- The task is actively executing instructions on a
+///   CPU core.  At most one task per core can be in this state.
+///
+/// - **`ReadyChirho`** -- The task is runnable and sitting in the scheduler's
+///   run queue, waiting for a CPU to become available.
+///
+/// - **`SleepingChirho`** -- The task is in an interruptible sleep.  It is
+///   waiting for an event (e.g., data arriving on a pipe, a timer expiring)
+///   and can be woken by a signal.  Corresponds to Linux `TASK_INTERRUPTIBLE`.
+///
+/// - **`BlockedChirho`** -- The task is in an uninterruptible wait, typically
+///   for disk I/O, a lock, or a futex.  Signals do not wake it.  Corresponds
+///   to Linux `TASK_UNINTERRUPTIBLE`.
+///
+/// - **`StoppedChirho`** -- The task has been stopped by a signal (`SIGSTOP`,
+///   `SIGTSTP`) or by a ptrace attach.  It will not be scheduled until
+///   continued with `SIGCONT`.
+///
+/// - **`ZombieChirho`** -- The task has called `exit()` (or was killed) but
+///   its parent has not yet collected the exit status via `wait()`/`waitpid()`.
+///
+/// - **`DeadChirho`** -- The task has been reaped and fully cleaned up.  The
+///   descriptor may be freed.
+///
 /// Transitions follow the standard Unix model:
 ///
 /// ```text
 ///                  schedule
 ///   ReadyChirho ──────────► RunningChirho
 ///        ▲                       │
-///        │  wake                 │ block / yield
+///        │  wake                 │ block / sleep / yield
 ///        │                      ▼
-///        └──────────────── BlockedChirho
-///                                │
-///                        exit()  │
-///                                ▼
-///                          ZombieChirho ──► DeadChirho
+///        ├──────────────── BlockedChirho
+///        │
+///        ├──────────────── SleepingChirho  (signal or event wakes)
+///        │
+///        │  SIGCONT            SIGSTOP / ptrace
+///        ├──────────────── StoppedChirho ◄──── RunningChirho
+///        │                                │
+///        │                        exit()  │
+///        │                                ▼
+///        └───────────────── ZombieChirho ──► DeadChirho
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStateChirho {
@@ -86,8 +117,12 @@ pub enum TaskStateChirho {
     RunningChirho,
     /// Runnable and waiting in the scheduler's run queue.
     ReadyChirho,
-    /// Blocked on I/O, a lock, a futex, or another event.
+    /// Interruptible sleep — waiting for an event; can be woken by a signal.
+    SleepingChirho,
+    /// Blocked on I/O, a lock, a futex, or another event (uninterruptible).
     BlockedChirho,
+    /// Stopped by a signal (SIGSTOP/SIGTSTP) or ptrace; resumed by SIGCONT.
+    StoppedChirho,
     /// Exited but not yet reaped by a parent `wait()` / `waitpid()`.
     ZombieChirho,
     /// Fully cleaned up; the descriptor may be freed.
@@ -99,7 +134,9 @@ impl core::fmt::Display for TaskStateChirho {
         match self {
             Self::RunningChirho => write!(f_chirho, "Running"),
             Self::ReadyChirho => write!(f_chirho, "Ready"),
+            Self::SleepingChirho => write!(f_chirho, "Sleeping"),
             Self::BlockedChirho => write!(f_chirho, "Blocked"),
+            Self::StoppedChirho => write!(f_chirho, "Stopped"),
             Self::ZombieChirho => write!(f_chirho, "Zombie"),
             Self::DeadChirho => write!(f_chirho, "Dead"),
         }

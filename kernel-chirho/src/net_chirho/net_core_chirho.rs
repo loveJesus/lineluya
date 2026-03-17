@@ -1929,6 +1929,25 @@ impl SocketChirho {
             nonblock_chirho,
         }
     }
+
+    /// Get the effective connection state, combining socket and TCP state.
+    /// For SOCK_STREAM sockets, TCP state takes precedence over socket state,
+    /// preventing out-of-sync issues between `state_chirho` and
+    /// `tcb_chirho.state_chirho` (audit typed-002).
+    pub fn effective_state_chirho(&self) -> SocketStateChirho {
+        // TCP state takes precedence for stream sockets
+        let base_type_chirho = self.sock_type_chirho & 0xF;
+        if base_type_chirho == 1 { // SOCK_STREAM
+            match self.tcb_chirho.state_chirho {
+                TcpStateChirho::EstablishedChirho => SocketStateChirho::ConnectedChirho,
+                TcpStateChirho::ListenChirho => SocketStateChirho::ListeningChirho,
+                TcpStateChirho::ClosedChirho => SocketStateChirho::ClosedChirho,
+                _ => self.state_chirho, // use socket state for transitional TCP states
+            }
+        } else {
+            self.state_chirho
+        }
+    }
 }
 
 // ============================================================================
@@ -2029,7 +2048,9 @@ impl FileOpsChirho for SocketFileOpsChirho {
             .and_then(|s_chirho| s_chirho.as_mut())
             .ok_or(-EBADF_CHIRHO)?;
 
-        if socket_chirho.state_chirho != SocketStateChirho::ConnectedChirho {
+        // Use effective_state_chirho to derive connected status from TCP state
+        // machine, preventing socket/TCP state desync (audit typed-002).
+        if socket_chirho.effective_state_chirho() != SocketStateChirho::ConnectedChirho {
             return Err(-ENOTCONN_CHIRHO);
         }
 
@@ -2239,20 +2260,26 @@ fn socket_idx_from_fd_chirho(fd_chirho: u64) -> Result<usize, i64> {
     Ok(inode_guard_chirho.ino_chirho as usize)
 }
 
-/// Read a sockaddr_in from user-space memory pointer.
-/// SAFETY: Assumes addr_chirho is a valid user-space pointer.
-unsafe fn read_sockaddr_from_user_chirho(
+/// Read a sockaddr_in from user-space memory, safely.
+///
+/// Uses `copy_from_user_chirho` to safely read from the user's address space
+/// instead of raw pointer arithmetic. Returns `None` if the pointer is null,
+/// too short, or the copy fails.
+fn read_sockaddr_from_user_chirho(
     addr_chirho: u64,
     addrlen_chirho: u64,
 ) -> Option<SockAddrInChirho> {
     if addr_chirho == 0 || addrlen_chirho < 8 {
         return None;
     }
-    let ptr_chirho = addr_chirho as *const u8;
     let mut buf_chirho = [0u8; 16];
     let copy_len_chirho = core::cmp::min(addrlen_chirho as usize, 16);
-    for i_chirho in 0..copy_len_chirho {
-        buf_chirho[i_chirho] = unsafe { core::ptr::read_volatile(ptr_chirho.add(i_chirho)) };
+    if crate::uaccess_chirho::copy_from_user_chirho(
+        &mut buf_chirho[..copy_len_chirho],
+        addr_chirho,
+        copy_len_chirho,
+    ).is_err() {
+        return None;
     }
     SockAddrInChirho::from_user_bytes_chirho(&buf_chirho[..copy_len_chirho])
 }
@@ -2834,8 +2861,8 @@ pub fn sys_sendto_chirho(
     _dest_addr_chirho: u64,
     _addrlen_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!(
-        "[NET] sys_sendto(fd={}, len={})",
+    crate::log_net_chirho!(
+        "sys_sendto(fd={}, len={})",
         sockfd_chirho,
         len_chirho,
     );
@@ -2864,16 +2891,17 @@ pub fn sys_sendto_chirho(
         None => return len_chirho as i64, // Fallback
     };
 
-    // For stream sockets, must be connected
+    // For stream sockets, must be connected — use effective_state_chirho to
+    // derive from TCP state machine, preventing desync (audit typed-002).
     let sock_type_chirho = SocketTypeChirho::from_raw_chirho(socket_chirho.sock_type_chirho);
     if sock_type_chirho == Some(SocketTypeChirho::SockStreamChirho)
-        && socket_chirho.state_chirho != SocketStateChirho::ConnectedChirho
+        && socket_chirho.effective_state_chirho() != SocketStateChirho::ConnectedChirho
     {
         return -ENOTCONN_CHIRHO;
     }
 
     // For connected sockets, try to deliver to peer's recv buffer (loopback path)
-    if socket_chirho.state_chirho == SocketStateChirho::ConnectedChirho
+    if socket_chirho.effective_state_chirho() == SocketStateChirho::ConnectedChirho
         && !data_chirho.is_empty()
     {
         let remote_addr_chirho = socket_chirho.remote_addr_chirho;
@@ -2950,8 +2978,8 @@ pub fn sys_sendto_chirho(
                     for byte_chirho in &data_chirho {
                         peer_chirho.recv_buf_chirho.push_back(*byte_chirho);
                     }
-                    crate::serial_println_chirho!(
-                        "[NET] sendto: delivered {} bytes to peer socket_idx={}",
+                    crate::log_net_chirho!(
+                        "sendto: delivered {} bytes to peer socket_idx={}",
                         data_chirho.len(),
                         peer_idx_val_chirho,
                     );
@@ -3067,7 +3095,7 @@ pub fn sys_recvfrom_chirho(
                 unsafe { core::ptr::write_volatile(ptr_chirho.add(i_chirho), byte_chirho) };
             }
         }
-        crate::serial_println_chirho!("[NET] recvfrom (polled) -> {}", count_chirho);
+        crate::log_net_chirho!("recvfrom (polled) -> {}", count_chirho);
         return count_chirho as i64;
     }
 
@@ -3080,7 +3108,7 @@ pub fn sys_recvfrom_chirho(
         }
     }
 
-    crate::serial_println_chirho!("[NET] recvfrom -> {}", count_chirho);
+    crate::log_net_chirho!("recvfrom -> {}", count_chirho);
     count_chirho as i64
 }
 
@@ -3206,7 +3234,9 @@ pub fn sys_getpeername_chirho(
         None => return -EBADF_CHIRHO,
     };
 
-    if socket_chirho.state_chirho != SocketStateChirho::ConnectedChirho {
+    // Use effective_state_chirho to derive from TCP state machine,
+    // preventing socket/TCP state desync (audit typed-002).
+    if socket_chirho.effective_state_chirho() != SocketStateChirho::ConnectedChirho {
         return -ENOTCONN_CHIRHO;
     }
 
@@ -4111,7 +4141,7 @@ impl NetDeviceChirho for VirtioNetDeviceChirho {
         if !self.initialized_chirho {
             return;
         }
-        crate::serial_println_chirho!("[VNET] TX: {} bytes", data_chirho.len());
+        crate::log_net_chirho!("[VNET] TX: {} bytes", data_chirho.len());
         self.transmit_frame_chirho(data_chirho);
     }
 
@@ -4484,7 +4514,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
         None => return,
     };
 
-    crate::serial_println_chirho!(
+    crate::log_net_chirho!(
         "[TCP] Received {}:{} -> {}:{} flags={:#04x} seq={} ack={} len={}",
         format_ip_chirho(ip_hdr_chirho.src_ip_chirho), segment_chirho.src_port_chirho,
         format_ip_chirho(ip_hdr_chirho.dst_ip_chirho), segment_chirho.dst_port_chirho,
@@ -4606,7 +4636,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
             for byte_chirho in &segment_chirho.payload_chirho {
                 sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
             }
-            crate::serial_println_chirho!(
+            crate::log_net_chirho!(
                 "[TCP] Delivered {} bytes to socket port {}",
                 segment_chirho.payload_chirho.len(),
                 local_port_chirho,
@@ -6205,7 +6235,7 @@ impl NetDeviceChirho for VirtioNetIoDeviceChirho {
         if !self.initialized_chirho {
             return;
         }
-        crate::serial_println_chirho!("[VNET-IO] TX: {} bytes", data_chirho.len());
+        crate::log_net_chirho!("[VNET-IO] TX: {} bytes", data_chirho.len());
         self.transmit_frame_io_chirho(data_chirho);
     }
 

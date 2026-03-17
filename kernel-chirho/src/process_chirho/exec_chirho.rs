@@ -91,6 +91,22 @@ pub enum ExecErrorChirho {
 }
 
 // ============================================================================
+// ExecTargetChirho — classification of an execve target
+// ============================================================================
+
+/// Classification of an execve target. Determined from the filename
+/// and file contents before loading.
+#[derive(Debug, Clone)]
+pub enum ExecTargetChirho {
+    /// Embedded BusyBox binary (matched by applet name in /bin).
+    EmbeddedBusyBoxChirho { applet_name_chirho: alloc::string::String },
+    /// ELF binary loaded from VFS (ext4 or tmpfs).
+    ElfFromVfsChirho { path_chirho: alloc::string::String },
+    /// Shell script (starts with #!).
+    ScriptChirho { interpreter_chirho: alloc::string::String },
+}
+
+// ============================================================================
 // LoadedElfChirho — result of loading an ELF into memory
 // ============================================================================
 

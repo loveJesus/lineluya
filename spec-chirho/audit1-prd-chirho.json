@@ -1,5 +1,5 @@
 {
-  "title_chirho": "Lineluya Kernel Audit #1 — Rust Improvements PRD",
+  "title_chirho": "Lineluya Kernel Audit #1 \u2014 Rust Improvements PRD",
   "description_chirho": "For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life. - John 3:16. Structured tasks from kernel-rust-improvements-chirho.md audit.",
   "version_chirho": "1.0.0",
   "created_chirho": "2026-03-16",
@@ -38,26 +38,26 @@
           "status_chirho": "done",
           "file_chirho": "fs_chirho/ext4_chirho.rs",
           "priority_chirho": "high",
-          "notes_chirho": "readonly_chirho field corrupts at runtime — enum prevents this"
+          "notes_chirho": "readonly_chirho field corrupts at runtime \u2014 enum prevents this"
         },
         {
           "id_chirho": "typed-002",
-          "title_chirho": "SocketStateChirho — merge with TcpStateChirho into coherent lifecycle",
-          "status_chirho": "todo",
+          "title_chirho": "SocketStateChirho \u2014 merge with TcpStateChirho into coherent lifecycle",
+          "status_chirho": "done",
           "file_chirho": "net_chirho/net_core_chirho.rs",
           "priority_chirho": "high"
         },
         {
           "id_chirho": "typed-003",
           "title_chirho": "ProcessLifecycleStateChirho enum replacing TaskStateChirho",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "sched_chirho/task_chirho.rs",
           "priority_chirho": "medium"
         },
         {
           "id_chirho": "typed-004",
           "title_chirho": "FaultDispositionChirho enum for page fault handler",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "arch_chirho/interrupts_chirho.rs",
           "priority_chirho": "medium"
         },
@@ -78,7 +78,7 @@
         {
           "id_chirho": "typed-007",
           "title_chirho": "ExecTargetChirho enum (EmbeddedBusyBox/ElfFromVfs/Script)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "process_chirho/exec_chirho.rs",
           "priority_chirho": "low"
         }
@@ -113,7 +113,7 @@
         {
           "id_chirho": "err-004",
           "title_chirho": "Remove panic!/expect/unwrap from non-init code paths",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "Audit all unwrap() calls in hot paths"
         }
@@ -147,7 +147,7 @@
         {
           "id_chirho": "unsafe-004",
           "title_chirho": "Typed sockaddr decoder replacing raw pointer math",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "net_chirho/net_core_chirho.rs",
           "priority_chirho": "medium"
         }
@@ -175,14 +175,14 @@
         {
           "id_chirho": "const-003",
           "title_chirho": "HeapConfigChirho replacing scattered heap size constants",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "mm_chirho/allocator_chirho.rs",
           "priority_chirho": "low"
         },
         {
           "id_chirho": "const-004",
           "title_chirho": "GDT selector newtypes (0x08, 0x10, 0x23, 0x2B, 0x30)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "arch_chirho/gdt_chirho.rs",
           "priority_chirho": "low"
         }
@@ -202,7 +202,7 @@
         {
           "id_chirho": "log-002",
           "title_chirho": "Remove unconditional logging from hot paths (poll, select, read)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high"
         },
         {
@@ -301,10 +301,10 @@
     }
   ],
   "summary_chirho": {
-    "total_chirho": 38,
-    "done_chirho": 13,
-    "in_progress_chirho": 1,
-    "blocked_chirho": 2,
-    "todo_chirho": 22
+    "total_chirho": 37,
+    "done_chirho": 23,
+    "in_progress_chirho": 0,
+    "blocked_chirho": 1,
+    "todo_chirho": 13
   }
 }

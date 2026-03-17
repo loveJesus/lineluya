@@ -272,15 +272,33 @@ extern "x86-interrupt" fn double_fault_handler_chirho(
 
 /// Page-fault handler. Checks for COW faults first; if the fault is not
 /// COW-resolvable, prints the faulting address and error code, then halts.
+/// Fault disposition — what action to take after analyzing a page fault.
+/// Replaces ad-hoc boolean branching with an explicit decision type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FaultDispositionChirho {
+    /// Page successfully mapped — resume the faulting instruction.
+    ResolvedChirho,
+    /// User-mode fault that can't be resolved — kill the task.
+    KillTaskChirho,
+    /// Kernel-mode fault that can't be resolved — panic.
+    PanicKernelChirho,
+}
+
+/// Fault source classification for clearer dispatch.
+#[derive(Debug, Clone, Copy)]
+struct FaultContextChirho {
+    addr_chirho: u64,
+    is_user_chirho: bool,
+    is_write_chirho: bool,
+    is_present_chirho: bool,
+}
+
 extern "x86-interrupt" fn page_fault_handler_chirho(
     _stack_frame_chirho: InterruptStackFrame,
     error_code_chirho: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
 
-    // For user-mode page faults: map the page directly using raw
-    // page table operations. CANNOT use mm_chirho.mmap (would deadlock
-    // if the mm locks are already held by the faulting syscall).
     let is_user_chirho = error_code_chirho.contains(PageFaultErrorCode::USER_MODE);
     let is_write_chirho = error_code_chirho.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_present_chirho = error_code_chirho.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
