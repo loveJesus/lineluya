@@ -3360,9 +3360,11 @@ fn sys_select_chirho(
             crate::net_chirho::poll_network_chirho();
 
             // Yield to other runnable tasks.
+            // Do NOT reset time slice — let the timer manage preemption
+            // so that the yielded-to task gets preempted back when its
+            // time slice expires via the syscall return check.
             if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                 crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
             }
 
             let count_chirho = write_ready_fds_chirho(
