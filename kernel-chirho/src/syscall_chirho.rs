@@ -2216,6 +2216,11 @@ fn sys_writev_chirho(
     if iov_chirho.is_null() || iovcnt_chirho <= 0 {
         return -EINVAL_CHIRHO;
     }
+    let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho);
+    crate::serial_println_chirho!(
+        "[WRITEV] fd={} iovcnt={} is_socket={}",
+        fd_chirho, iovcnt_chirho, is_sock_chirho,
+    );
 
     let mut total_written_chirho: i64 = 0;
 

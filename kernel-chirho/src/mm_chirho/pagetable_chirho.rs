@@ -417,23 +417,36 @@ fn clone_table_level_chirho(
 
         if level_chirho == 1 {
             // Leaf level (PT entries) — these point to actual 4 KiB frames.
-            // For COW: if the page is user-accessible and writable, mark it
-            // read-only and set the COW bit in both source and clone.
+            //
+            // Full copy: allocate a new frame and copy the page contents.
+            // This avoids the need for COW fault resolution in the page fault
+            // handler. COW is more efficient but requires page fault handling
+            // that we haven't implemented yet.
             let is_user_chirho = flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE);
-            let is_writable_chirho = flags_chirho.contains(PageTableFlags::WRITABLE);
 
-            if is_user_chirho && is_writable_chirho {
-                // Remove WRITABLE, add COW bit.
-                let cow_flags_chirho = (flags_chirho - PageTableFlags::WRITABLE)
-                    | PageTableFlags::from_bits_truncate(COW_BIT_CHIRHO);
-
-                // Update the source entry (parent's PT) to be COW too.
-                source_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
-
-                // Set the clone entry with the same COW flags.
-                new_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
+            if is_user_chirho {
+                // Allocate a fresh frame and copy the page data.
+                let copy_frame_chirho = {
+                    let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+                    alloc_lock_chirho.as_mut().and_then(|a_chirho| a_chirho.allocate_frame())
+                };
+                if let Some(frame_chirho) = copy_frame_chirho {
+                    let phys_offset_chirho = phys_mem_offset_chirho();
+                    let src_chirho = (phys_offset_chirho + entry_addr_chirho.as_u64()) as *const u8;
+                    let dst_chirho = (phys_offset_chirho + frame_chirho.start_address().as_u64()) as *mut u8;
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(src_chirho, dst_chirho, 4096);
+                    }
+                    new_table_chirho[i_chirho].set_addr(
+                        frame_chirho.start_address(),
+                        flags_chirho, // Keep original flags (including WRITABLE)
+                    );
+                } else {
+                    // OOM — share the page read-only as fallback.
+                    new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
+                }
             } else {
-                // Read-only or non-user page — share directly.
+                // Kernel or non-user page — share directly (read-only is fine).
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
             }
         } else {

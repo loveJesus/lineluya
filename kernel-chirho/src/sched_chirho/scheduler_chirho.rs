@@ -326,9 +326,29 @@ pub fn schedule_chirho() {
                             crate::gdt_chirho::set_tss_rsp0_chirho(kstack_top_chirho);
                         }
                         crate::syscall_entry_chirho::set_kernel_stack_top_chirho(kstack_top_chirho);
-                        // Update CURRENT_TASK so current_task_chirho() returns
-                        // the correct task. Without this, sys_exit marks the
-                        // wrong PID as zombie.
+
+                        // Save/restore per-process fd tables on context switch.
+                        // MUST happen BEFORE set_current_task so we save the
+                        // OLD task's fd table, not the new one.
+                        {
+                            let mut global_fd_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+
+                            // Save current global fd table back to the OLD task.
+                            if let Some(old_task_chirho) = crate::task_chirho::current_task_chirho() {
+                                let mut old_guard_chirho = old_task_chirho.lock();
+                                if let Some(ref global_table_chirho) = *global_fd_chirho {
+                                    old_guard_chirho.fd_table_chirho = Some(global_table_chirho.clone_table_chirho());
+                                }
+                            }
+
+                            // Load NEW task's fd table into the global slot.
+                            let new_guard_chirho = task_arc_chirho.lock();
+                            if let Some(ref fd_table_chirho) = new_guard_chirho.fd_table_chirho {
+                                *global_fd_chirho = Some(fd_table_chirho.clone_table_chirho());
+                            }
+                        }
+
+                        // NOW update CURRENT_TASK.
                         crate::task_chirho::set_current_task_chirho(
                             alloc::sync::Arc::clone(task_arc_chirho),
                         );

@@ -3308,7 +3308,13 @@ pub fn sys_getpeername_chirho(
 ) -> i64 {
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
-        Err(e_chirho) => return e_chirho,
+        Err(e_chirho) => {
+            crate::serial_println_chirho!(
+                "[NET] getpeername(fd={}) -> err {} (not a socket)",
+                sockfd_chirho, e_chirho,
+            );
+            return e_chirho;
+        }
     };
 
     let table_chirho = SOCKET_TABLE_CHIRHO.lock();
@@ -3317,9 +3323,13 @@ pub fn sys_getpeername_chirho(
         None => return -EBADF_CHIRHO,
     };
 
-    // Use effective_state_chirho to derive from TCP state machine,
-    // preventing socket/TCP state desync (audit typed-002).
-    if socket_chirho.effective_state_chirho() != SocketStateChirho::ConnectedChirho {
+    let eff_state_chirho = socket_chirho.effective_state_chirho();
+    crate::serial_println_chirho!(
+        "[NET] getpeername(fd={}, idx={}) state={:?} remote={:?}",
+        sockfd_chirho, socket_idx_chirho, eff_state_chirho,
+        socket_chirho.remote_addr_chirho,
+    );
+    if eff_state_chirho != SocketStateChirho::ConnectedChirho {
         return -ENOTCONN_CHIRHO;
     }
 
