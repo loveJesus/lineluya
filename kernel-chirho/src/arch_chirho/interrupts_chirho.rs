@@ -647,22 +647,16 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
     if was_user_mode_chirho && crate::scheduler_chirho::need_resched_chirho() {
-        // NOTE: Do NOT call schedule_chirho() here directly!
-        // The context switch inside schedule_chirho switches RSP to the target
-        // task's stack, but the timer handler's epilogue expects to IRETQ from
-        // the CURRENT task's interrupt frame. Switching stacks here would make
-        // the IRETQ pop wrong values (GPF with corrupted RIP).
-        //
-        // Instead, just leave need_resched set. The syscall dispatch wrapper
-        // (syscall_entry_chirho.rs) checks need_resched after every syscall
-        // and does the context switch on the syscall return path, where the
-        // stack state is well-defined.
-        //
-        // For user-mode preemption without a pending syscall, the HLT in the
-        // kernel idle loop will fire the timer and the next syscall from the
-        // rescheduled task will pick up the context switch.
-        // crate::scheduler_chirho::schedule_chirho();
-        // crate::scheduler_chirho::reset_time_slice_chirho();
+        // Preemptive scheduling from the timer interrupt.
+        // This is safe because we only preempt USER MODE code — the timer
+        // handler runs on the kernel stack (TSS.RSP0) with the interrupt
+        // frame at a known position. After schedule_chirho() switches context,
+        // the NEW task resumes from ITS saved context (not from this handler's
+        // IRETQ frame). When this task is eventually scheduled again, the
+        // scheduler restores its context which includes the registers saved
+        // by this handler, and the handler's epilogue IRETQs correctly.
+        crate::scheduler_chirho::schedule_chirho();
+        crate::scheduler_chirho::reset_time_slice_chirho();
     }
 }
 
