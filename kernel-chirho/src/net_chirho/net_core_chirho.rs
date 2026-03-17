@@ -2994,9 +2994,18 @@ pub fn sys_sendto_chirho(
             let remote_chirho = remote_addr_chirho.unwrap_or(SockAddrInChirho { port_chirho: 0, addr_chirho: 0 });
             let remote_port_chirho = remote_chirho.port_chirho;
             let remote_ip_chirho = remote_chirho.addr_chirho;
-            let src_ip_chirho = socket_chirho.local_addr_chirho
+            // Use interface IP when local addr is INADDR_ANY (0.0.0.0).
+            let raw_local_ip_chirho = socket_chirho.local_addr_chirho
                 .map(|a_chirho| a_chirho.addr_chirho)
-                .unwrap_or(get_interface_ip_chirho(0));
+                .unwrap_or(0);
+            let src_ip_chirho = if raw_local_ip_chirho == 0 {
+                // Try all interfaces to find a non-zero IP.
+                let mut ip_chirho = get_interface_ip_chirho(0);
+                if ip_chirho == 0 { ip_chirho = get_interface_ip_chirho(1); }
+                ip_chirho
+            } else {
+                raw_local_ip_chirho
+            };
 
             crate::serial_println_chirho!(
                 "[NET] sendto TCP: {} bytes state={:?} src={}:{} dst={}:{}",
