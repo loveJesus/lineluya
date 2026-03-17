@@ -424,12 +424,23 @@ fn resolve_path_depth_chirho(
         .filter(|s_chirho| !s_chirho.is_empty())
         .collect();
 
+    let debug_resolve_chirho = path_chirho.contains("dropbear");
+
     // Check mount points -- find the longest matching mount
     let mut mount_prefix_len_chirho: usize = 0;
     let mut current_sb_chirho: Option<Arc<Mutex<SuperblockChirho>>> = None;
 
     {
         let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+        if debug_resolve_chirho {
+            crate::serial_println_chirho!(
+                "[VFS-DBG] mount table has {} entries for path '{}'",
+                mounts_chirho.len(), path_chirho
+            );
+            for (i_chirho, m_chirho) in mounts_chirho.iter().enumerate() {
+                crate::serial_println_chirho!("[VFS-DBG]   mount[{}] = '{}'", i_chirho, m_chirho.path_chirho);
+            }
+        }
         for mount_chirho in mounts_chirho.iter() {
             let mount_path_chirho = &mount_chirho.path_chirho;
             // Special case: "/" matches all paths but is the shortest
@@ -532,8 +543,6 @@ fn resolve_path_depth_chirho(
     // For non-tmpfs inodes (procfs, devtmpfs), we fall back to
     // `InodeOps::lookup_chirho` which may return static Arc copies.
     let mut current_inode_chirho = start_inode_chirho;
-
-    let debug_resolve_chirho = path_chirho.contains("dropbear");
 
     for (idx_chirho, component_chirho) in remaining_components_chirho.iter().enumerate() {
         let is_last_chirho = idx_chirho == remaining_components_chirho.len() - 1;
