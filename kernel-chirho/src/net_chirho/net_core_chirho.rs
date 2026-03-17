@@ -4338,11 +4338,32 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
 /// Called from pipe read when the pipe is empty — this bridges
 /// the TCP connection data to dropbear's childpipe I/O.
 pub fn relay_tcp_2222_to_pipe_chirho(pipe_chirho: &alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>) {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static LOGGED_CHIRHO: AtomicBool = AtomicBool::new(false);
+
     let table_result_chirho = SOCKET_TABLE_CHIRHO.try_lock();
     let mut table_chirho = match table_result_chirho {
         Some(t) => t,
-        None => return, // Lock held — skip this check
+        None => return,
     };
+
+    // One-shot debug: log socket table state on first successful lock
+    if !LOGGED_CHIRHO.swap(true, Ordering::SeqCst) {
+        let mut found_chirho = 0u32;
+        for (i, s) in table_chirho.iter().enumerate() {
+            if let Some(ref sock) = s {
+                crate::serial_println_chirho!(
+                    "[RELAY-DBG] socket[{}]: family={} state={:?} port={:?} recv={}",
+                    i, sock.family_chirho, sock.tcb_chirho.state_chirho,
+                    sock.local_addr_chirho.map(|a| a.port_chirho),
+                    sock.recv_buf_chirho.len()
+                );
+                found_chirho += 1;
+            }
+        }
+        crate::serial_println_chirho!("[RELAY-DBG] {} sockets found", found_chirho);
+    }
+
     for slot_chirho in table_chirho.iter_mut() {
         if let Some(ref mut s_chirho) = slot_chirho {
             if s_chirho.family_chirho == 2
