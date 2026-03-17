@@ -1666,21 +1666,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_GETGID_CHIRHO => sys_getgid_chirho(),
         SYS_GETEGID_CHIRHO => sys_getegid_chirho(),
         SYS_GETPPID_CHIRHO => sys_getppid_chirho(),
-        // Phase 4: Process group/session — track in task struct
-        SYS_SETPGID_CHIRHO => {
-            // setpgid(pid, pgid): if pid==0, use current. if pgid==0, use pid.
-            let target_pid_chirho = if arg0_chirho == 0 { sys_getpid_chirho() as u64 } else { arg0_chirho };
-            let _target_pgid_chirho = if arg1_chirho == 0 { target_pid_chirho } else { arg1_chirho };
-            crate::serial_debug_chirho!("[SYSCALL] setpgid({}, {})", target_pid_chirho, _target_pgid_chirho);
-            0 // Accept silently — we track PID as PGID for now
-        },
-        SYS_GETPGRP_CHIRHO => sys_getpid_chirho(), // PGID == PID for now
-        SYS_SETSID_CHIRHO => {
-            // Create new session: session_id = current PID, become group leader
-            let pid_chirho = sys_getpid_chirho();
-            crate::serial_debug_chirho!("[SYSCALL] setsid() -> session {}", pid_chirho);
-            pid_chirho // Return the new session ID (= PID)
-        },
+        // Phase 5: Real process group/session infrastructure
+        SYS_SETPGID_CHIRHO => sys_setpgid_chirho(arg0_chirho, arg1_chirho),
+        SYS_GETPGRP_CHIRHO => sys_getpgrp_chirho(),
+        SYS_SETSID_CHIRHO => sys_setsid_chirho(),
         SYS_SETREUID_CHIRHO => 0,
         SYS_SETREGID_CHIRHO => 0,
         SYS_GETGROUPS_CHIRHO => 0,
@@ -1701,8 +1690,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             if arg2_chirho != 0 { unsafe { *(arg2_chirho as *mut u32) = 0; } }
             0
         },
-        SYS_GETPGID_CHIRHO => sys_getpid_chirho(),
-        SYS_GETSID_CHIRHO => sys_getpid_chirho(),
+        SYS_GETPGID_CHIRHO => sys_getpgid_chirho(arg0_chirho),
+        SYS_GETSID_CHIRHO => sys_getsid_chirho(arg0_chirho),
         // Phase 4: Additional signal syscalls
         SYS_RT_SIGPENDING_CHIRHO => crate::signal_chirho::sys_rt_sigpending_chirho(arg0_chirho),
         SYS_RT_SIGSUSPEND_CHIRHO => crate::signal_chirho::sys_rt_sigsuspend_chirho(arg0_chirho),
@@ -2837,23 +2826,11 @@ fn sys_ioctl_real_chirho(
     cmd_chirho: u64,
     arg_chirho: u64,
 ) -> i64 {
-    // Handle terminal ioctls for ANY fd before VFS dispatch.
-    // BusyBox dups the TTY to high fds and calls ioctl on them.
-    match cmd_chirho {
-        TIOCGPGRP_CHIRHO => {
-            if arg_chirho != 0 {
-                let pgrp_chirho: i32 = sys_getpid_chirho() as i32;
-                let _ = crate::uaccess_chirho::copy_to_user_chirho(
-                    arg_chirho,
-                    unsafe { core::slice::from_raw_parts(&pgrp_chirho as *const i32 as *const u8, 4) },
-                    4,
-                );
-            }
-            return 0;
-        }
-        TIOCSPGRP_CHIRHO => return 0,
-        _ => {}
-    }
+    // NOTE: TIOCGPGRP / TIOCSPGRP are no longer intercepted here before VFS
+    // dispatch.  PTY fds have their own handlers in pty_ioctl_chirho which
+    // store/retrieve the real foreground pgrp.  The fallback for non-PTY fds
+    // (stdin/stdout/stderr, BusyBox dup'd fds) is handled after VFS dispatch
+    // below.
 
     // Try VFS fd table
     {
@@ -3509,6 +3486,155 @@ fn sys_getppid_chirho() -> i64 {
             if ppid_chirho == 0 { 1 } else { ppid_chirho as i64 }
         }
         None => 1, // fallback
+    }
+}
+
+// ============================================================================
+// Process group / session syscall implementations
+// ============================================================================
+
+/// `setsid(2)` -- create a new session and set the process group ID.
+///
+/// The calling process becomes the leader of a new session and the leader of
+/// a new process group.  The controlling terminal is detached.
+///
+/// Returns the new session ID (= caller's PID) on success, or `-EPERM` if the
+/// caller is already a process group leader (pgid == pid).
+fn sys_setsid_chirho() -> i64 {
+    let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => t_chirho,
+        None => return -EPERM_CHIRHO,
+    };
+    let mut task_chirho = task_arc_chirho.lock();
+    let pid_chirho = task_chirho.pid_chirho;
+
+    // POSIX: setsid fails if caller is already a process group leader.
+    if task_chirho.pgid_chirho == pid_chirho && task_chirho.sid_chirho == pid_chirho {
+        crate::serial_debug_chirho!(
+            "[SYSCALL] setsid() EPERM: PID {} already session leader",
+            pid_chirho
+        );
+        return -EPERM_CHIRHO;
+    }
+
+    // Create new session: sid = pid, pgid = pid, detach controlling tty.
+    task_chirho.sid_chirho = pid_chirho;
+    task_chirho.pgid_chirho = pid_chirho;
+    task_chirho.controlling_tty_chirho = None;
+
+    crate::serial_println_chirho!(
+        "[SYSCALL] setsid() PID {} -> new session {}",
+        pid_chirho,
+        pid_chirho
+    );
+    pid_chirho as i64
+}
+
+/// `setpgid(2)` -- set process group ID for a process.
+///
+/// `setpgid(0, 0)` sets the caller's pgid to its own pid (creates a new
+/// process group).  `setpgid(pid, pgid)` sets the target's pgid.
+///
+/// Returns 0 on success, `-ESRCH` if the target PID is not found, `-EPERM`
+/// on permission errors.
+fn sys_setpgid_chirho(pid_arg_chirho: u64, pgid_arg_chirho: u64) -> i64 {
+    let current_pid_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => t_chirho.lock().pid_chirho,
+        None => return -ESRCH_CHIRHO,
+    };
+
+    // If pid == 0, target is the current process.
+    let target_pid_chirho = if pid_arg_chirho == 0 {
+        current_pid_chirho
+    } else {
+        pid_arg_chirho
+    };
+
+    // If pgid == 0, set pgid to the target's PID.
+    let new_pgid_chirho = if pgid_arg_chirho == 0 {
+        target_pid_chirho
+    } else {
+        pgid_arg_chirho
+    };
+
+    // Find the target task and update its pgid.
+    let target_arc_chirho = match crate::task_chirho::find_task_by_pid_chirho(target_pid_chirho) {
+        Some(t_chirho) => t_chirho,
+        None => {
+            crate::serial_debug_chirho!(
+                "[SYSCALL] setpgid({}, {}) ESRCH: no such process",
+                target_pid_chirho,
+                new_pgid_chirho
+            );
+            return -ESRCH_CHIRHO;
+        }
+    };
+
+    {
+        let mut target_chirho = target_arc_chirho.lock();
+
+        // POSIX: cannot change pgid of a session leader.
+        if target_chirho.sid_chirho == target_chirho.pid_chirho
+            && target_chirho.pgid_chirho == target_chirho.pid_chirho
+            && new_pgid_chirho != target_chirho.pid_chirho
+        {
+            crate::serial_debug_chirho!(
+                "[SYSCALL] setpgid({}, {}) EPERM: target is session leader",
+                target_pid_chirho,
+                new_pgid_chirho
+            );
+            return -EPERM_CHIRHO;
+        }
+
+        target_chirho.pgid_chirho = new_pgid_chirho;
+    }
+
+    crate::serial_println_chirho!(
+        "[SYSCALL] setpgid({}, {}) -> 0",
+        target_pid_chirho,
+        new_pgid_chirho
+    );
+    0
+}
+
+/// `getpgrp(2)` -- get the calling process's process group ID.
+///
+/// Equivalent to `getpgid(0)`.
+fn sys_getpgrp_chirho() -> i64 {
+    match crate::task_chirho::current_task_chirho() {
+        Some(t_chirho) => t_chirho.lock().pgid_chirho as i64,
+        None => 1, // fallback
+    }
+}
+
+/// `getpgid(2)` -- get process group ID for a process.
+///
+/// If `pid_arg_chirho` is 0, returns the caller's pgid.  Otherwise returns
+/// the pgid of the specified process.
+fn sys_getpgid_chirho(pid_arg_chirho: u64) -> i64 {
+    if pid_arg_chirho == 0 {
+        return sys_getpgrp_chirho();
+    }
+    match crate::task_chirho::find_task_by_pid_chirho(pid_arg_chirho) {
+        Some(t_chirho) => t_chirho.lock().pgid_chirho as i64,
+        None => -ESRCH_CHIRHO,
+    }
+}
+
+/// `getsid(2)` -- get session ID for a process.
+///
+/// If `pid_arg_chirho` is 0, returns the caller's session ID.  Otherwise
+/// returns the session ID of the specified process.
+fn sys_getsid_chirho(pid_arg_chirho: u64) -> i64 {
+    if pid_arg_chirho == 0 {
+        return match crate::task_chirho::current_task_chirho() {
+            Some(t_chirho) => t_chirho.lock().sid_chirho as i64,
+            None => 1, // fallback
+        };
+    }
+    match crate::task_chirho::find_task_by_pid_chirho(pid_arg_chirho) {
+        Some(t_chirho) => t_chirho.lock().sid_chirho as i64,
+        None => -ESRCH_CHIRHO,
     }
 }
 

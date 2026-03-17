@@ -6,6 +6,9 @@
 #![feature(abi_x86_interrupt)]
 #![feature(custom_test_frameworks)]
 #![feature(alloc_error_handler)]
+#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
+#![allow(unused_parens, unused_braces, unused_unsafe, unused_assignments)]
+#![allow(unused_doc_comments, unreachable_code, private_interfaces)]
 
 extern crate alloc;
 

@@ -338,6 +338,12 @@ pub struct TaskChirho {
     /// Initial program break set when the binary was loaded.  The kernel
     /// refuses `brk` requests below this address.
     pub brk_start_chirho: u64,
+    /// Session ID (PID of session leader).
+    pub sid_chirho: u64,
+    /// Process group ID.
+    pub pgid_chirho: u64,
+    /// Controlling terminal PTY number, or `None`.
+    pub controlling_tty_chirho: Option<u32>,
 }
 
 impl TaskChirho {
@@ -402,6 +408,9 @@ impl TaskChirho {
             brk_chirho: 0,
             brk_start_chirho: 0,
             cwd_chirho: alloc::string::String::from("/"),
+            sid_chirho: pid_chirho,
+            pgid_chirho: pid_chirho,
+            controlling_tty_chirho: None,
         }
     }
 
@@ -467,6 +476,9 @@ impl TaskChirho {
             brk_chirho: 0,
             brk_start_chirho: 0,
             cwd_chirho: alloc::string::String::from("/"),
+            sid_chirho: pid_chirho,
+            pgid_chirho: pid_chirho,
+            controlling_tty_chirho: None,
         }
     }
 

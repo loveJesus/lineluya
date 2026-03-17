@@ -18,20 +18,17 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use spin::Mutex;
 
 use crate::vfs_chirho::{
-    FileChirho, FileOpsChirho, InodeChirho,
-    S_IFCHR_CHIRHO, S_IFDIR_CHIRHO,
+    FileChirho, FileOpsChirho,
 };
 use crate::syscall_chirho::{
-    EAGAIN_CHIRHO, EFAULT_CHIRHO, EINVAL_CHIRHO, ENOENT_CHIRHO,
+    EAGAIN_CHIRHO, EFAULT_CHIRHO, EINVAL_CHIRHO,
     ENOSYS_CHIRHO, EIO_CHIRHO,
 };
 use crate::tty_chirho::TermiosChirho;
@@ -67,6 +64,9 @@ const TIOCGWINSZ_CHIRHO: u64 = 0x5413;
 
 /// TIOCSWINSZ -- set window size.
 const TIOCSWINSZ_CHIRHO: u64 = 0x5414;
+
+/// TIOCSCTTY -- become controlling terminal.
+const TIOCSCTTY_CHIRHO: u64 = 0x540E;
 
 /// TIOCGPGRP -- get foreground process group.
 const TIOCGPGRP_CHIRHO: u64 = 0x540F;
@@ -106,22 +106,30 @@ pub struct PtyPairChirho {
     pub master_open_chirho: AtomicBool,
     /// Whether slave side is still open.
     pub slave_open_chirho: AtomicBool,
+    /// Foreground process group ID for this PTY.
+    pub foreground_pgrp_chirho: AtomicU32,
 }
 
 impl PtyPairChirho {
     /// Create a new PTY pair with the given number.
+    ///
+    /// The slave is auto-unlocked on creation (Linux behaviour since 2.6.29 --
+    /// most programs like dropbear call TIOCSPTLCK(0) anyway, and SSH login
+    /// breaks if the slave stays locked).
     pub fn new_chirho(nr_chirho: u32) -> Self {
         Self {
             pty_nr_chirho: nr_chirho,
-            slave_unlocked_chirho: AtomicBool::new(false),
+            // Auto-unlock: slave is immediately openable after ptmx open
+            slave_unlocked_chirho: AtomicBool::new(true),
             master_to_slave_chirho: Mutex::new(VecDeque::with_capacity(PTY_BUF_SIZE_CHIRHO)),
             slave_to_master_chirho: Mutex::new(VecDeque::with_capacity(PTY_BUF_SIZE_CHIRHO)),
             termios_chirho: Mutex::new(TermiosChirho::default_chirho()),
             winsize_chirho: Mutex::new((24, 80)),
             master_read_wait_chirho: WaitQueueChirho::new_chirho(),
             slave_read_wait_chirho: WaitQueueChirho::new_chirho(),
-            master_open_chirho: AtomicBool::new(true),
+            master_open_chirho: AtomicBool::new(false), // set true when ptmx open completes
             slave_open_chirho: AtomicBool::new(false),
+            foreground_pgrp_chirho: AtomicU32::new(0),
         }
     }
 }
@@ -174,8 +182,19 @@ pub struct PtmxFileOpsChirho;
 impl PtmxFileOpsChirho {
     /// Called when userspace opens /dev/ptmx.
     /// Allocates a PTY pair and returns a PtyMasterOps for the new pair.
+    ///
+    /// Sets `master_open_chirho = true` and auto-unlocks the slave so that
+    /// `/dev/pts/N` can be opened immediately (Linux 2.6.29+ behaviour).
     pub fn open_ptmx_chirho() -> Result<(Arc<PtyPairChirho>, &'static dyn FileOpsChirho), i64> {
         let pair_chirho = alloc_pty_pair_chirho()?;
+        // Mark master as open
+        pair_chirho.master_open_chirho.store(true, Ordering::SeqCst);
+        // Slave is already auto-unlocked in new_chirho(), but be explicit
+        pair_chirho.slave_unlocked_chirho.store(true, Ordering::SeqCst);
+        crate::serial_println_chirho!(
+            "[PTY] opened ptmx -> pty_nr={}, slave auto-unlocked",
+            pair_chirho.pty_nr_chirho
+        );
         // We return a static ref to the master ops singleton; the pair
         // is looked up via the inode's ino_chirho field (set to pty_nr).
         Ok((pair_chirho, &PTY_MASTER_OPS_CHIRHO))
@@ -216,7 +235,8 @@ impl FileOpsChirho for PtmxFileOpsChirho {
         _cmd_chirho: u64,
         _arg_chirho: u64,
     ) -> Result<i64, i64> {
-        Err(-EINVAL_CHIRHO)
+        // Positive errno in Err() -- dispatch layer negates it
+        Err(EINVAL_CHIRHO)
     }
 
     fn readdir_chirho(
@@ -477,7 +497,8 @@ impl FileOpsChirho for PtsDirOpsChirho {
         _cmd_chirho: u64,
         _arg_chirho: u64,
     ) -> Result<i64, i64> {
-        Err(-EINVAL_CHIRHO)
+        // Positive errno in Err() -- dispatch layer negates it
+        Err(EINVAL_CHIRHO)
     }
 
     fn readdir_chirho(
@@ -529,7 +550,7 @@ fn pty_ioctl_chirho(
         TIOCGPTN_CHIRHO => {
             // Return PTY number in the u32 at arg_chirho
             if arg_chirho == 0 {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let nr_chirho = pair_chirho.pty_nr_chirho;
             if crate::uaccess_chirho::copy_to_user_chirho(
@@ -537,7 +558,7 @@ fn pty_ioctl_chirho(
                 &nr_chirho.to_ne_bytes(),
                 4,
             ).is_err() {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             Ok(0)
         }
@@ -545,7 +566,7 @@ fn pty_ioctl_chirho(
         TIOCSPTLCK_CHIRHO => {
             // Lock/unlock slave: read int from arg
             if arg_chirho == 0 {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let mut val_buf_chirho = [0u8; 4];
             if crate::uaccess_chirho::copy_from_user_chirho(
@@ -553,7 +574,7 @@ fn pty_ioctl_chirho(
                 arg_chirho,
                 4,
             ).is_err() {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let lock_val_chirho = i32::from_ne_bytes(val_buf_chirho);
             pair_chirho.slave_unlocked_chirho.store(
@@ -566,7 +587,7 @@ fn pty_ioctl_chirho(
         TIOCGPTLCK_CHIRHO => {
             // Get lock state
             if arg_chirho == 0 {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let locked_chirho: i32 = if pair_chirho.slave_unlocked_chirho.load(Ordering::SeqCst) {
                 0
@@ -578,14 +599,14 @@ fn pty_ioctl_chirho(
                 &locked_chirho.to_ne_bytes(),
                 4,
             ).is_err() {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             Ok(0)
         }
 
         TCGETS_CHIRHO => {
             if arg_chirho == 0 {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let termios_chirho = pair_chirho.termios_chirho.lock();
             let size_chirho = core::mem::size_of::<TermiosChirho>();
@@ -600,14 +621,14 @@ fn pty_ioctl_chirho(
                 src_chirho,
                 size_chirho,
             ).is_err() {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             Ok(0)
         }
 
         TCSETS_CHIRHO => {
             if arg_chirho == 0 {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let size_chirho = core::mem::size_of::<TermiosChirho>();
             let mut buf_chirho = [0u8; 128];
@@ -616,7 +637,7 @@ fn pty_ioctl_chirho(
                 arg_chirho,
                 size_chirho,
             ).is_err() {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let new_termios_chirho = unsafe {
                 core::ptr::read(buf_chirho.as_ptr() as *const TermiosChirho)
@@ -627,7 +648,7 @@ fn pty_ioctl_chirho(
 
         TIOCGWINSZ_CHIRHO => {
             if arg_chirho == 0 {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let (rows_chirho, cols_chirho) = *pair_chirho.winsize_chirho.lock();
             let mut buf_chirho = [0u8; 8];
@@ -639,14 +660,14 @@ fn pty_ioctl_chirho(
                 &buf_chirho,
                 8,
             ).is_err() {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             Ok(0)
         }
 
         TIOCSWINSZ_CHIRHO => {
             if arg_chirho == 0 {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let mut buf_chirho = [0u8; 8];
             if crate::uaccess_chirho::copy_from_user_chirho(
@@ -654,7 +675,7 @@ fn pty_ioctl_chirho(
                 arg_chirho,
                 8,
             ).is_err() {
-                return Err(-EFAULT_CHIRHO);
+                return Err(EFAULT_CHIRHO);
             }
             let rows_chirho = u16::from_ne_bytes([buf_chirho[0], buf_chirho[1]]);
             let cols_chirho = u16::from_ne_bytes([buf_chirho[2], buf_chirho[3]]);
@@ -663,20 +684,46 @@ fn pty_ioctl_chirho(
         }
 
         TIOCGPGRP_CHIRHO => {
-            // Return 0 (foreground pgroup) as stub
-            if arg_chirho != 0 {
-                let pgid_chirho: i32 = 0;
-                let _ = crate::uaccess_chirho::copy_to_user_chirho(
-                    arg_chirho,
-                    &pgid_chirho.to_ne_bytes(),
-                    4,
-                );
+            // Return the foreground process group stored on this PTY
+            if arg_chirho == 0 {
+                return Err(EFAULT_CHIRHO);
+            }
+            let pgid_chirho: i32 = pair_chirho.foreground_pgrp_chirho.load(Ordering::SeqCst) as i32;
+            if crate::uaccess_chirho::copy_to_user_chirho(
+                arg_chirho,
+                &pgid_chirho.to_ne_bytes(),
+                4,
+            ).is_err() {
+                return Err(EFAULT_CHIRHO);
             }
             Ok(0)
         }
 
-        TIOCSPGRP_CHIRHO => Ok(0), // silently accept
+        TIOCSPGRP_CHIRHO => {
+            // Read the u32 pgrp from userspace and store it
+            if arg_chirho == 0 {
+                return Err(EFAULT_CHIRHO);
+            }
+            let mut val_buf_chirho = [0u8; 4];
+            if crate::uaccess_chirho::copy_from_user_chirho(
+                &mut val_buf_chirho,
+                arg_chirho,
+                4,
+            ).is_err() {
+                return Err(EFAULT_CHIRHO);
+            }
+            let pgrp_val_chirho = u32::from_ne_bytes(val_buf_chirho);
+            pair_chirho.foreground_pgrp_chirho.store(pgrp_val_chirho, Ordering::SeqCst);
+            Ok(0)
+        }
 
-        _ => Err(-EINVAL_CHIRHO),
+        TIOCSCTTY_CHIRHO => {
+            // Become controlling TTY -- accept silently for SSH login.
+            // In a full implementation this would associate the TTY with
+            // the calling session, but for now success is sufficient.
+            Ok(0)
+        }
+
+        _ => Err(EINVAL_CHIRHO),
     }
 }

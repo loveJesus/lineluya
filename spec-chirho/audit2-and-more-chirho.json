@@ -1,0 +1,688 @@
+{
+  "header_chirho": "For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life. - John 3:16",
+  "title_chirho": "Lineluya Kernel — Audit #2 + Feature PRD",
+  "description_chirho": "Second-pass Rust audit, SSH login completion, XWindows/XTerm, MP3 playback, loop devices, and process management — everything needed for a sound drop-in Linux replacement.",
+  "version_chirho": "2.0.0",
+  "created_chirho": "2026-03-17",
+  "categories_chirho": [
+    {
+      "id_chirho": "A2-SSH",
+      "name_chirho": "SSH Login Completion (Dropbear)",
+      "description_chirho": "Get ssh -p 2222 root@127.0.0.1 working end-to-end: PTY allocation, fork+exec shell, bidirectional data flow.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-SSH-001",
+          "title_chirho": "Wire PTY open into openat — /dev/ptmx returns master fd + allocates pair",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "PtmxFileOpsChirho::open_ptmx_chirho wired via VFS openat. Master fd registered in global fd table. Slave auto-unlocked."
+        },
+        {
+          "id_chirho": "A2-SSH-002",
+          "title_chirho": "Wire PTY slave open — /dev/pts/N returns slave fd linked to pair",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "vfs_ops_chirho.rs handles /dev/pts/N open: looks up pair, checks unlock, returns slave fd with PTY_SLAVE_OPS."
+        },
+        {
+          "id_chirho": "A2-SSH-003",
+          "title_chirho": "ioctl TIOCGPTN — return PTY number to userspace",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "pty_ioctl_chirho handles TIOCGPTN (0x80045430). Writes u32 pty_nr to user pointer via copy_to_user."
+        },
+        {
+          "id_chirho": "A2-SSH-004",
+          "title_chirho": "ioctl TIOCSPTLCK — unlock PTY slave (accept 0 = unlocked)",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "pty_ioctl_chirho handles TIOCSPTLCK (0x40045431). Reads int from user, sets slave_unlocked_chirho. Auto-unlocked on open."
+        },
+        {
+          "id_chirho": "A2-SSH-005",
+          "title_chirho": "ioctl TIOCSCTTY — set controlling terminal for session",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "pty_ioctl_chirho handles TIOCSCTTY (0x540E). Returns Ok(0) for SSH login."
+        },
+        {
+          "id_chirho": "A2-SSH-006",
+          "title_chirho": "ioctl TIOCSWINSZ — set terminal window size",
+          "status_chirho": "done",
+          "priority_chirho": "high",
+          "notes_chirho": "pty_ioctl_chirho handles TIOCSWINSZ (0x5414). Reads struct winsize from user, stores in pair."
+        },
+        {
+          "id_chirho": "A2-SSH-007",
+          "title_chirho": "ioctl TIOCSPGRP — set foreground process group",
+          "status_chirho": "done",
+          "priority_chirho": "high",
+          "notes_chirho": "pty_ioctl_chirho handles TIOCSPGRP (0x5410). Reads u32 pgrp from user, stores in foreground_pgrp_chirho."
+        },
+        {
+          "id_chirho": "A2-SSH-008",
+          "title_chirho": "PTY master read/write — bidirectional data flow through ring buffer",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "PtyMasterOpsChirho and PtySlaveOpsChirho read/write through VecDeque ring buffers. WaitQueueChirho for blocking reads."
+        },
+        {
+          "id_chirho": "A2-SSH-009",
+          "title_chirho": "PTY slave read/write — terminal line discipline (raw mode at minimum)",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "PTY slave passes data through ring buffer. Termios stored per-pair, raw mode supported via TCSETS."
+        },
+        {
+          "id_chirho": "A2-SSH-010",
+          "title_chirho": "setsid() creates new session + process group",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "Implemented: sid=pid, pgid=pid, ctty=None. EPERM if already session leader."
+        },
+        {
+          "id_chirho": "A2-SSH-011",
+          "title_chirho": "setpgid/getpgid — process group management",
+          "status_chirho": "done",
+          "priority_chirho": "high",
+          "notes_chirho": "Implemented setpgid, getpgid, getpgrp, getsid. POSIX-compliant including session leader checks."
+        },
+        {
+          "id_chirho": "A2-SSH-012",
+          "title_chirho": "dup2 syscall — duplicate fd to specific number",
+          "status_chirho": "done",
+          "priority_chirho": "critical",
+          "notes_chirho": "Already implemented in vfs_ops_chirho.rs. Properly closes target, duplicates fd entry, returns newfd."
+        },
+        {
+          "id_chirho": "A2-SSH-013",
+          "title_chirho": "close() properly removes fd from task fd table",
+          "status_chirho": "done",
+          "priority_chirho": "high",
+          "notes_chirho": "close() removes fd from global fd table. Reference counting prevents premature pair cleanup."
+        },
+        {
+          "id_chirho": "A2-SSH-014",
+          "title_chirho": "End-to-end SSH login test: ssh -p 2222 root@127.0.0.1 echo hello",
+          "status_chirho": "todo",
+          "priority_chirho": "critical",
+          "notes_chirho": "Full flow: TCP accept -> SSH handshake -> auth -> channel -> PTY alloc -> fork -> setsid -> dup2 -> execve /bin/sh -> echo hello -> exit"
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-PROC",
+      "name_chirho": "Process Management Improvements",
+      "description_chirho": "Replace poll loops and workarounds with proper waitqueues, sessions, and process lifecycle.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-PROC-001",
+          "title_chirho": "Replace wait4 poll-and-yield with WaitQueueChirho",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Current wait4 polls 10,000 times. Use waitqueue_chirho to sleep until child exits and wakes parent."
+        },
+        {
+          "id_chirho": "A2-PROC-002",
+          "title_chirho": "Replace shell-relaunch workaround with ProcessExitContinuationChirho enum",
+          "status_chirho": "done",
+          "priority_chirho": "high",
+          "notes_chirho": "Removed shell-relaunch workaround. wait4 now returns reaped PID normally. IRETQ return path is safe (no RCX corruption)."
+        },
+        {
+          "id_chirho": "A2-PROC-003",
+          "title_chirho": "Per-process fd tables — proper clone on fork, no global fallback",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Current: global fd table + fallback. Need: fork clones parent's fd table into child's own table. Context switch restores active task's table."
+        },
+        {
+          "id_chirho": "A2-PROC-004",
+          "title_chirho": "Process groups and sessions — pgid, sid fields on TaskChirho",
+          "status_chirho": "done",
+          "priority_chirho": "high",
+          "notes_chirho": "Added sid_chirho, pgid_chirho, controlling_tty_chirho to TaskChirho. Fork/clone inherit from parent. Init: sid=pid, pgid=pid."
+        },
+        {
+          "id_chirho": "A2-PROC-005",
+          "title_chirho": "Signal delivery infrastructure — kill(pid, sig) sends to target task",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Currently signals are mostly stubs. Need at least SIGCHLD, SIGTERM, SIGHUP, SIGPIPE for SSH."
+        },
+        {
+          "id_chirho": "A2-PROC-006",
+          "title_chirho": "exit_group properly terminates all threads in process",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Currently just exits the calling thread. Multi-threaded programs need all threads killed."
+        },
+        {
+          "id_chirho": "A2-PROC-007",
+          "title_chirho": "pipe() creates bidirectional pipe fd pair",
+          "status_chirho": "done",
+          "priority_chirho": "high",
+          "notes_chirho": "pipe() and pipe2() implemented in pipe_chirho.rs. VecDeque 4KB buffer, blocking reads, EPIPE detection."
+        },
+        {
+          "id_chirho": "A2-PROC-008",
+          "title_chirho": "Centralize BusyBox applet registry — shared by VFS bootstrap, exec, process",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Applet names currently duplicated in vfs_ops and process_core. Single const registry."
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-AUDIT",
+      "name_chirho": "Rust Audit #2 — Type Safety & Code Quality",
+      "description_chirho": "Second-pass audit: UserPtr types, eliminate fabricated values, split monoliths, typed state machines.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-AUDIT-001",
+          "title_chirho": "Add UserPtrChirho<T> and UserSliceChirho<T> typed user-pointer wrappers",
+          "status_chirho": "todo",
+          "priority_chirho": "critical",
+          "notes_chirho": "Create uaccess_chirho module with UserPtrChirho<T>, UserSliceChirho<T>, UserCStrChirho. Bounds-checked read/write. Replace all raw pointer math in syscall handlers."
+        },
+        {
+          "id_chirho": "A2-AUDIT-002",
+          "title_chirho": "Replace fabricated clock_gettime with ClockSourceChirho",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Hardcoded 2026-03-14 epoch. Use monotonic TSC or HPET with proper ClockSourceChirho trait."
+        },
+        {
+          "id_chirho": "A2-AUDIT-003",
+          "title_chirho": "Replace global CURRENT_BRK with per-process ProcessAddressSpaceChirho",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "brk is currently global. Each process needs its own brk pointer in ProcessAddressSpaceChirho."
+        },
+        {
+          "id_chirho": "A2-AUDIT-004",
+          "title_chirho": "Replace fabricated sysinfo/statfs with SystemMemorySnapshotChirho",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "sysinfo returns hardcoded 128MB RAM. Query actual allocator state."
+        },
+        {
+          "id_chirho": "A2-AUDIT-005",
+          "title_chirho": "Split syscall_chirho.rs into per-subsystem dispatch modules",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "syscall_time_chirho, syscall_fs_chirho, syscall_termios_chirho, syscall_process_chirho, syscall_net_chirho. Keep dispatch table in main syscall_chirho."
+        },
+        {
+          "id_chirho": "A2-AUDIT-006",
+          "title_chirho": "Split net_core_chirho.rs into sub-modules",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "net_socket_chirho, net_tcp_chirho, net_udp_chirho, net_dhcp_chirho, net_dns_chirho, net_ioctl_chirho. Currently ~6500 lines."
+        },
+        {
+          "id_chirho": "A2-AUDIT-007",
+          "title_chirho": "Add Ipv4AddrChirho, PortChirho, MtuChirho newtypes in networking",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Replace raw u32/u16 with typed wrappers. Display impl for logging."
+        },
+        {
+          "id_chirho": "A2-AUDIT-008",
+          "title_chirho": "Typed termios — replace raw magic bit patterns with TermiosFlagsChirho",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "termios struct currently built from raw hex. Use bitflags! or typed constants."
+        },
+        {
+          "id_chirho": "A2-AUDIT-009",
+          "title_chirho": "Remove remaining expect() calls in exec/loader critical path",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "exec_chirho.rs uses expect(\"MM not initialised\"), expect(\"Failed to map user stack\"). Convert to ExecErrorChirho variants."
+        },
+        {
+          "id_chirho": "A2-AUDIT-010",
+          "title_chirho": "Wrap LAPIC/IOAPIC registers in typed LapicRegisterChirho enum",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Raw 0xFEE0_00B0 offsets used in multiple places. Centralize in typed register map."
+        },
+        {
+          "id_chirho": "A2-AUDIT-011",
+          "title_chirho": "Replace leaked Vec<u8> syscall stack with dedicated allocator",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "syscall_entry allocates Vec<u8> and leaks it. Use proper kernel stack pool."
+        },
+        {
+          "id_chirho": "A2-AUDIT-012",
+          "title_chirho": "Add VirtIO typestate: DiscoveredChirho -> FeaturesNegotiatedChirho -> QueuesReadyChirho -> DriverReadyChirho",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "VirtIO init mixes scan/detect/probe/mount. Use typestate pattern."
+        },
+        {
+          "id_chirho": "A2-AUDIT-013",
+          "title_chirho": "Push Ext4ErrorChirho through ALL write paths — eliminate Err(&str)",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Some write paths still return Result<_, &'static str>. Convert to Ext4ErrorChirho."
+        },
+        {
+          "id_chirho": "A2-AUDIT-014",
+          "title_chirho": "Add InodeModeChirho helpers — is_symlink_chirho(), is_dir_chirho(), etc.",
+          "status_chirho": "todo",
+          "priority_chirho": "low",
+          "notes_chirho": "Replace raw mode & 0xF000 == 0xA000 checks with typed helpers."
+        },
+        {
+          "id_chirho": "A2-AUDIT-015",
+          "title_chirho": "Separate scheduler policy from arch context-switch in scheduler_chirho.rs",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "CR3 switching logic embedded in scheduling. Extract to arch-specific context_switch_chirho()."
+        },
+        {
+          "id_chirho": "A2-AUDIT-016",
+          "title_chirho": "Add AllocationClassChirho and AllocatorPolicyChirho to allocator_chirho.rs",
+          "status_chirho": "todo",
+          "priority_chirho": "low",
+          "notes_chirho": "Centralize allocation thresholds. Separate OOM reporting from allocator mechanics."
+        },
+        {
+          "id_chirho": "A2-AUDIT-017",
+          "title_chirho": "Clean up net_chirho.rs.bak and syscall_chirho.rs.bak from src/",
+          "status_chirho": "todo",
+          "priority_chirho": "low",
+          "notes_chirho": "Backup files pollute grep results. Move out or delete."
+        },
+        {
+          "id_chirho": "A2-AUDIT-018",
+          "title_chirho": "LogLevelChirho + LogSubsystemChirho unified logging facade",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Replace ad-hoc serial_debug/log_net/log_fs macros with unified log_chirho!(level, subsystem, ...) facade."
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-X11",
+      "name_chirho": "XWindows / XTerm Support",
+      "description_chirho": "Get Xvfb or Xorg fbdev running with XTerm and a window manager.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-X11-001",
+          "title_chirho": "FB ioctls — FBIOGET_VSCREENINFO (0x4600) returns real fb_var_screeninfo",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "xres=1280, yres=800, bits_per_pixel=32, red/green/blue bitfield offsets. Xorg fbdev driver reads this."
+        },
+        {
+          "id_chirho": "A2-X11-002",
+          "title_chirho": "FB ioctls — FBIOGET_FSCREENINFO (0x4602) returns fb_fix_screeninfo",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "smem_start, smem_len, line_length, type=FB_TYPE_PACKED_PIXELS, visual=FB_VISUAL_TRUECOLOR."
+        },
+        {
+          "id_chirho": "A2-X11-003",
+          "title_chirho": "FB mmap — map framebuffer physical memory into userspace",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Xorg mmap's /dev/fb0 to write pixels directly. Must map the real UEFI framebuffer physical address."
+        },
+        {
+          "id_chirho": "A2-X11-004",
+          "title_chirho": "evdev input — /dev/input/event0 (keyboard) with struct input_event",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Hook PS/2 keyboard interrupt to produce evdev events. type=EV_KEY, code=KEY_*, value=0/1/2."
+        },
+        {
+          "id_chirho": "A2-X11-005",
+          "title_chirho": "evdev input — /dev/input/event1 (mouse) with relative motion events",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Hook PS/2 mouse to produce EV_REL + EV_KEY events. Or use virtio-tablet for absolute."
+        },
+        {
+          "id_chirho": "A2-X11-006",
+          "title_chirho": "evdev ioctls — EVIOCGBIT, EVIOCGNAME, EVIOCGID for device capability query",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Xorg evdev driver queries device capabilities on open."
+        },
+        {
+          "id_chirho": "A2-X11-007",
+          "title_chirho": "Unix domain sockets — verify /tmp/.X11-unix/X0 works for X protocol",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "AF_UNIX SOCK_STREAM. X clients connect here. Already partially implemented."
+        },
+        {
+          "id_chirho": "A2-X11-008",
+          "title_chirho": "mmap MAP_SHARED — shared memory between X server and clients",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "X11 MIT-SHM extension uses shared memory for fast blitting."
+        },
+        {
+          "id_chirho": "A2-X11-009",
+          "title_chirho": "ftruncate — real implementation for memfd/shm setup",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "X server uses ftruncate to size shared memory segments."
+        },
+        {
+          "id_chirho": "A2-X11-010",
+          "title_chirho": "Install Xvfb + xterm + twm + fonts on Alpine disk image",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "apk add xvfb xterm twm font-misc-misc font-cursor-misc xauth. ~55MB total."
+        },
+        {
+          "id_chirho": "A2-X11-011",
+          "title_chirho": "End-to-end Xvfb test: Xvfb :0 && DISPLAY=:0 xterm",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Xvfb needs no /dev/fb0. Just PTY + AF_UNIX + fork/exec."
+        },
+        {
+          "id_chirho": "A2-X11-012",
+          "title_chirho": "End-to-end Xorg fbdev test: Xorg :0 with real display",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Needs FB ioctls + evdev + mmap. QEMU -vga std -display gtk."
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-SOUND",
+      "name_chirho": "Sound Driver / MP3 Playback",
+      "description_chirho": "Get audio output working in QEMU with mp3 playback via mpg123 or madplay.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-SOUND-001",
+          "title_chirho": "Detect Intel HDA or AC97 sound card via PCI enumeration",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "QEMU provides Intel HDA (default) or AC97 (-device AC97). PCI vendor 0x8086, device 0x2668 (HDA) or 0x2415 (AC97)."
+        },
+        {
+          "id_chirho": "A2-SOUND-002",
+          "title_chirho": "Implement /dev/dsp OSS device (simplest audio path)",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "OSS /dev/dsp is simplest: open, ioctl to set format/rate/channels, write PCM data. Major 14, minor 3."
+        },
+        {
+          "id_chirho": "A2-SOUND-003",
+          "title_chirho": "OSS ioctls — SNDCTL_DSP_SETFMT, SNDCTL_DSP_SPEED, SNDCTL_DSP_CHANNELS",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Set sample format (16-bit LE), sample rate (44100), channels (2=stereo)."
+        },
+        {
+          "id_chirho": "A2-SOUND-004",
+          "title_chirho": "OSS write — PCM samples written to /dev/dsp play through sound card",
+          "status_chirho": "todo",
+          "priority_chirho": "critical",
+          "notes_chirho": "Write 16-bit signed LE PCM samples. DMA transfer to AC97/HDA codec."
+        },
+        {
+          "id_chirho": "A2-SOUND-005",
+          "title_chirho": "AC97 controller driver — codec init, DMA buffer, stream descriptors",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "AC97 is simpler than HDA. BAR0 = mixer registers, BAR1 = bus master registers. Set up buffer descriptor list (BDL)."
+        },
+        {
+          "id_chirho": "A2-SOUND-006",
+          "title_chirho": "Install mpg123 on Alpine disk — lightest MP3 player",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "apk add mpg123. Decodes mp3 to PCM, writes to /dev/dsp or ALSA. ~200KB binary."
+        },
+        {
+          "id_chirho": "A2-SOUND-007",
+          "title_chirho": "End-to-end MP3 test: mpg123 test.mp3 plays audio in QEMU",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "QEMU -device AC97 -audiodev pa,id=snd0 (or coreaudio on macOS). Need test mp3 file on disk."
+        },
+        {
+          "id_chirho": "A2-SOUND-008",
+          "title_chirho": "ALSA /dev/snd/* devices (stretch goal — if OSS not enough)",
+          "status_chirho": "todo",
+          "priority_chirho": "low",
+          "notes_chirho": "ALSA is more complex: /dev/snd/pcmC0D0p, /dev/snd/controlC0. Only if mpg123 requires it."
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-LOOP",
+      "name_chirho": "Loop Device Support",
+      "description_chirho": "Mount filesystem images via /dev/loopN — needed for loop.ko, disk images, and installers.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-LOOP-001",
+          "title_chirho": "Create /dev/loop-control device node (major 10, minor 237)",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "misc device. Supports LOOP_CTL_GET_FREE (0x4C82) to allocate next free loop device."
+        },
+        {
+          "id_chirho": "A2-LOOP-002",
+          "title_chirho": "Create /dev/loop0..7 device nodes (major 7, minor 0..7)",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Block devices. Pre-create 8 loop devices in devtmpfs."
+        },
+        {
+          "id_chirho": "A2-LOOP-003",
+          "title_chirho": "ioctl LOOP_SET_FD (0x4C00) — bind backing file to loop device",
+          "status_chirho": "todo",
+          "priority_chirho": "critical",
+          "notes_chirho": "Associates an open file descriptor (disk image) with /dev/loopN. Core operation."
+        },
+        {
+          "id_chirho": "A2-LOOP-004",
+          "title_chirho": "ioctl LOOP_CLR_FD (0x4C01) — detach backing file",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Disassociates the backing file. Used by umount/losetup -d."
+        },
+        {
+          "id_chirho": "A2-LOOP-005",
+          "title_chirho": "ioctl LOOP_SET_STATUS64 (0x4C04) — set loop device parameters",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "struct loop_info64: lo_offset, lo_sizelimit, lo_encrypt_type, lo_flags. Offset support enables partition mounting."
+        },
+        {
+          "id_chirho": "A2-LOOP-006",
+          "title_chirho": "ioctl LOOP_GET_STATUS64 (0x4C05) — get loop device parameters",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Returns current loop_info64. Used by mount to check state."
+        },
+        {
+          "id_chirho": "A2-LOOP-007",
+          "title_chirho": "Loop device read/write — translate block I/O to file read/write",
+          "status_chirho": "todo",
+          "priority_chirho": "critical",
+          "notes_chirho": "Read from /dev/loopN -> pread from backing file at offset. Write -> pwrite. Block size 512 or 4096."
+        },
+        {
+          "id_chirho": "A2-LOOP-008",
+          "title_chirho": "End-to-end test: losetup /dev/loop0 image.img && mount /dev/loop0 /mnt",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Create ext4 image, bind to loop, mount, read files. Full stack test."
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-IOCTL",
+      "name_chirho": "ioctl Infrastructure",
+      "description_chirho": "Centralized, typed ioctl dispatch replacing the monolithic switch in syscall_chirho.rs.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-IOCTL-001",
+          "title_chirho": "Create IoctlCommandChirho enum with all known ioctl numbers",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "TTY, PTY, FB, evdev, loop, socket, OSS — all in one typed enum. From/TryFrom<u64>."
+        },
+        {
+          "id_chirho": "A2-IOCTL-002",
+          "title_chirho": "Route ioctl through FileOpsChirho::ioctl_chirho method on each device",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Instead of giant switch in syscall_chirho.rs, each device's FileOps handles its own ioctls."
+        },
+        {
+          "id_chirho": "A2-IOCTL-003",
+          "title_chirho": "Add ioctl_chirho to FileOpsChirho trait with default ENOTTY return",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "fn ioctl_chirho(&self, cmd: u64, arg: u64) -> i64 { -ENOTTY }. Override per device."
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-ARCH",
+      "name_chirho": "Architecture Safety — syscall entry/interrupt tightening",
+      "description_chirho": "Tighter unsafe boundaries, typed segment selectors, proper kernel stack management.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-ARCH-001",
+          "title_chirho": "PerCpuSyscallStateChirho — replace static mut with per-CPU state struct",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Currently single-CPU but prepare for SMP. KERNEL_STACK_TOP, USER_RSP_SCRATCH in per-CPU struct."
+        },
+        {
+          "id_chirho": "A2-ARCH-002",
+          "title_chirho": "SyscallFrameChirho compile-time layout checks against assembly offsets",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "const_assert! that Rust struct offsets match assembly push/pop layout."
+        },
+        {
+          "id_chirho": "A2-ARCH-003",
+          "title_chirho": "Wrap segment selectors 0x23/0x2B in SegmentSelectorChirho newtype",
+          "status_chirho": "todo",
+          "priority_chirho": "low",
+          "notes_chirho": "Magic numbers in IRETQ frame. Use USER_CS_CHIRHO, USER_SS_CHIRHO constants."
+        },
+        {
+          "id_chirho": "A2-ARCH-004",
+          "title_chirho": "Extend FaultDispositionChirho with QueueDeferredRepairChirho variant",
+          "status_chirho": "todo",
+          "priority_chirho": "low",
+          "notes_chirho": "Currently: ResumeNow, KillTask. Add deferred repair for recoverable faults."
+        },
+        {
+          "id_chirho": "A2-ARCH-005",
+          "title_chirho": "Move trap-driven shell relaunch from interrupt handler to process exit policy",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Invalid opcode handler currently removes task and relaunches shell. Should just kill task; init/process exit handles relaunch."
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-FS",
+      "name_chirho": "Filesystem Improvements",
+      "description_chirho": "ext4 write path, typed errors, path resolution, devtmpfs improvements.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-FS-001",
+          "title_chirho": "ext4 write — verify write_block_chirho + write_inode_chirho in QEMU",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Code exists but untested. echo hello > /tmp/test should persist via ext4 write path."
+        },
+        {
+          "id_chirho": "A2-FS-002",
+          "title_chirho": "ext4 create_file_chirho — create new files in ext4 directories",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "Allocate inode, add directory entry, write inode. Needed for touch, redirect, gcc output."
+        },
+        {
+          "id_chirho": "A2-FS-003",
+          "title_chirho": "ext4 mkdir — create new directories in ext4",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Allocate inode with S_IFDIR, add . and .. entries, add to parent directory."
+        },
+        {
+          "id_chirho": "A2-FS-004",
+          "title_chirho": "VirtIO-blk write — sector write for ext4 persistence",
+          "status_chirho": "todo",
+          "priority_chirho": "high",
+          "notes_chirho": "VirtIO-blk read works. Need write operation for ext4 write-back."
+        },
+        {
+          "id_chirho": "A2-FS-005",
+          "title_chirho": "Typed extent builders — replace raw field packing in ext4",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Extent header/entry construction uses hardcoded byte packing. Use typed ExtentHeaderChirho builder."
+        },
+        {
+          "id_chirho": "A2-FS-006",
+          "title_chirho": "Replace magic inode 9999 with CONSOLE_INODE_CHIRHO constant",
+          "status_chirho": "todo",
+          "priority_chirho": "low",
+          "notes_chirho": "vfs_ops_chirho.rs hardcodes 9999 for console inode."
+        }
+      ]
+    },
+    {
+      "id_chirho": "A2-DRIVERS",
+      "name_chirho": "Driver Improvements",
+      "description_chirho": "VirtIO typestate, PCI typed registers, AHCI improvements.",
+      "tasks_chirho": [
+        {
+          "id_chirho": "A2-DRIVERS-001",
+          "title_chirho": "PciConfigRegisterChirho enum — typed PCI config space access",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "Replace raw config-space offsets (0x00, 0x04, etc.) with typed register enum."
+        },
+        {
+          "id_chirho": "A2-DRIVERS-002",
+          "title_chirho": "Separate VirtIO block device detection from mount policy",
+          "status_chirho": "todo",
+          "priority_chirho": "medium",
+          "notes_chirho": "virtio_chirho.rs couples device scan with 'mount first ext4 found'. Separate concerns."
+        },
+        {
+          "id_chirho": "A2-DRIVERS-003",
+          "title_chirho": "AHCI typed wrappers — command slots, ports, HBA memory",
+          "status_chirho": "todo",
+          "priority_chirho": "low",
+          "notes_chirho": "AHCI uses raw pointer casts for HBA mapped memory. Wrap in typed abstraction."
+        }
+      ]
+    }
+  ],
+  "execution_order_chirho": [
+    "Phase 1 — SSH Login (A2-SSH): PTY + setsid + dup2 + fork+exec. Unblocks interactive use.",
+    "Phase 2 — Process Mgmt (A2-PROC): waitqueue, per-process fd, sessions. Stabilizes multi-process.",
+    "Phase 3 — Audit #2 (A2-AUDIT): UserPtr, split monoliths, typed state. Code quality.",
+    "Phase 4 — ioctl Infrastructure (A2-IOCTL): Centralized dispatch. Unblocks all device work.",
+    "Phase 5 — X11 (A2-X11): FB ioctls + evdev + Xvfb -> Xorg fbdev -> XTerm.",
+    "Phase 6 — Sound (A2-SOUND): AC97 driver + OSS /dev/dsp + mpg123.",
+    "Phase 7 — Loop Devices (A2-LOOP): /dev/loop* + mount image files.",
+    "Phase 8 — FS Write (A2-FS): ext4 write + create + mkdir. Persistence.",
+    "Phase 9 — Arch Safety (A2-ARCH): Per-CPU state, typed selectors, deferred fault.",
+    "Phase 10 — Drivers (A2-DRIVERS): VirtIO typestate, PCI typed access."
+  ],
+  "total_tasks_chirho": 82,
+  "status_chirho": "active"
+}

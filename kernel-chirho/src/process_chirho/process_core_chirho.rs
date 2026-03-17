@@ -243,6 +243,9 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             brk_chirho: parent_chirho.brk_chirho,
             brk_start_chirho: parent_chirho.brk_start_chirho,
             cwd_chirho: parent_chirho.cwd_chirho.clone(),
+            sid_chirho: parent_chirho.sid_chirho,
+            pgid_chirho: parent_chirho.pgid_chirho,
+            controlling_tty_chirho: parent_chirho.controlling_tty_chirho,
         }
     };
 
@@ -389,6 +392,9 @@ pub fn sys_clone_chirho(
             brk_chirho: parent_chirho.brk_chirho,
             brk_start_chirho: parent_chirho.brk_start_chirho,
             cwd_chirho: parent_chirho.cwd_chirho.clone(),
+            sid_chirho: parent_chirho.sid_chirho,
+            pgid_chirho: parent_chirho.pgid_chirho,
+            controlling_tty_chirho: parent_chirho.controlling_tty_chirho,
         }
     };
 
@@ -527,15 +533,11 @@ pub fn sys_wait4_chirho(
                 found_exit_code_chirho
             );
 
-            // Re-exec shell after reaping child.
-            // The SYSRET back to parent's userspace after a context switch
-            // cycle corrupts RCX (kernel stack frame pointer issue).
-            // Re-exec'ing the shell bypasses the problematic return path.
-            crate::serial_println_chirho!("[PROCESS] wait4: re-launching shell after child reap");
-            let shell_argv_chirho = [alloc::string::String::from("sh")];
-            let shell_envp_chirho = [alloc::string::String::from("HOME=/root")];
-            exec_shell_with_args_chirho(&shell_argv_chirho, &shell_envp_chirho);
-            // UNREACHABLE
+            // Return the reaped PID to the parent.
+            // We use IRETQ for syscall return (not SYSRET), so the return
+            // address is read from the kernel stack frame — no RCX corruption
+            // risk. The parent continues its event loop normally.
+            return reaped_pid_chirho as i64;
         }
 
         // No zombie child found.
