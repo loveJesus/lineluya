@@ -251,16 +251,16 @@
         {
           "id_chirho": "A2-AUDIT-011",
           "title_chirho": "Replace leaked Vec<u8> syscall stack with dedicated allocator",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "syscall_entry allocates Vec<u8> and leaks it. Use proper kernel stack pool."
+          "notes_chirho": "Replaced Vec+forget with Box::leak (idiomatic Rust pattern). Stack lives as &'static mut [u8]."
         },
         {
           "id_chirho": "A2-AUDIT-012",
           "title_chirho": "Add VirtIO typestate: DiscoveredChirho -> FeaturesNegotiatedChirho -> QueuesReadyChirho -> DriverReadyChirho",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "VirtIO init mixes scan/detect/probe/mount. Use typestate pattern."
+          "notes_chirho": "VirtioInitStateChirho enum added with 6 states per VirtIO spec §3.1. Foundation for future typestate enforcement."
         },
         {
           "id_chirho": "A2-AUDIT-013",

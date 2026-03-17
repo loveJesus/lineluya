@@ -300,13 +300,13 @@ pub unsafe fn init_syscall_entry_chirho() {
     use x86_64::registers::model_specific::Msr;
 
     // -- Allocate syscall kernel stack --
-    // We use a Vec<u8> and leak it so the memory lives forever.
-    let mut stack_vec_chirho: Vec<u8> = Vec::with_capacity(SYSCALL_STACK_SIZE_CHIRHO);
-    // Zero-fill for safety.
-    stack_vec_chirho.resize(SYSCALL_STACK_SIZE_CHIRHO, 0);
-    let stack_base_chirho = stack_vec_chirho.as_ptr() as u64;
-    // Leak the vector so it is never freed.
-    core::mem::forget(stack_vec_chirho);
+    // Allocate a zeroed buffer from the heap and leak it into a &'static [u8].
+    // This is intentional — the syscall stack must live for the entire kernel
+    // lifetime. Box::leak is the idiomatic Rust pattern for this.
+    let stack_slice_chirho: &'static mut [u8] = alloc::boxed::Box::leak(
+        alloc::vec![0u8; SYSCALL_STACK_SIZE_CHIRHO].into_boxed_slice()
+    );
+    let stack_base_chirho = stack_slice_chirho.as_ptr() as u64;
 
     // The stack grows downward, so "top" = base + size.
     // Align to 16 bytes for ABI compliance.

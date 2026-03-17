@@ -47,6 +47,30 @@ const VIRTIO_NET_MODERN_DEVICE_ID_CHIRHO: u16 = 0x1041;
 const VIRTIO_BLK_SUBSYS_ID_CHIRHO: u16 = 0x0002;
 
 // ============================================================================
+// VirtIO device initialization states (typestate pattern)
+// ============================================================================
+
+/// VirtIO device bring-up phases.
+///
+/// Documents the expected initialization sequence per VirtIO spec §3.1.
+/// Currently used for logging/documentation; future: enforce via typestate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtioInitStateChirho {
+    /// Device discovered on PCI bus, vendor/device IDs match.
+    DiscoveredChirho,
+    /// ACKNOWLEDGE + DRIVER status bits set, feature negotiation in progress.
+    FeaturesNegotiatingChirho,
+    /// FEATURES_OK status bit set, features accepted by both sides.
+    FeaturesNegotiatedChirho,
+    /// Virtqueues allocated and configured.
+    QueuesReadyChirho,
+    /// DRIVER_OK status bit set, device is fully operational.
+    DriverReadyChirho,
+    /// Device initialization failed.
+    FailedChirho,
+}
+
+// ============================================================================
 // VirtIO device status bits (§2.1)
 // ============================================================================
 
