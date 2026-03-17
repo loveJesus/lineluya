@@ -645,8 +645,28 @@ pub fn mount_devtmpfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             })),
         }));
 
+        // /dev/input/event1 — mouse evdev device (major 13, minor 65)
+        // A2-X11-005: evdev mouse input for X11/libinput
+        let event1_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: alloc_dev_ino_chirho(),
+            mode_chirho: S_IFCHR_CHIRHO | 0o666,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: 0,
+            nlink_chirho: 1,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+            fs_data_chirho: Some(Box::new(DevNodeDataChirho {
+                major_chirho: 13,   // Linux input device major
+                minor_chirho: 65,   // event1 = minor 65
+            })),
+        }));
+
         let mut input_entries_chirho: Vec<(String, Arc<Mutex<InodeChirho>>)> = Vec::new();
         input_entries_chirho.push((String::from("event0"), event0_inode_chirho));
+        input_entries_chirho.push((String::from("event1"), event1_inode_chirho));
 
         let input_dir_inode_chirho = Arc::new(Mutex::new(InodeChirho {
             ino_chirho: alloc_dev_ino_chirho(),

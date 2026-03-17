@@ -11,7 +11,9 @@
 //!   basic OSS ioctls (SNDCTL_DSP_SETFMT, SNDCTL_DSP_SPEED,
 //!   SNDCTL_DSP_CHANNELS).
 //!
-//! The actual audio hardware programming is not yet implemented;
+//! - AC97 controller struct with PCI BAR discovery (`Ac97ControllerChirho`).
+//!
+//! The actual audio hardware DMA programming is not yet implemented;
 //! this layer provides the device interface so userspace programs
 //! that probe for `/dev/dsp` do not fail immediately.
 
@@ -254,3 +256,118 @@ impl FileOpsChirho for DevDspOpsChirho {
 
 /// Static instance of /dev/dsp file operations.
 pub static DEV_DSP_OPS_CHIRHO: DevDspOpsChirho = DevDspOpsChirho;
+
+// ============================================================================
+// AC97 controller driver (A2-SOUND-005)
+// ============================================================================
+
+/// AC97 controller state — holds PCI BARs and IRQ discovered during init.
+///
+/// The Intel ICH AC97 audio controller uses two I/O port regions:
+/// - NAM BAR (BAR0): Audio Mixer register I/O (Native Audio Mixer).
+/// - NABM BAR (BAR1): Bus Master register I/O (Native Audio Bus Master).
+///
+/// Full DMA buffer programming is not yet implemented — this struct records
+/// the device location so that a future DMA path can use it.
+#[allow(dead_code)]
+pub struct Ac97ControllerChirho {
+    /// Bus Master BAR I/O port base (NABM — BAR1).
+    pub nabm_bar_chirho: u16,
+    /// Mixer BAR I/O port base (NAM — BAR0).
+    pub nam_bar_chirho: u16,
+    /// PCI interrupt line.
+    pub irq_chirho: u8,
+    /// PCI bus number where the device was found.
+    pub bus_chirho: u8,
+    /// PCI device number where the device was found.
+    pub device_chirho: u8,
+    /// PCI function number where the device was found.
+    pub function_chirho: u8,
+}
+
+/// Global AC97 controller instance (set during init if device found).
+static AC97_CONTROLLER_CHIRHO: spin::Mutex<Option<Ac97ControllerChirho>> =
+    spin::Mutex::new(None);
+
+/// Probe PCI bus for an Intel AC97 controller and read its BARs.
+///
+/// If an AC97 device (vendor 0x8086, device 0x2415) is found, reads BAR0
+/// (NAM — mixer I/O) and BAR1 (NABM — bus master I/O) from PCI config space,
+/// along with the interrupt line. Stores the result in [`AC97_CONTROLLER_CHIRHO`].
+///
+/// Does NOT perform full codec reset or DMA buffer setup — that comes in a
+/// later task when we actually want to push PCM samples to hardware.
+pub fn init_ac97_chirho() {
+    crate::serial_println_chirho!("AC97: probing PCI bus 0 for Intel AC97 controller...");
+
+    let devices_chirho = unsafe { scan_bus_chirho(0) };
+
+    for dev_chirho in &devices_chirho {
+        if dev_chirho.vendor_id_chirho != INTEL_VENDOR_ID_CHIRHO
+            || dev_chirho.device_id_chirho != INTEL_AC97_DEVICE_ID_CHIRHO
+        {
+            continue;
+        }
+
+        // Found AC97 — read BAR0 (NAM) and BAR1 (NABM) from config space.
+        let bar0_raw_chirho = unsafe {
+            crate::pci_chirho::pci_config_read_u32_chirho(
+                dev_chirho.bus_chirho,
+                dev_chirho.device_chirho,
+                dev_chirho.function_chirho,
+                0x10, // BAR0
+            )
+        };
+        let bar1_raw_chirho = unsafe {
+            crate::pci_chirho::pci_config_read_u32_chirho(
+                dev_chirho.bus_chirho,
+                dev_chirho.device_chirho,
+                dev_chirho.function_chirho,
+                0x14, // BAR1
+            )
+        };
+        let irq_raw_chirho = unsafe {
+            crate::pci_chirho::pci_config_read_u8_chirho(
+                dev_chirho.bus_chirho,
+                dev_chirho.device_chirho,
+                dev_chirho.function_chirho,
+                0x3C, // Interrupt Line
+            )
+        };
+
+        // AC97 BARs are I/O space (bit 0 set). Mask to get port base.
+        let nam_port_chirho = (bar0_raw_chirho & 0xFFFC) as u16;
+        let nabm_port_chirho = (bar1_raw_chirho & 0xFFFC) as u16;
+
+        crate::serial_println_chirho!(
+            "AC97: found at PCI {:02x}:{:02x}.{} — NAM(BAR0)={:#06x} NABM(BAR1)={:#06x} IRQ={}",
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            nam_port_chirho,
+            nabm_port_chirho,
+            irq_raw_chirho,
+        );
+
+        let controller_chirho = Ac97ControllerChirho {
+            nabm_bar_chirho: nabm_port_chirho,
+            nam_bar_chirho: nam_port_chirho,
+            irq_chirho: irq_raw_chirho,
+            bus_chirho: dev_chirho.bus_chirho,
+            device_chirho: dev_chirho.device_chirho,
+            function_chirho: dev_chirho.function_chirho,
+        };
+
+        *AC97_CONTROLLER_CHIRHO.lock() = Some(controller_chirho);
+        crate::serial_println_chirho!("AC97: controller registered (DMA not yet enabled)");
+        return;
+    }
+
+    crate::serial_println_chirho!("AC97: no Intel AC97 controller found on PCI bus 0");
+}
+
+/// Returns `true` if an AC97 controller was detected and initialized.
+#[allow(dead_code)]
+pub fn ac97_detected_chirho() -> bool {
+    AC97_CONTROLLER_CHIRHO.lock().is_some()
+}

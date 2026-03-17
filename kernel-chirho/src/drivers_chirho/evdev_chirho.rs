@@ -603,3 +603,371 @@ pub fn push_key_event_chirho(code_chirho: u16, value_chirho: i32) {
         value_chirho: 0,
     });
 }
+
+// ============================================================================
+// A2-X11-005: EvdevMouseOpsChirho — /dev/input/event1 (mouse) file operations
+// ============================================================================
+
+/// REL_X — relative X axis.
+const REL_X_CHIRHO: u16 = 0x00;
+/// REL_Y — relative Y axis.
+const REL_Y_CHIRHO: u16 = 0x01;
+/// REL_WHEEL — scroll wheel.
+const REL_WHEEL_CHIRHO: u16 = 0x08;
+
+/// BTN_LEFT — left mouse button.
+const BTN_LEFT_CHIRHO: u16 = 0x110;
+/// BTN_RIGHT — right mouse button.
+const BTN_RIGHT_CHIRHO: u16 = 0x111;
+/// BTN_MIDDLE — middle mouse button.
+const BTN_MIDDLE_CHIRHO: u16 = 0x112;
+
+/// BUS_USB for mouse device identification.
+const BUS_USB_CHIRHO: u16 = 0x03;
+
+/// Mouse event ring buffer (separate from keyboard).
+pub static MOUSE_EVENT_RING_CHIRHO: spin::Mutex<EventRingChirho> =
+    spin::Mutex::new(EventRingChirho::new_chirho());
+
+/// File operations for `/dev/input/event1` (mouse evdev device).
+///
+/// Reports EV_REL (relative motion) and EV_KEY (mouse buttons) capabilities.
+/// X11 and libinput use this to discover and read mouse input.
+pub struct EvdevMouseOpsChirho;
+
+impl FileOpsChirho for EvdevMouseOpsChirho {
+    fn read_chirho(
+        &self,
+        file_chirho: &mut FileChirho,
+        buf_chirho: &mut [u8],
+    ) -> Result<usize, i64> {
+        if buf_chirho.len() < INPUT_EVENT_SIZE_CHIRHO {
+            return Err(-EINVAL_CHIRHO);
+        }
+
+        let nonblock_chirho = (file_chirho.flags_chirho
+            & crate::vfs_chirho::O_NONBLOCK_CHIRHO) != 0;
+
+        let mut ring_chirho = MOUSE_EVENT_RING_CHIRHO.lock();
+
+        if !ring_chirho.has_events_chirho() {
+            if nonblock_chirho {
+                return Err(-EAGAIN_CHIRHO);
+            }
+            return Ok(0);
+        }
+
+        let max_events_chirho = buf_chirho.len() / INPUT_EVENT_SIZE_CHIRHO;
+        let mut bytes_written_chirho = 0usize;
+
+        for _ in 0..max_events_chirho {
+            if let Some(event_chirho) = ring_chirho.pop_chirho() {
+                let event_bytes_chirho = unsafe {
+                    core::slice::from_raw_parts(
+                        &event_chirho as *const InputEventChirho as *const u8,
+                        INPUT_EVENT_SIZE_CHIRHO,
+                    )
+                };
+                buf_chirho[bytes_written_chirho..bytes_written_chirho + INPUT_EVENT_SIZE_CHIRHO]
+                    .copy_from_slice(event_bytes_chirho);
+                bytes_written_chirho += INPUT_EVENT_SIZE_CHIRHO;
+            } else {
+                break;
+            }
+        }
+
+        Ok(bytes_written_chirho)
+    }
+
+    fn write_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        buf_chirho: &[u8],
+    ) -> Result<usize, i64> {
+        Ok(buf_chirho.len())
+    }
+
+    fn seek_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _offset_chirho: i64,
+        _whence_chirho: u32,
+    ) -> Result<u64, i64> {
+        Err(-29) // ESPIPE
+    }
+
+    fn ioctl_chirho(
+        &self,
+        _file_chirho: &FileChirho,
+        cmd_chirho: u64,
+        arg_chirho: u64,
+    ) -> Result<i64, i64> {
+        let base_cmd_chirho = cmd_chirho & 0x0000FFFF;
+        let ioctl_size_chirho = ((cmd_chirho >> 16) & 0x3FFF) as usize;
+
+        match cmd_chirho {
+            // EVIOCGVERSION
+            EVIOCGVERSION_CHIRHO => {
+                if arg_chirho == 0 { return Err(-EFAULT_CHIRHO); }
+                let version_chirho: i32 = 0x010001;
+                let src_chirho = unsafe {
+                    core::slice::from_raw_parts(
+                        &version_chirho as *const i32 as *const u8, 4,
+                    )
+                };
+                if crate::uaccess_chirho::copy_to_user_chirho(arg_chirho, src_chirho, 4).is_err() {
+                    return Err(-EFAULT_CHIRHO);
+                }
+                Ok(0)
+            }
+
+            // EVIOCGID — mouse device identification
+            EVIOCGID_CHIRHO => {
+                if arg_chirho == 0 { return Err(-EFAULT_CHIRHO); }
+                let id_chirho = InputIdChirho {
+                    bustype_chirho: BUS_USB_CHIRHO,
+                    vendor_chirho: 0x4C49,  // "LI" for Lineluya
+                    product_chirho: 0x4D53, // "MS" for mouse
+                    version_chirho: 0x0001,
+                };
+                let size_chirho = core::mem::size_of::<InputIdChirho>();
+                let src_chirho = unsafe {
+                    core::slice::from_raw_parts(
+                        &id_chirho as *const InputIdChirho as *const u8,
+                        size_chirho,
+                    )
+                };
+                if crate::uaccess_chirho::copy_to_user_chirho(
+                    arg_chirho, src_chirho, size_chirho,
+                ).is_err() {
+                    return Err(-EFAULT_CHIRHO);
+                }
+                Ok(0)
+            }
+
+            _ => {
+                match base_cmd_chirho {
+                    // EVIOCGNAME — "lineluya-mouse"
+                    x_chirho if x_chirho == EVIOCGNAME_BASE_CHIRHO as u64 => {
+                        if arg_chirho == 0 { return Err(-EFAULT_CHIRHO); }
+                        let name_chirho = b"lineluya-mouse\0";
+                        let copy_len_chirho = name_chirho.len().min(ioctl_size_chirho);
+                        if crate::uaccess_chirho::copy_to_user_chirho(
+                            arg_chirho, &name_chirho[..copy_len_chirho], copy_len_chirho,
+                        ).is_err() {
+                            return Err(-EFAULT_CHIRHO);
+                        }
+                        Ok(copy_len_chirho as i64)
+                    }
+
+                    // EVIOCGPHYS
+                    x_chirho if x_chirho == EVIOCGPHYS_BASE_CHIRHO as u64 => {
+                        if arg_chirho == 0 { return Err(-EFAULT_CHIRHO); }
+                        let phys_chirho = b"usb-0000:00:01.0-1/input0\0";
+                        let copy_len_chirho = phys_chirho.len().min(ioctl_size_chirho);
+                        if crate::uaccess_chirho::copy_to_user_chirho(
+                            arg_chirho, &phys_chirho[..copy_len_chirho], copy_len_chirho,
+                        ).is_err() {
+                            return Err(-EFAULT_CHIRHO);
+                        }
+                        Ok(copy_len_chirho as i64)
+                    }
+
+                    // EVIOCGUNIQ
+                    x_chirho if x_chirho == EVIOCGUNIQ_BASE_CHIRHO as u64 => {
+                        if arg_chirho == 0 { return Err(-EFAULT_CHIRHO); }
+                        let uniq_chirho = b"\0";
+                        let copy_len_chirho = uniq_chirho.len().min(ioctl_size_chirho);
+                        if crate::uaccess_chirho::copy_to_user_chirho(
+                            arg_chirho, &uniq_chirho[..copy_len_chirho], copy_len_chirho,
+                        ).is_err() {
+                            return Err(-EFAULT_CHIRHO);
+                        }
+                        Ok(copy_len_chirho as i64)
+                    }
+
+                    // EVIOCGPROP — no properties
+                    x_chirho if x_chirho == EVIOCGPROP_BASE_CHIRHO as u64 => {
+                        if arg_chirho == 0 { return Err(-EFAULT_CHIRHO); }
+                        let zero_buf_chirho = [0u8; 32];
+                        let copy_len_chirho = zero_buf_chirho.len().min(ioctl_size_chirho);
+                        if crate::uaccess_chirho::copy_to_user_chirho(
+                            arg_chirho, &zero_buf_chirho[..copy_len_chirho], copy_len_chirho,
+                        ).is_err() {
+                            return Err(-EFAULT_CHIRHO);
+                        }
+                        Ok(0)
+                    }
+
+                    // EVIOCGBIT — capability bits for mouse
+                    x_chirho if x_chirho >= EVIOCGBIT_BASE_CHIRHO as u64
+                             && x_chirho <= (EVIOCGBIT_BASE_CHIRHO as u64 + EV_MAX_CHIRHO as u64) =>
+                    {
+                        if arg_chirho == 0 { return Err(-EFAULT_CHIRHO); }
+                        let ev_type_chirho = (x_chirho - EVIOCGBIT_BASE_CHIRHO as u64) as u16;
+                        self.handle_mouse_eviocgbit_chirho(ev_type_chirho, arg_chirho, ioctl_size_chirho)
+                    }
+
+                    // EVIOCGKEY — all buttons up
+                    x_chirho if x_chirho == EVIOCGKEY_BASE_CHIRHO as u64 => {
+                        if arg_chirho == 0 { return Err(-EFAULT_CHIRHO); }
+                        let zero_buf_chirho = [0u8; 96];
+                        let copy_len_chirho = zero_buf_chirho.len().min(ioctl_size_chirho);
+                        if crate::uaccess_chirho::copy_to_user_chirho(
+                            arg_chirho, &zero_buf_chirho[..copy_len_chirho], copy_len_chirho,
+                        ).is_err() {
+                            return Err(-EFAULT_CHIRHO);
+                        }
+                        Ok(0)
+                    }
+
+                    _ => Err(-EINVAL_CHIRHO),
+                }
+            }
+        }
+    }
+
+    fn readdir_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _callback_chirho: &mut dyn FnMut(&str, u64, u8) -> bool,
+    ) -> Result<usize, i64> {
+        Err(-20) // ENOTDIR
+    }
+}
+
+impl EvdevMouseOpsChirho {
+    /// Handle EVIOCGBIT for mouse device — reports EV_REL, EV_KEY, EV_SYN capabilities.
+    fn handle_mouse_eviocgbit_chirho(
+        &self,
+        ev_type_chirho: u16,
+        arg_chirho: u64,
+        max_size_chirho: usize,
+    ) -> Result<i64, i64> {
+        match ev_type_chirho {
+            // EV type 0: which event types this device supports.
+            // Mouse: EV_SYN (0), EV_KEY (1), EV_REL (2)
+            0 => {
+                let mut bits_chirho = [0u8; 4];
+                // Bit 0 = EV_SYN, Bit 1 = EV_KEY, Bit 2 = EV_REL
+                bits_chirho[0] = 0x07; // 0b0000_0111
+                let copy_len_chirho = bits_chirho.len().min(max_size_chirho);
+                if crate::uaccess_chirho::copy_to_user_chirho(
+                    arg_chirho, &bits_chirho[..copy_len_chirho], copy_len_chirho,
+                ).is_err() {
+                    return Err(-EFAULT_CHIRHO);
+                }
+                Ok(copy_len_chirho as i64)
+            }
+
+            // EV_KEY (1): mouse button bits.
+            // BTN_LEFT=0x110, BTN_RIGHT=0x111, BTN_MIDDLE=0x112
+            1 => {
+                let mut bits_chirho = [0u8; 96]; // KEY_MAX/8 + 1
+                // BTN_LEFT=0x110: byte 0x110/8=34, bit 0x110%8=0
+                bits_chirho[34] |= 0x01; // BTN_LEFT
+                // BTN_RIGHT=0x111: byte 34, bit 1
+                bits_chirho[34] |= 0x02; // BTN_RIGHT
+                // BTN_MIDDLE=0x112: byte 34, bit 2
+                bits_chirho[34] |= 0x04; // BTN_MIDDLE
+                let copy_len_chirho = bits_chirho.len().min(max_size_chirho);
+                if crate::uaccess_chirho::copy_to_user_chirho(
+                    arg_chirho, &bits_chirho[..copy_len_chirho], copy_len_chirho,
+                ).is_err() {
+                    return Err(-EFAULT_CHIRHO);
+                }
+                Ok(copy_len_chirho as i64)
+            }
+
+            // EV_REL (2): relative axis bits.
+            // REL_X=0, REL_Y=1, REL_WHEEL=8
+            2 => {
+                let mut bits_chirho = [0u8; 2]; // need at least 2 bytes for bit 8
+                bits_chirho[0] = 0x03; // REL_X (bit 0) + REL_Y (bit 1)
+                bits_chirho[1] = 0x01; // REL_WHEEL (bit 8 => byte 1, bit 0)
+                let copy_len_chirho = bits_chirho.len().min(max_size_chirho);
+                if crate::uaccess_chirho::copy_to_user_chirho(
+                    arg_chirho, &bits_chirho[..copy_len_chirho], copy_len_chirho,
+                ).is_err() {
+                    return Err(-EFAULT_CHIRHO);
+                }
+                Ok(copy_len_chirho as i64)
+            }
+
+            // All other event types: return zero bits.
+            _ => {
+                let zero_buf_chirho = [0u8; 32];
+                let copy_len_chirho = zero_buf_chirho.len().min(max_size_chirho);
+                if crate::uaccess_chirho::copy_to_user_chirho(
+                    arg_chirho, &zero_buf_chirho[..copy_len_chirho], copy_len_chirho,
+                ).is_err() {
+                    return Err(-EFAULT_CHIRHO);
+                }
+                Ok(0)
+            }
+        }
+    }
+}
+
+/// Static instance of /dev/input/event1 (mouse) file operations.
+pub static EVDEV_MOUSE_OPS_CHIRHO: EvdevMouseOpsChirho = EvdevMouseOpsChirho;
+
+/// Push a mouse motion event into the mouse evdev ring buffer.
+///
+/// Generates REL_X and/or REL_Y events plus SYN_REPORT.
+#[allow(dead_code)]
+pub fn push_mouse_rel_event_chirho(dx_chirho: i32, dy_chirho: i32) {
+    let mut ring_chirho = MOUSE_EVENT_RING_CHIRHO.lock();
+
+    if dx_chirho != 0 {
+        ring_chirho.push_chirho(InputEventChirho {
+            tv_sec_chirho: 0,
+            tv_usec_chirho: 0,
+            type_chirho: EV_REL_CHIRHO,
+            code_chirho: REL_X_CHIRHO,
+            value_chirho: dx_chirho,
+        });
+    }
+    if dy_chirho != 0 {
+        ring_chirho.push_chirho(InputEventChirho {
+            tv_sec_chirho: 0,
+            tv_usec_chirho: 0,
+            type_chirho: EV_REL_CHIRHO,
+            code_chirho: REL_Y_CHIRHO,
+            value_chirho: dy_chirho,
+        });
+    }
+
+    ring_chirho.push_chirho(InputEventChirho {
+        tv_sec_chirho: 0,
+        tv_usec_chirho: 0,
+        type_chirho: EV_SYN_CHIRHO,
+        code_chirho: 0,
+        value_chirho: 0,
+    });
+}
+
+/// Push a mouse button event into the mouse evdev ring buffer.
+///
+/// `button_chirho`: BTN_LEFT, BTN_RIGHT, or BTN_MIDDLE code.
+/// `pressed_chirho`: 1 for press, 0 for release.
+#[allow(dead_code)]
+pub fn push_mouse_button_event_chirho(button_chirho: u16, pressed_chirho: i32) {
+    let mut ring_chirho = MOUSE_EVENT_RING_CHIRHO.lock();
+
+    ring_chirho.push_chirho(InputEventChirho {
+        tv_sec_chirho: 0,
+        tv_usec_chirho: 0,
+        type_chirho: EV_KEY_CHIRHO,
+        code_chirho: button_chirho,
+        value_chirho: pressed_chirho,
+    });
+
+    ring_chirho.push_chirho(InputEventChirho {
+        tv_sec_chirho: 0,
+        tv_usec_chirho: 0,
+        type_chirho: EV_SYN_CHIRHO,
+        code_chirho: 0,
+        value_chirho: 0,
+    });
+}
