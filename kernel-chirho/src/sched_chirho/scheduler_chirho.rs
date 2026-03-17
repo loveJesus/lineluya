@@ -373,12 +373,21 @@ pub fn schedule_chirho() {
                     let new_rip_chirho = (*new_ctx_ptr_chirho).rip_chirho;
                     let new_rsp_chirho = (*new_ctx_ptr_chirho).rsp_chirho;
                     // Verify new RIP is in kernel code range (0x10000...)
+                    // Validate new task's stack integrity by checking if the
+                    // return address AT the saved RSP is a valid kernel address.
+                    let stack_top_ret_chirho = if new_rsp_chirho > 0 {
+                        core::ptr::read_volatile(new_rsp_chirho as *const u64)
+                    } else { 0 };
+                    let stack_ok_chirho = stack_top_ret_chirho >= 0x1000_0000_000
+                        && stack_top_ret_chirho <= 0x2000_0000_000;
+
                     // Kernel code is around 0x10000xxxxxx (~64GB virtual).
-                    // Stack/heap is around 0x4444xxxxxxxx or 0x4666xxxxxxxx.
-                    if new_rip_chirho < 0x1000_0000_000 || new_rip_chirho > 0x2000_0000_000 {
+                    if new_rip_chirho < 0x1000_0000_000 || new_rip_chirho > 0x2000_0000_000
+                        || !stack_ok_chirho {
                         crate::serial_println_chirho!(
-                            "[SCHED] ABORT switch {:?}->{}: BAD rip={:#x} rsp={:#x}",
-                            old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho
+                            "[SCHED] ABORT switch {:?}->{}: rip={:#x} rsp={:#x} stack_ret={:#x} stack_ok={}",
+                            old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
+                            stack_top_ret_chirho, stack_ok_chirho
                         );
                         return; // Don't switch to corrupted context
                     }
