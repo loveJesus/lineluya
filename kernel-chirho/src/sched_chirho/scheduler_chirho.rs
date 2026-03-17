@@ -279,12 +279,7 @@ pub fn schedule_chirho() {
         //    This prevents context switch corruption when switching back.
         let old_pid_chirho = scheduler_chirho.current_pid_chirho;
         if let Some(pid_chirho) = old_pid_chirho {
-            // Only push back if the queue is empty (no children to run).
-            // If children exist, the current task stays out of the queue
-            // until the child completes and wakes it via waitqueue/signal.
-            if scheduler_chirho.tasks_chirho.is_empty() {
-                scheduler_chirho.tasks_chirho.push_back(pid_chirho);
-            }
+            scheduler_chirho.tasks_chirho.push_back(pid_chirho);
         }
 
         // 3. Pop the next task from the front.
