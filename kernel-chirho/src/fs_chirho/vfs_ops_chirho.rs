@@ -90,10 +90,11 @@ pub fn init_fs_chirho() {
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "tmp", 0o1777);
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "run", 0o755);
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "var", 0o755);
-            // Create /bin and /sbin for BusyBox applet lookups
+            // Create /bin and /sbin for BusyBox applet lookups.
+            // Do NOT create /usr, /lib, /etc on tmpfs — those must resolve
+            // to the ext4 rootfs so binaries like dropbear can be found.
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "bin", 0o755);
             let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "sbin", 0o755);
-            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "usr", 0o755);
         }
     }
 
