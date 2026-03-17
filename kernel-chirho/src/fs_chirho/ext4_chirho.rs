@@ -1297,6 +1297,17 @@ impl Ext4MountChirho {
         let dir_size_chirho = inode_chirho.size_chirho() as usize;
         let num_blocks_chirho = (dir_size_chirho + 4095) / 4096;
 
+        // Debug: log root directory lookup details
+        let debug_lookup_chirho = dir_ino_chirho == 2 && (name_chirho == "usr" || name_chirho == "sbin");
+        if debug_lookup_chirho {
+            let flags_copy_chirho = { inode_chirho.i_flags_chirho };
+            crate::serial_println_chirho!(
+                "[EXT4-DBG] dir ino={} size={} blocks={} flags={:#x} uses_extents={}",
+                dir_ino_chirho, dir_size_chirho, num_blocks_chirho,
+                flags_copy_chirho, inode_chirho.uses_extents_chirho()
+            );
+        }
+
         let mut block_buf_chirho = [0u8; 4096];
         for blk_idx_chirho in 0..num_blocks_chirho {
             if self.read_block_by_logical_into_chirho(
@@ -1337,6 +1348,12 @@ impl Ext4MountChirho {
                     if let Ok(entry_name_chirho) = core::str::from_utf8(
                         &block_buf_chirho[offset_chirho + 8..offset_chirho + 8 + name_len_chirho],
                     ) {
+                        if debug_lookup_chirho {
+                            crate::serial_println_chirho!(
+                                "[EXT4-DBG]   entry: ino={} name='{}' type={}",
+                                ino_chirho, entry_name_chirho, file_type_chirho
+                            );
+                        }
                         if entry_name_chirho == name_chirho {
                             return Some(DirEntryInfoChirho {
                                 inode_chirho: ino_chirho,
@@ -2195,12 +2212,35 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
             .fs_data_chirho
             .as_ref()
             .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
-            .ok_or(-2i64)?; // ENOENT
+            .ok_or_else(|| {
+                if name_chirho.contains("usr") || name_chirho.contains("sbin") || name_chirho.contains("dropbear") {
+                    crate::serial_println_chirho!(
+                        "[EXT4-DBG] lookup '{}': fs_data downcast FAILED (parent ino={})",
+                        name_chirho, parent_chirho.ino_chirho
+                    );
+                }
+                -2i64
+            })?;
+
+        if name_chirho.contains("usr") || name_chirho.contains("sbin") || name_chirho.contains("dropbear") {
+            crate::serial_println_chirho!(
+                "[EXT4-DBG] lookup '{}' in ext4 inode {} (mount OK)",
+                name_chirho, fs_data_chirho.ino_chirho
+            );
+        }
 
         let mount_chirho = fs_data_chirho.mount_chirho.lock();
         let entry_chirho = mount_chirho
             .lookup_in_dir_chirho(fs_data_chirho.ino_chirho, name_chirho)
-            .ok_or(-2i64)?; // ENOENT
+            .ok_or_else(|| {
+                if name_chirho.contains("usr") || name_chirho.contains("sbin") || name_chirho.contains("dropbear") {
+                    crate::serial_println_chirho!(
+                        "[EXT4-DBG] lookup_in_dir({}, '{}') returned None",
+                        fs_data_chirho.ino_chirho, name_chirho
+                    );
+                }
+                -2i64
+            })?;
 
         let child_ext4_inode_chirho = mount_chirho
             .read_inode_chirho(entry_chirho.inode_chirho)
