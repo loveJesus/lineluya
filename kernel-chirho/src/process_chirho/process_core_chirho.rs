@@ -674,63 +674,73 @@ fn reap_child_chirho(
 #[unsafe(naked)]
 unsafe extern "C" fn fork_child_return_chirho() {
     core::arch::naked_asm!(
-        // RSP points to the extended SyscallFrameChirho.
-        // Use IRETQ instead of SYSRET for more reliable ring transition.
-        // IRETQ pops: RIP, CS, RFLAGS, RSP, SS from the stack.
+        // RSP points to the SyscallFrameChirho on the child's kernel stack.
+        // Layout (offsets from RSP):
+        //   0x00: rax (= 0, fork return value)
+        //   0x08: rdi     0x10: rsi     0x18: rdx
+        //   0x20: r10     0x28: r8      0x30: r9
+        //   0x38: rcx (user RIP)
+        //   0x40: r11 (user RFLAGS)
+        //   0x48: rsp (user RSP)
+        //   0x50: rbx     0x58: rbp
+        //   0x60: r12     0x68: r13     0x70: r14     0x78: r15
+        //
+        // Strategy: save frame pointer, read user RIP/RFLAGS/RSP into
+        // scratch registers, restore all GPRs, then build IRETQ frame
+        // on a clean area of the kernel stack.
 
-        // First, restore ALL general-purpose registers from the frame.
-        // We use rax as scratch last (it's overwritten by the frame value).
-        "mov rbx, [rsp + 0x50]",    // rbx (callee-saved)
-        "mov rbp, [rsp + 0x58]",    // rbp (callee-saved)
-        "mov r12, [rsp + 0x60]",    // r12 (callee-saved)
-        "mov r13, [rsp + 0x68]",    // r13 (callee-saved)
-        "mov r14, [rsp + 0x70]",    // r14 (callee-saved)
-        "mov r15, [rsp + 0x78]",    // r15 (callee-saved)
-        "mov rdi, [rsp + 0x08]",    // rdi
-        "mov rsi, [rsp + 0x10]",    // rsi
-        "mov rdx, [rsp + 0x18]",    // rdx
-        "mov r10, [rsp + 0x20]",    // r10
-        "mov r8,  [rsp + 0x28]",    // r8
-        "mov r9,  [rsp + 0x30]",    // r9
-        "mov rcx, [rsp + 0x38]",    // rcx (user RIP, saved for IRETQ below)
-        "mov r11, [rsp + 0x40]",    // r11 (user RFLAGS)
+        // Step 1: Save the frame base pointer so we can read it after
+        //         restoring all registers.  Use r15 as temporary (we
+        //         restore it last).
+        "mov r15, rsp",                     // r15 = frame base
 
-        // Build IRETQ frame on the kernel stack.
-        // IRETQ expects (from top): RIP, CS, RFLAGS, RSP, SS
-        // We need to push these in reverse order.
+        // Step 2: Read the three IRETQ inputs into callee-saved regs
+        //         that we will restore AFTER building the IRETQ frame.
+        //         We cannot use caller-saved regs because they get
+        //         overwritten by the GPR restore below.
+        //
+        //         r12 = user RIP,  r13 = user RFLAGS,  r14 = user RSP
+        "mov r12, [r15 + 0x38]",            // user RIP  (was in rcx)
+        "mov r13, [r15 + 0x40]",            // user RFLAGS (was in r11)
+        "mov r14, [r15 + 0x48]",            // user RSP
 
-        // Save rax temporarily (we need rsp slot first)
-        "mov rax, [rsp + 0x48]",    // rax = user RSP (temporary)
-        "mov [rsp + 0x20], rax",    // stash user RSP in a slot we don't need (r10 slot)
+        // Step 3: Restore all GPRs from the frame EXCEPT r12-r15
+        //         (we're using those as scratch for IRETQ values).
+        "xor eax, eax",                     // rax = 0 (fork return)
+        "mov rdi, [r15 + 0x08]",
+        "mov rsi, [r15 + 0x10]",
+        "mov rdx, [r15 + 0x18]",
+        "mov r10, [r15 + 0x20]",
+        "mov r8,  [r15 + 0x28]",
+        "mov r9,  [r15 + 0x30]",
+        "mov rcx, [r15 + 0x38]",            // rcx = user RIP (also in r12)
+        "mov r11, [r15 + 0x40]",            // r11 = user RFLAGS (also in r13)
+        "mov rbx, [r15 + 0x50]",
+        "mov rbp, [r15 + 0x58]",
 
-        // Now load rax with the fork return value
-        "mov rax, [rsp + 0x00]",    // rax = 0 (fork return)
+        // Step 4: Build IRETQ frame on a clean kernel stack area.
+        //         Move RSP well below the SyscallFrame to avoid overlap.
+        "lea rsp, [r15 - 64]",
 
-        // Build IRETQ frame on the kernel stack.
-        // IRETQ pops: RIP, CS, RFLAGS, RSP, SS (5 quadwords, 40 bytes).
-        // We build this at the TOP of the kernel stack using push.
-        // Save everything we need on the kernel stack first.
-        "push rax",                         // save rax=0
+        // Push IRETQ frame (reverse order: SS, RSP, RFLAGS, CS, RIP)
+        "push 0x23",                         // SS  = user data segment
+        "push r14",                          // RSP = user stack pointer
+        "push r13",                          // RFLAGS = user flags
+        "push 0x2B",                         // CS  = user code segment (64-bit)
+        "push r12",                          // RIP = user return address
 
-        // Push IRETQ frame in REVERSE order (SS first, RIP last)
-        "mov rax, 0x23",                    // SS = user data segment
-        "push rax",
-        "mov rax, [rsp + 0x28]",            // user RSP from stashed slot (+8 for saved rax, +8 for SS push)
-        "push rax",                          // RSP
-        "push r11",                          // RFLAGS
-        "mov rax, 0x2b",                    // CS = user code segment
-        "push rax",
-        "push rcx",                          // RIP = user return address
+        // Step 5: Restore the remaining callee-saved regs (r12-r15)
+        //         from the frame.  We use r15 (frame base) to read them.
+        "mov r12, [r15 + 0x60]",
+        "mov r13, [r15 + 0x68]",
+        "mov r14, [r15 + 0x70]",
+        "mov r15, [r15 + 0x78]",            // last use of frame pointer
 
-        // Restore rax=0 (skip over 5 IRETQ pushes + 1 saved rax = 48 bytes)
-        "mov rax, [rsp + 0x28]",             // saved rax at RSP+40
-        // Actually just set rax=0 directly (it's the fork return value)
-        "xor eax, eax",
-
-        // Swap GS before returning to user mode
+        // Step 6: Switch GS base from kernel to user before returning.
         "swapgs",
 
-        // Return to userspace via IRETQ
+        // Step 7: Return to userspace.  IRETQ pops RIP, CS, RFLAGS,
+        //         RSP, SS — atomically switching to ring 3.
         "iretq",
     );
 }
