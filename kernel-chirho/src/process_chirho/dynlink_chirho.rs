@@ -127,6 +127,10 @@ pub const R_X86_64_GLOB_DAT_CHIRHO: u32 = 6;
 /// R_X86_64_64 — Direct 64-bit relocation.
 pub const R_X86_64_64_CHIRHO: u32 = 1;
 
+/// R_X86_64_COPY — Copy symbol value from shared library into executable's BSS.
+/// Used for global data symbols like `environ`, `optind`, `__stack_chk_guard`.
+pub const R_X86_64_COPY_CHIRHO: u32 = 5;
+
 // ---------------------------------------------------------------------------
 // Auxiliary vector types not yet in elf_chirho.rs
 // ---------------------------------------------------------------------------
@@ -691,11 +695,25 @@ pub unsafe fn apply_relative_relocs_chirho(
                 // These require symbol resolution. For now, write 0 as a
                 // placeholder — the dynamic linker (ld.so) will resolve them
                 // during its own initialization.
-                // If we are loading the linker itself, these should be
-                // self-referencing and resolved via DT_SYMTAB.
+            }
+            R_X86_64_COPY_CHIRHO => {
+                // COPY: copy symbol data from shared library into executable BSS.
+                // The symbol index tells us which symbol to look up. The target
+                // address (base + offset) is where to copy the data.
+                // For now, zero-fill the target to prevent garbage data crashes.
+                // Real implementation requires looking up the symbol in the
+                // interpreter's symbol table and copying st_size bytes.
+                let target_addr_chirho = rela_chirho.r_offset_chirho.wrapping_add(load_bias_chirho);
+                // Zero-fill 8 bytes as a safe default (most COPY relocs are
+                // for pointers or small data: environ, optind, etc.)
+                core::ptr::write(target_addr_chirho as *mut u64, 0);
+                crate::serial_debug_chirho!(
+                    "[DYNLINK] COPY reloc at {:#x} (zeroed)",
+                    target_addr_chirho,
+                );
             }
             _ => {
-                // Unknown relocation type — skip.
+                // Unknown relocation type — skip with warning.
                 serial_println_chirho!(
                     "[DYNLINK] Skipping relocation type {} at offset {:#x}",
                     rela_type_chirho,
