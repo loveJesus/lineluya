@@ -2082,7 +2082,7 @@ impl FileOpsChirho for SocketFileOpsChirho {
             // Connection is still alive but no data yet.
             // Block: poll network + yield in a loop until data arrives.
             drop(table_chirho);
-            for _wait_chirho in 0..500u32 {
+            for _wait_chirho in 0..10_000u32 {
                 x86_64::instructions::interrupts::enable_and_hlt();
                 poll_network_chirho();
                 // Don't yield here — keep the CPU and wait for data.
