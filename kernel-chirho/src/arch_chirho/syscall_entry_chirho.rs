@@ -162,19 +162,39 @@ syscall_entry_chirho:
     popq    %r10                             // r10_chirho
     popq    %r8                              // r8_chirho
     popq    %r9                              // r9_chirho
-    popq    %rcx                             // rcx_chirho  (user RIP for sysretq)
-    popq    %r11                             // r11_chirho  (user RFLAGS for sysretq)
+    popq    %rcx                             // rcx_chirho  (user RIP)
+    popq    %r11                             // r11_chirho  (user RFLAGS)
 
-    // Step 9: Restore user RSP.
-    popq    %rsp                             // rsp_chirho
-    // Callee-saved registers (rbx-r15) remain on the kernel stack
-    // but are preserved by the C ABI across the Rust call.
+    // Step 9: Build IRETQ frame for return to userspace.
+    // IRETQ is used instead of SYSRET because QEMU TCG on ARM64 has
+    // SYSRET emulation issues that cause #UD with CS=0x08 at user addresses.
+    // IRETQ is slower but correct — atomically sets RIP, CS, RFLAGS, RSP, SS.
+    //
+    // Current register state:
+    //   RCX = user RIP, R11 = user RFLAGS, RSP points to user_rsp slot
+    //   RAX = syscall return value, RDI-R10 restored
+    //   RBX/RBP/R12-R15 = user values (C ABI callee-saved)
+    //
+    // Read user RSP from the stack (next value to pop), save it to scratch.
+    popq    %rsp                             // rsp_chirho = user RSP
+    movq    %rsp, USER_RSP_SCRATCH_CHIRHO(%rip)  // save user RSP
 
-    // Step 10: Switch GS base back to user before returning.
+    // Switch to kernel stack (well below the SyscallFrame to avoid overlap).
+    movq    KERNEL_STACK_TOP_CHIRHO(%rip), %rsp
+    subq    $256, %rsp
+
+    // Switch GS base back to user before returning.
     swapgs
 
-    // Step 11: Return to userspace via SYSRET.
-    sysretq
+    // Build IRETQ frame on kernel stack (push in reverse order):
+    pushq   $0x23                            // SS  = user data segment
+    pushq   USER_RSP_SCRATCH_CHIRHO(%rip)    // RSP = user stack pointer
+    pushq   %r11                             // RFLAGS = user flags
+    pushq   $0x2B                            // CS  = user code segment (64-bit)
+    pushq   %rcx                             // RIP = user return address
+
+    // Return to userspace via IRETQ.
+    iretq
 
 .size syscall_entry_chirho, . - syscall_entry_chirho
 "#,
