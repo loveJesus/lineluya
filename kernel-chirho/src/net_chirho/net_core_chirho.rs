@@ -4653,10 +4653,16 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
     }
 
     let hdr_len_chirho = (ip_hdr_chirho.ihl_chirho as usize) * 4;
-    if ip_data_chirho.len() < hdr_len_chirho {
+    // Use IP total_length to exclude Ethernet frame padding.
+    // Without this, TCP ACK packets (40 bytes IP) get 6 bytes of
+    // Ethernet padding (min frame 60 bytes) included as TCP payload,
+    // corrupting the SSH protocol stream.
+    let ip_total_chirho = ip_hdr_chirho.total_length_chirho as usize;
+    let ip_end_chirho = core::cmp::min(ip_total_chirho, ip_data_chirho.len());
+    if ip_end_chirho < hdr_len_chirho {
         return;
     }
-    let tcp_data_chirho = &ip_data_chirho[hdr_len_chirho..];
+    let tcp_data_chirho = &ip_data_chirho[hdr_len_chirho..ip_end_chirho];
 
     let segment_chirho = match TcpSegmentChirho::parse_chirho(tcp_data_chirho) {
         Some(s_chirho) => s_chirho,
@@ -4785,10 +4791,20 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
             for byte_chirho in &segment_chirho.payload_chirho {
                 sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
             }
-            crate::log_net_chirho!(
-                "[TCP] Delivered {} bytes to socket port {}",
+            // Log first 8 bytes of payload for debugging SSH protocol
+            let preview_chirho: alloc::string::String = segment_chirho.payload_chirho
+                .iter().take(8)
+                .map(|b_chirho| if b_chirho.is_ascii_graphic() || *b_chirho == b' ' {
+                    *b_chirho as char
+                } else {
+                    '.'
+                })
+                .collect();
+            crate::serial_println_chirho!(
+                "[TCP] Delivered {} bytes to port {} [{}]",
                 segment_chirho.payload_chirho.len(),
                 local_port_chirho,
+                preview_chirho,
             );
         }
 
