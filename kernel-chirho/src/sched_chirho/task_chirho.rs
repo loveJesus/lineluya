@@ -695,7 +695,7 @@ fn make_comm_chirho(name_chirho: &str) -> [u8; TASK_COMM_LEN_CHIRHO] {
 /// # Panics
 ///
 /// Panics if the heap allocator cannot satisfy the request.
-fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
+pub fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
     // Allocate kernel stacks from the FRAME ALLOCATOR (physical memory)
     // instead of the heap. This prevents heap fragmentation from leaked
     // stacks, which blocked the 64MB buddy allocation for dropbear SSH.

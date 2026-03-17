@@ -1258,12 +1258,11 @@ fn debug_verify_stack_chirho(user_rsp_chirho: u64) {
 /// The stack memory is leaked intentionally — kernel stacks live for the
 /// lifetime of their task.
 fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
-    use alloc::vec;
-
-    let stack_vec_chirho = vec![0u8; size_chirho];
-    let ptr_chirho = stack_vec_chirho.as_ptr() as u64;
-    core::mem::forget(stack_vec_chirho);
-    ptr_chirho
+    // Delegate to the task module's allocator which uses a bump allocator
+    // with guard pages, preventing stack overlap. The previous heap-based
+    // allocator (Vec + forget) placed adjacent stacks without gaps,
+    // causing PID 3 and PID 4's stacks to overlap and corrupt each other.
+    crate::task_chirho::allocate_kernel_stack_chirho(size_chirho)
 }
 
 /// Read a NULL-terminated array of string pointers from userspace.
