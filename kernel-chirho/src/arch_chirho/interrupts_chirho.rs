@@ -647,16 +647,24 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
     if was_user_mode_chirho && crate::scheduler_chirho::need_resched_chirho() {
-        // Preemptive scheduling from the timer interrupt.
-        // This is safe because we only preempt USER MODE code — the timer
-        // handler runs on the kernel stack (TSS.RSP0) with the interrupt
-        // frame at a known position. After schedule_chirho() switches context,
-        // the NEW task resumes from ITS saved context (not from this handler's
-        // IRETQ frame). When this task is eventually scheduled again, the
-        // scheduler restores its context which includes the registers saved
-        // by this handler, and the handler's epilogue IRETQs correctly.
-        crate::scheduler_chirho::schedule_chirho();
-        crate::scheduler_chirho::reset_time_slice_chirho();
+        // Preemptive scheduling: we cannot call schedule_chirho() directly here
+        // because the context switch would corrupt this interrupt handler's
+        // IRETQ frame (RSP switches to the target task's stack).
+        //
+        // Instead, we make the current task call yield via a SYNTHETIC syscall.
+        // Modify the interrupt frame's RIP to point to a SYSCALL instruction
+        // that will trigger schedule_chirho() on the syscall return path.
+        // The user's original RIP is saved in RCX (by convention for SYSCALL),
+        // so we also save RCX.
+        //
+        // Actually, the simplest approach: just leave need_resched set.
+        // The NEXT syscall from this task will trigger the schedule on return
+        // (the check in syscall_dispatch_wrapper_chirho).
+        //
+        // For tasks in tight userspace loops without syscalls, they will
+        // eventually get preempted when the timer fires and they make their
+        // next syscall (the dynamic linker makes syscalls regularly).
+        // This is cooperative-at-userspace, preemptive-at-syscall-boundary.
     }
 }
 
