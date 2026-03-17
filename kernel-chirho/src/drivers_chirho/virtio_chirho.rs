@@ -233,6 +233,14 @@ pub struct VringUsedChirho {
 
 /// A complete VirtIO split virtqueue with descriptor table, available ring,
 /// and used ring.
+///
+/// ## Safety (audit unsafe-003)
+///
+/// The VirtQueue uses `Vec` for all internal storage (no raw pointers).
+/// All descriptor access goes through safe methods: `alloc_desc_chirho`,
+/// `free_desc_chirho`, `push_avail_chirho`, `pop_used_chirho`. The only
+/// unsafe boundary is writing the physical address to device registers
+/// (done in the transport-specific setup code, not here).
 pub struct VirtQueueChirho {
     /// Number of entries (descriptors) in this queue.
     pub size_chirho: u16,
@@ -1855,6 +1863,13 @@ const HEX_DIGITS_CHIRHO: &[u8; 16] = b"0123456789abcdef";
 
 // ============================================================================
 // P2-003 / P2-004: ext4 superblock parsing and VFS mount at /mnt
+//
+// TODO(fs-dyn-003): Make the ext4 root mount configurable via kernel cmdline.
+// Currently the first VirtIO-blk device with a valid ext4 superblock is
+// hardcoded as the root filesystem ("/"). The cmdline module already parses
+// `root=/dev/vda` style parameters — this should be used to select which
+// block device to mount and at which path. The mount point should also be
+// configurable (e.g., `rootmount=/` vs `rootmount=/mnt`).
 // ============================================================================
 
 /// After block device registration, read the ext4 superblock from the first

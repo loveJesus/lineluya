@@ -88,6 +88,35 @@ pub enum ExecErrorChirho {
     MmapFailedChirho(i64),
     /// No PT_LOAD segments found.
     NoSegmentsChirho,
+    /// File not found or not accessible (ENOENT).
+    NotFoundChirho,
+    /// Permission denied (EACCES).
+    PermissionDeniedChirho,
+    /// Not an executable or unsupported format (ENOEXEC).
+    NotExecutableChirho,
+    /// Too many levels of #! interpreter indirection (ELOOP).
+    InterpreterLoopChirho,
+    /// Argument list or environment too large (E2BIG).
+    ArgListTooBigChirho,
+    /// I/O error reading the executable (EIO).
+    IoErrorChirho,
+}
+
+impl ExecErrorChirho {
+    /// Convert to Linux errno value for syscall return.
+    pub fn to_errno_chirho(&self) -> i64 {
+        match self {
+            Self::ElfParseChirho(_) => -8,       // ENOEXEC
+            Self::MmapFailedChirho(e_chirho) => *e_chirho, // pass through mmap errno
+            Self::NoSegmentsChirho => -8,        // ENOEXEC
+            Self::NotFoundChirho => -2,          // ENOENT
+            Self::PermissionDeniedChirho => -13,  // EACCES
+            Self::NotExecutableChirho => -8,     // ENOEXEC
+            Self::InterpreterLoopChirho => -40,  // ELOOP
+            Self::ArgListTooBigChirho => -7,     // E2BIG
+            Self::IoErrorChirho => -5,           // EIO
+        }
+    }
 }
 
 // ============================================================================

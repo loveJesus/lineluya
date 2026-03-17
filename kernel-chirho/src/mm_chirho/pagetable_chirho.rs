@@ -105,10 +105,70 @@ fn phys_to_virt_chirho(phys_chirho: PhysAddr) -> VirtAddr {
     VirtAddr::new(phys_chirho.as_u64() + phys_mem_offset_chirho())
 }
 
+// ============================================================================
+// Safe page table operation wrappers (audit unsafe-001)
+// ============================================================================
+
+/// Read a PML4 entry at the given index from a physical PML4 address.
+/// Returns the raw u64 entry value.
+pub fn read_pml4_entry_chirho(pml4_phys_chirho: u64, index_chirho: usize) -> u64 {
+    assert!(index_chirho < 512, "PML4 index out of range");
+    let phys_offset_chirho = phys_mem_offset_chirho();
+    let table_ptr_chirho = (phys_offset_chirho + pml4_phys_chirho) as *const u64;
+    unsafe { core::ptr::read_volatile(table_ptr_chirho.add(index_chirho)) }
+}
+
+/// Write a PML4 entry at the given index to a physical PML4 address.
+pub fn write_pml4_entry_chirho(pml4_phys_chirho: u64, index_chirho: usize, value_chirho: u64) {
+    assert!(index_chirho < 512, "PML4 index out of range");
+    let phys_offset_chirho = phys_mem_offset_chirho();
+    let table_ptr_chirho = (phys_offset_chirho + pml4_phys_chirho) as *mut u64;
+    unsafe { core::ptr::write_volatile(table_ptr_chirho.add(index_chirho), value_chirho) }
+}
+
+/// Read a page table entry at any level (PML4/PDPT/PD/PT) given
+/// the table's physical address and the entry index.
+pub fn read_pt_entry_chirho(table_phys_chirho: u64, index_chirho: usize) -> u64 {
+    assert!(index_chirho < 512, "Page table index out of range");
+    let phys_offset_chirho = phys_mem_offset_chirho();
+    let ptr_chirho = (phys_offset_chirho + table_phys_chirho) as *const u64;
+    unsafe { core::ptr::read_volatile(ptr_chirho.add(index_chirho)) }
+}
+
+/// Write a page table entry at any level.
+pub fn write_pt_entry_chirho(table_phys_chirho: u64, index_chirho: usize, value_chirho: u64) {
+    assert!(index_chirho < 512, "Page table index out of range");
+    let phys_offset_chirho = phys_mem_offset_chirho();
+    let ptr_chirho = (phys_offset_chirho + table_phys_chirho) as *mut u64;
+    unsafe { core::ptr::write_volatile(ptr_chirho.add(index_chirho), value_chirho) }
+}
+
+/// Extract the physical address from a raw page table entry (any level).
+/// Masks out the flag bits, returning only the 4 KiB-aligned physical address.
+#[inline]
+pub fn pt_entry_addr_chirho(entry_chirho: u64) -> u64 {
+    entry_chirho & 0x000F_FFFF_FFFF_F000
+}
+
+/// Check whether a raw page table entry is present (bit 0 set).
+#[inline]
+pub fn pt_entry_is_present_chirho(entry_chirho: u64) -> bool {
+    entry_chirho & 0x1 != 0
+}
+
+/// Check whether a raw page table entry has the HUGE_PAGE / PS bit set (bit 7).
+#[inline]
+pub fn pt_entry_is_huge_chirho(entry_chirho: u64) -> bool {
+    entry_chirho & (1 << 7) != 0
+}
+
 /// Translate a virtual address to its physical address by walking the page table.
 /// Returns None if the address is not mapped.
+///
+/// Uses safe wrappers `read_pt_entry_chirho` / `pt_entry_addr_chirho` /
+/// `pt_entry_is_present_chirho` / `pt_entry_is_huge_chirho` from audit
+/// unsafe-001 instead of raw pointer arithmetic.
 pub fn virt_to_phys_chirho(virt_chirho: u64) -> Option<u64> {
-    let phys_offset_chirho = phys_mem_offset_chirho();
     let (pml4_frame_chirho, _) = Cr3::read();
     let pml4_phys_chirho = pml4_frame_chirho.start_address().as_u64();
 
@@ -122,21 +182,16 @@ pub fn virt_to_phys_chirho(virt_chirho: u64) -> Option<u64> {
     let mut table_phys_chirho = pml4_phys_chirho;
 
     for (level_chirho, &idx_chirho) in indices_chirho.iter().enumerate() {
-        let table_virt_chirho = table_phys_chirho + phys_offset_chirho;
-        let entry_chirho = unsafe {
-            let table_ptr_chirho = table_virt_chirho as *const PageTableEntry;
-            core::ptr::read_volatile(table_ptr_chirho.add(idx_chirho))
-        };
+        let raw_entry_chirho = read_pt_entry_chirho(table_phys_chirho, idx_chirho);
 
-        if entry_chirho.is_unused() {
+        if !pt_entry_is_present_chirho(raw_entry_chirho) {
             return None;
         }
 
-        let entry_phys_chirho = entry_chirho.addr().as_u64();
+        let entry_phys_chirho = pt_entry_addr_chirho(raw_entry_chirho);
 
         // Check for huge pages (1GiB at level 1, 2MiB at level 2)
-        let flags_chirho = entry_chirho.flags();
-        if flags_chirho.contains(PageTableFlags::HUGE_PAGE) {
+        if pt_entry_is_huge_chirho(raw_entry_chirho) {
             if level_chirho == 1 {
                 // 1 GiB page
                 return Some(entry_phys_chirho + (virt_chirho & 0x3FFFFFFF));
@@ -516,6 +571,12 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
 /// Walk a 4-level page table to find the PTE (level 1 entry) for a given
 /// virtual address. Returns a raw mutable pointer to the PTE, or `None`
 /// if any level is not present.
+///
+/// Uses safe wrappers `read_pt_entry_chirho` / `pt_entry_is_present_chirho` /
+/// `pt_entry_addr_chirho` / `pt_entry_is_huge_chirho` from audit unsafe-001
+/// for the intermediate level reads (PML4, PDPT, PD).  The final PT level
+/// still needs `table_from_phys_chirho` because the caller requires a
+/// mutable pointer for COW write-back.
 fn walk_page_table_chirho(
     pml4_phys_chirho: PhysAddr,
     addr_chirho: VirtAddr,
@@ -528,37 +589,38 @@ fn walk_page_table_chirho(
     let pd_idx_chirho = ((addr_u64_chirho >> 21) & 0x1FF) as usize;
     let pt_idx_chirho = ((addr_u64_chirho >> 12) & 0x1FF) as usize;
 
-    // Level 4: PML4
-    let pml4_chirho = unsafe { table_from_phys_chirho(pml4_phys_chirho) };
-    let pml4_entry_chirho = &pml4_chirho[pml4_idx_chirho];
-    if pml4_entry_chirho.is_unused() || !pml4_entry_chirho.flags().contains(PageTableFlags::PRESENT) {
+    // Level 4: PML4 — safe read via wrapper
+    let pml4_raw_chirho = read_pt_entry_chirho(pml4_phys_chirho.as_u64(), pml4_idx_chirho);
+    if !pt_entry_is_present_chirho(pml4_raw_chirho) {
         return None;
     }
+    let pdpt_phys_chirho = pt_entry_addr_chirho(pml4_raw_chirho);
 
-    // Level 3: PDPT
-    let pdpt_chirho = unsafe { table_from_phys_chirho(pml4_entry_chirho.addr()) };
-    let pdpt_entry_chirho = &pdpt_chirho[pdpt_idx_chirho];
-    if pdpt_entry_chirho.is_unused() || !pdpt_entry_chirho.flags().contains(PageTableFlags::PRESENT) {
+    // Level 3: PDPT — safe read via wrapper
+    let pdpt_raw_chirho = read_pt_entry_chirho(pdpt_phys_chirho, pdpt_idx_chirho);
+    if !pt_entry_is_present_chirho(pdpt_raw_chirho) {
         return None;
     }
     // Check for 1 GiB huge page.
-    if pdpt_entry_chirho.flags().contains(PageTableFlags::HUGE_PAGE) {
+    if pt_entry_is_huge_chirho(pdpt_raw_chirho) {
         return None; // COW not supported on huge pages.
     }
+    let pd_phys_chirho = pt_entry_addr_chirho(pdpt_raw_chirho);
 
-    // Level 2: PD
-    let pd_chirho = unsafe { table_from_phys_chirho(pdpt_entry_chirho.addr()) };
-    let pd_entry_chirho = &pd_chirho[pd_idx_chirho];
-    if pd_entry_chirho.is_unused() || !pd_entry_chirho.flags().contains(PageTableFlags::PRESENT) {
+    // Level 2: PD — safe read via wrapper
+    let pd_raw_chirho = read_pt_entry_chirho(pd_phys_chirho, pd_idx_chirho);
+    if !pt_entry_is_present_chirho(pd_raw_chirho) {
         return None;
     }
     // Check for 2 MiB huge page.
-    if pd_entry_chirho.flags().contains(PageTableFlags::HUGE_PAGE) {
+    if pt_entry_is_huge_chirho(pd_raw_chirho) {
         return None; // COW not supported on huge pages.
     }
+    let pt_phys_chirho = pt_entry_addr_chirho(pd_raw_chirho);
 
-    // Level 1: PT
-    let pt_chirho = unsafe { table_from_phys_chirho(pd_entry_chirho.addr()) };
+    // Level 1: PT — needs mutable pointer for COW write-back, so we
+    // still use table_from_phys_chirho here.
+    let pt_chirho = unsafe { table_from_phys_chirho(PhysAddr::new(pt_phys_chirho)) };
     let pt_entry_chirho = &mut pt_chirho[pt_idx_chirho];
     if pt_entry_chirho.is_unused() || !pt_entry_chirho.flags().contains(PageTableFlags::PRESENT) {
         return None;

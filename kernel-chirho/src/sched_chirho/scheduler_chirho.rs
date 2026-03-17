@@ -324,8 +324,8 @@ pub fn schedule_chirho() {
                         let kstack_top_chirho = task_arc_chirho.lock().kernel_stack_chirho;
                         unsafe {
                             crate::gdt_chirho::set_tss_rsp0_chirho(kstack_top_chirho);
-                            crate::syscall_entry_chirho::KERNEL_STACK_TOP_CHIRHO = kstack_top_chirho;
                         }
+                        crate::syscall_entry_chirho::set_kernel_stack_top_chirho(kstack_top_chirho);
                         // Update CURRENT_TASK so current_task_chirho() returns
                         // the correct task. Without this, sys_exit marks the
                         // wrong PID as zombie.

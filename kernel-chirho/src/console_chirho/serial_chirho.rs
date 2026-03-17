@@ -278,6 +278,62 @@ macro_rules! serial_println_chirho {
     };
 }
 
+// ---------------------------------------------------------------------------
+// IRQ-safe byte output (no locks, no formatting, no allocation)
+// ---------------------------------------------------------------------------
+
+/// Write a static string to serial port without formatting.
+/// Safe to call from interrupt handlers — no locks, no allocation.
+///
+/// Directly polls the Line Status Register and writes bytes one at a time
+/// to the COM1 data port, bypassing the `Mutex<SerialPortChirho>` entirely.
+/// This avoids any risk of deadlock when an interrupt fires while the
+/// serial lock is already held.
+#[inline(always)]
+pub fn serial_write_bytes_chirho(bytes_chirho: &[u8]) {
+    for &b_chirho in bytes_chirho {
+        unsafe {
+            // Spin-wait for transmit buffer empty (LSR bit 5)
+            while x86_64::instructions::port::Port::<u8>::new(
+                COM1_BASE_CHIRHO + RegisterOffsetChirho::LineStatusChirho as u16,
+            )
+            .read()
+                & LSR_THRE_CHIRHO
+                == 0
+            {}
+            x86_64::instructions::port::Port::<u8>::new(
+                COM1_BASE_CHIRHO + RegisterOffsetChirho::DataChirho as u16,
+            )
+            .write(b_chirho);
+        }
+    }
+}
+
+/// IRQ-safe log macro — outputs a static string with no formatting.
+/// For use in interrupt handlers where deadlock-free output is critical.
+///
+/// Unlike [`serial_println_chirho!`], this macro bypasses the global serial
+/// mutex and the `core::fmt` machinery.  It writes raw bytes directly to
+/// the COM1 data port, making it safe to call even when the serial lock is
+/// held by the interrupted code path.
+///
+/// # Example
+///
+/// ```ignore
+/// log_irq_chirho!("timer tick");
+/// ```
+#[macro_export]
+macro_rules! log_irq_chirho {
+    ($msg_chirho:expr) => {
+        $crate::serial_chirho::serial_write_bytes_chirho($msg_chirho.as_bytes());
+        $crate::serial_chirho::serial_write_bytes_chirho(b"\r\n");
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Debug macros
+// ---------------------------------------------------------------------------
+
 /// Debug-only serial print. Compiles to nothing unless the `debug_serial`
 /// feature is enabled. Rust optimizes the empty branch away entirely.
 ///

@@ -207,7 +207,15 @@ pub fn init_fs_chirho() {
     crate::serial_println_chirho!("[OK] Filesystem layer initialized (root tmpfs + /dev + /proc + /bin applets)");
 }
 
-/// Populate `/bin` with dummy executable entries for all BusyBox applets.
+/// Populate `/bin` with BusyBox applet symlinks.
+///
+/// TODO(fs-dyn-001): This creates hardcoded applet entries at boot time.
+/// The proper approach is to have the BusyBox binary create these itself
+/// during first boot (like `busybox --install -s /bin`), or to use an
+/// initramfs/init script that runs the install command.
+///
+/// For now this is needed because our ext4 root doesn't have /bin/ls etc.
+/// and the embedded BusyBox binary needs applet entries in the VFS.
 ///
 /// Walks the tmpfs root directory entries to find the real `/bin` inode
 /// (with its `fs_data_chirho` intact), then creates regular file entries

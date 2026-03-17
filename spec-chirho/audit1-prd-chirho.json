@@ -17,13 +17,13 @@
         {
           "id_chirho": "src-reorg-002",
           "title_chirho": "Split net_chirho.rs into sub-modules (socket, tcp, udp, dhcp, dns, arp)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high"
         },
         {
           "id_chirho": "src-reorg-003",
           "title_chirho": "Split syscall_chirho.rs into per-subsystem dispatch files",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium"
         }
       ]
@@ -71,7 +71,7 @@
         {
           "id_chirho": "typed-006",
           "title_chirho": "IoctlCommandChirho enum replacing raw integer matching",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "net_chirho/net_core_chirho.rs",
           "priority_chirho": "low"
         },
@@ -99,14 +99,14 @@
         {
           "id_chirho": "err-002",
           "title_chirho": "NetErrorChirho enum for network subsystem",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "net_chirho/net_core_chirho.rs",
           "priority_chirho": "medium"
         },
         {
           "id_chirho": "err-003",
           "title_chirho": "ExecErrorChirho enum for process/exec path",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "process_chirho/exec_chirho.rs",
           "priority_chirho": "medium"
         },
@@ -126,21 +126,21 @@
         {
           "id_chirho": "unsafe-001",
           "title_chirho": "Wrap page table raw pointer ops in safe helpers",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "mm_chirho/pagetable_chirho.rs",
           "priority_chirho": "medium"
         },
         {
           "id_chirho": "unsafe-002",
           "title_chirho": "PerCpuSyscallStateChirho replacing static mut globals",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "arch_chirho/syscall_entry_chirho.rs",
           "priority_chirho": "medium"
         },
         {
           "id_chirho": "unsafe-003",
           "title_chirho": "Safe VirtIO descriptor ring wrapper",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "file_chirho": "drivers_chirho/virtio_chirho.rs",
           "priority_chirho": "low"
         },
@@ -208,7 +208,7 @@
         {
           "id_chirho": "log-003",
           "title_chirho": "IRQ-safe minimal logging for interrupt handlers",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low"
         }
       ]
@@ -282,19 +282,19 @@
         {
           "id_chirho": "fs-dyn-001",
           "title_chirho": "Remove hardcoded /bin applet creation from init_fs",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium"
         },
         {
           "id_chirho": "fs-dyn-002",
           "title_chirho": "Support mount(2) from userspace for tmpfs/procfs/sysfs",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium"
         },
         {
           "id_chirho": "fs-dyn-003",
           "title_chirho": "Make ext4 root mount configurable via kernel cmdline",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low"
         }
       ]
@@ -302,9 +302,9 @@
   ],
   "summary_chirho": {
     "total_chirho": 37,
-    "done_chirho": 23,
+    "done_chirho": 35,
     "in_progress_chirho": 0,
     "blocked_chirho": 1,
-    "todo_chirho": 13
+    "todo_chirho": 1
   }
 }

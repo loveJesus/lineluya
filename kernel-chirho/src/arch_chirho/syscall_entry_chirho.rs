@@ -27,17 +27,37 @@ use core::arch::global_asm;
 // Static scratch storage (single-CPU only)
 // ============================================================================
 
-/// Kernel stack top for the SYSCALL trampoline.
+/// Per-CPU syscall entry state.
 ///
-/// Set by [`init_syscall_entry_chirho`] during boot.  The assembly stub loads
-/// this into RSP on entry.
+/// Groups the `static mut` globals that the assembly trampoline reads/writes.
+/// Currently single-CPU; when SMP is added, this becomes an array indexed
+/// by CPU id (or stored in the GS-base per-CPU area).
+///
+/// SAFETY: These are `static mut` because the assembly trampoline accesses
+/// them by symbol name. All Rust access goes through the typed helpers below.
+/// The assembly contract:
+///   - `KERNEL_STACK_TOP_CHIRHO`: read on SYSCALL entry to set RSP.
+///   - `USER_RSP_SCRATCH_CHIRHO`: written on entry to save user RSP,
+///     read on exit to restore it.
 #[no_mangle]
 pub static mut KERNEL_STACK_TOP_CHIRHO: u64 = 0;
 
-/// Scratch space to temporarily save the user RSP during the SYSCALL entry
-/// sequence, before we have switched to the kernel stack.
 #[no_mangle]
 pub static mut USER_RSP_SCRATCH_CHIRHO: u64 = 0;
+
+/// Safe read of the current kernel stack top.
+pub fn kernel_stack_top_chirho() -> u64 {
+    unsafe { KERNEL_STACK_TOP_CHIRHO }
+}
+
+/// Safe write of the kernel stack top (called during context switch).
+///
+/// # Safety contract
+/// The caller must ensure `addr_chirho` points to a valid, mapped
+/// kernel stack region with enough space for the syscall frame.
+pub fn set_kernel_stack_top_chirho(addr_chirho: u64) {
+    unsafe { KERNEL_STACK_TOP_CHIRHO = addr_chirho; }
+}
 
 // ============================================================================
 // Syscall stack size

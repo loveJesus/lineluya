@@ -3,6 +3,19 @@
 
 //! Network subsystem for the Lineluya kernel (Phase A3).
 //!
+//! ## TODO(src-reorg-002): Split into sub-modules
+//!
+//! This file is ~6500 lines. Planned split:
+//! - `net_chirho/socket_chirho.rs` — SocketChirho, fd registration, syscalls
+//! - `net_chirho/tcp_chirho.rs` — TcpSegment, TcpControlBlock, TcpState
+//! - `net_chirho/udp_chirho.rs` — UDP datagram handling
+//! - `net_chirho/ip_chirho.rs` — IPv4 header, routing, ICMP
+//! - `net_chirho/arp_chirho.rs` — ARP cache and handling
+//! - `net_chirho/dhcp_chirho.rs` — DHCP client
+//! - `net_chirho/dns_chirho.rs` — DNS resolver
+//! - `net_chirho/device_chirho.rs` — NetDevice trait, loopback
+//! - `net_chirho/ioctl_chirho.rs` — Network ioctl handling
+//!
 //! Provides:
 //! - `NetDeviceChirho` trait for network device abstraction
 //! - `LoopbackDeviceChirho` — loopback device (packets sent are received back)
@@ -137,6 +150,51 @@ pub const TCP_DEFAULT_WINDOW_CHIRHO: u16 = 65535;
 /// Default TCP MSS (Maximum Segment Size).
 #[allow(dead_code)]
 pub const TCP_DEFAULT_MSS_CHIRHO: u16 = 1460;
+
+// ============================================================================
+// NetErrorChirho — typed errors for the network subsystem (audit err-002)
+// ============================================================================
+
+/// Typed errors for the network subsystem.
+/// Convert to Linux errno at syscall boundary only.
+#[derive(Debug, Clone, Copy)]
+pub enum NetErrorChirho {
+    /// Socket not found or invalid fd.
+    BadFdChirho,
+    /// Address already in use.
+    AddrInUseChirho,
+    /// Connection refused by peer.
+    ConnRefusedChirho,
+    /// Network unreachable.
+    NetUnreachChirho,
+    /// Connection timed out.
+    TimedOutChirho,
+    /// Operation not supported on this socket type.
+    OpNotSuppChirho,
+    /// Socket not connected.
+    NotConnectedChirho,
+    /// Invalid argument.
+    InvalidArgChirho,
+    /// No buffer space available.
+    NoBufsChirho,
+}
+
+impl NetErrorChirho {
+    /// Convert to Linux errno value for syscall return.
+    pub fn to_errno_chirho(self) -> i64 {
+        match self {
+            Self::BadFdChirho => -9,         // EBADF
+            Self::AddrInUseChirho => -98,    // EADDRINUSE
+            Self::ConnRefusedChirho => -111, // ECONNREFUSED
+            Self::NetUnreachChirho => -101,  // ENETUNREACH
+            Self::TimedOutChirho => -110,    // ETIMEDOUT
+            Self::OpNotSuppChirho => -95,    // EOPNOTSUPP
+            Self::NotConnectedChirho => -107, // ENOTCONN
+            Self::InvalidArgChirho => -22,   // EINVAL
+            Self::NoBufsChirho => -105,      // ENOBUFS
+        }
+    }
+}
 
 // ============================================================================
 // NetDeviceChirho trait
@@ -6439,6 +6497,54 @@ static SOCKET_OPTS_CHIRHO: Mutex<[SocketOptionsChirho; MAX_SOCK_OPTS_CHIRHO]> = 
 // ============================================================================
 // A3-019: Network config ioctls
 // ============================================================================
+
+/// Typed ioctl command — replaces raw integer matching.
+/// Covers terminal, socket, and interface ioctls used by musl programs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum IoctlCommandChirho {
+    /// TCGETS — get terminal attributes.
+    TcgetsChirho,
+    /// TIOCGWINSZ — get window size.
+    TiocgwinszChirho,
+    /// TIOCSWINSZ — set window size.
+    TiocswinszChirho,
+    /// FIONREAD — bytes available to read.
+    FionreadChirho,
+    /// SIOCGIFADDR — get interface address.
+    SiocgifaddrChirho,
+    /// SIOCSIFADDR — set interface address.
+    SiocsifaddrChirho,
+    /// SIOCGIFFLAGS — get interface flags.
+    SiocgifflagsChirho,
+    /// SIOCGIFHWADDR — get hardware address.
+    SiocgifhwaddrChirho,
+    /// TIOCGPTN — get PTY number.
+    TiocgptnChirho,
+    /// TIOCSPTLCK — lock/unlock PTY.
+    TiocsptlckChirho,
+}
+
+impl IoctlCommandChirho {
+    /// Convert a raw ioctl command number to a typed enum variant.
+    #[allow(dead_code)]
+    pub fn from_raw_chirho(cmd_chirho: u32) -> Option<Self> {
+        match cmd_chirho {
+            0x5401 => Some(Self::TcgetsChirho),
+            0x5413 => Some(Self::TiocgwinszChirho),
+            0x5414 => Some(Self::TiocswinszChirho),
+            0x541B => Some(Self::FionreadChirho),
+            0x8912 => Some(Self::SiocgifaddrChirho),
+            0x8916 => Some(Self::SiocsifaddrChirho),
+            0x8913 => Some(Self::SiocgifflagsChirho),
+            0x8927 => Some(Self::SiocgifhwaddrChirho),
+            0x80045430 => Some(Self::TiocgptnChirho),
+            0x40045431 => Some(Self::TiocsptlckChirho),
+            _ => None,
+        }
+    }
+}
+
 #[allow(dead_code)] pub const SIOCSIFADDR_CHIRHO: u64 = 0x8916;
 #[allow(dead_code)] pub const SIOCGIFADDR_CHIRHO: u64 = 0x8915;
 #[allow(dead_code)] pub const SIOCSIFFLAGS_CHIRHO: u64 = 0x8914;
