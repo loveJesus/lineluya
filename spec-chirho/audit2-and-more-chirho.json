@@ -657,9 +657,9 @@
         {
           "id_chirho": "A2-DRIVERS-002",
           "title_chirho": "Separate VirtIO block device detection from mount policy",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "virtio_chirho.rs couples device scan with 'mount first ext4 found'. Separate concerns."
+          "notes_chirho": "probe_ext4_and_mount_chirho is already a separate function from init_virtio_chirho. Mount policy isolated."
         },
         {
           "id_chirho": "A2-DRIVERS-003",
