@@ -1401,8 +1401,16 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => {
             if arg0_chirho == 0 {
-                // stdin → direct serial poll
-                sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
+                // stdin: check if fd=0 has been redirected (dup2/pipe).
+                // For the init shell (PID 0), use direct serial poll.
+                // For fork children (PID 3+), use VFS which handles pipes.
+                let use_serial_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pid_chirho < 3).unwrap_or(true);
+                if use_serial_chirho {
+                    sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
+                } else {
+                    crate::fs_chirho::sys_read_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
+                }
             } else if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
                 // Socket fd → recvfrom
                 crate::net_chirho::sys_recvfrom_chirho(
