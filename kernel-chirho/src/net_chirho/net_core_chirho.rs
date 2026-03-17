@@ -2704,10 +2704,74 @@ pub fn sys_sendto_chirho(
         }
     }
 
+    // SSH relay: if the target is a Unix socket, forward data to the
+    // established TCP connection on port 2222 (dropbear SSH relay).
+    {
+        let table_relay_chirho = SOCKET_TABLE_CHIRHO.lock();
+        let is_unix_chirho = table_relay_chirho.get(socket_idx_chirho)
+            .and_then(|s| s.as_ref())
+            .map(|s| s.family_chirho == 1)
+            .unwrap_or(false);
+        if is_unix_chirho && !data_chirho.is_empty() {
+            // Find an established TCP socket on port 2222
+            let mut tcp_idx_chirho: Option<usize> = None;
+            let mut tcp_info_chirho: Option<(u16, u32, u32)> = None; // (remote_port, remote_ip, src_ip)
+            for (idx_chirho, slot_chirho) in table_relay_chirho.iter().enumerate() {
+                if let Some(ref sock_chirho) = slot_chirho {
+                    if sock_chirho.family_chirho == 2
+                        && sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+                        && sock_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(2222)
+                    {
+                        let rp_chirho = sock_chirho.remote_addr_chirho.map(|a| a.port_chirho).unwrap_or(0);
+                        let ri_chirho = sock_chirho.remote_addr_chirho.map(|a| a.addr_chirho).unwrap_or(0);
+                        tcp_idx_chirho = Some(idx_chirho);
+                        tcp_info_chirho = Some((rp_chirho, ri_chirho, get_interface_ip_chirho(0)));
+                        break;
+                    }
+                }
+            }
+            drop(table_relay_chirho);
+
+            if let (Some(idx_chirho), Some((rport_chirho, rip_chirho, sip_chirho))) =
+                (tcp_idx_chirho, tcp_info_chirho)
+            {
+                let mut table2_chirho = SOCKET_TABLE_CHIRHO.lock();
+                if let Some(Some(ref mut tcp_sock_chirho)) = table2_chirho.get_mut(idx_chirho) {
+                    if let Some(seg_chirho) = tcp_sock_chirho.tcb_chirho.make_data_segment_chirho(
+                        2222, rport_chirho, &data_chirho,
+                    ) {
+                        let cksum_chirho = seg_chirho.compute_checksum_chirho(sip_chirho, rip_chirho);
+                        let mut seg_ck_chirho = seg_chirho;
+                        seg_ck_chirho.checksum_chirho = cksum_chirho;
+                        let tcp_bytes_chirho = seg_ck_chirho.build_chirho();
+                        let ip_hdr_chirho = Ipv4HeaderChirho {
+                            version_chirho: 4, ihl_chirho: 5, tos_chirho: 0,
+                            total_length_chirho: 20 + tcp_bytes_chirho.len() as u16,
+                            id_chirho: 0, flags_chirho: 0x02, fragment_offset_chirho: 0,
+                            ttl_chirho: 64, protocol_chirho: IP_PROTO_TCP_CHIRHO,
+                            checksum_chirho: 0, src_ip_chirho: sip_chirho, dst_ip_chirho: rip_chirho,
+                        };
+                        let mut pkt_chirho = ip_hdr_chirho.build_chirho();
+                        pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
+                        drop(table2_chirho);
+                        crate::serial_println_chirho!(
+                            "[NET] SSH-RELAY: {} bytes Unix->TCP port 2222", data_chirho.len()
+                        );
+                        let _ = send_ip_packet_chirho(&pkt_chirho);
+                        return count_chirho as i64;
+                    }
+                }
+                return count_chirho as i64;
+            }
+        }
+    }
+
+
+    // Re-acquire socket table for the standard sendto path.
     let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
     let socket_chirho = match table_chirho.get_mut(socket_idx_chirho).and_then(|s_chirho| s_chirho.as_mut()) {
         Some(s_chirho) => s_chirho,
-        None => return len_chirho as i64, // Fallback
+        None => return len_chirho as i64,
     };
 
     // For stream sockets, must be connected — use effective_state_chirho to

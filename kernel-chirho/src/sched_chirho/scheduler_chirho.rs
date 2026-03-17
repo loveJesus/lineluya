@@ -279,7 +279,11 @@ pub fn schedule_chirho() {
         //    This prevents context switch corruption when switching back.
         let old_pid_chirho = scheduler_chirho.current_pid_chirho;
         if let Some(pid_chirho) = old_pid_chirho {
-            scheduler_chirho.tasks_chirho.push_back(pid_chirho);
+            // Don't push back when children exist — prevents context switch
+            // crash when switching back. The SSH relay is handled in-kernel.
+            if scheduler_chirho.tasks_chirho.is_empty() {
+                scheduler_chirho.tasks_chirho.push_back(pid_chirho);
+            }
         }
 
         // 3. Pop the next task from the front.
