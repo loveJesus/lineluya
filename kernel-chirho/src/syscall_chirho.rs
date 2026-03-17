@@ -3349,22 +3349,17 @@ fn sys_select_chirho(
         write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho)
     } else {
         // Block: HLT in a loop until something becomes ready.
-        // If there are other runnable tasks (fork children), limit the
-        // block to just a few iterations so this task returns quickly
-        // and the child can run at the syscall return boundary.
-        let max_attempts_chirho = if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-            5u32 // Short block — let the child run soon
-        } else {
-            1000u32 // Long block — no other tasks to run
-        };
+        // Always yield once first to give fork children a chance to run.
+        // This is critical for dropbear: after fork, PID 4 needs CPU time
+        // to handle the SSH connection.
+        crate::scheduler_chirho::yield_current_chirho();
+
+        let max_attempts_chirho = 200u32;
         for _attempt_chirho in 0..max_attempts_chirho {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
-            // Yield to other runnable tasks (e.g., fork children that need
-            // to write the SSH banner). Without this, the parent monopolizes
-            // the CPU and the child never runs.
-            // Yield to fork children during blocking wait.
+            // Yield to other runnable tasks.
             if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                 crate::scheduler_chirho::schedule_chirho();
                 crate::scheduler_chirho::reset_time_slice_chirho();
