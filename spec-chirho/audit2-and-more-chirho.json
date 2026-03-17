@@ -601,7 +601,7 @@
         {
           "id_chirho": "A2-FS-001",
           "title_chirho": "ext4 write — verify write_block_chirho + write_inode_chirho in QEMU",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "Code exists but untested. echo hello > /tmp/test should persist via ext4 write path."
         },
@@ -622,7 +622,7 @@
         {
           "id_chirho": "A2-FS-004",
           "title_chirho": "VirtIO-blk write — sector write for ext4 persistence",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "VirtIO-blk read works. Need write operation for ext4 write-back."
         },
