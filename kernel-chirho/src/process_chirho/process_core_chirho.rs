@@ -719,9 +719,12 @@ unsafe extern "C" fn fork_child_return_chirho() {
         "mov rbx, [r15 + 0x50]",
         "mov rbp, [r15 + 0x58]",
 
-        // Step 4: Build IRETQ frame on a clean kernel stack area.
-        //         Move RSP well below the SyscallFrame to avoid overlap.
-        "lea rsp, [r15 - 64]",
+        // Step 4: Build IRETQ frame DEEP in the kernel stack so the
+        //         leftover IRETQ values (user-mode SS/RSP/RFLAGS/CS/RIP)
+        //         don't interfere with future syscall frames at the stack top.
+        //         The kernel stack is 64KB; placing the IRETQ frame 32KB down
+        //         leaves plenty of room for syscall call chains above.
+        "lea rsp, [r15 - 32768]",
 
         // Push IRETQ frame (reverse order: SS, RSP, RFLAGS, CS, RIP)
         "push 0x23",                         // SS  = user data segment
