@@ -608,16 +608,16 @@
         {
           "id_chirho": "A2-FS-002",
           "title_chirho": "ext4 create_file_chirho — create new files in ext4 directories",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "Allocate inode, add directory entry, write inode. Needed for touch, redirect, gcc output."
+          "notes_chirho": "create_file_chirho exists in ext4_chirho.rs (line 1576). Allocates inode, adds dir entry. Needs QEMU testing."
         },
         {
           "id_chirho": "A2-FS-003",
           "title_chirho": "ext4 mkdir — create new directories in ext4",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Allocate inode with S_IFDIR, add . and .. entries, add to parent directory."
+          "notes_chirho": "mkdir_chirho exists in ext4_chirho.rs (line 2281). Wired via sys_mkdir + sys_mkdirat. Needs QEMU testing."
         },
         {
           "id_chirho": "A2-FS-004",
@@ -629,9 +629,9 @@
         {
           "id_chirho": "A2-FS-005",
           "title_chirho": "Typed extent builders — replace raw field packing in ext4",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Extent header/entry construction uses hardcoded byte packing. Use typed ExtentHeaderChirho builder."
+          "notes_chirho": "Ext4ExtentHeaderChirho struct exists with typed fields. Used throughout extent tree parsing."
         },
         {
           "id_chirho": "A2-FS-006",
@@ -664,9 +664,9 @@
         {
           "id_chirho": "A2-DRIVERS-003",
           "title_chirho": "AHCI typed wrappers — command slots, ports, HBA memory",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low",
-          "notes_chirho": "AHCI uses raw pointer casts for HBA mapped memory. Wrap in typed abstraction."
+          "notes_chirho": "HbaMemChirho, HbaPortChirho, HbaCmdHeaderChirho, HbaPrdtEntryChirho already exist as typed #[repr(C)] structs."
         }
       ]
     }
