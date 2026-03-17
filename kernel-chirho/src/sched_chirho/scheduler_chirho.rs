@@ -618,7 +618,10 @@ pub fn need_resched_chirho() -> bool {
 pub fn has_runnable_tasks_chirho() -> bool {
     if let Some(guard_chirho) = SCHEDULER_CHIRHO.try_lock() {
         if let Some(ref sched_chirho) = *guard_chirho {
-            return sched_chirho.tasks_chirho.len() > 1;
+            // Check if there are ANY other tasks in the run queue.
+            // The current task is NOT in the queue (it was popped),
+            // so len > 0 means at least one other task can run.
+            return !sched_chirho.tasks_chirho.is_empty();
         }
     }
     false
