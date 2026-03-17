@@ -377,9 +377,9 @@ echo "[DOCKER] rootfs populated and configured."
 
 echo "[DOCKER] Build complete."
 '
-        # Pipe the finished image out of the container via stdout
-        log_chirho "Extracting disk image from container..."
-        docker exec "$cid_chirho" cat /tmp/disk.img > "$abs_image_chirho"
+        # Extract the finished image via docker cp (not pipe/cat which corrupts on macOS)
+        log_chirho "Extracting disk image from container via docker cp..."
+        docker cp "$cid_chirho:/tmp/disk.img" "$abs_image_chirho"
 
         # Clean up container
         docker stop "$cid_chirho" >/dev/null 2>&1 || true
