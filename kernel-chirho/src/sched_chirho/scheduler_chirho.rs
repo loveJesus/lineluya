@@ -274,9 +274,17 @@ pub fn schedule_chirho() {
 
         // 2. If there is a current task, push it to the back of the run queue
         //    so it participates in future rounds.
+        //    EXCEPTION: if the current task is yielding from select and there
+        //    are fork children, DON'T push back — let the child run alone.
+        //    This prevents context switch corruption when switching back.
         let old_pid_chirho = scheduler_chirho.current_pid_chirho;
         if let Some(pid_chirho) = old_pid_chirho {
-            scheduler_chirho.tasks_chirho.push_back(pid_chirho);
+            // Only push back if the queue is empty (no children to run).
+            // If children exist, the current task stays out of the queue
+            // until the child completes and wakes it via waitqueue/signal.
+            if scheduler_chirho.tasks_chirho.is_empty() {
+                scheduler_chirho.tasks_chirho.push_back(pid_chirho);
+            }
         }
 
         // 3. Pop the next task from the front.
