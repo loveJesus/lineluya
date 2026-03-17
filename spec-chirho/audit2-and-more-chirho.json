@@ -405,14 +405,14 @@
         {
           "id_chirho": "A2-SOUND-001",
           "title_chirho": "Detect Intel HDA or AC97 sound card via PCI enumeration",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "QEMU provides Intel HDA (default) or AC97 (-device AC97). PCI vendor 0x8086, device 0x2668 (HDA) or 0x2415 (AC97)."
         },
         {
           "id_chirho": "A2-SOUND-002",
           "title_chirho": "Implement /dev/dsp OSS device (simplest audio path)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "OSS /dev/dsp is simplest: open, ioctl to set format/rate/channels, write PCM data. Major 14, minor 3."
         },
@@ -468,14 +468,14 @@
         {
           "id_chirho": "A2-LOOP-001",
           "title_chirho": "Create /dev/loop-control device node (major 10, minor 237)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "misc device. Supports LOOP_CTL_GET_FREE (0x4C82) to allocate next free loop device."
         },
         {
           "id_chirho": "A2-LOOP-002",
           "title_chirho": "Create /dev/loop0..7 device nodes (major 7, minor 0..7)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "Block devices. Pre-create 8 loop devices in devtmpfs."
         },
