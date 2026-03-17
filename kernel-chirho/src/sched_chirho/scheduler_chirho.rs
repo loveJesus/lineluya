@@ -373,18 +373,15 @@ pub fn schedule_chirho() {
                     let new_rip_chirho = (*new_ctx_ptr_chirho).rip_chirho;
                     let new_rsp_chirho = (*new_ctx_ptr_chirho).rsp_chirho;
                     // Verify new RIP is in kernel code range (0x10000...)
-                    // For RESUMED tasks (not first dispatch), validate the
-                    // return address at saved RSP. First-time tasks have
-                    // the entry point in rip, stack may be zero-filled.
-                    let is_first_dispatch_chirho = old_pid_chirho.is_none()
-                        || new_rip_chirho == 0x10000127294  // fork_child_return
-                        || new_rip_chirho == 0x10000127274; // fork_child_return (other build)
-                    let stack_ok_chirho = if is_first_dispatch_chirho {
-                        true // Skip stack check for first-time tasks
-                    } else if new_rsp_chirho >= 0x4000_0000_0000 {
+                    // For RESUMED tasks, validate the return address at saved RSP.
+                    // First-time tasks have a zero-filled stack — detect by checking
+                    // if the value at RSP is 0 (entry point is in rip, not on stack).
+                    let stack_ok_chirho = if new_rsp_chirho >= 0x4000_0000_0000 {
                         let stack_top_ret_chirho = core::ptr::read_volatile(new_rsp_chirho as *const u64);
-                        stack_top_ret_chirho >= 0x1000_0000_000
-                            && stack_top_ret_chirho <= 0x2000_0000_000
+                        // Allow zero (first-time dispatch) or valid kernel address
+                        stack_top_ret_chirho == 0
+                            || (stack_top_ret_chirho >= 0x1000_0000_000
+                                && stack_top_ret_chirho <= 0x2000_0000_000)
                     } else {
                         false
                     };
