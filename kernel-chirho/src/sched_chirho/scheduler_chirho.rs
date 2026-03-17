@@ -399,6 +399,22 @@ pub fn schedule_tick_chirho() {
     }
 }
 
+/// Reset the current task's time slice and clear need_resched.
+///
+/// Called after blocking syscalls (select, poll, etc.) return.
+/// These syscalls cooperatively yield via HLT loops, consuming the
+/// time slice. Without reset, the NEXT non-blocking syscall (accept,
+/// read, etc.) would trigger a context switch that crashes.
+pub fn reset_time_slice_chirho() {
+    NEED_RESCHED_ATOMIC_CHIRHO.store(false, Ordering::Release);
+    if let Some(mut guard_chirho) = SCHEDULER_CHIRHO.try_lock() {
+        if let Some(ref mut sched_chirho) = *guard_chirho {
+            sched_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
+            sched_chirho.need_resched_chirho = false;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Task management helpers
 // ---------------------------------------------------------------------------

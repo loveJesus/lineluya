@@ -2120,21 +2120,45 @@ impl FileOpsChirho for SocketFileOpsChirho {
             .map(|a_chirho| a_chirho.port_chirho)
             .unwrap_or(0);
 
-        let _segment_chirho = socket_chirho.tcb_chirho.make_data_segment_chirho(
+        let segment_chirho = socket_chirho.tcb_chirho.make_data_segment_chirho(
             local_port_chirho,
             remote_port_chirho,
             buf_chirho,
         );
 
-        // In a real implementation, the segment would be sent via the IP layer.
-        // For now, if loopback, we enqueue the data in the peer's recv_buf.
-        // Since we do not yet have full IP routing, we consider the write successful.
+        // Get the IP addresses for the TCP response.
+        let local_ip_chirho = socket_chirho.local_addr_chirho
+            .map(|a_chirho| a_chirho.addr_chirho)
+            .unwrap_or(0);
+        let remote_ip_chirho = socket_chirho.remote_addr_chirho
+            .map(|a_chirho| a_chirho.addr_chirho)
+            .unwrap_or(0);
 
-        crate::serial_println_chirho!(
-            "[NET] socket write: {} bytes on socket_idx={}",
-            buf_chirho.len(),
-            socket_idx_chirho,
-        );
+        // Use our own IP if local is 0.0.0.0 (INADDR_ANY).
+        let src_ip_chirho = if local_ip_chirho == 0 {
+            get_interface_ip_chirho(0) // use first interface's IP
+        } else {
+            local_ip_chirho
+        };
+
+        drop(table_chirho); // release lock before sending
+
+        // Send the TCP segment over the network.
+        match segment_chirho {
+            Some(seg_chirho) => {
+                crate::serial_println_chirho!(
+                    "[NET] socket write: {} bytes -> {}:{}",
+                    buf_chirho.len(), format_ip_chirho(remote_ip_chirho), remote_port_chirho,
+                );
+                send_tcp_response_chirho(&seg_chirho, src_ip_chirho, remote_ip_chirho);
+            }
+            None => {
+                crate::serial_println_chirho!(
+                    "[NET] socket write: make_data_segment returned None (idx={}, state check failed)",
+                    socket_idx_chirho,
+                );
+            }
+        }
 
         Ok(buf_chirho.len())
     }
@@ -2974,11 +2998,12 @@ pub fn sys_sendto_chirho(
                 .map(|a_chirho| a_chirho.addr_chirho)
                 .unwrap_or(get_interface_ip_chirho(0));
 
-            // Debug logging disabled for performance
-            // crate::serial_println_chirho!(
-            //     "[NET] socket write: {} bytes state={:?}",
-            //     data_chirho.len(), socket_chirho.tcb_chirho.state_chirho
-            // );
+            crate::serial_println_chirho!(
+                "[NET] sendto TCP: {} bytes state={:?} src={}:{} dst={}:{}",
+                data_chirho.len(), socket_chirho.tcb_chirho.state_chirho,
+                format_ip_chirho(src_ip_chirho), local_port_chirho,
+                format_ip_chirho(remote_ip_chirho), remote_port_chirho,
+            );
             if let Some(seg_chirho) = socket_chirho.tcb_chirho.make_data_segment_chirho(
                 local_port_chirho, remote_port_chirho, &data_chirho,
             ) {

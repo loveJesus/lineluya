@@ -2062,17 +2062,27 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
     // Preemptive scheduling on syscall return.
     // Skip for syscalls that modify process state or already did scheduling.
+    // After blocking syscalls (select, poll, etc.) the time slice is exhausted
+    // from HLT loops. Reset need_resched so the NEXT syscall (e.g., accept)
+    // doesn't trigger a context switch that crashes.
+    let is_blocking_chirho = matches!(
+        syscall_nr_chirho,
+        SYS_SELECT_CHIRHO | SYS_POLL_CHIRHO | SYS_PPOLL_CHIRHO
+        | SYS_EPOLL_WAIT_CHIRHO | SYS_EPOLL_PWAIT_CHIRHO
+        | SYS_NANOSLEEP_CHIRHO | SYS_CLOCK_NANOSLEEP_CHIRHO
+    );
+    if is_blocking_chirho {
+        // Reset the time slice — the task cooperatively yielded during the block.
+        crate::scheduler_chirho::reset_time_slice_chirho();
+    }
+
+    // Check for preemptive reschedule on non-lifecycle syscalls.
     let skip_resched_chirho = matches!(
         syscall_nr_chirho,
         SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO | SYS_CLONE_CHIRHO | SYS_EXECVE_CHIRHO
         | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO | SYS_WAIT4_CHIRHO
         | SYS_SCHED_YIELD_CHIRHO
-        // Blocking syscalls consume their time slice in HLT loops.
-        // Don't reschedule — the task is already cooperative.
-        | SYS_SELECT_CHIRHO | SYS_POLL_CHIRHO | SYS_PPOLL_CHIRHO
-        | SYS_EPOLL_WAIT_CHIRHO | SYS_EPOLL_PWAIT_CHIRHO
-        | SYS_NANOSLEEP_CHIRHO | SYS_CLOCK_NANOSLEEP_CHIRHO
-    );
+    ) || is_blocking_chirho;
     if !skip_resched_chirho && crate::scheduler_chirho::need_resched_chirho() {
         crate::scheduler_chirho::schedule_chirho();
     }
