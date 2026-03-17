@@ -77,6 +77,28 @@ pub struct SyscallFrameChirho {
     pub r15_chirho: u64,
 }
 
+// Compile-time layout assertions tying the Rust struct to assembly offsets.
+// If these fail, the assembly trampoline in syscall_entry_chirho.rs is broken.
+const _: () = {
+    assert!(core::mem::offset_of!(SyscallFrameChirho, rax_chirho) == 0x00);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, rdi_chirho) == 0x08);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, rsi_chirho) == 0x10);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, rdx_chirho) == 0x18);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, r10_chirho) == 0x20);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, r8_chirho)  == 0x28);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, r9_chirho)  == 0x30);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, rcx_chirho) == 0x38);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, r11_chirho) == 0x40);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, rsp_chirho) == 0x48);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, rbx_chirho) == 0x50);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, rbp_chirho) == 0x58);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, r12_chirho) == 0x60);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, r13_chirho) == 0x68);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, r14_chirho) == 0x70);
+    assert!(core::mem::offset_of!(SyscallFrameChirho, r15_chirho) == 0x78);
+    assert!(core::mem::size_of::<SyscallFrameChirho>() == 0x80); // 128 bytes = 16 * 8
+};
+
 impl SyscallFrameChirho {
     /// Create a zeroed syscall frame (useful for testing).
     pub const fn zeroed_chirho() -> Self {

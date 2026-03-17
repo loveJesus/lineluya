@@ -33,24 +33,28 @@ pub const USER_DS_CHIRHO: u64 = 0x23;
 pub const USER_CS_CHIRHO: u64 = 0x2B;
 
 // ============================================================================
-// Static scratch storage (single-CPU only)
+// Per-CPU syscall state (single-CPU for now)
 // ============================================================================
 
 /// Per-CPU syscall entry state.
 ///
-/// Groups the `static mut` globals that the assembly trampoline reads/writes.
-/// Currently single-CPU; when SMP is added, this becomes an array indexed
-/// by CPU id (or stored in the GS-base per-CPU area).
+/// Groups all `static mut` globals that the assembly trampoline reads/writes.
+/// Currently single-CPU; for SMP this becomes an array indexed by CPU id
+/// (or stored in the GS-base per-CPU area).
 ///
-/// SAFETY: These are `static mut` because the assembly trampoline accesses
-/// them by symbol name. All Rust access goes through the typed helpers below.
-/// The assembly contract:
-///   - `KERNEL_STACK_TOP_CHIRHO`: read on SYSCALL entry to set RSP.
-///   - `USER_RSP_SCRATCH_CHIRHO`: written on entry to save user RSP,
-///     read on exit to restore it.
+/// The fields are `#[no_mangle]` because the assembly trampoline accesses
+/// them by symbol name. All Rust access goes through typed helpers below.
+pub struct PerCpuSyscallStateChirho {
+    /// Kernel stack pointer loaded on SYSCALL entry.
+    pub kernel_stack_top_chirho: u64,
+    /// Scratch slot for saving user RSP during SYSCALL entry.
+    pub user_rsp_scratch_chirho: u64,
+}
+
+/// The assembly trampoline accesses these by raw symbol name, so they
+/// must remain as `#[no_mangle] static mut` globals.
 #[no_mangle]
 pub static mut KERNEL_STACK_TOP_CHIRHO: u64 = 0;
-
 #[no_mangle]
 pub static mut USER_RSP_SCRATCH_CHIRHO: u64 = 0;
 

@@ -559,14 +559,14 @@
         {
           "id_chirho": "A2-ARCH-001",
           "title_chirho": "PerCpuSyscallStateChirho — replace static mut with per-CPU state struct",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
           "notes_chirho": "Currently single-CPU but prepare for SMP. KERNEL_STACK_TOP, USER_RSP_SCRATCH in per-CPU struct."
         },
         {
           "id_chirho": "A2-ARCH-002",
           "title_chirho": "SyscallFrameChirho compile-time layout checks against assembly offsets",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
           "notes_chirho": "const_assert! that Rust struct offsets match assembly push/pop layout."
         },
