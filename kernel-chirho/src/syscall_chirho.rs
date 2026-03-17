@@ -1459,7 +1459,14 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho as u32, // flags
             arg2_chirho as u32, // mode
         ),
-        SYS_CLOSE_CHIRHO => crate::fs_chirho::sys_close_real_chirho(arg0_chirho),
+        SYS_CLOSE_CHIRHO => {
+            let pid_dbg_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if pid_dbg_chirho >= 3 {
+                crate::serial_println_chirho!("[CLOSE] pid={} close({})", pid_dbg_chirho, arg0_chirho);
+            }
+            crate::fs_chirho::sys_close_real_chirho(arg0_chirho)
+        },
         SYS_FSTAT_CHIRHO => sys_fstat_chirho(arg0_chirho, arg1_chirho as *mut StatChirho),
         SYS_STAT_CHIRHO => sys_stat_chirho(
             arg0_chirho as *const u8,
@@ -1550,7 +1557,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_MINCORE_CHIRHO => -ENOSYS_CHIRHO,
         SYS_MADVISE_CHIRHO => 0, // advisory, silently ignore
         SYS_DUP_CHIRHO => crate::fs_chirho::sys_dup_chirho(arg0_chirho),
-        SYS_DUP2_CHIRHO => crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho),
+        SYS_DUP2_CHIRHO => {
+            crate::serial_println_chirho!("[DUP2] dup2({}, {})", arg0_chirho, arg1_chirho);
+            crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho)
+        },
         SYS_PAUSE_CHIRHO => -EINTR_CHIRHO,
         SYS_NANOSLEEP_CHIRHO => sys_clock_nanosleep_chirho(
             1, // CLOCK_MONOTONIC
