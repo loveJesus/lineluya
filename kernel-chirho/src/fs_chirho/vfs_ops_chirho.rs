@@ -383,7 +383,15 @@ fn clone_fs_data_chirho(
 pub fn resolve_path_chirho(
     path_chirho: &str,
 ) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
-    resolve_path_depth_chirho(path_chirho, 0)
+    let result_chirho = resolve_path_depth_chirho(path_chirho, 0);
+    if result_chirho.is_err() && (path_chirho.contains("sbin") || path_chirho.contains("dropbear")) {
+        crate::serial_println_chirho!(
+            "[VFS] resolve_path FAILED for '{}': err={}",
+            path_chirho,
+            result_chirho.as_ref().err().unwrap_or(&0)
+        );
+    }
+    result_chirho
 }
 
 /// Linux ELOOP — too many levels of symbolic links.
@@ -524,8 +532,17 @@ fn resolve_path_depth_chirho(
     // `InodeOps::lookup_chirho` which may return static Arc copies.
     let mut current_inode_chirho = start_inode_chirho;
 
+    let debug_resolve_chirho = path_chirho.contains("dropbear");
+
     for (idx_chirho, component_chirho) in remaining_components_chirho.iter().enumerate() {
         let is_last_chirho = idx_chirho == remaining_components_chirho.len() - 1;
+
+        if debug_resolve_chirho {
+            crate::serial_println_chirho!(
+                "[VFS-DBG] resolve '{}': walking component [{}]='{}' (is_last={})",
+                path_chirho, idx_chirho, component_chirho, is_last_chirho,
+            );
+        }
 
         // Try live tmpfs walk first
         let live_child_chirho: Option<Arc<Mutex<InodeChirho>>> = {
@@ -555,6 +572,13 @@ fn resolve_path_depth_chirho(
         };
 
         if let Some(child_arc_chirho) = live_child_chirho {
+            if debug_resolve_chirho {
+                crate::serial_println_chirho!(
+                    "[VFS-DBG] tmpfs live walk FOUND '{}' (mode={:#o})",
+                    component_chirho,
+                    child_arc_chirho.lock().mode_chirho
+                );
+            }
             // Check if this child is a mount point
             if !is_last_chirho {
                 let mut child_path_chirho = String::from("/");
@@ -709,7 +733,73 @@ fn resolve_path_depth_chirho(
                         fs_data_chirho: intermediate_fs_data_chirho,
                     }));
                 }
-                Err(errno_chirho) => return Err(errno_chirho),
+                Err(errno_chirho) => {
+                    // Fallback: if lookup failed on a tmpfs/devtmpfs root and
+                    // there's an ext4 root mount at "/", try the ext4 root inode.
+                    // This handles paths like "/usr/sbin/dropbear" where /usr
+                    // exists on ext4 but not in the tmpfs overlay.
+                    if idx_chirho == 0 {
+                        // Try all "/" mounts to find one with ext4 inode ops
+                        let ext4_root_chirho = {
+                            let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+                            let mut result_chirho: Option<Arc<Mutex<InodeChirho>>> = None;
+                            for m_chirho in mounts_chirho.iter() {
+                                if m_chirho.path_chirho == "/" || m_chirho.path_chirho == "/mnt" {
+                                    let sb_chirho = m_chirho.superblock_chirho.lock();
+                                    let root_chirho = sb_chirho.root_chirho.lock();
+                                    if let Some(ref inode_arc_chirho) = root_chirho.inode_chirho {
+                                        let ig_chirho = inode_arc_chirho.lock();
+                                        // Check if this inode has ext4 data
+                                        if ig_chirho.fs_data_chirho.as_ref()
+                                            .map(|d| d.downcast_ref::<crate::ext4_chirho::Ext4FsDataChirho>().is_some())
+                                            .unwrap_or(false)
+                                        {
+                                            result_chirho = Some(inode_arc_chirho.clone());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if debug_resolve_chirho && result_chirho.is_none() {
+                                crate::serial_println_chirho!(
+                                    "[VFS-DBG] ext4 fallback: no ext4 root mount found ({} mounts checked)",
+                                    mounts_chirho.len()
+                                );
+                            }
+                            result_chirho
+                        };
+                        if let Some(ext4_inode_chirho) = ext4_root_chirho {
+                            let ext4_lookup_chirho = {
+                                let ig_chirho = ext4_inode_chirho.lock();
+                                ig_chirho.ops_chirho.lookup_chirho(&ig_chirho, component_chirho)
+                            };
+                            if let Ok(child_chirho) = ext4_lookup_chirho {
+                                if debug_resolve_chirho {
+                                    crate::serial_println_chirho!(
+                                        "[VFS-DBG] ext4 fallback found '{}'",
+                                        component_chirho
+                                    );
+                                }
+                                let fs_data_clone_chirho = clone_fs_data_chirho(&child_chirho.fs_data_chirho);
+                                current_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+                                    ino_chirho: child_chirho.ino_chirho,
+                                    mode_chirho: child_chirho.mode_chirho,
+                                    uid_chirho: child_chirho.uid_chirho,
+                                    gid_chirho: child_chirho.gid_chirho,
+                                    size_chirho: child_chirho.size_chirho,
+                                    nlink_chirho: child_chirho.nlink_chirho,
+                                    atime_chirho: child_chirho.atime_chirho,
+                                    mtime_chirho: child_chirho.mtime_chirho,
+                                    ctime_chirho: child_chirho.ctime_chirho,
+                                    ops_chirho: child_chirho.ops_chirho,
+                                    fs_data_chirho: fs_data_clone_chirho,
+                                }));
+                                continue;
+                            }
+                        }
+                    }
+                    return Err(errno_chirho);
+                }
             }
         }
     }
