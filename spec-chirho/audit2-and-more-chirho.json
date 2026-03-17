@@ -314,14 +314,14 @@
         {
           "id_chirho": "A2-X11-001",
           "title_chirho": "FB ioctls — FBIOGET_VSCREENINFO (0x4600) returns real fb_var_screeninfo",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "xres=1280, yres=800, bits_per_pixel=32, red/green/blue bitfield offsets. Xorg fbdev driver reads this."
         },
         {
           "id_chirho": "A2-X11-002",
           "title_chirho": "FB ioctls — FBIOGET_FSCREENINFO (0x4602) returns fb_fix_screeninfo",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "smem_start, smem_len, line_length, type=FB_TYPE_PACKED_PIXELS, visual=FB_VISUAL_TRUECOLOR."
         },
@@ -335,7 +335,7 @@
         {
           "id_chirho": "A2-X11-004",
           "title_chirho": "evdev input — /dev/input/event0 (keyboard) with struct input_event",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
           "notes_chirho": "Hook PS/2 keyboard interrupt to produce evdev events. type=EV_KEY, code=KEY_*, value=0/1/2."
         },
