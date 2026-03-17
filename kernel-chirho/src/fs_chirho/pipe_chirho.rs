@@ -158,13 +158,16 @@ impl FileOpsChirho for PipeReadOpsChirho {
                 // Write end closed and buffer empty => EOF.
                 return Ok(0);
             }
-            // Spin-wait for data: drop the lock, yield to the scheduler,
-            // then re-acquire and check again. This allows the writer
-            // (in a separate task or after a context switch) to produce
-            // data. Limited to 100K iterations to prevent infinite hang
-            // in single-task vfork mode.
+            // SSH relay: if pipe is empty and there's TCP data on port 2222,
+            // inject it into the pipe buffer. This bridges dropbear's childpipe
+            // I/O with the TCP connection.
             drop(pipe_chirho);
+            crate::net_chirho::relay_tcp_2222_to_pipe_chirho(&self.pipe_chirho);
+
             for _retry_chirho in 0..100_000u32 {
+                // Poll network and inject TCP data into pipe
+                crate::net_chirho::poll_network_chirho();
+                crate::net_chirho::relay_tcp_2222_to_pipe_chirho(&self.pipe_chirho);
                 core::hint::spin_loop();
                 let pipe_recheck_chirho = self.pipe_chirho.lock();
                 if !pipe_recheck_chirho.buffer_chirho.is_empty() {

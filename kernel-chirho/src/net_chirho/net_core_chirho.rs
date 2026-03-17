@@ -4334,6 +4334,37 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
     }
 }
 
+/// SSH relay: inject TCP data from port 2222 into a pipe buffer.
+/// Called from pipe read when the pipe is empty — this bridges
+/// the TCP connection data to dropbear's childpipe I/O.
+pub fn relay_tcp_2222_to_pipe_chirho(pipe_chirho: &alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>) {
+    let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    for slot_chirho in table_chirho.iter_mut() {
+        if let Some(ref mut s_chirho) = slot_chirho {
+            if s_chirho.family_chirho == 2
+                && s_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+                && s_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(2222)
+                && !s_chirho.recv_buf_chirho.is_empty()
+            {
+                let mut pipe_guard_chirho = pipe_chirho.lock();
+                let count_chirho = s_chirho.recv_buf_chirho.len();
+                for _ in 0..count_chirho {
+                    if let Some(byte_chirho) = s_chirho.recv_buf_chirho.pop_front() {
+                        pipe_guard_chirho.buffer_chirho.push_back(byte_chirho);
+                    }
+                }
+                if count_chirho > 0 {
+                    crate::serial_println_chirho!(
+                        "[NET] SSH-RELAY(tcp->pipe): {} bytes from TCP port 2222",
+                        count_chirho
+                    );
+                }
+                return;
+            }
+        }
+    }
+}
+
 /// Performs routing lookup, ARP resolution, wraps in Ethernet frame, and
 /// transmits via the correct NIC.
 pub fn send_ip_packet_chirho(ip_packet_chirho: &[u8]) -> Result<(), i64> {
