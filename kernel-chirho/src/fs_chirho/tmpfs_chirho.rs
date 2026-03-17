@@ -677,3 +677,93 @@ pub fn mount_tmpfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
         ops_chirho: &TMPFS_SUPER_OPS_CHIRHO,
     }))
 }
+
+/// Write a file to tmpfs at the given path.
+///
+/// Creates the file if it doesn't exist on tmpfs. If the path resolves
+/// to an ext4 file, this is a no-op (ext4 files can't be overwritten
+/// via this helper).
+///
+/// Used by the kernel to create configuration files (e.g., `/etc/profile`)
+/// before launching userspace.
+pub fn write_tmpfs_file_chirho(path_chirho: &str, content_chirho: &[u8]) {
+    // Split path into directory and filename
+    let (dir_path_chirho, file_name_chirho) = match path_chirho.rfind('/') {
+        Some(idx_chirho) if idx_chirho > 0 => (&path_chirho[..idx_chirho], &path_chirho[idx_chirho + 1..]),
+        _ => ("/", &path_chirho[1..]),
+    };
+
+    // Resolve the parent directory
+    let parent_chirho = match crate::fs_chirho::resolve_path_chirho(dir_path_chirho) {
+        Ok((inode_chirho, _ops_chirho)) => inode_chirho,
+        Err(_) => {
+            crate::serial_println_chirho!(
+                "[TMPFS] write_tmpfs_file: parent dir '{}' not found",
+                dir_path_chirho,
+            );
+            return;
+        }
+    };
+
+    // Lock the parent and get its tmpfs directory entries
+    let parent_guard_chirho = parent_chirho.lock();
+    let tmpfs_data_chirho = match get_tmpfs_data_chirho(&parent_guard_chirho) {
+        Ok(d_chirho) => d_chirho,
+        Err(_) => {
+            crate::serial_println_chirho!(
+                "[TMPFS] write_tmpfs_file: '{}' is not a tmpfs directory",
+                dir_path_chirho,
+            );
+            return;
+        }
+    };
+
+    let mut data_guard_chirho = tmpfs_data_chirho.lock();
+    if let TmpfsDataChirho::DirChirho(ref mut entries_chirho) = *data_guard_chirho {
+        // Check if file already exists
+        for (name_chirho, inode_arc_chirho) in entries_chirho.iter() {
+            if name_chirho == file_name_chirho {
+                // Overwrite existing file content
+                {
+                    let inode_guard_chirho = inode_arc_chirho.lock();
+                    if let Ok(file_data_chirho) = get_tmpfs_data_chirho(&inode_guard_chirho) {
+                        let mut fd_chirho = file_data_chirho.lock();
+                        if let TmpfsDataChirho::FileChirho(ref mut buf_chirho) = *fd_chirho {
+                            buf_chirho.clear();
+                            buf_chirho.extend_from_slice(content_chirho);
+                        }
+                    }
+                }
+                crate::serial_println_chirho!(
+                    "[TMPFS] Overwrote {} ({} bytes)",
+                    path_chirho,
+                    content_chirho.len(),
+                );
+                return;
+            }
+        }
+
+        // Create new file
+        let new_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: alloc_ino_chirho(),
+            mode_chirho: S_IFREG_CHIRHO | 0o644,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: content_chirho.len() as u64,
+            nlink_chirho: 1,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+            fs_data_chirho: new_tmpfs_fs_data_chirho(
+                TmpfsDataChirho::FileChirho(Vec::from(content_chirho)),
+            ),
+        }));
+        entries_chirho.push((String::from(file_name_chirho), new_inode_chirho));
+        crate::serial_println_chirho!(
+            "[TMPFS] Created {} ({} bytes)",
+            path_chirho,
+            content_chirho.len(),
+        );
+    }
+}

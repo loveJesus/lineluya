@@ -1229,11 +1229,12 @@ pub fn exec_init_chirho() {
     // BusyBox uses argv[0] to determine which applet to run.
     // Pass "sh" so it launches the ash shell.
     let argv_chirho = if elf_data_chirho.len() > 100_000 {
-        // BusyBox — launch as LOGIN shell (-l flag).
-        // Login shells read /etc/profile which auto-starts dropbear SSH.
+        // BusyBox — launch shell with init command to start dropbear SSH,
+        // then drop into an interactive shell.
         alloc::vec![
             alloc::string::String::from("/bin/sh"),
-            alloc::string::String::from("-l"),
+            alloc::string::String::from("-c"),
+            alloc::string::String::from("/usr/sbin/dropbear -p 2222 -B -R; exec /bin/sh"),
         ]
     } else {
         alloc::vec![

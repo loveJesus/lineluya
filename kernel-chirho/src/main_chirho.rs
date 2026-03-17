@@ -425,6 +425,17 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         serial_println_chirho!("[TEST] sys_getpid returned: {}", result_chirho);
     }
 
+    // Create /etc/profile on tmpfs to auto-start dropbear SSH server.
+    // Uses the tmpfs write API directly since ext4 disk may not have this file.
+    {
+        let profile_content_chirho = "# Auto-start dropbear SSH on port 2222\ndropbear -p 2222 -B -R 2>/dev/null &\n";
+        tmpfs_chirho::write_tmpfs_file_chirho(
+            "/etc/profile",
+            profile_content_chirho.as_bytes(),
+        );
+        serial_println_chirho!("[INIT] Created /etc/profile (dropbear auto-start)");
+    }
+
     // Load and execute the hello world binary
     serial_println_chirho!();
     serial_println_chirho!("Loading hello world ELF into userspace...");
