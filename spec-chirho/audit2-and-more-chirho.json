@@ -104,7 +104,7 @@
         {
           "id_chirho": "A2-SSH-014",
           "title_chirho": "End-to-end SSH login test: ssh -p 2222 root@127.0.0.1 echo hello",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "critical",
           "notes_chirho": "TCP connects, SSH version exchange works. Blocker: ash shell fork for background commands (dropbear &) not triggering fork syscall. All kernel infrastructure in place (PTY, setsid, dup2, signal delivery). Need QEMU debugging of shell fork path."
         }
