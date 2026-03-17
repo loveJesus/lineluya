@@ -461,7 +461,10 @@ pub fn add_task_chirho(pid_chirho: u64) {
             return;
         }
 
-        scheduler_chirho.tasks_chirho.push_back(pid_chirho);
+        // Push to FRONT so newly forked children run before older tasks.
+        // Without this, the shell's wait4 loop monopolizes the CPU and
+        // the fork child (SSH handler) never gets scheduled.
+        scheduler_chirho.tasks_chirho.push_front(pid_chirho);
     });
 }
 
