@@ -2097,16 +2097,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         | SYS_EPOLL_WAIT_CHIRHO | SYS_EPOLL_PWAIT_CHIRHO
         | SYS_NANOSLEEP_CHIRHO | SYS_CLOCK_NANOSLEEP_CHIRHO
     );
-    // After blocking syscalls, explicitly trigger resched if there are
-    // runnable tasks. This is the ONLY safe place to context-switch
-    // (not inside HLT loops). Reset time slice afterward.
-    if is_blocking_chirho && crate::scheduler_chirho::has_runnable_tasks_chirho() {
-        crate::scheduler_chirho::schedule_chirho();
-        crate::scheduler_chirho::reset_time_slice_chirho();
-    } else if is_blocking_chirho {
+    // Reset time slice after blocking syscalls.
+    if is_blocking_chirho {
         crate::scheduler_chirho::reset_time_slice_chirho();
     }
-    if !skip_resched_chirho && crate::scheduler_chirho::need_resched_chirho() {
+    // Skip resched for blocking + lifecycle syscalls.
+    // The fork child gets CPU time from schedule calls in HLT loops.
+    if !skip_resched_chirho && !is_blocking_chirho
+        && crate::scheduler_chirho::need_resched_chirho()
+    {
         crate::scheduler_chirho::schedule_chirho();
     }
 
@@ -3088,10 +3087,11 @@ fn sys_poll_chirho(
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
             // Yield to other runnable tasks (fork children).
-            // NOTE: Do NOT call schedule_chirho() here. Context switching
-            // from inside a syscall HLT loop crashes (#UD in kernel_main)
-            // because the context switch doesn't handle nested kernel stacks.
-            // Fork children get CPU time at syscall return boundaries.
+            // Yield to fork children during blocking wait.
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
+            }
             // Re-check pollfds
             for pfd_chirho in pollfds_chirho.iter() {
                 if pfd_chirho.fd_chirho >= 0 {
@@ -3238,10 +3238,11 @@ fn sys_select_chirho(
             // Yield to other runnable tasks (e.g., fork children that need
             // to write the SSH banner). Without this, the parent monopolizes
             // the CPU and the child never runs.
-            // NOTE: Do NOT call schedule_chirho() here. Context switching
-            // from inside a syscall HLT loop crashes (#UD in kernel_main)
-            // because the context switch doesn't handle nested kernel stacks.
-            // Fork children get CPU time at syscall return boundaries.
+            // Yield to fork children during blocking wait.
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
+            }
 
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
@@ -3387,10 +3388,11 @@ fn sys_epoll_wait_chirho(
         if timeout_chirho != 0 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
-            // NOTE: Do NOT call schedule_chirho() here. Context switching
-            // from inside a syscall HLT loop crashes (#UD in kernel_main)
-            // because the context switch doesn't handle nested kernel stacks.
-            // Fork children get CPU time at syscall return boundaries.
+            // Yield to fork children during blocking wait.
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
+            }
         } else {
             return 0; // Non-blocking: return immediately.
         }

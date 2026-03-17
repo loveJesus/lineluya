@@ -2357,20 +2357,38 @@ pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
 }
 
 fn socket_idx_from_fd_chirho(fd_chirho: u64) -> Result<usize, i64> {
+    // Try the global fd table first (most common path).
     let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-    let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-        Some(t_chirho) => t_chirho,
-        None => return Err(-EBADF_CHIRHO),
-    };
-    let file_arc_chirho = fd_table_chirho.get_chirho(fd_chirho as usize)
-        .ok_or(-EBADF_CHIRHO)?;
-    let file_guard_chirho = file_arc_chirho.lock();
-    let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
-    // Check if this is a socket inode (mode has S_IFSOCK = 0o140000)
-    if inode_guard_chirho.mode_chirho & 0o170000 != 0o140000 {
-        return Err(-ENOTSOCK_CHIRHO);
+    if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
+        if let Some(file_arc_chirho) = fd_table_chirho.get_chirho(fd_chirho as usize) {
+            let file_guard_chirho = file_arc_chirho.lock();
+            let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+            if inode_guard_chirho.mode_chirho & 0o170000 == 0o140000 {
+                return Ok(inode_guard_chirho.ino_chirho as usize);
+            }
+            return Err(-ENOTSOCK_CHIRHO);
+        }
     }
-    Ok(inode_guard_chirho.ino_chirho as usize)
+    drop(fd_table_guard_chirho);
+
+    // Fallback: check the current task's per-process fd table.
+    // This handles the case where the global table was swapped
+    // during a context switch and doesn't have this fd.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            if let Some(file_arc_chirho) = fd_table_chirho.get_chirho(fd_chirho as usize) {
+                let file_guard_chirho = file_arc_chirho.lock();
+                let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+                if inode_guard_chirho.mode_chirho & 0o170000 == 0o140000 {
+                    return Ok(inode_guard_chirho.ino_chirho as usize);
+                }
+                return Err(-ENOTSOCK_CHIRHO);
+            }
+        }
+    }
+
+    Err(-EBADF_CHIRHO)
 }
 
 /// Read a sockaddr_in from user-space memory, safely.

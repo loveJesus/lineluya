@@ -1149,23 +1149,43 @@ pub fn sys_open_chirho(
     sys_openat_chirho(AT_FDCWD_CHIRHO, pathname_addr_chirho, flags_chirho, mode_chirho)
 }
 
+/// Look up a file from an fd, checking GLOBAL table first,
+/// then the current task's per-process table as fallback.
+///
+/// This is needed because the global fd table may be stale
+/// after a context switch (parent closed fds that child still has).
+pub fn lookup_fd_chirho(fd_chirho: u64) -> Option<alloc::sync::Arc<spin::Mutex<FileChirho>>> {
+    // Try global first.
+    {
+        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+        if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
+            if let Some(file_arc_chirho) = fd_table_chirho.get_chirho(fd_chirho as usize) {
+                return Some(file_arc_chirho);
+            }
+        }
+    }
+    // Fallback: current task's fd table.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            if let Some(file_arc_chirho) = fd_table_chirho.get_chirho(fd_chirho as usize) {
+                return Some(file_arc_chirho);
+            }
+        }
+    }
+    None
+}
+
 /// `read(2)` -- read from a file descriptor using the VFS.
 pub fn sys_read_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: usize) -> i64 {
     if count_chirho == 0 {
         return 0;
     }
 
-    // Get the file from the fd table
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho,
-            None => return -EBADF_CHIRHO,
-        }
+    // Get the file from the fd table (global or per-task fallback).
+    let file_arc_chirho = match lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
     };
 
     // Read into a stack-based kernel buffer (avoid heap allocation
@@ -1199,17 +1219,10 @@ pub fn sys_write_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho:
         return 0;
     }
 
-    // Get the file from the fd table
-    let file_arc_chirho = {
-        let fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
-            None => return -EBADF_CHIRHO,
-        };
-        match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho,
-            None => return -EBADF_CHIRHO,
-        }
+    // Get the file from the fd table (global or per-task fallback).
+    let file_arc_chirho = match lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return -EBADF_CHIRHO,
     };
 
     // Copy from user space into stack-based kernel buffer
