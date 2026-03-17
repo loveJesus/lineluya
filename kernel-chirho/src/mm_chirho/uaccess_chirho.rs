@@ -289,6 +289,216 @@ pub fn read_user_string_chirho(
 }
 
 // ============================================================================
+// Typed user-pointer wrappers (A2-AUDIT-001)
+// ============================================================================
+
+/// Typed user-space pointer.  Wraps a raw `u64` address with type information
+/// and bounds-checked read/write operations, replacing raw pointer arithmetic
+/// in syscall handlers with safe, validated access.
+///
+/// # Example
+///
+/// ```ignore
+/// let ptr_chirho = UserPtrChirho::<u64>::new_chirho(user_addr_chirho);
+/// let val_chirho = ptr_chirho.read_chirho()?;
+/// ```
+pub struct UserPtrChirho<T> {
+    addr_chirho: u64,
+    _marker_chirho: core::marker::PhantomData<T>,
+}
+
+impl<T: Copy> UserPtrChirho<T> {
+    /// Create a new typed user-space pointer from a raw `u64` address.
+    ///
+    /// This does **not** validate the address; validation is deferred to
+    /// [`read_chirho`](Self::read_chirho) / [`write_chirho`](Self::write_chirho)
+    /// so that construction is zero-cost.
+    #[inline]
+    pub fn new_chirho(addr_chirho: u64) -> Self {
+        Self {
+            addr_chirho,
+            _marker_chirho: core::marker::PhantomData,
+        }
+    }
+
+    /// Read a `T` from user space.
+    ///
+    /// The entire range `[addr, addr + size_of::<T>())` must lie within the
+    /// canonical user-space region.  Returns `Err(-EFAULT)` (as a negative
+    /// errno `i64`) if the address is invalid or overflows.
+    ///
+    /// Uses `read_unaligned` because user-space pointers are not guaranteed
+    /// to satisfy alignment requirements.
+    pub fn read_chirho(&self) -> Result<T, i64> {
+        let size_chirho = core::mem::size_of::<T>();
+
+        validate_user_range_chirho(self.addr_chirho, size_chirho)
+            .map_err(|_err_chirho| -(EFAULT_CHIRHO))?;
+
+        // SAFETY: Address range validated above.  `read_unaligned` tolerates
+        // arbitrary alignment from user space.
+        let value_chirho =
+            unsafe { core::ptr::read_unaligned(self.addr_chirho as *const T) };
+
+        Ok(value_chirho)
+    }
+
+    /// Write a `T` to user space.
+    ///
+    /// The entire range `[addr, addr + size_of::<T>())` must lie within the
+    /// canonical user-space region.  Returns `Err(-EFAULT)` if the address
+    /// is invalid or overflows.
+    pub fn write_chirho(&self, val_chirho: &T) -> Result<(), i64> {
+        let size_chirho = core::mem::size_of::<T>();
+
+        validate_user_range_chirho(self.addr_chirho, size_chirho)
+            .map_err(|_err_chirho| -(EFAULT_CHIRHO))?;
+
+        // SAFETY: Address range validated above.  `write_unaligned` tolerates
+        // arbitrary alignment.
+        unsafe {
+            core::ptr::write_unaligned(self.addr_chirho as *mut T, *val_chirho);
+        }
+
+        Ok(())
+    }
+
+    /// Check if the pointer is null (address == 0).
+    #[inline]
+    pub fn is_null_chirho(&self) -> bool {
+        self.addr_chirho == 0
+    }
+
+    /// Return the raw address.
+    #[inline]
+    pub fn addr_chirho(&self) -> u64 {
+        self.addr_chirho
+    }
+}
+
+/// Typed user-space slice.  Wraps a `(ptr, len)` pair with bounds-checked
+/// bulk read/write operations.
+///
+/// # Example
+///
+/// ```ignore
+/// let slice_chirho = UserSliceChirho::<u8>::new_chirho(buf_addr_chirho, count_chirho);
+/// let mut kbuf_chirho = [0u8; 256];
+/// let n_chirho = slice_chirho.read_to_chirho(&mut kbuf_chirho)?;
+/// ```
+pub struct UserSliceChirho<T> {
+    addr_chirho: u64,
+    len_chirho: usize,
+    _marker_chirho: core::marker::PhantomData<T>,
+}
+
+impl<T: Copy> UserSliceChirho<T> {
+    /// Create a new typed user-space slice.
+    ///
+    /// `addr_chirho` is the base address in user space and `len_chirho` is
+    /// the number of `T` elements (not bytes).
+    #[inline]
+    pub fn new_chirho(addr_chirho: u64, len_chirho: usize) -> Self {
+        Self {
+            addr_chirho,
+            len_chirho,
+            _marker_chirho: core::marker::PhantomData,
+        }
+    }
+
+    /// Read the user-space slice into a kernel buffer.
+    ///
+    /// Copies `min(self.len, buf.len)` elements of type `T` from user space
+    /// into `buf_chirho`.  Returns the number of elements actually read.
+    ///
+    /// The byte range `[addr, addr + count * size_of::<T>())` must lie within
+    /// the canonical user-space region.  Returns `Err(-EFAULT)` on failure.
+    pub fn read_to_chirho(&self, buf_chirho: &mut [T]) -> Result<usize, i64> {
+        let count_chirho = core::cmp::min(self.len_chirho, buf_chirho.len());
+        if count_chirho == 0 {
+            return Ok(0);
+        }
+
+        let byte_len_chirho = count_chirho
+            .checked_mul(core::mem::size_of::<T>())
+            .ok_or(-(EFAULT_CHIRHO))?;
+
+        validate_user_range_chirho(self.addr_chirho, byte_len_chirho)
+            .map_err(|_err_chirho| -(EFAULT_CHIRHO))?;
+
+        // SAFETY: Address range validated.  We copy `byte_len_chirho` bytes
+        // from user space into the kernel buffer.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                self.addr_chirho as *const T,
+                buf_chirho.as_mut_ptr(),
+                count_chirho,
+            );
+        }
+
+        Ok(count_chirho)
+    }
+
+    /// Write from a kernel buffer into user space.
+    ///
+    /// Copies `min(self.len, buf.len)` elements of type `T` from `buf_chirho`
+    /// into user space.  Returns the number of elements actually written.
+    ///
+    /// Returns `Err(-EFAULT)` if the address range is invalid.
+    pub fn write_from_chirho(&self, buf_chirho: &[T]) -> Result<usize, i64> {
+        let count_chirho = core::cmp::min(self.len_chirho, buf_chirho.len());
+        if count_chirho == 0 {
+            return Ok(0);
+        }
+
+        let byte_len_chirho = count_chirho
+            .checked_mul(core::mem::size_of::<T>())
+            .ok_or(-(EFAULT_CHIRHO))?;
+
+        validate_user_range_chirho(self.addr_chirho, byte_len_chirho)
+            .map_err(|_err_chirho| -(EFAULT_CHIRHO))?;
+
+        // SAFETY: Address range validated.  We copy `byte_len_chirho` bytes
+        // from the kernel buffer into user space.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                buf_chirho.as_ptr(),
+                self.addr_chirho as *mut T,
+                count_chirho,
+            );
+        }
+
+        Ok(count_chirho)
+    }
+
+    /// Return the number of elements in this user slice.
+    #[inline]
+    pub fn len_chirho(&self) -> usize {
+        self.len_chirho
+    }
+
+    /// Check if the user slice has zero length.
+    #[inline]
+    pub fn is_empty_chirho(&self) -> bool {
+        self.len_chirho == 0
+    }
+
+    /// Return the base address.
+    #[inline]
+    pub fn addr_chirho(&self) -> u64 {
+        self.addr_chirho
+    }
+}
+
+// ============================================================================
+// EFAULT constant (mirrors syscall_chirho::EFAULT_CHIRHO for self-contained use)
+// ============================================================================
+
+/// Errno 14 — Bad address.  Kept local so that `uaccess_chirho` does not need
+/// a circular dependency on `syscall_chirho`.
+const EFAULT_CHIRHO: i64 = 14;
+
+// ============================================================================
 // Unit tests (run under the host, not the kernel target)
 // ============================================================================
 
@@ -330,5 +540,80 @@ mod tests_chirho {
             validate_user_range_chirho(USER_SPACE_MAX_CHIRHO, 2),
             Err(UaccessErrorChirho::OverflowChirho)
         );
+    }
+
+    // ---- UserPtrChirho tests ----
+
+    #[test]
+    fn test_user_ptr_new_null_chirho() {
+        let ptr_chirho = UserPtrChirho::<u64>::new_chirho(0);
+        assert!(ptr_chirho.is_null_chirho());
+        assert_eq!(ptr_chirho.addr_chirho(), 0);
+    }
+
+    #[test]
+    fn test_user_ptr_non_null_chirho() {
+        let ptr_chirho = UserPtrChirho::<u32>::new_chirho(0x1000);
+        assert!(!ptr_chirho.is_null_chirho());
+        assert_eq!(ptr_chirho.addr_chirho(), 0x1000);
+    }
+
+    #[test]
+    fn test_user_ptr_read_kernel_addr_fails_chirho() {
+        // Kernel-space address must be rejected.
+        let ptr_chirho = UserPtrChirho::<u64>::new_chirho(0xFFFF_8000_0000_0000);
+        assert!(ptr_chirho.read_chirho().is_err());
+    }
+
+    #[test]
+    fn test_user_ptr_write_kernel_addr_fails_chirho() {
+        let ptr_chirho = UserPtrChirho::<u64>::new_chirho(0xFFFF_8000_0000_0000);
+        let val_chirho: u64 = 42;
+        assert!(ptr_chirho.write_chirho(&val_chirho).is_err());
+    }
+
+    #[test]
+    fn test_user_ptr_read_overflow_fails_chirho() {
+        // Address near end of user space — size_of::<u64>()=8 would overflow.
+        let ptr_chirho =
+            UserPtrChirho::<u64>::new_chirho(USER_SPACE_MAX_CHIRHO - 3);
+        assert!(ptr_chirho.read_chirho().is_err());
+    }
+
+    // ---- UserSliceChirho tests ----
+
+    #[test]
+    fn test_user_slice_empty_chirho() {
+        let slice_chirho = UserSliceChirho::<u8>::new_chirho(0x1000, 0);
+        assert!(slice_chirho.is_empty_chirho());
+        assert_eq!(slice_chirho.len_chirho(), 0);
+
+        let mut buf_chirho = [0u8; 4];
+        let n_chirho = slice_chirho.read_to_chirho(&mut buf_chirho).unwrap();
+        assert_eq!(n_chirho, 0);
+    }
+
+    #[test]
+    fn test_user_slice_kernel_addr_fails_chirho() {
+        let slice_chirho =
+            UserSliceChirho::<u8>::new_chirho(0xFFFF_8000_0000_0000, 16);
+        let mut buf_chirho = [0u8; 16];
+        assert!(slice_chirho.read_to_chirho(&mut buf_chirho).is_err());
+    }
+
+    #[test]
+    fn test_user_slice_write_kernel_addr_fails_chirho() {
+        let slice_chirho =
+            UserSliceChirho::<u8>::new_chirho(0xFFFF_8000_0000_0000, 16);
+        let buf_chirho = [0u8; 16];
+        assert!(slice_chirho.write_from_chirho(&buf_chirho).is_err());
+    }
+
+    #[test]
+    fn test_user_slice_accessors_chirho() {
+        let slice_chirho = UserSliceChirho::<u32>::new_chirho(0x2000, 10);
+        assert_eq!(slice_chirho.addr_chirho(), 0x2000);
+        assert_eq!(slice_chirho.len_chirho(), 10);
+        assert!(!slice_chirho.is_empty_chirho());
     }
 }

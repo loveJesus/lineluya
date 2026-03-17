@@ -223,20 +223,8 @@ pub fn init_fs_chirho() {
 fn populate_bin_applets_chirho(root_sb_chirho: &Arc<Mutex<crate::vfs_chirho::SuperblockChirho>>) {
     use crate::tmpfs_chirho::TmpfsDataChirho;
 
-    // BusyBox applet names — must match the list in process_chirho.rs
-    let applets_chirho: &[&str] = &[
-        "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "chmod",
-        "chown", "ln", "touch", "head", "tail", "wc", "grep", "sed",
-        "awk", "sort", "uniq", "tr", "cut", "find", "xargs", "tee",
-        "du", "df", "mount", "umount", "ps", "kill", "sleep",
-        "date", "uname", "id", "whoami", "hostname", "env",
-        "printenv", "expr", "test", "true", "false", "yes",
-        "sh", "ash", "busybox", "vi", "ping", "wget", "nc",
-        "tar", "gzip", "gunzip", "dd", "hexdump", "od",
-        "dmesg", "free", "uptime", "stat", "readlink",
-        "basename", "dirname", "realpath", "seq", "printf",
-        "echo", "clear", "reset", "stty", "tty",
-    ];
+    // BusyBox applet names — single source of truth in busybox_chirho module.
+    let applets_chirho = crate::busybox_chirho::BUSYBOX_APPLETS_CHIRHO;
 
     // Step 1: Get the root inode from the superblock.
     let sb_guard_chirho = root_sb_chirho.lock();

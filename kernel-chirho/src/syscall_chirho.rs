@@ -2514,6 +2514,11 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         }
     }
 
+    // Wake any parent sleeping in wait4 on the child-exit wait queue.
+    // This unblocks the parent so it can reap this zombie child immediately
+    // instead of polling.  (A2-PROC-001: WaitQueueChirho replaces poll loop.)
+    crate::process_chirho::wake_child_exit_waitqueue_chirho();
+
     // Yield to parent (real fork) or re-launch shell (fallback).
     crate::serial_println_chirho!("[SYSCALL] exit: PID={} zombie, yielding", pid_chirho);
     crate::scheduler_chirho::yield_current_chirho();
@@ -4087,21 +4092,11 @@ fn sys_fstat_chirho(
 ///
 /// Resolves the pathname via VFS path resolution and fills `statbuf_chirho`
 /// with inode metadata.
+
 /// Check if a name is a known BusyBox applet.
+/// Delegates to the centralized registry in `busybox_chirho` module.
 fn is_busybox_applet_chirho(name_chirho: &str) -> bool {
-    matches!(name_chirho,
-        "ls" | "cat" | "cp" | "mv" | "rm" | "mkdir" | "rmdir" | "chmod" |
-        "chown" | "ln" | "touch" | "head" | "tail" | "wc" | "grep" | "sed" |
-        "awk" | "sort" | "uniq" | "tr" | "cut" | "find" | "xargs" | "tee" |
-        "du" | "df" | "mount" | "umount" | "ps" | "kill" | "sleep" |
-        "date" | "uname" | "id" | "whoami" | "hostname" | "env" |
-        "printenv" | "expr" | "test" | "true" | "false" | "yes" |
-        "sh" | "ash" | "busybox" | "vi" | "ping" | "wget" | "nc" |
-        "tar" | "gzip" | "gunzip" | "dd" | "hexdump" | "od" |
-        "dmesg" | "free" | "uptime" | "stat" | "readlink" |
-        "basename" | "dirname" | "realpath" | "seq" | "printf" |
-        "echo" | "clear" | "reset" | "stty" | "tty"
-    )
+    crate::busybox_chirho::is_busybox_applet_chirho(name_chirho)
 }
 
 fn sys_stat_chirho(

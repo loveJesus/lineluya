@@ -192,6 +192,8 @@ mod trace_chirho;
 mod eventfd_chirho;
 #[path = "subsys_chirho/inotify_chirho.rs"]
 mod inotify_chirho;
+#[path = "subsys_chirho/busybox_chirho.rs"]
+pub mod busybox_chirho;
 
 use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 use bootloader_api::config::Mapping;
