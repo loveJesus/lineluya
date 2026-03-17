@@ -3178,6 +3178,7 @@ fn sys_select_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
             );
             if count_chirho > 0 {
+                crate::serial_println_chirho!("[SELECT] woke: {} fds ready", count_chirho);
                 return count_chirho;
             }
         }
@@ -3307,7 +3308,7 @@ fn sys_epoll_wait_chirho(
         drop(entries_chirho);
 
         if count_chirho > 0 {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[EPOLL] returning {} events", count_chirho,
             );
             return count_chirho as i64;
