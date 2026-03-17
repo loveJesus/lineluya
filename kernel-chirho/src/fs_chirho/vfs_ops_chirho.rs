@@ -306,6 +306,10 @@ fn dev_file_ops_chirho(major_chirho: u32, minor_chirho: u32) -> &'static dyn Fil
         (5, 2) => &crate::pty_chirho::PTMX_OPS_CHIRHO,       // /dev/ptmx
         (136, _) => &crate::pty_chirho::PTY_SLAVE_OPS_CHIRHO, // /dev/pts/N (major 136)
         (29, 0) => &crate::fb_device_chirho::FB_DEVICE_OPS_CHIRHO, // /dev/fb0
+        (13, 64..=95) => &crate::evdev_chirho::EVDEV_OPS_CHIRHO,  // /dev/input/event0-31
+        (14, 3) => &crate::sound_chirho::DEV_DSP_OPS_CHIRHO,      // /dev/dsp (OSS)
+        (10, 237) => &crate::loop_device_chirho::LOOP_CONTROL_OPS_CHIRHO, // /dev/loop-control
+        (7, 0..=7) => &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, // /dev/loop0-7
         _ => &TMPFS_FILE_OPS_CHIRHO, // fallback
     }
 }

@@ -495,6 +495,69 @@ static DEV_NODES_CHIRHO: &[DevNodeChirho] = &[
         minor_chirho: 0,
         ops_chirho: &crate::fb_device_chirho::FB_DEVICE_OPS_CHIRHO,
     },
+    // A2-SOUND-002: /dev/dsp OSS audio device
+    DevNodeChirho {
+        name_chirho: "dsp",
+        major_chirho: 14,
+        minor_chirho: 3,
+        ops_chirho: &crate::sound_chirho::DEV_DSP_OPS_CHIRHO,
+    },
+    // A2-LOOP-001: /dev/loop-control
+    DevNodeChirho {
+        name_chirho: "loop-control",
+        major_chirho: 10,
+        minor_chirho: 237,
+        ops_chirho: &crate::loop_device_chirho::LOOP_CONTROL_OPS_CHIRHO,
+    },
+    // A2-LOOP-002: /dev/loop0 through /dev/loop7
+    DevNodeChirho {
+        name_chirho: "loop0",
+        major_chirho: 7,
+        minor_chirho: 0,
+        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
+    },
+    DevNodeChirho {
+        name_chirho: "loop1",
+        major_chirho: 7,
+        minor_chirho: 1,
+        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
+    },
+    DevNodeChirho {
+        name_chirho: "loop2",
+        major_chirho: 7,
+        minor_chirho: 2,
+        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
+    },
+    DevNodeChirho {
+        name_chirho: "loop3",
+        major_chirho: 7,
+        minor_chirho: 3,
+        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
+    },
+    DevNodeChirho {
+        name_chirho: "loop4",
+        major_chirho: 7,
+        minor_chirho: 4,
+        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
+    },
+    DevNodeChirho {
+        name_chirho: "loop5",
+        major_chirho: 7,
+        minor_chirho: 5,
+        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
+    },
+    DevNodeChirho {
+        name_chirho: "loop6",
+        major_chirho: 7,
+        minor_chirho: 6,
+        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
+    },
+    DevNodeChirho {
+        name_chirho: "loop7",
+        major_chirho: 7,
+        minor_chirho: 7,
+        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -560,6 +623,48 @@ pub fn mount_devtmpfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
         ))),
     }));
     entries_chirho.push((String::from("pts"), pts_dir_inode_chirho));
+
+    // Create /dev/input/ directory with event0 (evdev keyboard) inside.
+    // A2-X11-004: evdev input device infrastructure for X11/libinput.
+    {
+        // /dev/input/event0 — keyboard evdev device (major 13, minor 64)
+        let event0_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: alloc_dev_ino_chirho(),
+            mode_chirho: S_IFCHR_CHIRHO | 0o666,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: 0,
+            nlink_chirho: 1,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+            fs_data_chirho: Some(Box::new(DevNodeDataChirho {
+                major_chirho: 13,   // Linux input device major
+                minor_chirho: 64,   // event0 = minor 64
+            })),
+        }));
+
+        let mut input_entries_chirho: Vec<(String, Arc<Mutex<InodeChirho>>)> = Vec::new();
+        input_entries_chirho.push((String::from("event0"), event0_inode_chirho));
+
+        let input_dir_inode_chirho = Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: alloc_dev_ino_chirho(),
+            mode_chirho: S_IFDIR_CHIRHO | 0o755,
+            uid_chirho: 0,
+            gid_chirho: 0,
+            size_chirho: 0,
+            nlink_chirho: 2,
+            atime_chirho: 0,
+            mtime_chirho: 0,
+            ctime_chirho: 0,
+            ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+            fs_data_chirho: Some(Box::new(Mutex::new(
+                TmpfsDataChirho::DirChirho(input_entries_chirho),
+            ))),
+        }));
+        entries_chirho.push((String::from("input"), input_dir_inode_chirho));
+    }
 
     let root_inode_chirho = Arc::new(Mutex::new(InodeChirho {
         ino_chirho: alloc_dev_ino_chirho(),

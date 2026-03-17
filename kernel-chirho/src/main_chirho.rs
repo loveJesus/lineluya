@@ -121,8 +121,14 @@ mod e1000_chirho;
 mod usb_chirho;
 #[path = "drivers_chirho/fb_device_chirho.rs"]
 mod fb_device_chirho;
+#[path = "drivers_chirho/evdev_chirho.rs"]
+mod evdev_chirho;
 #[path = "drivers_chirho/random_chirho.rs"]
 mod random_chirho;
+#[path = "drivers_chirho/sound_chirho.rs"]
+mod sound_chirho;
+#[path = "drivers_chirho/loop_device_chirho.rs"]
+mod loop_device_chirho;
 
 // ============================================================================
 // Networking — TCP/IP stack, sockets, DHCP, DNS
@@ -372,6 +378,10 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     // and attempt to read sector 0 as a smoke test (P2-001 / P2-002).
     virtio_chirho::init_virtio_chirho();
     fb_println_chirho!("[OK] VirtIO subsystem initialized");
+
+    // Phase A2: Sound card PCI detection (A2-SOUND-001).
+    sound_chirho::detect_sound_cards_chirho();
+    fb_println_chirho!("[OK] Sound subsystem initialized");
 
     net_chirho::init_networking_chirho();
     fb_println_chirho!("[OK] Networking initialized");
