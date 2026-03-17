@@ -236,6 +236,20 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
     // Save the syscall number before dispatch overwrites rax with the result.
     let syscall_nr_chirho = frame_chirho.rax_chirho;
 
+    // Debug: log stack pointer for context switch investigation
+    let current_rsp_chirho: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) current_rsp_chirho); }
+    let pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho).unwrap_or(999);
+    if pid_chirho >= 3 && (syscall_nr_chirho == 23 || syscall_nr_chirho == 0) {
+        // Log RSP for select(23) and read(0) from PID 3+
+        crate::serial_println_chirho!(
+            "[STACK-DBG] pid={} sc={} rsp={:#x} KERNEL_STACK_TOP={:#x}",
+            pid_chirho, syscall_nr_chirho, current_rsp_chirho,
+            unsafe { KERNEL_STACK_TOP_CHIRHO }
+        );
+    }
+
     let result_chirho = crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho);
 
     // Validate that RCX (user return address) wasn't corrupted by the dispatch.
