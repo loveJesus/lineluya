@@ -2713,9 +2713,16 @@ pub fn sys_sendto_chirho(
     // For stream sockets, must be connected — use effective_state_chirho to
     // derive from TCP state machine, preventing desync (audit typed-002).
     let sock_type_chirho = SocketTypeChirho::from_raw_chirho(socket_chirho.sock_type_chirho);
+    let eff_state_chirho = socket_chirho.effective_state_chirho();
     if sock_type_chirho == Some(SocketTypeChirho::SockStreamChirho)
-        && socket_chirho.effective_state_chirho() != SocketStateChirho::ConnectedChirho
+        && eff_state_chirho != SocketStateChirho::ConnectedChirho
     {
+        crate::serial_println_chirho!(
+            "[NET] sendto fd={} ENOTCONN: eff_state={:?} tcb_state={:?} sock_state={:?}",
+            sockfd_chirho, eff_state_chirho,
+            socket_chirho.tcb_chirho.state_chirho,
+            socket_chirho.state_chirho
+        );
         return -ENOTCONN_CHIRHO;
     }
 
