@@ -4341,11 +4341,7 @@ pub fn relay_tcp_2222_to_pipe_chirho(pipe_chirho: &alloc::sync::Arc<spin::Mutex<
     use core::sync::atomic::{AtomicBool, Ordering};
     static LOGGED_CHIRHO: AtomicBool = AtomicBool::new(false);
 
-    let table_result_chirho = SOCKET_TABLE_CHIRHO.try_lock();
-    let mut table_chirho = match table_result_chirho {
-        Some(t) => t,
-        None => return,
-    };
+    let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
 
     // One-shot debug: log socket table state on first successful lock
     if !LOGGED_CHIRHO.swap(true, Ordering::SeqCst) {
