@@ -2672,8 +2672,24 @@ pub fn sys_sendto_chirho(
 
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
-        Err(_) => {
-            // Fallback: if fd is not a socket, pretend bytes were sent (for compat)
+        Err(err_chirho) => {
+            // Not a socket fd — try writing via VFS file ops instead
+            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(sockfd_chirho) {
+                let mut file_chirho = file_arc_chirho.lock();
+                let data_count_chirho = core::cmp::min(len_chirho as usize, 65536);
+                let mut data_chirho = alloc::vec![0u8; data_count_chirho];
+                for i_chirho in 0..data_count_chirho {
+                    data_chirho[i_chirho] = unsafe { core::ptr::read_volatile((buf_chirho as *const u8).add(i_chirho)) };
+                }
+                match file_chirho.ops_chirho.write_chirho(&mut file_chirho, &data_chirho) {
+                    Ok(n_chirho) => return n_chirho as i64,
+                    Err(e_chirho) => return e_chirho,
+                }
+            }
+            crate::serial_println_chirho!(
+                "[NET] sendto fd={} NOT a socket (err={}), no VFS entry either",
+                sockfd_chirho, err_chirho
+            );
             return len_chirho as i64;
         }
     };
