@@ -4338,7 +4338,11 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
 /// Called from pipe read when the pipe is empty — this bridges
 /// the TCP connection data to dropbear's childpipe I/O.
 pub fn relay_tcp_2222_to_pipe_chirho(pipe_chirho: &alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>) {
-    let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    let table_result_chirho = SOCKET_TABLE_CHIRHO.try_lock();
+    let mut table_chirho = match table_result_chirho {
+        Some(t) => t,
+        None => return, // Lock held — skip this check
+    };
     for slot_chirho in table_chirho.iter_mut() {
         if let Some(ref mut s_chirho) = slot_chirho {
             if s_chirho.family_chirho == 2
