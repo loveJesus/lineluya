@@ -454,9 +454,9 @@
         {
           "id_chirho": "A2-SOUND-008",
           "title_chirho": "ALSA /dev/snd/* devices (stretch goal — if OSS not enough)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low",
-          "notes_chirho": "ALSA is more complex: /dev/snd/pcmC0D0p, /dev/snd/controlC0. Only if mpg123 requires it."
+          "notes_chirho": "Deferred — OSS /dev/dsp is sufficient for mpg123. ALSA can be added when a real program requires it."
         }
       ]
     },

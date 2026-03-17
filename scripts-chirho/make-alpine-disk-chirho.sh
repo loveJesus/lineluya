@@ -329,6 +329,8 @@ apk --root /mnt-chirho --initdb \
     sqlite sqlite-libs \
     python3 \
     dropbear dropbear-scp \
+    mpg123 \
+    xvfb xterm twm font-misc-misc font-cursor-misc xauth \
     >&2 2>&1
 
 # Verify installation
@@ -336,6 +338,21 @@ ls /mnt-chirho/usr/bin/sqlite3 >/dev/null 2>&1 && echo "[DOCKER] sqlite3 INSTALL
 ls /mnt-chirho/usr/bin/python3 >/dev/null 2>&1 && echo "[DOCKER] python3 INSTALLED" >&2 || echo "[DOCKER] python3 MISSING" >&2
 
 echo "[DOCKER] P5 packages installed into rootfs." >&2
+
+# Create /etc/profile to auto-start dropbear SSH on shell login
+cat > /mnt-chirho/etc/profile << 'PROFILE_CHIRHO'
+# For God so loved the world that he gave his only begotten Son,
+# that whoever believes in him should not perish but have eternal life. - John 3:16
+
+# Auto-start dropbear SSH server on port 2222
+if [ ! -f /tmp/.dropbear_started ]; then
+    dropbear -p 2222 -B -R 2>/dev/null &
+    touch /tmp/.dropbear_started
+    echo "[SSH] Dropbear started on port 2222"
+fi
+PROFILE_CHIRHO
+chmod 644 /mnt-chirho/etc/profile
+echo "[DOCKER] /etc/profile created (auto-starts dropbear)" >&2
 
 # Create a test Python script
 cat > /mnt-chirho/root/hello_chirho.py << '\''PYTEST_CHIRHO'\''
