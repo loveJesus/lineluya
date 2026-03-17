@@ -229,8 +229,32 @@ impl FbVarScreenInfoChirho {
 
 /// Linux `struct fb_fix_screeninfo` -- fixed screen information.
 ///
-/// Total size = 68 bytes (Linux uses a padded 80-byte version, but the
-/// first 68 bytes are what user-space fbdev actually reads).
+/// Layout matches the Linux x86_64 ABI exactly (80 bytes with alignment):
+///
+/// ```text
+///  offset  field           size
+///  ------  -----           ----
+///   0      id[16]          16     identification string (null-terminated)
+///  16      smem_start      8      unsigned long — physical framebuffer addr
+///  24      smem_len        4      __u32
+///  28      type            4      __u32  (FB_TYPE_PACKED_PIXELS = 0)
+///  32      type_aux        4      __u32
+///  36      visual          4      __u32  (FB_VISUAL_TRUECOLOR = 2)
+///  40      xpanstep        2      __u16
+///  42      ypanstep        2      __u16
+///  44      ywrapstep       2      __u16
+///  46      [pad]           2      alignment padding
+///  48      line_length     4      __u32  (bytes per scan line)
+///  52      [pad]           4      alignment padding for mmio_start (u64)
+///  56      mmio_start      8      unsigned long
+///  64      mmio_len        4      __u32
+///  68      accel           4      __u32  (FB_ACCEL_NONE = 0)
+///  72      capabilities    2      __u16
+///  74      reserved[2]     4      __u16 x 2
+///  78      [pad]           2      struct tail alignment to 8 bytes
+///  ------
+///  total:  80 bytes
+/// ```
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FbFixScreenInfoChirho {
@@ -245,11 +269,13 @@ pub struct FbFixScreenInfoChirho {
     pub ywrapstep_chirho: u16,
     pub _pad0_chirho: u16,
     pub line_length_chirho: u32,    // bytes per scan line
+    pub _pad1_chirho: u32,          // explicit alignment pad for mmio_start
     pub mmio_start_chirho: u64,     // start of MMIO (0 for us)
     pub mmio_len_chirho: u32,       // length of MMIO (0)
     pub accel_chirho: u32,          // FB_ACCEL_NONE = 0
     pub capabilities_chirho: u16,
     pub reserved_chirho: [u16; 2],
+    pub _pad2_chirho: u16,          // struct tail alignment to 8 bytes
 }
 
 impl FbFixScreenInfoChirho {
@@ -259,8 +285,9 @@ impl FbFixScreenInfoChirho {
         let height_chirho = FB_ACTUAL_HEIGHT_CHIRHO.load(Ordering::Relaxed);
         let size_chirho = stride_chirho as u32 * height_chirho;
 
+        // ID = "lineluya", null-terminated, zero-padded to 16 bytes.
         let mut id_chirho = [0u8; 16];
-        let id_str_chirho = b"lineluya-fb0";
+        let id_str_chirho = b"lineluya";
         let copy_len_chirho = id_str_chirho.len().min(15);
         id_chirho[..copy_len_chirho].copy_from_slice(&id_str_chirho[..copy_len_chirho]);
 
@@ -276,11 +303,13 @@ impl FbFixScreenInfoChirho {
             ywrapstep_chirho: 0,
             _pad0_chirho: 0,
             line_length_chirho: stride_chirho,
+            _pad1_chirho: 0,
             mmio_start_chirho: 0,
             mmio_len_chirho: 0,
             accel_chirho: 0,     // FB_ACCEL_NONE
             capabilities_chirho: 0,
             reserved_chirho: [0; 2],
+            _pad2_chirho: 0,
         }
     }
 }
