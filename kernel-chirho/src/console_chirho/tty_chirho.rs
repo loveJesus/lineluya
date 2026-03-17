@@ -27,20 +27,67 @@ use crate::vfs_chirho::{FileChirho, FileOpsChirho};
 use crate::waitqueue_chirho::WaitQueueChirho;
 
 // ============================================================================
-// termios flag constants
+// termios flag constants (audit A2-AUDIT-008)
+//
+// All values match Linux's <bits/termios.h> for x86_64.
+// Octal literals are used because POSIX/Linux headers define these in octal.
 // ============================================================================
 
-/// Local flag: enable echo of input characters.
-pub const ECHO_CHIRHO: u32 = 0o10;
-/// Local flag: canonical (line-buffered) mode.
-pub const ICANON_CHIRHO: u32 = 0o2;
-/// Local flag: enable signal generation (SIGINT on Ctrl-C, etc.).
-pub const ISIG_CHIRHO: u32 = 0o1;
+// --- Input mode flags (c_iflag) ---
+
+/// Input flag: map CR to NL on input.
+pub const ICRNL_CHIRHO: u32 = 0o400;
+/// Input flag: enable XON/XOFF flow control on output.
+pub const IXON_CHIRHO: u32 = 0o2000;
+/// Input flag: enable XON/XOFF flow control on input.
+#[allow(dead_code)]
+pub const IXOFF_CHIRHO: u32 = 0o10000;
+
+// --- Output mode flags (c_oflag) ---
 
 /// Output flag: post-process output.
 pub const OPOST_CHIRHO: u32 = 0o1;
 /// Output flag: map NL to CR-NL on output.
 pub const ONLCR_CHIRHO: u32 = 0o4;
+
+// --- Local mode flags (c_lflag) ---
+
+/// Local flag: enable signal generation (SIGINT on Ctrl-C, etc.).
+pub const ISIG_CHIRHO: u32 = 0o1;
+/// Local flag: canonical (line-buffered) mode.
+pub const ICANON_CHIRHO: u32 = 0o2;
+/// Local flag: enable echo of input characters.
+pub const ECHO_CHIRHO: u32 = 0o10;
+/// Local flag: echo erase character as BS-SP-BS.
+#[allow(dead_code)]
+pub const ECHOE_CHIRHO: u32 = 0o20;
+/// Local flag: echo NL after kill character.
+#[allow(dead_code)]
+pub const ECHOK_CHIRHO: u32 = 0o40;
+/// Local flag: echo NL even if ECHO is off.
+#[allow(dead_code)]
+pub const ECHONL_CHIRHO: u32 = 0o100;
+/// Local flag: echo control characters as ^X.
+#[allow(dead_code)]
+pub const ECHOCTL_CHIRHO: u32 = 0o1000;
+/// Local flag: enable implementation-defined input processing.
+#[allow(dead_code)]
+pub const IEXTEN_CHIRHO: u32 = 0o100000;
+
+// --- c_cc indices (control characters) ---
+
+/// c_cc index for VINTR (interrupt char, usually Ctrl-C).
+#[allow(dead_code)]
+pub const VINTR_CHIRHO: usize = 0;
+/// c_cc index for VEOF (end-of-file char, usually Ctrl-D).
+#[allow(dead_code)]
+pub const VEOF_CHIRHO: usize = 4;
+/// c_cc index for VMIN (minimum chars for non-canonical read).
+#[allow(dead_code)]
+pub const VMIN_CHIRHO: usize = 6;
+/// c_cc index for VTIME (timeout for non-canonical read, in 1/10 s).
+#[allow(dead_code)]
+pub const VTIME_CHIRHO: usize = 5;
 
 /// Size of the c_cc control-character array (matches Linux NCCS).
 const NCCS_CHIRHO: usize = 32;

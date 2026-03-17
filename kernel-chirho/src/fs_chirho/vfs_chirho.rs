@@ -25,6 +25,30 @@ pub const S_IFCHR_CHIRHO: u32 = 0o020000;
 pub const S_IFBLK_CHIRHO: u32 = 0o060000;
 
 // ---------------------------------------------------------------------------
+// Inode mode type-check helpers (A2-AUDIT-014)
+// ---------------------------------------------------------------------------
+
+/// Returns true if `mode_chirho` indicates a symbolic link (S_IFLNK).
+#[inline]
+pub fn is_symlink_chirho(mode_chirho: u32) -> bool { mode_chirho & 0xF000 == 0xA000 }
+
+/// Returns true if `mode_chirho` indicates a directory (S_IFDIR).
+#[inline]
+pub fn is_dir_chirho(mode_chirho: u32) -> bool { mode_chirho & 0xF000 == 0x4000 }
+
+/// Returns true if `mode_chirho` indicates a regular file (S_IFREG).
+#[inline]
+pub fn is_regular_chirho(mode_chirho: u32) -> bool { mode_chirho & 0xF000 == 0x8000 }
+
+/// Returns true if `mode_chirho` indicates a character device (S_IFCHR).
+#[inline]
+pub fn is_chardev_chirho(mode_chirho: u32) -> bool { mode_chirho & 0xF000 == 0x2000 }
+
+/// Returns true if `mode_chirho` indicates a block device (S_IFBLK).
+#[inline]
+pub fn is_blkdev_chirho(mode_chirho: u32) -> bool { mode_chirho & 0xF000 == 0x6000 }
+
+// ---------------------------------------------------------------------------
 // Open flags (O_*)
 // ---------------------------------------------------------------------------
 

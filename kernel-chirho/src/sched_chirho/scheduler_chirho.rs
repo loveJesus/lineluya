@@ -191,6 +191,47 @@ pub fn init_scheduler_chirho() {
 }
 
 // ---------------------------------------------------------------------------
+// Architecture-specific context switch preparation
+// ---------------------------------------------------------------------------
+
+/// Perform architecture-specific context switch preparation.
+///
+/// Switches the page table (CR3) to the target task's address space. If the
+/// task has a per-process page table, CR3 is loaded with that physical
+/// address. Otherwise, CR3 is switched back to the boot PML4 so the task
+/// runs in the shared kernel address space.
+///
+/// This helper separates arch-specific concerns from the scheduling policy
+/// logic in [`schedule_chirho`], making it easier to port to other
+/// architectures or to swap out page-table switching strategies.
+fn arch_prepare_switch_chirho(next_pid_chirho: u64) {
+    // Look up the target task's page table root.
+    let new_pt_root_chirho = {
+        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+        list_chirho
+            .iter()
+            .find(|t_chirho| t_chirho.lock().pid_chirho == next_pid_chirho)
+            .and_then(|t_chirho| t_chirho.lock().page_table_root_chirho)
+    };
+
+    // Switch to the task's page table, or fall back to boot PML4.
+    if let Some(pt_root_chirho) = new_pt_root_chirho {
+        unsafe {
+            crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
+        }
+    } else {
+        // Task has no per-process PT — switch back to boot PML4
+        // so the task runs in the shared boot address space.
+        let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+        if boot_pml4_chirho.as_u64() != 0 {
+            unsafe {
+                crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core scheduling
 // ---------------------------------------------------------------------------
 
@@ -283,37 +324,14 @@ pub fn schedule_chirho() {
                 let new_ctx_ptr_chirho =
                     crate::task_chirho::context_ptr_chirho(next_chirho);
 
-                // Switch page tables if the new task has its own address space.
-                // Look up the new task's page_table_root_chirho and switch CR3
-                // before the context switch so the new task resumes in the
-                // correct address space.
-                let new_pt_root_chirho = {
-                    let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
-                    list_chirho
-                        .iter()
-                        .find(|t_chirho| t_chirho.lock().pid_chirho == next_chirho)
-                        .and_then(|t_chirho| t_chirho.lock().page_table_root_chirho)
-                };
-
                 // Drop the scheduler lock before performing the actual context
                 // switch so that the new task can acquire it if needed.
                 drop(scheduler_guard_chirho);
 
-                // Switch to the new task's page table, or fall back to boot PT.
-                if let Some(pt_root_chirho) = new_pt_root_chirho {
-                    unsafe {
-                        crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
-                    }
-                } else {
-                    // Task has no per-process PT — switch back to boot PML4
-                    // so the task runs in the shared boot address space.
-                    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
-                    if boot_pml4_chirho.as_u64() != 0 {
-                        unsafe {
-                            crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
-                        }
-                    }
-                }
+                // Perform arch-specific context switch preparation (CR3 / page
+                // table switch).  This is factored out so the scheduling policy
+                // remains architecture-agnostic.
+                arch_prepare_switch_chirho(next_chirho);
 
                 // Set kernel stack + current task for the new task.
                 {

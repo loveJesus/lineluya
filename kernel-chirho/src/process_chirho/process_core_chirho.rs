@@ -169,10 +169,13 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
         child_ctx_chirho.rsp_chirho = frame_dst_chirho;
         child_ctx_chirho.rflags_chirho = 0x200; // IF (interrupts enabled)
 
-        // Clone the GLOBAL fd table (the live one, not the task's stale copy).
-        // The task's fd_table_chirho is only updated on context switch and may
-        // be missing fds that were opened/accepted since the last switch.
-        let child_fd_table_chirho = {
+        // A2-PROC-003: Clone the parent's per-process fd table.  The
+        // per-process table is now the authoritative source of truth
+        // (no more relying on GLOBAL swap during context switch).
+        // Fall back to GLOBAL only if the parent has no per-process table.
+        let child_fd_table_chirho = if let Some(ref parent_fdt_chirho) = parent_chirho.fd_table_chirho {
+            Some(parent_fdt_chirho.clone_table_chirho())
+        } else {
             let global_fd_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
             global_fd_chirho.as_ref().map(|t_chirho| t_chirho.clone_table_chirho())
         };
@@ -354,10 +357,15 @@ pub fn sys_clone_chirho(
         child_ctx_chirho.rsp_chirho = frame_dst_chirho;
         child_ctx_chirho.rflags_chirho = 0x200;
 
-        // FD table: clone the GLOBAL (live) fd table, not the task's stale copy.
-        let child_fd_table_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock()
-            .as_ref()
-            .map(|t_chirho| t_chirho.clone_table_chirho());
+        // A2-PROC-003: Clone the parent's per-process fd table (authoritative).
+        // Fall back to GLOBAL only if the parent has no per-process table.
+        let child_fd_table_chirho = if let Some(ref parent_fdt_chirho) = parent_chirho.fd_table_chirho {
+            Some(parent_fdt_chirho.clone_table_chirho())
+        } else {
+            crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock()
+                .as_ref()
+                .map(|t_chirho| t_chirho.clone_table_chirho())
+        };
 
         let child_user_rsp_chirho = if stack_chirho != 0 {
             stack_chirho

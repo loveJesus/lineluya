@@ -350,6 +350,77 @@ macro_rules! serial_debug_chirho {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Unified logging facade — LogLevelChirho + LogSubsystemChirho
+// ---------------------------------------------------------------------------
+
+/// Severity level for kernel log messages.
+///
+/// Ordered from most severe ([`ErrorChirho`]) to most verbose
+/// ([`TraceChirho`]).  The derived [`PartialOrd`]/[`Ord`] follow the same
+/// ordering so that `level <= LogLevelChirho::InfoChirho` matches Error,
+/// Warn, and Info.
+///
+/// This enum is foundational — existing per-subsystem macros
+/// ([`log_net_chirho!`], [`log_fs_chirho!`], etc.) continue to work
+/// unchanged.  New code can use these enums for runtime-filterable logging.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevelChirho {
+    /// Unrecoverable or critical errors.
+    ErrorChirho = 0,
+    /// Conditions that may indicate a problem but are recoverable.
+    WarnChirho = 1,
+    /// High-level operational information.
+    InfoChirho = 2,
+    /// Detailed diagnostic output (gated by `debug_serial` feature).
+    DebugChirho = 3,
+    /// Very fine-grained tracing (e.g. per-packet, per-syscall).
+    TraceChirho = 4,
+}
+
+/// Kernel subsystem identifier for log tagging and filtering.
+///
+/// Each variant corresponds to one of the existing `log_*_chirho!` macros.
+/// When a unified `klog_chirho!` macro is eventually introduced, this enum
+/// will be passed as a parameter so that runtime filtering by subsystem
+/// becomes possible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogSubsystemChirho {
+    /// Networking stack (TCP, UDP, DHCP, DNS, sockets).
+    NetChirho,
+    /// Filesystems (ext4, VFS, path resolution).
+    FsChirho,
+    /// Memory management (page tables, allocator, mmap).
+    MmChirho,
+    /// Scheduler (context switch, run queue, time slices).
+    SchedChirho,
+    /// Process lifecycle (fork, exec, exit, wait).
+    ProcessChirho,
+    /// System call dispatch and handling.
+    SyscallChirho,
+    /// Device drivers (VirtIO, serial, framebuffer).
+    DriverChirho,
+}
+
+impl LogSubsystemChirho {
+    /// Return the short tag string used in log output (e.g. `"NET"`, `"FS"`).
+    pub const fn tag_chirho(&self) -> &'static str {
+        match self {
+            Self::NetChirho => "NET",
+            Self::FsChirho => "FS",
+            Self::MmChirho => "MM",
+            Self::SchedChirho => "SCHED",
+            Self::ProcessChirho => "PROC",
+            Self::SyscallChirho => "SYSCALL",
+            Self::DriverChirho => "DRV",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-subsystem debug macros
+// ---------------------------------------------------------------------------
+
 /// Subsystem-tagged debug macros. Each compiles to nothing unless
 /// the `debug_serial` feature is enabled. Tags help filter kernel
 /// log output by subsystem.

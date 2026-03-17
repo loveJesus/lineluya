@@ -7,6 +7,55 @@
 //! for no_std Rust. Handles large contiguous allocations (64MB+) without
 //! fragmentation, with correct buddy merging via bitmap tracking.
 
+// ---------------------------------------------------------------------------
+// Allocation size classification
+// ---------------------------------------------------------------------------
+
+/// Allocation size classification for logging and policy decisions.
+///
+/// Centralises the thresholds used throughout the allocator so that policy
+/// changes (e.g. adjusting what counts as "large") only need to happen in
+/// one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocationClassChirho {
+    /// Normal allocation (< 64 KB).
+    NormalChirho,
+    /// Large allocation (64 KB – 1 MB) — logged for diagnostics.
+    LargeChirho,
+    /// Huge allocation (1 MB – 128 MB) — logged with a warning.
+    HugeChirho,
+    /// Oversized (> 128 MB) — rejected by the allocator.
+    OversizedChirho,
+}
+
+/// Threshold constant: allocations >= this are classified as [`LargeChirho`].
+const LARGE_THRESHOLD_CHIRHO: usize = 64 * 1024; // 64 KB
+
+/// Threshold constant: allocations >= this are classified as [`HugeChirho`].
+const HUGE_THRESHOLD_CHIRHO: usize = 1024 * 1024; // 1 MB
+
+/// Hard cap: allocations larger than this are refused (returns null).
+const OVERSIZED_THRESHOLD_CHIRHO: usize = 128 * 1024 * 1024; // 128 MB
+
+impl AllocationClassChirho {
+    /// Classify an allocation by its requested byte size.
+    pub fn classify_chirho(size_chirho: usize) -> Self {
+        if size_chirho >= OVERSIZED_THRESHOLD_CHIRHO {
+            Self::OversizedChirho
+        } else if size_chirho >= HUGE_THRESHOLD_CHIRHO {
+            Self::HugeChirho
+        } else if size_chirho >= LARGE_THRESHOLD_CHIRHO {
+            Self::LargeChirho
+        } else {
+            Self::NormalChirho
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Buddy-alloc crate imports
+// ---------------------------------------------------------------------------
+
 use buddy_alloc::{BuddyAllocParam, FastAllocParam, NonThreadsafeAlloc};
 use x86_64::structures::paging::mapper::MapToError;
 use x86_64::structures::paging::{
@@ -66,25 +115,33 @@ struct TracingAllocChirho;
 unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
     unsafe fn alloc(&self, layout_chirho: core::alloc::Layout) -> *mut u8 {
         let size_chirho = layout_chirho.size();
+        let class_chirho = AllocationClassChirho::classify_chirho(size_chirho);
 
-        // Track large allocations
-        if size_chirho > 256 * 1024 {
-            LARGE_ALLOC_COUNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        // Track large+ allocations via the global counter.
+        match class_chirho {
+            AllocationClassChirho::LargeChirho
+            | AllocationClassChirho::HugeChirho => {
+                LARGE_ALLOC_COUNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+            AllocationClassChirho::OversizedChirho => {
+                // Hard cap — refuse the allocation.
+                crate::serial_println_chirho!(
+                    "[ALLOC] REJECTED {:?} {}B a={}",
+                    class_chirho, size_chirho, layout_chirho.align(),
+                );
+                return core::ptr::null_mut();
+            }
+            AllocationClassChirho::NormalChirho => {}
         }
 
-        // Cap: refuse allocations > 128MB.
-        if size_chirho > 128 * 1024 * 1024 {
-            return core::ptr::null_mut();
-        }
-
-        // Log allocations > 1MB with syscall name for debugging.
-        if size_chirho > 1 * 1024 * 1024 {
+        // Log huge allocations with syscall context for debugging.
+        if matches!(class_chirho, AllocationClassChirho::HugeChirho) {
             let sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO
                 .load(core::sync::atomic::Ordering::Relaxed);
             let sc_name_chirho = crate::syscall_chirho::syscall_name_chirho(sc_chirho);
             crate::serial_println_chirho!(
-                "[ALLOC] {}B a={} sc={}({})",
-                size_chirho, layout_chirho.align(), sc_chirho, sc_name_chirho,
+                "[ALLOC] {:?} {}B a={} sc={}({})",
+                class_chirho, size_chirho, layout_chirho.align(), sc_chirho, sc_name_chirho,
             );
         }
 

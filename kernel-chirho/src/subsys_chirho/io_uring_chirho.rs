@@ -230,18 +230,11 @@ impl IoUringInstanceChirho {
             fd_chirho, buf_addr_chirho, len_chirho,
         );
 
-        // Perform synchronous read through the VFS fd table.
-        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
+        // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
+        let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
+            Some(f_chirho) => f_chirho,
             None => return -(EBADF_CHIRHO as i32),
         };
-
-        let file_arc_chirho = match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho.clone(),
-            None => return -(EBADF_CHIRHO as i32),
-        };
-        drop(fd_table_guard_chirho);
 
         let read_len_chirho = core::cmp::min(len_chirho as usize, 4096);
         let mut tmp_buf_chirho = alloc::vec![0u8; read_len_chirho];
@@ -283,17 +276,11 @@ impl IoUringInstanceChirho {
             tmp_buf_chirho[i_chirho] = unsafe { core::ptr::read_volatile(src_ptr_chirho.add(i_chirho)) };
         }
 
-        let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        let fd_table_chirho = match fd_table_guard_chirho.as_ref() {
-            Some(t_chirho) => t_chirho,
+        // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
+        let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
+            Some(f_chirho) => f_chirho,
             None => return -(EBADF_CHIRHO as i32),
         };
-
-        let file_arc_chirho = match fd_table_chirho.get_chirho(fd_chirho as usize) {
-            Some(f_chirho) => f_chirho.clone(),
-            None => return -(EBADF_CHIRHO as i32),
-        };
-        drop(fd_table_guard_chirho);
 
         let mut file_guard_chirho = file_arc_chirho.lock();
         match file_guard_chirho.ops_chirho.write_chirho(&mut file_guard_chirho, &tmp_buf_chirho) {

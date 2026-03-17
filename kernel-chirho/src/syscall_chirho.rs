@@ -1148,9 +1148,13 @@ pub static PRNG_STATE_CHIRHO: AtomicU64 = AtomicU64::new(0);
 /// Global tick counter for clock_gettime monotonic approximation.
 static TICK_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
-/// Hardcoded epoch for CLOCK_REALTIME: 2026-03-14 00:00:00 UTC
-/// = 1773532800 seconds since Unix epoch.
-const REALTIME_EPOCH_CHIRHO: i64 = 1773532800;
+/// Approximate boot timestamp (seconds since Unix epoch).
+/// March 17, 2026 00:00:00 UTC = 1773878400.
+/// CLOCK_REALTIME = BOOT_EPOCH_CHIRHO + monotonic offset from tick counter.
+const BOOT_EPOCH_CHIRHO: i64 = 1773878400;
+
+/// Tick period in nanoseconds.  The timer IRQ fires every ~10 ms.
+const TICK_PERIOD_NS_CHIRHO: i64 = 10_000_000; // 10 ms
 
 // ============================================================================
 // Program break tracking (for brk)
@@ -1713,12 +1717,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho as *mut TimespecChirho,
         ),
         // clock_getres(2): musl calls this during __libc_start_main
+        // A2-AUDIT-002: report real 10ms tick resolution
         SYS_CLOCK_GETRES_CHIRHO => {
-            // Return 1ns resolution for all clocks
             if arg1_chirho != 0 {
                 let res_chirho = TimespecChirho {
                     tv_sec_chirho: 0,
-                    tv_nsec_chirho: 1, // 1 nanosecond
+                    tv_nsec_chirho: TICK_PERIOD_NS_CHIRHO, // 10ms real resolution
                 };
                 unsafe { core::ptr::write(arg1_chirho as *mut TimespecChirho, res_chirho); }
             }
@@ -1916,12 +1920,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
         // --- Phase 8+9: time ---
         SYS_GETTIMEOFDAY_CHIRHO => {
-            // Write a stub timeval: use tick counter for some progression
+            // A2-AUDIT-002: real time from tick counter + boot epoch
             if arg0_chirho != 0 {
-                let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                let (mono_sec_chirho, mono_nsec_chirho) = monotonic_from_ticks_chirho();
                 let tv_chirho = TimevalChirho {
-                    tv_sec_chirho: REALTIME_EPOCH_CHIRHO + (ticks_chirho as i64 / 100),
-                    tv_usec_chirho: ((ticks_chirho % 100) as i64) * 10_000,
+                    tv_sec_chirho: BOOT_EPOCH_CHIRHO + mono_sec_chirho,
+                    tv_usec_chirho: mono_nsec_chirho / 1_000, // ns to us
                 };
                 unsafe { core::ptr::write(arg0_chirho as *mut TimevalChirho, tv_chirho); }
             }
@@ -3814,10 +3818,47 @@ fn sys_gettid_chirho() -> i64 {
     sys_getpid_chirho()
 }
 
-/// `clock_gettime(2)` implementation.
+/// Compute monotonic seconds and nanoseconds from the tick counter.
 ///
-/// For CLOCK_MONOTONIC, uses the tick counter * ~10ms per tick.
-/// For CLOCK_REALTIME, returns a hardcoded epoch (2026-03-14).
+/// Reads (without incrementing) the global tick counter and converts to
+/// `(seconds, nanoseconds)` using `TICK_PERIOD_NS_CHIRHO`.
+#[inline]
+fn monotonic_from_ticks_chirho() -> (i64, i64) {
+    let ticks_chirho = TICK_COUNTER_CHIRHO.load(Ordering::Relaxed);
+    let mono_ns_chirho = ticks_chirho as i64 * TICK_PERIOD_NS_CHIRHO;
+    let mono_sec_chirho = mono_ns_chirho / 1_000_000_000;
+    let mono_nsec_chirho = mono_ns_chirho % 1_000_000_000;
+    (mono_sec_chirho, mono_nsec_chirho)
+}
+
+/// Compute a `TimespecChirho` for the given `clock_id_chirho`.
+///
+/// - `CLOCK_REALTIME` (0): `BOOT_EPOCH_CHIRHO` + monotonic offset.
+/// - `CLOCK_MONOTONIC` (1) and all others: pure monotonic time.
+#[inline]
+fn clock_gettime_value_chirho(clock_id_chirho: u64) -> TimespecChirho {
+    let (mono_sec_chirho, mono_nsec_chirho) = monotonic_from_ticks_chirho();
+
+    match clock_id_chirho {
+        CLOCK_REALTIME_CHIRHO => TimespecChirho {
+            tv_sec_chirho: BOOT_EPOCH_CHIRHO + mono_sec_chirho,
+            tv_nsec_chirho: mono_nsec_chirho,
+        },
+        // CLOCK_MONOTONIC (1), CLOCK_PROCESS_CPUTIME_ID (2),
+        // CLOCK_THREAD_CPUTIME_ID (3), CLOCK_MONOTONIC_RAW (4),
+        // CLOCK_MONOTONIC_COARSE (6), CLOCK_BOOTTIME (7), and any
+        // unknown clock ID -- all treated as monotonic.
+        _ => TimespecChirho {
+            tv_sec_chirho: mono_sec_chirho,
+            tv_nsec_chirho: mono_nsec_chirho,
+        },
+    }
+}
+
+/// `clock_gettime(2)` implementation (A2-AUDIT-002).
+///
+/// For CLOCK_MONOTONIC, uses the tick counter * 10ms per tick.
+/// For CLOCK_REALTIME, returns BOOT_EPOCH_CHIRHO + monotonic offset.
 fn sys_clock_gettime_chirho(
     clock_id_chirho: u64,
     tp_chirho: *mut TimespecChirho,
@@ -3826,45 +3867,7 @@ fn sys_clock_gettime_chirho(
         return -EFAULT_CHIRHO;
     }
 
-    let ts_chirho = match clock_id_chirho {
-        CLOCK_REALTIME_CHIRHO => {
-            // Hardcoded epoch + monotonic offset for some progression.
-            let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            TimespecChirho {
-                tv_sec_chirho: REALTIME_EPOCH_CHIRHO + (ticks_chirho as i64 / 100),
-                tv_nsec_chirho: ((ticks_chirho % 100) as i64) * 10_000_000, // 10ms per tick
-            }
-        }
-        CLOCK_MONOTONIC_CHIRHO => {
-            let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            // ~10ms per tick
-            let total_ns_chirho = ticks_chirho as i64 * 10_000_000;
-            TimespecChirho {
-                tv_sec_chirho: total_ns_chirho / 1_000_000_000,
-                tv_nsec_chirho: total_ns_chirho % 1_000_000_000,
-            }
-        }
-        // CLOCK_PROCESS_CPUTIME_ID (2), CLOCK_THREAD_CPUTIME_ID (3),
-        // CLOCK_MONOTONIC_RAW (4), CLOCK_BOOTTIME (7), CLOCK_MONOTONIC_COARSE (6)
-        // — all treated as monotonic for simplicity.
-        2 | 3 | 4 | 6 | 7 => {
-            let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            let total_ns_chirho = ticks_chirho as i64 * 10_000_000;
-            TimespecChirho {
-                tv_sec_chirho: total_ns_chirho / 1_000_000_000,
-                tv_nsec_chirho: total_ns_chirho % 1_000_000_000,
-            }
-        }
-        _ => {
-            // Unknown clock ID -- treat as monotonic rather than failing.
-            let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            let total_ns_chirho = ticks_chirho as i64 * 10_000_000;
-            TimespecChirho {
-                tv_sec_chirho: total_ns_chirho / 1_000_000_000,
-                tv_nsec_chirho: total_ns_chirho % 1_000_000_000,
-            }
-        }
-    };
+    let ts_chirho = clock_gettime_value_chirho(clock_id_chirho);
 
     // SAFETY: Caller guarantees tp_chirho is a valid writable user-space pointer.
     unsafe {
@@ -5135,18 +5138,19 @@ fn sys_sched_getparam_chirho(param_chirho: *mut u8) -> i64 {
     0
 }
 
-/// `gettimeofday(2)` implementation.
+/// `gettimeofday(2)` implementation (A2-AUDIT-002).
 ///
-/// Writes the current time to a TimevalChirho struct in user space.
+/// Writes the current real time to a TimevalChirho struct in user space.
+/// Uses BOOT_EPOCH_CHIRHO + monotonic offset from tick counter.
 fn sys_gettimeofday_chirho(tv_chirho: *mut TimevalChirho) -> i64 {
     if tv_chirho.is_null() {
         return -EFAULT_CHIRHO;
     }
 
-    let ticks_chirho = TICK_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+    let (mono_sec_chirho, mono_nsec_chirho) = monotonic_from_ticks_chirho();
     let timeval_chirho = TimevalChirho {
-        tv_sec_chirho: REALTIME_EPOCH_CHIRHO + (ticks_chirho as i64 / 100),
-        tv_usec_chirho: ((ticks_chirho % 100) as i64) * 10_000, // 10ms per tick in microseconds
+        tv_sec_chirho: BOOT_EPOCH_CHIRHO + mono_sec_chirho,
+        tv_usec_chirho: mono_nsec_chirho / 1_000, // ns to us
     };
 
     unsafe {

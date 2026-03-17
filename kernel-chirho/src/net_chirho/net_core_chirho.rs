@@ -53,148 +53,11 @@ use crate::syscall_chirho::{
 use crate::vfs_chirho::{FileChirho, FileOpsChirho, InodeChirho};
 
 // ============================================================================
-// Ethertype constants
+// A2-AUDIT-006: Network types and constants extracted into sub-module
 // ============================================================================
-
-/// Ethertype for IPv4.
-#[allow(dead_code)]
-pub const ETHERTYPE_IPV4_CHIRHO: u16 = 0x0800;
-/// Ethertype for ARP.
-#[allow(dead_code)]
-pub const ETHERTYPE_ARP_CHIRHO: u16 = 0x0806;
-/// Ethertype for IPv6.
-#[allow(dead_code)]
-pub const ETHERTYPE_IPV6_CHIRHO: u16 = 0x86DD;
-
-// ============================================================================
-// IP protocol numbers
-// ============================================================================
-
-/// IP protocol number for ICMP.
-#[allow(dead_code)]
-pub const IP_PROTO_ICMP_CHIRHO: u8 = 1;
-/// IP protocol number for TCP.
-#[allow(dead_code)]
-pub const IP_PROTO_TCP_CHIRHO: u8 = 6;
-/// IP protocol number for UDP.
-#[allow(dead_code)]
-pub const IP_PROTO_UDP_CHIRHO: u8 = 17;
-
-// ============================================================================
-// ARP constants
-// ============================================================================
-
-/// ARP hardware type: Ethernet.
-#[allow(dead_code)]
-pub const ARP_HTYPE_ETHERNET_CHIRHO: u16 = 1;
-/// ARP operation: request.
-#[allow(dead_code)]
-pub const ARP_OP_REQUEST_CHIRHO: u16 = 1;
-/// ARP operation: reply.
-#[allow(dead_code)]
-pub const ARP_OP_REPLY_CHIRHO: u16 = 2;
-
-// ============================================================================
-// ICMP type constants
-// ============================================================================
-
-/// ICMP type: echo reply.
-#[allow(dead_code)]
-pub const ICMP_ECHO_REPLY_CHIRHO: u8 = 0;
-/// ICMP type: echo request (ping).
-#[allow(dead_code)]
-pub const ICMP_ECHO_REQUEST_CHIRHO: u8 = 8;
-
-// ============================================================================
-// Network constants — centralized to avoid magic numbers (audit const-001)
-// ============================================================================
-
-/// Maximum Transmission Unit for standard Ethernet.
-pub const ETHERNET_MTU_CHIRHO: usize = 1500;
-
-/// Maximum Transmission Unit for loopback interface (matches Linux `lo`).
-pub const LOOPBACK_MTU_CHIRHO: usize = 65536;
-
-/// Google Public DNS server (8.8.8.8) as u32 in network byte order.
-pub const DEFAULT_DNS_CHIRHO: u32 = 0x08080808;
-
-/// Spin-loop iterations for DHCP / TCP-connect polling before timeout.
-pub const NETWORK_POLL_MAX_CHIRHO: u32 = 5_000_000;
-
-/// Spin-loop iterations for TCP recv / ARP / short polls.
-pub const NETWORK_POLL_SHORT_CHIRHO: u32 = 500_000;
-
-/// Maximum bytes copied from user-space in a single send/sendto call.
-pub const SOCKET_SEND_MAX_CHIRHO: usize = 65536;
-
-// ============================================================================
-// TCP flag constants (A3-002)
-// ============================================================================
-
-/// TCP FIN flag.
-pub const TCP_FIN_CHIRHO: u8 = 0x01;
-/// TCP SYN flag.
-pub const TCP_SYN_CHIRHO: u8 = 0x02;
-/// TCP RST flag.
-pub const TCP_RST_CHIRHO: u8 = 0x04;
-/// TCP PSH flag.
-pub const TCP_PSH_CHIRHO: u8 = 0x08;
-/// TCP ACK flag.
-pub const TCP_ACK_CHIRHO: u8 = 0x10;
-/// TCP URG flag.
-#[allow(dead_code)]
-pub const TCP_URG_CHIRHO: u8 = 0x20;
-
-/// Default TCP window size.
-pub const TCP_DEFAULT_WINDOW_CHIRHO: u16 = 65535;
-/// Default TCP MSS (Maximum Segment Size).
-#[allow(dead_code)]
-pub const TCP_DEFAULT_MSS_CHIRHO: u16 = 1460;
-
-// ============================================================================
-// NetErrorChirho — typed errors for the network subsystem (audit err-002)
-// ============================================================================
-
-/// Typed errors for the network subsystem.
-/// Convert to Linux errno at syscall boundary only.
-#[derive(Debug, Clone, Copy)]
-pub enum NetErrorChirho {
-    /// Socket not found or invalid fd.
-    BadFdChirho,
-    /// Address already in use.
-    AddrInUseChirho,
-    /// Connection refused by peer.
-    ConnRefusedChirho,
-    /// Network unreachable.
-    NetUnreachChirho,
-    /// Connection timed out.
-    TimedOutChirho,
-    /// Operation not supported on this socket type.
-    OpNotSuppChirho,
-    /// Socket not connected.
-    NotConnectedChirho,
-    /// Invalid argument.
-    InvalidArgChirho,
-    /// No buffer space available.
-    NoBufsChirho,
-}
-
-impl NetErrorChirho {
-    /// Convert to Linux errno value for syscall return.
-    pub fn to_errno_chirho(self) -> i64 {
-        match self {
-            Self::BadFdChirho => -9,         // EBADF
-            Self::AddrInUseChirho => -98,    // EADDRINUSE
-            Self::ConnRefusedChirho => -111, // ECONNREFUSED
-            Self::NetUnreachChirho => -101,  // ENETUNREACH
-            Self::TimedOutChirho => -110,    // ETIMEDOUT
-            Self::OpNotSuppChirho => -95,    // EOPNOTSUPP
-            Self::NotConnectedChirho => -107, // ENOTCONN
-            Self::InvalidArgChirho => -22,   // EINVAL
-            Self::NoBufsChirho => -105,      // ENOBUFS
-        }
-    }
-}
+#[path = "net_types_chirho.rs"]
+mod net_types_chirho;
+pub use net_types_chirho::*;
 
 // ============================================================================
 // NetDeviceChirho trait
@@ -702,36 +565,7 @@ impl TcpSegmentChirho {
     }
 }
 
-// ============================================================================
-// TcpStateChirho — TCP connection state machine (A3-002, RFC 793)
-// ============================================================================
-
-/// TCP connection states per RFC 793.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TcpStateChirho {
-    /// No connection — initial/final state.
-    ClosedChirho,
-    /// Waiting for a connection request (server).
-    ListenChirho,
-    /// SYN sent, waiting for SYN-ACK (client active open).
-    SynSentChirho,
-    /// SYN received, SYN-ACK sent, waiting for ACK (server).
-    SynReceivedChirho,
-    /// Connection established — data transfer.
-    EstablishedChirho,
-    /// FIN sent (active close initiated), waiting for ACK.
-    FinWait1Chirho,
-    /// FIN acknowledged, waiting for peer's FIN.
-    FinWait2Chirho,
-    /// Received FIN while established (passive close), waiting for app close.
-    CloseWaitChirho,
-    /// App closed after CloseWait, FIN sent, waiting for ACK.
-    LastAckChirho,
-    /// Both FINs exchanged, waiting for TIME_WAIT timeout.
-    TimeWaitChirho,
-    /// Simultaneous close: both sides sent FIN simultaneously.
-    ClosingChirho,
-}
+// TcpStateChirho — now in net_types_chirho.rs (A2-AUDIT-006)
 
 // ============================================================================
 // TcpControlBlockChirho — per-connection TCP state (A3-002)
@@ -1775,148 +1609,8 @@ pub fn init_networking_chirho() {
     }
 }
 
-// ============================================================================
-// Address family constants
-// ============================================================================
-
-/// Address family: local / Unix domain sockets.
-#[allow(dead_code)]
-pub const AF_UNIX_CHIRHO: u64 = 1;
-/// Address family: IPv4.
-#[allow(dead_code)]
-pub const AF_INET_CHIRHO: u64 = 2;
-/// Address family: IPv6.
-#[allow(dead_code)]
-pub const AF_INET6_CHIRHO: u64 = 10;
-/// Address family: Netlink (kernel/userspace messaging).
-#[allow(dead_code)]
-pub const AF_NETLINK_CHIRHO: u64 = 16;
-
-// ============================================================================
-// AddressFamilyChirho enum
-// ============================================================================
-
-/// Supported address families.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
-pub enum AddressFamilyChirho {
-    /// Unix domain socket.
-    AfUnixChirho = AF_UNIX_CHIRHO,
-    /// IPv4.
-    AfInetChirho = AF_INET_CHIRHO,
-    /// IPv6.
-    AfInet6Chirho = AF_INET6_CHIRHO,
-    /// Netlink.
-    AfNetlinkChirho = AF_NETLINK_CHIRHO,
-}
-
-impl AddressFamilyChirho {
-    /// Try to convert from a raw u64 value.
-    pub fn from_raw_chirho(raw_chirho: u64) -> Option<Self> {
-        match raw_chirho {
-            AF_UNIX_CHIRHO => Some(Self::AfUnixChirho),
-            AF_INET_CHIRHO => Some(Self::AfInetChirho),
-            AF_INET6_CHIRHO => Some(Self::AfInet6Chirho),
-            AF_NETLINK_CHIRHO => Some(Self::AfNetlinkChirho),
-            _ => None,
-        }
-    }
-}
-
-// ============================================================================
-// SocketTypeChirho enum
-// ============================================================================
-
-/// Socket types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
-pub enum SocketTypeChirho {
-    /// Stream socket (TCP-like).
-    SockStreamChirho = 1,
-    /// Datagram socket (UDP-like).
-    SockDgramChirho = 2,
-    /// Raw socket.
-    SockRawChirho = 3,
-}
-
-impl SocketTypeChirho {
-    /// Try to convert from a raw u64 value (masking out SOCK_NONBLOCK/SOCK_CLOEXEC flags).
-    pub fn from_raw_chirho(raw_chirho: u64) -> Option<Self> {
-        // Linux defines SOCK_NONBLOCK = 0o4000, SOCK_CLOEXEC = 0o2000000.
-        // Mask those out to get the base type.
-        let base_chirho = raw_chirho & 0xF;
-        match base_chirho {
-            1 => Some(Self::SockStreamChirho),
-            2 => Some(Self::SockDgramChirho),
-            3 => Some(Self::SockRawChirho),
-            _ => None,
-        }
-    }
-}
-
-// ============================================================================
-// SocketStateChirho enum
-// ============================================================================
-
-/// High-level socket state machine (complements TCP state for the socket API).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SocketStateChirho {
-    /// Freshly created, not bound or connected.
-    UnconnectedChirho,
-    /// Bound to a local address.
-    BoundChirho,
-    /// Listening for incoming connections.
-    ListeningChirho,
-    /// Connected to a peer.
-    ConnectedChirho,
-    /// Closed.
-    ClosedChirho,
-}
-
-// ============================================================================
-// SockAddrInChirho — struct sockaddr_in for IPv4 (A3-003)
-// ============================================================================
-
-/// Parsed IPv4 socket address (equivalent to struct sockaddr_in).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SockAddrInChirho {
-    /// Port number (host byte order).
-    pub port_chirho: u16,
-    /// IPv4 address (network byte order, stored as u32).
-    pub addr_chirho: u32,
-}
-
-impl SockAddrInChirho {
-    /// Parse from user-space `struct sockaddr_in` layout (16 bytes).
-    /// Layout: family(2) + port(2 big-endian) + addr(4 big-endian) + pad(8).
-    pub fn from_user_bytes_chirho(data_chirho: &[u8]) -> Option<Self> {
-        if data_chirho.len() < 8 {
-            return None;
-        }
-        let port_chirho = u16::from_be_bytes([data_chirho[2], data_chirho[3]]);
-        let addr_chirho = u32::from_be_bytes([
-            data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7],
-        ]);
-        Some(Self { port_chirho, addr_chirho })
-    }
-
-    /// Write into user-space sockaddr_in layout (16 bytes).
-    pub fn to_user_bytes_chirho(&self, family_chirho: u16) -> [u8; 16] {
-        let mut buf_chirho = [0u8; 16];
-        let fam_bytes_chirho = family_chirho.to_le_bytes();
-        buf_chirho[0] = fam_bytes_chirho[0];
-        buf_chirho[1] = fam_bytes_chirho[1];
-        let port_bytes_chirho = self.port_chirho.to_be_bytes();
-        buf_chirho[2] = port_bytes_chirho[0];
-        buf_chirho[3] = port_bytes_chirho[1];
-        let addr_bytes_chirho = self.addr_chirho.to_be_bytes();
-        buf_chirho[4] = addr_bytes_chirho[0];
-        buf_chirho[5] = addr_bytes_chirho[1];
-        buf_chirho[6] = addr_bytes_chirho[2];
-        buf_chirho[7] = addr_bytes_chirho[3];
-        buf_chirho
-    }
-}
+// AF constants, AddressFamilyChirho, SocketTypeChirho, SocketStateChirho,
+// SockAddrInChirho — now in net_types_chirho.rs (A2-AUDIT-006)
 
 // ============================================================================
 // SocketChirho struct (enhanced for A3-002/A3-003)
@@ -2296,8 +1990,11 @@ fn make_socket_inode_chirho(socket_idx_chirho: usize) -> Arc<Mutex<InodeChirho>>
     }))
 }
 
-/// Create a FileChirho for a socket and register it in the global fd table.
+/// Create a FileChirho for a socket and register it in the current task's
+/// per-process fd table (with global fallback).
 /// Returns the fd number on success.
+///
+/// A2-PROC-003: Uses alloc_and_insert_fd_chirho for per-process tables.
 fn register_socket_fd_chirho(socket_idx_chirho: usize) -> Result<i64, i64> {
     let inode_chirho = make_socket_inode_chirho(socket_idx_chirho);
     let file_chirho = Arc::new(Mutex::new(FileChirho {
@@ -2307,15 +2004,12 @@ fn register_socket_fd_chirho(socket_idx_chirho: usize) -> Result<i64, i64> {
         ops_chirho: &SOCKET_FILE_OPS_CHIRHO,
     }));
 
-    let mut fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-    let fd_table_chirho = match fd_table_guard_chirho.as_mut() {
-        Some(t_chirho) => t_chirho,
-        None => return Err(-EBADF_CHIRHO),
-    };
-
-    let fd_chirho = fd_table_chirho.alloc_fd_chirho().map_err(|e_chirho| e_chirho)?;
-    fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
-    Ok(fd_chirho as i64)
+    let fd_chirho = crate::fs_chirho::alloc_and_insert_fd_chirho(file_chirho, None);
+    if fd_chirho < 0 {
+        Err(fd_chirho)
+    } else {
+        Ok(fd_chirho)
+    }
 }
 
 /// Look up the socket table index from an fd by reading inode_chirho.ino_chirho.
@@ -2354,39 +2048,19 @@ pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
     }
 }
 
+/// A2-PROC-003: Uses lookup_fd_chirho (per-process first, then global).
 fn socket_idx_from_fd_chirho(fd_chirho: u64) -> Result<usize, i64> {
-    // Try the global fd table first (most common path).
-    let fd_table_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-    if let Some(ref fd_table_chirho) = *fd_table_guard_chirho {
-        if let Some(file_arc_chirho) = fd_table_chirho.get_chirho(fd_chirho as usize) {
-            let file_guard_chirho = file_arc_chirho.lock();
-            let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
-            if inode_guard_chirho.mode_chirho & 0o170000 == 0o140000 {
-                return Ok(inode_guard_chirho.ino_chirho as usize);
-            }
-            return Err(-ENOTSOCK_CHIRHO);
-        }
+    let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        Some(f_chirho) => f_chirho,
+        None => return Err(-EBADF_CHIRHO),
+    };
+    let file_guard_chirho = file_arc_chirho.lock();
+    let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+    if inode_guard_chirho.mode_chirho & 0o170000 == 0o140000 {
+        Ok(inode_guard_chirho.ino_chirho as usize)
+    } else {
+        Err(-ENOTSOCK_CHIRHO)
     }
-    drop(fd_table_guard_chirho);
-
-    // Fallback: check the current task's per-process fd table.
-    // This handles the case where the global table was swapped
-    // during a context switch and doesn't have this fd.
-    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-        let task_guard_chirho = task_arc_chirho.lock();
-        if let Some(ref fd_table_chirho) = task_guard_chirho.fd_table_chirho {
-            if let Some(file_arc_chirho) = fd_table_chirho.get_chirho(fd_chirho as usize) {
-                let file_guard_chirho = file_arc_chirho.lock();
-                let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
-                if inode_guard_chirho.mode_chirho & 0o170000 == 0o140000 {
-                    return Ok(inode_guard_chirho.ino_chirho as usize);
-                }
-                return Err(-ENOTSOCK_CHIRHO);
-            }
-        }
-    }
-
-    Err(-EBADF_CHIRHO)
 }
 
 /// Read a sockaddr_in from user-space memory, safely.
@@ -5079,16 +4753,20 @@ fn parse_dhcp_options_chirho(
 }
 
 /// DHCP result containing the assigned network configuration.
+///
+/// Uses `Ipv4AddrChirho` newtypes for all address fields (audit A2-AUDIT-007).
+/// The inner `u32` is still accessible via `.0` for callers that need raw
+/// values (e.g. the routing table, interface configuration).
 #[derive(Debug, Clone)]
 pub struct DhcpResultChirho {
     /// Assigned IP address.
-    pub ip_chirho: u32,
+    pub ip_chirho: Ipv4AddrChirho,
     /// Subnet mask.
-    pub subnet_chirho: u32,
+    pub subnet_chirho: Ipv4AddrChirho,
     /// Default gateway.
-    pub gateway_chirho: u32,
+    pub gateway_chirho: Ipv4AddrChirho,
     /// DNS server.
-    pub dns_chirho: u32,
+    pub dns_chirho: Ipv4AddrChirho,
 }
 
 /// Run the DHCP client on the given interface index.
@@ -5392,10 +5070,10 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
     );
 
     Some(DhcpResultChirho {
-        ip_chirho: offer_ip_chirho,
-        subnet_chirho: offer_subnet_chirho,
-        gateway_chirho: offer_gw_chirho,
-        dns_chirho: offer_dns_chirho,
+        ip_chirho: Ipv4AddrChirho(offer_ip_chirho),
+        subnet_chirho: Ipv4AddrChirho(offer_subnet_chirho),
+        gateway_chirho: Ipv4AddrChirho(offer_gw_chirho),
+        dns_chirho: Ipv4AddrChirho(offer_dns_chirho),
     })
 }
 

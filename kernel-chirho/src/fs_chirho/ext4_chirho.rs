@@ -1775,7 +1775,7 @@ impl Ext4MountChirho {
         &self,
         ino_chirho: u32,
         data_chirho: &[u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Ext4ErrorChirho> {
         // NOTE: read-only guard now lives in write_block_chirho via
         // mode_chirho == MountModeChirho::ReadOnlyChirho check.
 
@@ -1797,7 +1797,7 @@ impl Ext4MountChirho {
             }
             let bitmap_block_chirho = gd_chirho.block_bitmap_chirho(has_64bit_chirho);
             let mut bitmap_chirho = self.read_block_cached_chirho(bitmap_block_chirho)
-                .ok_or("failed to read block bitmap")?;
+                .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
 
             let group_idx_chirho = (&self.group_descs_chirho as *const Vec<Ext4GroupDescChirho>).cast::<()>();
             let _ = group_idx_chirho; // prevent unused warning
@@ -1812,12 +1812,11 @@ impl Ext4MountChirho {
                 }
             }
 
-            self.write_block_chirho(bitmap_block_chirho, &bitmap_chirho)
-                .map_err(|_| "block bitmap write failed")?;
+            self.write_block_chirho(bitmap_block_chirho, &bitmap_chirho)?;
         }
 
         if allocated_blocks_chirho.len() < blocks_needed_chirho {
-            return Err("not enough free blocks");
+            return Err(Ext4ErrorChirho::NoSpaceChirho);
         }
 
         // Write data to allocated blocks.
@@ -1826,13 +1825,12 @@ impl Ext4MountChirho {
             let end_chirho = core::cmp::min(start_chirho + bs_chirho, data_chirho.len());
             let mut block_buf_chirho = alloc::vec![0u8; bs_chirho];
             block_buf_chirho[..end_chirho - start_chirho].copy_from_slice(&data_chirho[start_chirho..end_chirho]);
-            self.write_block_chirho(blk_chirho, &block_buf_chirho)
-                .map_err(|_| "data block write failed")?;
+            self.write_block_chirho(blk_chirho, &block_buf_chirho)?;
         }
 
         // Update the inode with the new size and extent info.
         let mut inode_chirho = self.read_inode_chirho(ino_chirho)
-            .ok_or("failed to read inode for update")?;
+            .ok_or(Ext4ErrorChirho::CorruptInodeChirho)?;
 
         inode_chirho.i_size_lo_chirho = data_chirho.len() as u32;
         inode_chirho.i_size_high_chirho = (data_chirho.len() as u64 >> 32) as u32;
@@ -1852,8 +1850,7 @@ impl Ext4MountChirho {
             inode_chirho.i_block_chirho[5] = first_phys_chirho as u32;
         }
 
-        self.write_inode_chirho(ino_chirho, &inode_chirho)
-            .map_err(|_| "inode write failed")?;
+        self.write_inode_chirho(ino_chirho, &inode_chirho)?;
 
         crate::serial_println_chirho!(
             "[EXT4] Wrote {} bytes to inode {} ({} blocks)",
@@ -1867,12 +1864,12 @@ impl Ext4MountChirho {
     ///
     /// Frees all data blocks and resets the inode size and extent tree.
     #[allow(dead_code)]
-    pub fn truncate_file_chirho(&self, ino_chirho: u32) -> Result<(), &'static str> {
+    pub fn truncate_file_chirho(&self, ino_chirho: u32) -> Result<(), Ext4ErrorChirho> {
         // NOTE: read-only guard now lives in write_block_chirho via
         // mode_chirho == MountModeChirho::ReadOnlyChirho check.
 
         let mut inode_chirho = self.read_inode_chirho(ino_chirho)
-            .ok_or("failed to read inode")?;
+            .ok_or(Ext4ErrorChirho::CorruptInodeChirho)?;
 
         // Zero out size and blocks.
         inode_chirho.i_size_lo_chirho = 0;
@@ -1884,8 +1881,7 @@ impl Ext4MountChirho {
         inode_chirho.i_block_chirho[1] = 4 | (0u32 << 16);
         inode_chirho.i_block_chirho[2] = 0;
 
-        self.write_inode_chirho(ino_chirho, &inode_chirho)
-            .map_err(|_| "inode write failed in truncate")?;
+        self.write_inode_chirho(ino_chirho, &inode_chirho)?;
 
         crate::serial_println_chirho!("[EXT4] Truncated inode {}", ino_chirho);
         Ok(())
@@ -2014,9 +2010,9 @@ impl JournalChirho {
     /// 3. Write a commit record.
     /// 4. Write metadata blocks to their final locations.
     #[allow(dead_code)]
-    pub fn commit_transaction_chirho(&mut self) -> Result<(), &'static str> {
+    pub fn commit_transaction_chirho(&mut self) -> Result<(), Ext4ErrorChirho> {
         let txn_chirho = self.current_transaction_chirho.take()
-            .ok_or("no active transaction")?;
+            .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
 
         crate::serial_println_chirho!(
             "[JBD2] Committing transaction {} ({} metadata blocks)",
@@ -2045,7 +2041,7 @@ impl JournalChirho {
     /// Reads committed transactions from the journal and replays their
     /// metadata blocks to their final locations.
     #[allow(dead_code)]
-    pub fn replay_journal_chirho(&mut self) -> Result<u32, &'static str> {
+    pub fn replay_journal_chirho(&mut self) -> Result<u32, Ext4ErrorChirho> {
         crate::serial_println_chirho!("[JBD2] Replaying journal (inode {})...", self.journal_ino_chirho);
 
         // In a real implementation:
@@ -2077,12 +2073,12 @@ impl JournalChirho {
 /// * `device_id_chirho` — block device ID in the registry.
 /// * `partition_start_chirho` — starting sector of the ext4 partition.
 ///
-/// Returns an `Ext4MountChirho` on success, or an error string on failure.
+/// Returns an `Ext4MountChirho` on success, or a typed `Ext4ErrorChirho` on failure.
 #[allow(dead_code)]
 pub fn mount_root_ext4_chirho(
     device_id_chirho: u32,
     partition_start_chirho: u64,
-) -> Result<Ext4MountChirho, &'static str> {
+) -> Result<Ext4MountChirho, Ext4ErrorChirho> {
     crate::serial_println_chirho!(
         "[EXT4] Mounting root filesystem: device={}, partition_start={}",
         device_id_chirho, partition_start_chirho
@@ -2101,11 +2097,11 @@ pub fn mount_root_ext4_chirho(
                 sb_sector_chirho + i_chirho,
                 &mut sb_data_chirho[(i_chirho as usize * 512)..((i_chirho as usize + 1) * 512)],
             )
-            .map_err(|_| "failed to read superblock sectors")?;
+            .map_err(|_| Ext4ErrorChirho::IoErrorChirho)?;
     }
 
     let sb_chirho = parse_superblock_chirho(&sb_data_chirho)
-        .ok_or("invalid ext4 superblock (bad magic)")?;
+        .ok_or(Ext4ErrorChirho::CorruptSuperblockChirho)?;
 
     let block_size_chirho = sb_chirho.block_size_chirho();
     let bg_count_chirho = sb_chirho.block_group_count_chirho();
@@ -2138,7 +2134,7 @@ pub fn mount_root_ext4_chirho(
                     start_sec_chirho + s_chirho,
                     &mut buf_chirho[off_chirho..off_chirho + 512],
                 )
-                .map_err(|_| "failed to read GDT")?;
+                .map_err(|_| Ext4ErrorChirho::IoErrorChirho)?;
         }
         gdt_data_chirho.extend_from_slice(&buf_chirho);
     }
@@ -2302,7 +2298,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
         inode_chirho: &crate::vfs_chirho::InodeChirho,
     ) -> Result<String, i64> {
         // Check if symlink mode
-        if inode_chirho.mode_chirho & 0xF000 != 0xA000 {
+        if !crate::vfs_chirho::is_symlink_chirho(inode_chirho.mode_chirho) {
             return Err(-22); // EINVAL — not a symlink
         }
         // For inline symlinks (target stored in fs_data), extract it.
