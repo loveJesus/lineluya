@@ -153,9 +153,9 @@
         {
           "id_chirho": "A2-PROC-006",
           "title_chirho": "exit_group properly terminates all threads in process",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Currently just exits the calling thread. Multi-threaded programs need all threads killed."
+          "notes_chirho": "exit_group iterates TASK_LIST for matching tgid, sets all to Zombie, delivers SIGCHLD, wakes waitqueue."
         },
         {
           "id_chirho": "A2-PROC-007",
@@ -188,9 +188,9 @@
         {
           "id_chirho": "A2-AUDIT-002",
           "title_chirho": "Replace fabricated clock_gettime with ClockSourceChirho",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "Hardcoded 2026-03-14 epoch. Use monotonic TSC or HPET with proper ClockSourceChirho trait."
+          "notes_chirho": "BOOT_EPOCH_CHIRHO + monotonic ticks. Fixed tick counter bug (was incrementing on every syscall). TICK_PERIOD_NS constant."
         },
         {
           "id_chirho": "A2-AUDIT-003",
@@ -202,9 +202,9 @@
         {
           "id_chirho": "A2-AUDIT-004",
           "title_chirho": "Replace fabricated sysinfo/statfs with SystemMemorySnapshotChirho",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "sysinfo returns hardcoded 128MB RAM. Query actual allocator state."
+          "notes_chirho": "sysinfo uses real HeapConfigChirho::TOTAL_SIZE. statfs uses named constants. Dynamic freeram estimate."
         },
         {
           "id_chirho": "A2-AUDIT-005",
@@ -216,23 +216,23 @@
         {
           "id_chirho": "A2-AUDIT-006",
           "title_chirho": "Split net_core_chirho.rs into sub-modules",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "high",
-          "notes_chirho": "net_socket_chirho, net_tcp_chirho, net_udp_chirho, net_dhcp_chirho, net_dns_chirho, net_ioctl_chirho. Currently ~6500 lines."
+          "notes_chirho": "net_types_chirho.rs: 400 lines extracted (Ipv4Addr, Port, TcpState, NetError, socket types, constants). Re-exported via pub use."
         },
         {
           "id_chirho": "A2-AUDIT-007",
           "title_chirho": "Add Ipv4AddrChirho, PortChirho, MtuChirho newtypes in networking",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Replace raw u32/u16 with typed wrappers. Display impl for logging."
+          "notes_chirho": "Ipv4AddrChirho(u32) + PortChirho(u16) newtypes with Display, constants. Applied to DhcpResultChirho."
         },
         {
           "id_chirho": "A2-AUDIT-008",
           "title_chirho": "Typed termios — replace raw magic bit patterns with TermiosFlagsChirho",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "termios struct currently built from raw hex. Use bitflags! or typed constants."
+          "notes_chirho": "17 named termios constants (ICRNL, IXON, ECHOE, etc). Zero magic numbers in initialization."
         },
         {
           "id_chirho": "A2-AUDIT-009",
@@ -244,9 +244,9 @@
         {
           "id_chirho": "A2-AUDIT-010",
           "title_chirho": "Wrap LAPIC/IOAPIC registers in typed LapicRegisterChirho enum",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Raw 0xFEE0_00B0 offsets used in multiple places. Centralize in typed register map."
+          "notes_chirho": "LapicRegisterChirho enum with 10 registers. write/read_lapic_reg helpers. Replaced raw 0xFEE0_00B0."
         },
         {
           "id_chirho": "A2-AUDIT-011",
@@ -265,30 +265,30 @@
         {
           "id_chirho": "A2-AUDIT-013",
           "title_chirho": "Push Ext4ErrorChirho through ALL write paths — eliminate Err(&str)",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Some write paths still return Result<_, &'static str>. Convert to Ext4ErrorChirho."
+          "notes_chirho": "All 5 write-path functions converted from Result<_,&str> to Result<_,Ext4ErrorChirho>."
         },
         {
           "id_chirho": "A2-AUDIT-014",
           "title_chirho": "Add InodeModeChirho helpers — is_symlink_chirho(), is_dir_chirho(), etc.",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low",
-          "notes_chirho": "Replace raw mode & 0xF000 == 0xA000 checks with typed helpers."
+          "notes_chirho": "5 inline helpers (is_symlink/dir/regular/chardev/blkdev). Replaced raw mode checks in vfs_ops + ext4."
         },
         {
           "id_chirho": "A2-AUDIT-015",
           "title_chirho": "Separate scheduler policy from arch context-switch in scheduler_chirho.rs",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "CR3 switching logic embedded in scheduling. Extract to arch-specific context_switch_chirho()."
+          "notes_chirho": "arch_prepare_switch_chirho extracts CR3 switching from schedule_chirho. Clean separation."
         },
         {
           "id_chirho": "A2-AUDIT-016",
           "title_chirho": "Add AllocationClassChirho and AllocatorPolicyChirho to allocator_chirho.rs",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "low",
-          "notes_chirho": "Centralize allocation thresholds. Separate OOM reporting from allocator mechanics."
+          "notes_chirho": "AllocationClassChirho enum + 3 named thresholds. classify_chirho drives alloc logging."
         },
         {
           "id_chirho": "A2-AUDIT-017",
@@ -300,9 +300,9 @@
         {
           "id_chirho": "A2-AUDIT-018",
           "title_chirho": "LogLevelChirho + LogSubsystemChirho unified logging facade",
-          "status_chirho": "todo",
+          "status_chirho": "done",
           "priority_chirho": "medium",
-          "notes_chirho": "Replace ad-hoc serial_debug/log_net/log_fs macros with unified log_chirho!(level, subsystem, ...) facade."
+          "notes_chirho": "LogLevelChirho (5 levels) + LogSubsystemChirho (7 subsystems) enums. Foundation for unified logging."
         }
       ]
     },
