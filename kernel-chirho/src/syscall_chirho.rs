@@ -1431,6 +1431,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     }
                 };
                 if redirected_chirho {
+                    crate::serial_println_chirho!(
+                        "[WRITE] fd={} REDIRECTED (pid={}, {} bytes)",
+                        arg0_chirho,
+                        crate::task_chirho::current_task_chirho()
+                            .map(|t| t.lock().pid_chirho).unwrap_or(999),
+                        arg2_chirho
+                    );
                     crate::fs_chirho::sys_write_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
                 } else {
                     sys_write_chirho(arg0_chirho, arg1_chirho as *const u8, arg2_chirho as usize)

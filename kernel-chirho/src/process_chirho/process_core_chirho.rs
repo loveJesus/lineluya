@@ -837,12 +837,34 @@ pub fn sys_execve_chirho(
     // -----------------------------------------------------------------------
     // Step 4: Obtain the ELF binary data
     // -----------------------------------------------------------------------
+    // Handle /proc/self/fd/N — resolve to the actual file that fd N points to.
+    // Dropbear uses this for re-exec: execve("/proc/self/fd/5", ...).
+    let resolved_filename_chirho = if filename_str_chirho.starts_with("/proc/self/fd/") {
+        let fd_str_chirho = &filename_str_chirho["/proc/self/fd/".len()..];
+        if let Ok(fd_num_chirho) = fd_str_chirho.parse::<u64>() {
+            // Look up the fd's path in the current task's fd table
+            if let Some(path_chirho) = crate::fs_chirho::get_fd_path_chirho(fd_num_chirho) {
+                crate::serial_println_chirho!(
+                    "[PROCESS] execve: resolved /proc/self/fd/{} -> '{}'",
+                    fd_num_chirho, path_chirho
+                );
+                path_chirho
+            } else {
+                filename_str_chirho.clone()
+            }
+        } else {
+            filename_str_chirho.clone()
+        }
+    } else {
+        filename_str_chirho.clone()
+    };
+
     // Try to resolve the file via the VFS first. If that fails, fall back to
     // the embedded hello-chirho binary (useful for early testing before the
     // filesystem has real binaries).
     // Read the ELF into a Vec — we'll drop it after mapping into user pages.
     // Previously this was leaked (Vec::leak), wasting heap on every execve.
-    let elf_data_owned_chirho: Option<Vec<u8>> = try_read_file_chirho(&filename_str_chirho);
+    let elf_data_owned_chirho: Option<Vec<u8>> = try_read_file_chirho(&resolved_filename_chirho);
     let elf_data_chirho: &[u8] = match &elf_data_owned_chirho {
         Some(data_chirho) => {
             crate::serial_println_chirho!(
