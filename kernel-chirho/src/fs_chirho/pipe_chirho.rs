@@ -372,6 +372,14 @@ fn pipe_common_chirho(fds_ptr_chirho: u64) -> i64 {
     let (read_file_chirho, write_file_chirho) = create_pipe_chirho();
 
     // 2. Install into the current task's fd table (with global fallback).
+    let fd0_before_chirho = crate::fs_chirho::lookup_fd_chirho(0).is_some();
+    let pid_pipe_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+    if pid_pipe_chirho >= 3 {
+        crate::serial_println_chirho!(
+            "[PIPE] pid={} pipe() fd0_before={}", pid_pipe_chirho, fd0_before_chirho
+        );
+    }
     let read_fd_chirho = crate::fs_chirho::alloc_and_insert_fd_chirho(read_file_chirho, None);
     if read_fd_chirho < 0 {
         return read_fd_chirho;
