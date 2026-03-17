@@ -373,7 +373,9 @@ pub fn schedule_chirho() {
                     let new_rip_chirho = (*new_ctx_ptr_chirho).rip_chirho;
                     let new_rsp_chirho = (*new_ctx_ptr_chirho).rsp_chirho;
                     // Verify new RIP is in kernel code range (0x10000...)
-                    if new_rip_chirho < 0x1000_0000_0000 || new_rip_chirho > 0x2000_0000_0000 {
+                    // Kernel code is around 0x10000xxxxxx (~64GB virtual).
+                    // Stack/heap is around 0x4444xxxxxxxx or 0x4666xxxxxxxx.
+                    if new_rip_chirho < 0x1000_0000_000 || new_rip_chirho > 0x2000_0000_000 {
                         crate::serial_println_chirho!(
                             "[SCHED] ABORT switch {:?}->{}: BAD rip={:#x} rsp={:#x}",
                             old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho
