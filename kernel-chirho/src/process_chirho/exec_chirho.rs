@@ -1229,15 +1229,10 @@ pub fn exec_init_chirho() {
     // BusyBox uses argv[0] to determine which applet to run.
     // Pass "sh" so it launches the ash shell.
     let argv_chirho = if elf_data_chirho.len() > 100_000 {
-        // BusyBox — launch shell that starts dropbear in background.
-        // Dropbear daemonizes itself (forks, parent exits, child continues).
-        // After PID 2 (dropbear parent) exits, PID 0 (shell) returns from
-        // wait4 and enters interactive stdin loop. PID 3 (dropbear daemon)
-        // runs via preemptive scheduling / stdin yield.
+        // BusyBox — launch interactive shell.
+        // Dropbear SSH is started via /etc/profile or manually.
         alloc::vec![
             alloc::string::String::from("/bin/sh"),
-            alloc::string::String::from("-c"),
-            alloc::string::String::from("/usr/sbin/dropbear -p 2222 -B -R"),
         ]
     } else {
         alloc::vec![
