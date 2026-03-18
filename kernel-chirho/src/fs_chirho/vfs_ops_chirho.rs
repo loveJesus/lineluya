@@ -1314,6 +1314,56 @@ pub fn lookup_fd_chirho(fd_chirho: u64) -> Option<alloc::sync::Arc<spin::Mutex<F
     None
 }
 
+/// Set or clear `FD_CLOEXEC` on a descriptor in the current task table.
+///
+/// Mirrors the state into the global compatibility table when present.
+pub fn set_fd_cloexec_chirho(fd_chirho: u64, enabled_chirho: bool) -> i64 {
+    let fd_usize_chirho = fd_chirho as usize;
+    let mut updated_task_chirho = false;
+
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            match fd_table_chirho.set_cloexec_chirho(fd_usize_chirho, enabled_chirho) {
+                Ok(()) => updated_task_chirho = true,
+                Err(errno_chirho) => return errno_chirho,
+            }
+        }
+    }
+
+    let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    if let Some(ref mut global_table_chirho) = *global_guard_chirho {
+        if global_table_chirho.get_chirho(fd_usize_chirho).is_some() {
+            let _ = global_table_chirho.set_cloexec_chirho(fd_usize_chirho, enabled_chirho);
+        }
+    }
+
+    if updated_task_chirho || global_guard_chirho.is_some() {
+        0
+    } else {
+        -EBADF_CHIRHO
+    }
+}
+
+/// Return the `FD_CLOEXEC` bit for a descriptor.
+pub fn get_fd_cloexec_chirho(fd_chirho: u64) -> Result<bool, i64> {
+    let fd_usize_chirho = fd_chirho as usize;
+
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            return fd_table_chirho.get_cloexec_chirho(fd_usize_chirho);
+        }
+    }
+
+    let global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    if let Some(ref global_table_chirho) = *global_guard_chirho {
+        return global_table_chirho.get_cloexec_chirho(fd_usize_chirho);
+    }
+
+    Err(EBADF_CHIRHO)
+}
+
 /// Allocate the lowest available fd and insert a file into the current
 /// task's fd table.  Falls back to the global table if no per-process
 /// table is available.
@@ -1327,6 +1377,11 @@ pub fn alloc_and_insert_fd_chirho(
     file_chirho: alloc::sync::Arc<spin::Mutex<FileChirho>>,
     path_chirho: Option<&str>,
 ) -> i64 {
+    let initial_cloexec_chirho = {
+        let file_guard_chirho = file_chirho.lock();
+        (file_guard_chirho.flags_chirho & crate::vfs_chirho::O_CLOEXEC_CHIRHO) != 0
+    };
+
     // Try inserting into current task's per-process table first.
     // Drop the task lock before taking the GLOBAL lock to avoid deadlock.
     let task_result_chirho: Option<usize> = if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
@@ -1337,6 +1392,9 @@ pub fn alloc_and_insert_fd_chirho(
                 Err(errno_chirho) => return errno_chirho,
             };
             fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho.clone());
+            if fd_chirho < fd_table_chirho.cloexec_chirho.len() {
+                fd_table_chirho.cloexec_chirho[fd_chirho] = initial_cloexec_chirho;
+            }
             if let Some(p_chirho) = path_chirho {
                 if fd_chirho < fd_table_chirho.paths_chirho.len() {
                     fd_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
@@ -1358,6 +1416,9 @@ pub fn alloc_and_insert_fd_chirho(
             if fd_chirho < global_table_chirho.fds_chirho.len() {
                 global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
             }
+            if fd_chirho < global_table_chirho.cloexec_chirho.len() {
+                global_table_chirho.cloexec_chirho[fd_chirho] = initial_cloexec_chirho;
+            }
             if let Some(p_chirho) = path_chirho {
                 if fd_chirho < global_table_chirho.paths_chirho.len() {
                     global_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
@@ -1378,6 +1439,9 @@ pub fn alloc_and_insert_fd_chirho(
         Err(errno_chirho) => return errno_chirho,
     };
     fd_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+    if fd_chirho < fd_table_chirho.cloexec_chirho.len() {
+        fd_table_chirho.cloexec_chirho[fd_chirho] = initial_cloexec_chirho;
+    }
     if let Some(p_chirho) = path_chirho {
         if fd_chirho < fd_table_chirho.paths_chirho.len() {
             fd_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
@@ -1453,6 +1517,15 @@ pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 
                     return -EBADF_CHIRHO;
                 }
                 fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho.clone());
+                if new_chirho < fd_table_chirho.paths_chirho.len()
+                    && old_chirho < fd_table_chirho.paths_chirho.len()
+                {
+                    fd_table_chirho.paths_chirho[new_chirho] =
+                        fd_table_chirho.paths_chirho[old_chirho].clone();
+                }
+                if new_chirho < fd_table_chirho.cloexec_chirho.len() {
+                    fd_table_chirho.cloexec_chirho[new_chirho] = false;
+                }
                 Some(Ok((new_chirho, file_chirho)))
             } else {
                 None
@@ -1468,6 +1541,9 @@ pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 
         if let Some(ref mut global_table_chirho) = *global_guard_chirho {
             if fd_chirho < global_table_chirho.fds_chirho.len() {
                 global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+            }
+            if fd_chirho < global_table_chirho.cloexec_chirho.len() {
+                global_table_chirho.cloexec_chirho[fd_chirho] = false;
             }
         }
         return fd_chirho as i64;
@@ -1493,6 +1569,9 @@ pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 
         return -EBADF_CHIRHO;
     }
     fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
+    if new_chirho < fd_table_chirho.cloexec_chirho.len() {
+        fd_table_chirho.cloexec_chirho[new_chirho] = false;
+    }
     new_chirho as i64
 }
 
@@ -1634,8 +1713,9 @@ pub fn sys_dup_chirho(oldfd_chirho: u64) -> i64 {
         Some(f_chirho) => f_chirho,
         None => return -EBADF_CHIRHO,
     };
+    let path_chirho = get_fd_path_chirho(oldfd_chirho);
     // Allocate new fd via per-process helper.
-    alloc_and_insert_fd_chirho(file_chirho, None)
+    alloc_and_insert_fd_chirho(file_chirho, path_chirho.as_deref())
 }
 
 /// `dup2(2)` -- duplicate a file descriptor to a specific number.
@@ -1663,12 +1743,19 @@ pub fn sys_dup3_chirho(oldfd_chirho: u64, newfd_chirho: u64, flags_chirho: u32) 
         return -EINVAL_CHIRHO;
     }
 
-    // Note: O_CLOEXEC flag (flags_chirho) is accepted but not yet enforced
-    // until execve implements close-on-exec descriptor cleanup.
-    let _ = flags_chirho;
-
     // Reuse dup2 logic for the actual duplication.
-    dup2_in_current_task_chirho(oldfd_chirho, newfd_chirho)
+    let duplicated_fd_chirho = dup2_in_current_task_chirho(oldfd_chirho, newfd_chirho);
+    if duplicated_fd_chirho < 0 {
+        return duplicated_fd_chirho;
+    }
+
+    let set_cloexec_chirho = (flags_chirho & crate::vfs_chirho::O_CLOEXEC_CHIRHO) != 0;
+    let cloexec_result_chirho = set_fd_cloexec_chirho(newfd_chirho, set_cloexec_chirho);
+    if cloexec_result_chirho < 0 {
+        return cloexec_result_chirho;
+    }
+
+    duplicated_fd_chirho
 }
 
 /// `lseek(2)` -- reposition read/write file offset.

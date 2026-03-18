@@ -385,9 +385,15 @@ pub fn create_pipe_chirho() -> (Arc<Mutex<FileChirho>>, Arc<Mutex<FileChirho>>) 
 /// user-space `int[2]` array at `fds_ptr_chirho`.
 ///
 /// A2-PROC-003: Uses alloc_and_insert_fd_chirho for per-process tables.
-fn pipe_common_chirho(fds_ptr_chirho: u64) -> i64 {
+fn pipe_common_chirho(fds_ptr_chirho: u64, flags_chirho: u32) -> i64 {
     // 1. Create the pipe (read_end, write_end).
     let (read_file_chirho, write_file_chirho) = create_pipe_chirho();
+    let inherited_flags_chirho =
+        flags_chirho & (crate::vfs_chirho::O_NONBLOCK_CHIRHO | crate::vfs_chirho::O_CLOEXEC_CHIRHO);
+    if inherited_flags_chirho != 0 {
+        read_file_chirho.lock().flags_chirho |= inherited_flags_chirho;
+        write_file_chirho.lock().flags_chirho |= inherited_flags_chirho;
+    }
 
     // 2. Install into the current task's fd table (with global fallback).
     let fd0_before_chirho = crate::fs_chirho::lookup_fd_chirho(0).is_some();
@@ -450,7 +456,7 @@ pub fn sys_pipe_chirho(fds_ptr_chirho: u64) -> i64 {
     }
 
     crate::serial_debug_chirho!("[PIPE] sys_pipe called (fds_ptr={:#x})", fds_ptr_chirho);
-    pipe_common_chirho(fds_ptr_chirho)
+    pipe_common_chirho(fds_ptr_chirho, 0)
 }
 
 /// `pipe2(int pipefd[2], int flags)` — create a pipe with flags.
@@ -469,6 +475,5 @@ pub fn sys_pipe2_chirho(fds_ptr_chirho: u64, flags_chirho: u32) -> i64 {
     );
 
     // Flags (O_CLOEXEC, O_NONBLOCK) are accepted but not enforced yet.
-    let _ = flags_chirho;
-    pipe_common_chirho(fds_ptr_chirho)
+    pipe_common_chirho(fds_ptr_chirho, flags_chirho)
 }

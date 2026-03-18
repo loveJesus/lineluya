@@ -318,6 +318,8 @@ pub struct FdTableChirho {
     pub fds_chirho: Vec<Option<Arc<Mutex<FileChirho>>>>,
     /// Path associated with each fd (for openat dirfd resolution).
     pub paths_chirho: Vec<Option<alloc::string::String>>,
+    /// Per-fd close-on-exec state (`FD_CLOEXEC`).
+    pub cloexec_chirho: Vec<bool>,
 }
 
 /// Linux errno: bad file descriptor.
@@ -333,7 +335,9 @@ impl FdTableChirho {
         fds_chirho.resize_with(capacity_chirho, || None);
         let mut paths_chirho = Vec::with_capacity(capacity_chirho);
         paths_chirho.resize_with(capacity_chirho, || None);
-        Self { fds_chirho, paths_chirho }
+        let mut cloexec_chirho = Vec::with_capacity(capacity_chirho);
+        cloexec_chirho.resize(capacity_chirho, false);
+        Self { fds_chirho, paths_chirho, cloexec_chirho }
     }
 
     /// Allocate the lowest available file descriptor, returning its index.
@@ -358,6 +362,12 @@ impl FdTableChirho {
         match self.fds_chirho.get_mut(fd_chirho) {
             Some(slot_chirho @ Some(_)) => {
                 *slot_chirho = None;
+                if fd_chirho < self.paths_chirho.len() {
+                    self.paths_chirho[fd_chirho] = None;
+                }
+                if fd_chirho < self.cloexec_chirho.len() {
+                    self.cloexec_chirho[fd_chirho] = false;
+                }
                 Ok(())
             }
             _ => Err(EBADF_CHIRHO),
@@ -369,7 +379,61 @@ impl FdTableChirho {
         let file_chirho = self.get_chirho(old_fd_chirho).ok_or(EBADF_CHIRHO)?;
         let new_fd_chirho = self.alloc_fd_chirho()?;
         self.fds_chirho[new_fd_chirho] = Some(file_chirho);
+        if new_fd_chirho < self.paths_chirho.len() && old_fd_chirho < self.paths_chirho.len() {
+            self.paths_chirho[new_fd_chirho] = self.paths_chirho[old_fd_chirho].clone();
+        }
+        if new_fd_chirho < self.cloexec_chirho.len() {
+            self.cloexec_chirho[new_fd_chirho] = false;
+        }
         Ok(new_fd_chirho)
+    }
+
+    /// Set or clear `FD_CLOEXEC` on an open file descriptor.
+    pub fn set_cloexec_chirho(&mut self, fd_chirho: usize, enabled_chirho: bool) -> Result<(), i64> {
+        if self.get_chirho(fd_chirho).is_none() {
+            return Err(EBADF_CHIRHO);
+        }
+        if fd_chirho >= self.cloexec_chirho.len() {
+            return Err(EBADF_CHIRHO);
+        }
+        self.cloexec_chirho[fd_chirho] = enabled_chirho;
+        Ok(())
+    }
+
+    /// Return the `FD_CLOEXEC` state for an open file descriptor.
+    pub fn get_cloexec_chirho(&self, fd_chirho: usize) -> Result<bool, i64> {
+        if self.get_chirho(fd_chirho).is_none() {
+            return Err(EBADF_CHIRHO);
+        }
+        self.cloexec_chirho
+            .get(fd_chirho)
+            .copied()
+            .ok_or(EBADF_CHIRHO)
+    }
+
+    /// Drop all descriptors marked close-on-exec.
+    pub fn close_cloexec_fds_chirho(&mut self) {
+        for fd_chirho in 0..self.fds_chirho.len() {
+            if self.fds_chirho[fd_chirho].is_some()
+                && self.cloexec_chirho.get(fd_chirho).copied().unwrap_or(false)
+            {
+                self.fds_chirho[fd_chirho] = None;
+                if fd_chirho < self.paths_chirho.len() {
+                    self.paths_chirho[fd_chirho] = None;
+                }
+                if fd_chirho < self.cloexec_chirho.len() {
+                    self.cloexec_chirho[fd_chirho] = false;
+                }
+            }
+        }
+    }
+
+    /// Return the lowest available descriptor slot.
+    pub fn next_free_fd_chirho(&self) -> usize {
+        self.fds_chirho
+            .iter()
+            .position(|slot_chirho| slot_chirho.is_none())
+            .unwrap_or(self.fds_chirho.len())
     }
 
     /// Clone the entire file descriptor table.
@@ -381,6 +445,7 @@ impl FdTableChirho {
         Self {
             fds_chirho: self.fds_chirho.clone(),
             paths_chirho: self.paths_chirho.clone(),
+            cloexec_chirho: self.cloexec_chirho.clone(),
         }
     }
 }

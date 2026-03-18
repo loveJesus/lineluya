@@ -1055,6 +1055,7 @@ pub fn sys_execve_chirho(
 
             // Update /proc/self/exe path for the new executable.
             crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
+            preserve_fd_table_across_exec_chirho();
 
             crate::serial_debug_chirho!(
                 "[PROCESS] execve: ready to enter userspace (dynamic) — entry={:#x}, rsp={:#x}",
@@ -1119,6 +1120,7 @@ pub fn sys_execve_chirho(
 
     // Update /proc/self/exe path for the new executable.
     crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
+    preserve_fd_table_across_exec_chirho();
 
     crate::serial_debug_chirho!(
         "[PROCESS] execve: ready to enter userspace (static) — entry={:#x}, rsp={:#x}",
@@ -1253,6 +1255,40 @@ pub fn exec_shell_with_args_chirho(
 // ===========================================================================
 // Internal helpers
 // ===========================================================================
+
+fn preserve_fd_table_across_exec_chirho() {
+    let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(task_arc_chirho) => task_arc_chirho,
+        None => return,
+    };
+
+    let global_snapshot_chirho = {
+        let global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+        global_guard_chirho.as_ref().map(|fd_table_chirho| fd_table_chirho.clone_table_chirho())
+    };
+
+    let global_mirror_chirho = {
+        let mut task_guard_chirho = task_arc_chirho.lock();
+        if task_guard_chirho.fd_table_chirho.is_none() {
+            task_guard_chirho.fd_table_chirho = global_snapshot_chirho;
+        }
+
+        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            fd_table_chirho.close_cloexec_fds_chirho();
+            let next_fd_chirho = fd_table_chirho.next_free_fd_chirho();
+            let mirror_table_chirho = fd_table_chirho.clone_table_chirho();
+            task_guard_chirho.next_fd_chirho = next_fd_chirho;
+            Some(mirror_table_chirho)
+        } else {
+            None
+        }
+    };
+
+    if let Some(global_mirror_value_chirho) = global_mirror_chirho {
+        let mut global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+        *global_guard_chirho = Some(global_mirror_value_chirho);
+    }
+}
 
 /// Resolve an interpreter path from a PT_INTERP segment.
 ///
