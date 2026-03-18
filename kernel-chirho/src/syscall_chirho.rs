@@ -3049,6 +3049,24 @@ fn sys_ioctl_chirho(
     -ENOTTY_CHIRHO
 }
 
+const F_SETFL_MUTABLE_FLAGS_CHIRHO: u32 =
+    crate::vfs_chirho::O_APPEND_CHIRHO | crate::vfs_chirho::O_NONBLOCK_CHIRHO;
+
+fn update_file_status_flags_chirho(
+    fd_chirho: u64,
+    requested_flags_chirho: u32,
+) -> i64 {
+    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        let mut file_chirho = file_arc_chirho.lock();
+        file_chirho.flags_chirho =
+            (file_chirho.flags_chirho & !F_SETFL_MUTABLE_FLAGS_CHIRHO)
+            | (requested_flags_chirho & F_SETFL_MUTABLE_FLAGS_CHIRHO);
+        return 0;
+    }
+
+    -EBADF_CHIRHO
+}
+
 /// `ioctl(2)` real implementation (P3-016).
 ///
 /// Dispatches to VFS FileOps::ioctl where possible. Handles common terminal
@@ -3168,8 +3186,29 @@ fn sys_ioctl_real_chirho(
             0
         }
         FIONBIO_CHIRHO => {
-            // Set/clear non-blocking I/O: accept silently
-            0
+            if arg_chirho == 0 {
+                return -EFAULT_CHIRHO;
+            }
+
+            let mut nonblock_bytes_chirho = [0u8; core::mem::size_of::<i32>()];
+            let nonblock_len_chirho = nonblock_bytes_chirho.len();
+            if crate::uaccess_chirho::copy_from_user_chirho(
+                &mut nonblock_bytes_chirho,
+                arg_chirho,
+                nonblock_len_chirho,
+            ).is_err() {
+                return -EFAULT_CHIRHO;
+            }
+
+            let enable_nonblock_chirho =
+                i32::from_ne_bytes(nonblock_bytes_chirho) != 0;
+            let requested_flags_chirho = if enable_nonblock_chirho {
+                crate::vfs_chirho::O_NONBLOCK_CHIRHO
+            } else {
+                0
+            };
+
+            update_file_status_flags_chirho(fd_chirho, requested_flags_chirho)
         }
         TIOCGPGRP_CHIRHO => {
             // Return the foreground process group ID (= our PID, since we
@@ -4410,23 +4449,7 @@ fn sys_fcntl_chirho(
                 _ => 0x8000, // O_LARGEFILE default
             }
         }
-        F_SETFL_CHIRHO => {
-            // Linux only lets F_SETFL change a subset of status flags.
-            // Keep access mode and creation-time bits intact.
-            const F_SETFL_MUTABLE_FLAGS_CHIRHO: u32 =
-                crate::vfs_chirho::O_APPEND_CHIRHO | crate::vfs_chirho::O_NONBLOCK_CHIRHO;
-
-            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
-                let mut file_chirho = file_arc_chirho.lock();
-                let requested_flags_chirho = arg_chirho as u32;
-                file_chirho.flags_chirho =
-                    (file_chirho.flags_chirho & !F_SETFL_MUTABLE_FLAGS_CHIRHO)
-                    | (requested_flags_chirho & F_SETFL_MUTABLE_FLAGS_CHIRHO);
-                return 0;
-            }
-
-            -EBADF_CHIRHO
-        }
+        F_SETFL_CHIRHO => update_file_status_flags_chirho(fd_chirho, arg_chirho as u32),
         F_GETLK_CHIRHO => {
             // Advisory file locking: report "no lock held" by setting
             // l_type to F_UNLCK (2). sqlite3 uses this to probe locking.
