@@ -1977,11 +1977,42 @@ impl FileOpsChirho for SocketFileOpsChirho {
 
     fn ioctl_chirho(
         &self,
-        _file_chirho: &FileChirho,
-        _cmd_chirho: u64,
-        _arg_chirho: u64,
+        file_chirho: &FileChirho,
+        cmd_chirho: u64,
+        arg_chirho: u64,
     ) -> Result<i64, i64> {
-        Ok(0) // Stub
+        const FIONREAD_CHIRHO: u64 = 0x541B;
+
+        match cmd_chirho {
+            FIONREAD_CHIRHO => {
+                if arg_chirho == 0 {
+                    return Err(-EFAULT_CHIRHO);
+                }
+
+                let socket_idx_chirho = {
+                    let inode_guard_chirho = file_chirho.inode_chirho.lock();
+                    inode_guard_chirho.ino_chirho as usize
+                };
+                let recv_len_chirho = {
+                    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+                    let socket_chirho = table_chirho
+                        .get(socket_idx_chirho)
+                        .and_then(|slot_chirho| slot_chirho.as_ref())
+                        .ok_or(-EBADF_CHIRHO)?;
+                    core::cmp::min(socket_chirho.recv_buf_chirho.len(), i32::MAX as usize) as i32
+                };
+                let recv_len_bytes_chirho = recv_len_chirho.to_ne_bytes();
+
+                crate::uaccess_chirho::copy_to_user_chirho(
+                    arg_chirho,
+                    &recv_len_bytes_chirho,
+                    recv_len_bytes_chirho.len(),
+                )
+                .map_err(|_| -EFAULT_CHIRHO)?;
+                Ok(0)
+            }
+            _ => Err(-crate::syscall_chirho::ENOTTY_CHIRHO),
+        }
     }
 
     fn readdir_chirho(
