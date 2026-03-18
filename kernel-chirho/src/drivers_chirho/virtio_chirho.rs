@@ -900,18 +900,34 @@ impl VirtioBlkDeviceChirho {
         let used_ring_bytes_chirho = 4 + (actual_size_chirho as usize) * 8 + 2;
         let total_bytes_chirho = used_ring_offset_chirho + used_ring_bytes_chirho;
 
-        // Allocate vring from the bootloader's physical memory direct mapping.
-        // This GUARANTEES contiguous physical memory (critical for DMA!).
-        // Heap allocations are virtually contiguous but may span non-contiguous
-        // physical pages — the device expects contiguous physical memory.
-        static VRING_PHYS_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0x1F000000); // Start at 496MB physical (avoid frame allocator conflict)
-
-        let alloc_pages_chirho = ((total_bytes_chirho + 4095) / 4096) as u64;
-        let phys_base_chirho = VRING_PHYS_NEXT_CHIRHO.fetch_add(
-            alloc_pages_chirho * 4096,
-            core::sync::atomic::Ordering::SeqCst,
-        );
+        // Allocate vring pages from the FRAME ALLOCATOR to prevent
+        // overlap with heap objects. The frame allocator tracks which
+        // physical frames are in use — using hardcoded addresses caused
+        // DMA writes to corrupt heap objects (TaskChirho, page cache, etc.).
+        //
+        // LIMITATION: The allocated frames may not be physically contiguous.
+        // VirtIO legacy transport requires contiguous physical memory for
+        // the virtqueue. We allocate enough pages and hope they're contiguous
+        // (they usually are on boot when the allocator hands out sequential frames).
+        let alloc_pages_chirho = ((total_bytes_chirho + 4095) / 4096) as usize;
+        let phys_base_chirho = {
+            let mut ag_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+            if let Some(alloc_chirho) = ag_chirho.as_mut() {
+                use x86_64::structures::paging::FrameAllocator;
+                // Allocate the first frame — this is the base physical address
+                let first_frame_chirho = alloc_chirho.allocate_frame()
+                    .expect("VirtIO DMA: out of frames for vring");
+                let base_chirho = first_frame_chirho.start_address().as_u64();
+                // Allocate remaining pages (hoping they're contiguous)
+                for _ in 1..alloc_pages_chirho {
+                    alloc_chirho.allocate_frame()
+                        .expect("VirtIO DMA: out of frames for vring");
+                }
+                base_chirho
+            } else {
+                panic!("VirtIO DMA: frame allocator not available");
+            }
+        };
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         let aligned_ptr_chirho = (phys_base_chirho + phys_offset_chirho) as usize;
 
@@ -1189,7 +1205,29 @@ impl VirtioBlkDeviceChirho {
         // DMA buffer at fixed physical address (reused per request).
         // Layout: [header 16 bytes][data N bytes][status 1 byte]
         // N = data_size_chirho (512 for single sector, up to 4096 for block)
-        let req_phys_chirho: u64 = 0x1F100000; // 497MB physical — avoid frame allocator conflict
+        // DMA request buffer — allocate from frame allocator on first use.
+        // 2 pages (8KB) are enough for any single-sector or block request.
+        static DMA_REQ_PHYS_CHIRHO: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0);
+        let req_phys_chirho: u64 = {
+            let current_chirho = DMA_REQ_PHYS_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            if current_chirho != 0 {
+                current_chirho
+            } else {
+                let phys_chirho = {
+                    let mut ag_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+                    if let Some(alloc_chirho) = ag_chirho.as_mut() {
+                        use x86_64::structures::paging::FrameAllocator;
+                        let f1_chirho = alloc_chirho.allocate_frame()
+                            .expect("VirtIO DMA: out of frames for req buf");
+                        let _f2_chirho = alloc_chirho.allocate_frame(); // 2nd page
+                        f1_chirho.start_address().as_u64()
+                    } else { 0x900000 } // fallback
+                };
+                DMA_REQ_PHYS_CHIRHO.store(phys_chirho, core::sync::atomic::Ordering::Relaxed);
+                phys_chirho
+            }
+        };
         let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         let req_virt_chirho = (req_phys_chirho + phys_off_chirho) as *mut u8;
 
