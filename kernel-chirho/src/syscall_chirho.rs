@@ -1372,16 +1372,6 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
 
-    // Debug: log syscalls from PID >= 4 (3rd fork child, mount)
-    {
-        let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if pid_chirho >= 4 {
-            crate::serial_println_chirho!(
-                "[SC-P{}] nr={}", pid_chirho, syscall_nr_chirho
-            );
-        }
-    }
-
     // Log all syscalls from PID >= 2 (dropbear + children) to trace fork flow
     static POST_ACCEPT_ARMED_CHIRHO: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);

@@ -713,48 +713,12 @@ unsafe extern "C" fn fork_child_return_chirho() {
         // Step 1: Save the frame base pointer so we can read it after
         //         restoring all registers.  Use r15 as temporary (we
         //         restore it last).
-        // Debug: write 'F' to serial to confirm fork_child_return reached
-        "push rax",
-        "push rdx",
-        "mov dx, 0x3FD",
-        "2: in al, dx",
-        "test al, 0x20",
-        "jz 2b",
-        "mov dx, 0x3F8",
-        "mov al, 0x46",                     // 'F'
-        "out dx, al",
-        "pop rdx",
-        "pop rax",
         "mov r15, rsp",                     // r15 = frame base
 
-        // Debug: '1' after r15 set
-        "push rax",
-        "push rdx",
-        "mov dx, 0x3FD",
-        "3: in al, dx",
-        "test al, 0x20",
-        "jz 3b",
-        "mov dx, 0x3F8",
-        "mov al, 0x31",                     // '1'
-        "out dx, al",
-        "pop rdx",
-        "pop rax",
-
+        // Step 2: Read the three IRETQ inputs into callee-saved regs
+        //         that we will restore AFTER building the IRETQ frame.
+        //         r12 = user RIP,  r13 = user RFLAGS,  r14 = user RSP
         "mov r12, [r15 + 0x38]",            // user RIP  (was in rcx)
-
-        // Debug: '2' after user RIP read
-        "push rax",
-        "push rdx",
-        "mov dx, 0x3FD",
-        "4: in al, dx",
-        "test al, 0x20",
-        "jz 4b",
-        "mov dx, 0x3F8",
-        "mov al, 0x32",                     // '2'
-        "out dx, al",
-        "pop rdx",
-        "pop rax",
-
         "mov r13, [r15 + 0x40]",            // user RFLAGS (was in r11)
         "mov r14, [r15 + 0x48]",            // user RSP
 
@@ -792,19 +756,6 @@ unsafe extern "C" fn fork_child_return_chirho() {
         "mov r13, [r15 + 0x68]",
         "mov r14, [r15 + 0x70]",
         "mov r15, [r15 + 0x78]",            // last use of frame pointer
-
-        // Debug: print 'I' before IRETQ
-        "push rax",
-        "push rdx",
-        "mov dx, 0x3FD",
-        "7: in al, dx",
-        "test al, 0x20",
-        "jz 7b",
-        "mov dx, 0x3F8",
-        "mov al, 0x49",                     // 'I'
-        "out dx, al",
-        "pop rdx",
-        "pop rax",
 
         // Step 6: Switch GS base from kernel to user before IRETQ.
         // Even though our SYSCALL entry doesn't use swapgs, the CPU
