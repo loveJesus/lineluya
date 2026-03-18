@@ -1167,6 +1167,15 @@ const CLOCK_MONOTONIC_CHIRHO: u64 = 1;
 /// Global xorshift64 PRNG state, seeded from TSC on first use.
 pub static PRNG_STATE_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
+/// Check if the current process is the interactive shell (not a daemon).
+/// The shell has ppid=0 (set by exit_group re-exec). Daemons (dropbear)
+/// have ppid != 0 because they were forked from the shell.
+fn is_interactive_shell_chirho() -> bool {
+    crate::task_chirho::current_task_chirho()
+        .map(|t_chirho| t_chirho.lock().ppid_chirho == 0)
+        .unwrap_or(true)
+}
+
 /// Global tick counter for clock_gettime monotonic approximation.
 static TICK_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
@@ -1423,8 +1432,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     // For the main shell (PID 0 or re-exec'd shell), block on
                     // serial input. For daemon children (dropbear PID 3+),
                     // return EAGAIN so they don't spin on empty stdin reads.
-                    let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                    if pid_chirho <= 1 {
+                    
+                    if is_interactive_shell_chirho() {
                         sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
                     } else {
                         // Check serial port — if no data ready, return EAGAIN
@@ -3328,8 +3337,8 @@ fn sys_poll_chirho(
                     // only report POLLIN if serial actually has data.
                     // The shell (PID 0/re-exec'd) needs unconditional
                     // POLLIN so its blocking read loop works.
-                    let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                    if pid_chirho <= 1 {
+                    
+                    if is_interactive_shell_chirho() {
                         revents_chirho |= POLLIN_CHIRHO; // shell: always
                     } else {
                         let lsr_chirho: u8 = unsafe {
@@ -3465,8 +3474,8 @@ fn sys_select_chirho(
                     // dropbear spins in its select loop on empty stdin.
                     if !crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
                         if fd_chirho == 0 {
-                            let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                            if pid_chirho <= 1 {
+                            
+                            if is_interactive_shell_chirho() {
                                 has_ready_chirho = true;
                                 break;
                             }
@@ -3503,8 +3512,8 @@ fn sys_select_chirho(
                     crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
                 } else if fd_chirho == 0 {
                     // stdin: daemon PIDs check serial LSR
-                    let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                    if pid_chirho <= 1 { true } else {
+                    
+                    if is_interactive_shell_chirho() { true } else {
                         let lsr_chirho: u8 = unsafe {
                             x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
                         };
