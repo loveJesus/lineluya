@@ -3440,6 +3440,37 @@ fn sys_select_chirho(
     // Check if any socket has pending data by polling the network.
     crate::net_chirho::poll_network_chirho();
 
+    // One-shot debug for select from dropbear child
+    {
+        static SELECT_DBG_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        if !is_interactive_shell_chirho() {
+            let cnt_chirho = SELECT_DBG_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt_chirho < 3 {
+                crate::serial_println_chirho!(
+                    "[SELECT-DBG] nfds={} readfds_ptr={:#x} shell=false",
+                    nfds_chirho, readfds_ptr_chirho,
+                );
+                // Log which fds are set and their data status
+                if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
+                    let sz_chirho = core::cmp::min(16, ((nfds_chirho as usize + 7) / 8));
+                    let mut tmp_chirho = [0u8; 16];
+                    let _ = crate::uaccess_chirho::copy_from_user_chirho(&mut tmp_chirho[..sz_chirho], readfds_ptr_chirho, sz_chirho);
+                    for fd_chirho in 0..core::cmp::min(nfds_chirho as usize, 16) {
+                        if tmp_chirho[fd_chirho / 8] & (1 << (fd_chirho % 8)) != 0 {
+                            let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
+                            let has_data_chirho = crate::net_chirho::socket_has_data_chirho(fd_chirho as u64);
+                            let has_fd_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some();
+                            crate::serial_println_chirho!(
+                                "[SELECT-DBG] fd={} sock={} data={} vfs={}",
+                                fd_chirho, is_sock_chirho, has_data_chirho, has_fd_chirho
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Read the fd_set once from userspace for both initial check and re-check loop.
     let mut fds_buf_chirho = [0u8; 128];
     let set_size_chirho = if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
