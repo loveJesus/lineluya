@@ -6883,6 +6883,8 @@ static UNIX_SOCKET_TABLE_CHIRHO: Mutex<[Option<UnixSocketChirho>; MAX_UNIX_SOCKE
 // ============================================================================
 #[allow(dead_code)] pub const SOL_SOCKET_CHIRHO: u64 = 1;
 #[allow(dead_code)] pub const SO_REUSEADDR_CHIRHO: u64 = 2;
+#[allow(dead_code)] pub const SO_TYPE_CHIRHO: u64 = 3;
+#[allow(dead_code)] pub const SO_ERROR_CHIRHO: u64 = 4;
 #[allow(dead_code)] pub const SO_KEEPALIVE_CHIRHO: u64 = 9;
 #[allow(dead_code)] pub const SO_RCVBUF_CHIRHO: u64 = 8;
 #[allow(dead_code)] pub const SO_SNDBUF_CHIRHO: u64 = 7;
@@ -6890,8 +6892,133 @@ static UNIX_SOCKET_TABLE_CHIRHO: Mutex<[Option<UnixSocketChirho>; MAX_UNIX_SOCKE
 #[derive(Clone)] pub struct SocketOptionsChirho { pub reuseaddr_chirho: bool, pub keepalive_chirho: bool, pub nodelay_chirho: bool, pub rcvbuf_size_chirho: u32, pub sndbuf_size_chirho: u32 }
 const MAX_SOCK_OPTS_CHIRHO: usize = 128;
 static SOCKET_OPTS_CHIRHO: Mutex<[SocketOptionsChirho; MAX_SOCK_OPTS_CHIRHO]> = Mutex::new([const { SocketOptionsChirho { reuseaddr_chirho: false, keepalive_chirho: false, nodelay_chirho: false, rcvbuf_size_chirho: 87380, sndbuf_size_chirho: 16384 } }; MAX_SOCK_OPTS_CHIRHO]);
-#[allow(dead_code)] pub fn setsockopt_impl_chirho(si_chirho: usize, lv_chirho: u64, nm_chirho: u64, vp_chirho: u64, vl_chirho: u64) -> i64 { if si_chirho >= MAX_SOCK_OPTS_CHIRHO { return -EINVAL_CHIRHO; } let v_chirho: u32 = if vl_chirho >= 4 && vp_chirho != 0 { unsafe { core::ptr::read_unaligned(vp_chirho as *const u32) } } else { 0 }; let mut o_chirho = SOCKET_OPTS_CHIRHO.lock(); let op_chirho = &mut o_chirho[si_chirho]; match (lv_chirho, nm_chirho) { (SOL_SOCKET_CHIRHO, SO_REUSEADDR_CHIRHO) => op_chirho.reuseaddr_chirho = v_chirho != 0, (SOL_SOCKET_CHIRHO, SO_KEEPALIVE_CHIRHO) => op_chirho.keepalive_chirho = v_chirho != 0, (SOL_SOCKET_CHIRHO, SO_RCVBUF_CHIRHO) => op_chirho.rcvbuf_size_chirho = v_chirho, (SOL_SOCKET_CHIRHO, SO_SNDBUF_CHIRHO) => op_chirho.sndbuf_size_chirho = v_chirho, (6, TCP_NODELAY_OPT_CHIRHO) => op_chirho.nodelay_chirho = v_chirho != 0, _ => {} } 0 }
-#[allow(dead_code)] pub fn getsockopt_impl_chirho(si_chirho: usize, lv_chirho: u64, nm_chirho: u64, vp_chirho: u64, lp_chirho: u64) -> i64 { if si_chirho >= MAX_SOCK_OPTS_CHIRHO { return -EINVAL_CHIRHO; } let o_chirho = SOCKET_OPTS_CHIRHO.lock(); let op_chirho = &o_chirho[si_chirho]; let v_chirho: u32 = match (lv_chirho, nm_chirho) { (SOL_SOCKET_CHIRHO, SO_REUSEADDR_CHIRHO) => op_chirho.reuseaddr_chirho as u32, (SOL_SOCKET_CHIRHO, SO_KEEPALIVE_CHIRHO) => op_chirho.keepalive_chirho as u32, (SOL_SOCKET_CHIRHO, SO_RCVBUF_CHIRHO) => op_chirho.rcvbuf_size_chirho, (SOL_SOCKET_CHIRHO, SO_SNDBUF_CHIRHO) => op_chirho.sndbuf_size_chirho, (6, TCP_NODELAY_OPT_CHIRHO) => op_chirho.nodelay_chirho as u32, _ => 0 }; if vp_chirho != 0 { unsafe { core::ptr::write_unaligned(vp_chirho as *mut u32, v_chirho) }; } if lp_chirho != 0 { unsafe { core::ptr::write_unaligned(lp_chirho as *mut u32, 4) }; } 0 }
+#[allow(dead_code)]
+pub fn setsockopt_impl_chirho(
+    si_chirho: usize,
+    lv_chirho: u64,
+    nm_chirho: u64,
+    vp_chirho: u64,
+    vl_chirho: u64,
+) -> i64 {
+    if si_chirho >= MAX_SOCK_OPTS_CHIRHO {
+        return -EINVAL_CHIRHO;
+    }
+
+    let mut opt_value_chirho = [0u8; 4];
+    let parsed_value_chirho = if vl_chirho >= 4 && vp_chirho != 0 {
+        let opt_value_len_chirho = opt_value_chirho.len();
+        if crate::uaccess_chirho::copy_from_user_chirho(
+            &mut opt_value_chirho,
+            vp_chirho,
+            opt_value_len_chirho,
+        )
+        .is_err()
+        {
+            return -EFAULT_CHIRHO;
+        }
+        u32::from_ne_bytes(opt_value_chirho)
+    } else {
+        0
+    };
+
+    let mut socket_options_chirho = SOCKET_OPTS_CHIRHO.lock();
+    let socket_option_chirho = &mut socket_options_chirho[si_chirho];
+    match (lv_chirho, nm_chirho) {
+        (SOL_SOCKET_CHIRHO, SO_REUSEADDR_CHIRHO) => {
+            socket_option_chirho.reuseaddr_chirho = parsed_value_chirho != 0;
+        }
+        (SOL_SOCKET_CHIRHO, SO_KEEPALIVE_CHIRHO) => {
+            socket_option_chirho.keepalive_chirho = parsed_value_chirho != 0;
+        }
+        (SOL_SOCKET_CHIRHO, SO_RCVBUF_CHIRHO) => {
+            socket_option_chirho.rcvbuf_size_chirho = parsed_value_chirho;
+        }
+        (SOL_SOCKET_CHIRHO, SO_SNDBUF_CHIRHO) => {
+            socket_option_chirho.sndbuf_size_chirho = parsed_value_chirho;
+        }
+        (6, TCP_NODELAY_OPT_CHIRHO) => {
+            socket_option_chirho.nodelay_chirho = parsed_value_chirho != 0;
+        }
+        _ => {}
+    }
+    0
+}
+
+#[allow(dead_code)]
+pub fn getsockopt_impl_chirho(
+    si_chirho: usize,
+    lv_chirho: u64,
+    nm_chirho: u64,
+    vp_chirho: u64,
+    lp_chirho: u64,
+) -> i64 {
+    if si_chirho >= MAX_SOCK_OPTS_CHIRHO {
+        return -EINVAL_CHIRHO;
+    }
+    if vp_chirho == 0 || lp_chirho == 0 {
+        return -EFAULT_CHIRHO;
+    }
+
+    let mut requested_len_bytes_chirho = [0u8; 4];
+    let requested_len_size_chirho = requested_len_bytes_chirho.len();
+    if crate::uaccess_chirho::copy_from_user_chirho(
+        &mut requested_len_bytes_chirho,
+        lp_chirho,
+        requested_len_size_chirho,
+    )
+    .is_err()
+    {
+        return -EFAULT_CHIRHO;
+    }
+    let requested_len_chirho = u32::from_ne_bytes(requested_len_bytes_chirho) as usize;
+
+    let socket_options_chirho = SOCKET_OPTS_CHIRHO.lock();
+    let socket_option_chirho = &socket_options_chirho[si_chirho];
+    let socket_type_value_chirho = {
+        let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+        table_chirho
+            .get(si_chirho)
+            .and_then(|slot_chirho| slot_chirho.as_ref())
+            .map(|socket_chirho| (socket_chirho.sock_type_chirho & 0xF) as u32)
+            .unwrap_or(0)
+    };
+    let opt_value_chirho: u32 = match (lv_chirho, nm_chirho) {
+        (SOL_SOCKET_CHIRHO, SO_REUSEADDR_CHIRHO) => socket_option_chirho.reuseaddr_chirho as u32,
+        (SOL_SOCKET_CHIRHO, SO_KEEPALIVE_CHIRHO) => socket_option_chirho.keepalive_chirho as u32,
+        (SOL_SOCKET_CHIRHO, SO_RCVBUF_CHIRHO) => socket_option_chirho.rcvbuf_size_chirho,
+        (SOL_SOCKET_CHIRHO, SO_SNDBUF_CHIRHO) => socket_option_chirho.sndbuf_size_chirho,
+        (SOL_SOCKET_CHIRHO, SO_TYPE_CHIRHO) => socket_type_value_chirho,
+        (SOL_SOCKET_CHIRHO, SO_ERROR_CHIRHO) => 0,
+        (6, TCP_NODELAY_OPT_CHIRHO) => socket_option_chirho.nodelay_chirho as u32,
+        _ => 0,
+    };
+    drop(socket_options_chirho);
+
+    let opt_value_bytes_chirho = opt_value_chirho.to_ne_bytes();
+    let write_len_chirho = core::cmp::min(requested_len_chirho, opt_value_bytes_chirho.len());
+    if crate::uaccess_chirho::copy_to_user_chirho(
+        vp_chirho,
+        &opt_value_bytes_chirho[..write_len_chirho],
+        write_len_chirho,
+    )
+    .is_err()
+    {
+        return -EFAULT_CHIRHO;
+    }
+
+    let actual_len_bytes_chirho = (opt_value_bytes_chirho.len() as u32).to_ne_bytes();
+    if crate::uaccess_chirho::copy_to_user_chirho(
+        lp_chirho,
+        &actual_len_bytes_chirho,
+        actual_len_bytes_chirho.len(),
+    )
+    .is_err()
+    {
+        return -EFAULT_CHIRHO;
+    }
+
+    0
+}
 
 // ============================================================================
 // A3-019: Network config ioctls
