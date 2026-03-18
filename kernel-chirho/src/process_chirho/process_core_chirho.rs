@@ -1273,8 +1273,18 @@ fn preserve_fd_table_across_exec_chirho() {
             task_guard_chirho.fd_table_chirho = global_snapshot_chirho;
         }
 
+        let ppid_chirho = task_guard_chirho.ppid_chirho;
         if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            let fd0_before_chirho = fd_table_chirho.fds_chirho.get(0).map(|s| s.is_some()).unwrap_or(false);
+            let fd0_cloexec_chirho = fd_table_chirho.cloexec_chirho.get(0).copied().unwrap_or(false);
             fd_table_chirho.close_cloexec_fds_chirho();
+            let fd0_after_chirho = fd_table_chirho.fds_chirho.get(0).map(|s| s.is_some()).unwrap_or(false);
+            if ppid_chirho != 0 {
+                crate::serial_println_chirho!(
+                    "[EXECVE-FD] fd0: before={} cloexec={} after={}",
+                    fd0_before_chirho, fd0_cloexec_chirho, fd0_after_chirho,
+                );
+            }
             let next_fd_chirho = fd_table_chirho.next_free_fd_chirho();
             let mirror_table_chirho = fd_table_chirho.clone_table_chirho();
             task_guard_chirho.next_fd_chirho = next_fd_chirho;

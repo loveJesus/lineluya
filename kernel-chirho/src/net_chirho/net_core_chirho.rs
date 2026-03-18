@@ -4560,8 +4560,10 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
                 let mut p_chirho = ih_chirho.build_chirho();
                 p_chirho.extend_from_slice(&tb_chirho);
                 drop(t2_chirho);
-                crate::serial_debug_chirho!(
-                    "[NET] SSH-RELAY(pipe): {} bytes -> TCP port 2222", data_chirho.len()
+                crate::serial_println_chirho!(
+                    "[NET] SSH-RELAY(pipe): {} bytes -> TCP seq={} ack={} dst={}:{}",
+                    data_chirho.len(), sc_chirho.seq_num_chirho, sc_chirho.ack_num_chirho,
+                    format_ip_chirho(rip_chirho), rport_chirho,
                 );
                 let _ = send_ip_packet_chirho(&p_chirho);
             }
