@@ -608,11 +608,38 @@ pub fn sys_wait4_chirho(
         return 0;
     }
 
-    // -----------------------------------------------------------------------
-    // Yield to child — child's exit_group will re-exec the shell.
-    // Context switch back to parent still doesn't work.
-    // -----------------------------------------------------------------------
-    crate::scheduler_chirho::yield_current_chirho();
+    // Block until a child exits. Yield repeatedly, checking for zombies
+    // on each wake. With static context slots and stale-PT fix, context
+    // switching back to the parent works correctly now.
+    for _attempt_chirho in 0..10000u32 {
+        crate::scheduler_chirho::yield_current_chirho();
+
+        // Re-check for zombie children after being scheduled back.
+        let caller_pid_chirho = {
+            match crate::task_chirho::current_task_chirho() {
+                Some(t_chirho) => t_chirho.lock().pid_chirho,
+                None => return -ECHILD_CHIRHO,
+            }
+        };
+        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+        for task_arc_chirho in list_chirho.iter() {
+            let task_chirho = task_arc_chirho.lock();
+            if task_chirho.ppid_chirho == caller_pid_chirho
+                && task_chirho.is_exited_chirho()
+                && (pid_chirho == -1 || pid_chirho == task_chirho.pid_chirho as i64)
+            {
+                let reaped_pid_chirho = task_chirho.pid_chirho;
+                let exit_code_chirho = task_chirho.exit_code_chirho;
+                drop(task_chirho);
+                drop(list_chirho);
+                return reap_child_chirho(
+                    reaped_pid_chirho,
+                    exit_code_chirho,
+                    wstatus_chirho,
+                );
+            }
+        }
+    }
     -ECHILD_CHIRHO
 }
 

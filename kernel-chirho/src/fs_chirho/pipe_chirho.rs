@@ -196,7 +196,9 @@ impl FileOpsChirho for PipeReadOpsChirho {
                 }
                 drop(pipe_recheck_chirho);
             }
-            return Ok(0); // Timeout — no data arrived.
+            // Timeout — no data arrived but write end is still open.
+            // Return EAGAIN so the caller can retry (not Ok(0) which means EOF).
+            return Err(-11); // EAGAIN
         }
 
         let to_read_chirho = buf_chirho.len().min(pipe_chirho.buffer_chirho.len());
