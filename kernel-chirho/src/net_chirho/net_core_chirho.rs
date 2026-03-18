@@ -47,6 +47,7 @@ use spin::Mutex;
 
 use crate::syscall_chirho::{
     EADDRINUSE_CHIRHO, EAFNOSUPPORT_CHIRHO, EAGAIN_CHIRHO, EBADF_CHIRHO,
+    EFAULT_CHIRHO,
     ECONNREFUSED_CHIRHO, EINVAL_CHIRHO, EISCONN_CHIRHO, ENOSYS_CHIRHO,
     ENOTCONN_CHIRHO, ENOTSOCK_CHIRHO, EOPNOTSUPP_CHIRHO,
 };
@@ -1357,8 +1358,10 @@ pub fn process_ipv4_packet_chirho(data_chirho: &[u8]) -> Option<Vec<u8>> {
         IP_PROTO_UDP_CHIRHO => {
             let udp_chirho = UdpDatagramChirho::parse_chirho(payload_chirho)?;
             deliver_udp_packet_chirho(&ip_hdr_chirho, &udp_chirho);
-            None // UDP delivery is fire-and-forget into socket buffers
+            None
         }
+        // TCP is handled by deliver_tcp_from_frame_chirho in poll_network_chirho.
+        // Do NOT also handle it here — double delivery corrupts recv_buf.
         _ => {
             crate::serial_debug_chirho!(
                 "[NET] Unhandled IPv4 protocol {}",
@@ -1852,8 +1855,9 @@ impl FileOpsChirho for SocketFileOpsChirho {
             .and_then(|s_chirho| s_chirho.as_mut())
             .ok_or(-EBADF_CHIRHO)?;
 
-        // SSH relay: if this is a Unix socket (AF_UNIX), forward to TCP port 2222.
-        if socket_chirho.family_chirho == 1 && !buf_chirho.is_empty() {
+        // Unix→TCP relay DISABLED: syslog messages were corrupting SSH stream.
+        // Dropbear sends SSH data via sendto(tcp_fd) directly.
+        if false && socket_chirho.family_chirho == 1 && !buf_chirho.is_empty() {
             drop(table_chirho);
             let table_relay_chirho = SOCKET_TABLE_CHIRHO.lock();
             let mut tcp_info_chirho: Option<(usize, u16, u32, u32)> = None;
@@ -2813,9 +2817,13 @@ pub fn sys_sendto_chirho(
         }
     }
 
-    // SSH relay: if the target is a Unix socket, forward data to the
-    // established TCP connection on port 2222 (dropbear SSH relay).
-    {
+    // Unix→TCP relay DISABLED: This was forwarding syslog messages
+    // (written to Unix sockets) into the SSH TCP stream, corrupting
+    // the SSH protocol. Dropbear sends SSH data via sendto(fd=tcp_fd)
+    // directly — no relay needed.
+    #[allow(unused_variables)]
+    let _relay_disabled_chirho = true;
+    if false {
         let table_relay_chirho = SOCKET_TABLE_CHIRHO.lock();
         let is_unix_chirho = table_relay_chirho.get(socket_idx_chirho)
             .and_then(|s| s.as_ref())
@@ -2881,7 +2889,7 @@ pub fn sys_sendto_chirho(
                 return count_chirho as i64;
             }
         }
-    }
+    } // end if false (relay disabled)
 
 
     // Re-acquire socket table for the standard sendto path.
@@ -3147,46 +3155,167 @@ pub fn sys_recvfrom_chirho(
     count_chirho as i64
 }
 
-/// `sendmsg(2)` — send a message through a socket (simplified stub).
+/// `sendmsg(2)` — send a scatter/gather message through a socket.
 pub fn sys_sendmsg_chirho(
-    _sockfd_chirho: u64,
-    _msg_chirho: u64,
-    _flags_chirho: u64,
+    sockfd_chirho: u64,
+    msg_chirho: u64,
+    flags_chirho: u64,
 ) -> i64 {
-    crate::serial_debug_chirho!("[NET] sys_sendmsg(fd={}) -> 0 (stub)", _sockfd_chirho);
-    0
+    let msg_hdr_chirho = match read_msghdr_from_user_chirho(msg_chirho) {
+        Ok(msg_hdr_chirho) => msg_hdr_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+    if msg_hdr_chirho.msg_iovlen_chirho < 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    let data_chirho = match gather_iovec_checked_chirho(
+        msg_hdr_chirho.msg_iov_chirho,
+        msg_hdr_chirho.msg_iovlen_chirho as usize,
+    ) {
+        Ok(data_chirho) => data_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+
+    sys_sendto_chirho(
+        sockfd_chirho,
+        data_chirho.as_ptr() as u64,
+        data_chirho.len() as u64,
+        flags_chirho,
+        msg_hdr_chirho.msg_name_chirho,
+        msg_hdr_chirho.msg_namelen_chirho as u64,
+    )
 }
 
-/// `recvmsg(2)` — receive a message from a socket (simplified stub).
+/// `recvmsg(2)` — receive a scatter/gather message from a socket.
 pub fn sys_recvmsg_chirho(
-    _sockfd_chirho: u64,
-    _msg_chirho: u64,
-    _flags_chirho: u64,
+    sockfd_chirho: u64,
+    msg_chirho: u64,
+    flags_chirho: u64,
 ) -> i64 {
-    crate::serial_debug_chirho!("[NET] sys_recvmsg(fd={}) -> 0 (stub)", _sockfd_chirho);
-    0
+    let mut msg_hdr_chirho = match read_msghdr_from_user_chirho(msg_chirho) {
+        Ok(msg_hdr_chirho) => msg_hdr_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+    if msg_hdr_chirho.msg_iovlen_chirho < 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    let total_capacity_chirho = match total_iovec_len_chirho(
+        msg_hdr_chirho.msg_iov_chirho,
+        msg_hdr_chirho.msg_iovlen_chirho as usize,
+    ) {
+        Ok(total_capacity_chirho) => total_capacity_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+    if total_capacity_chirho == 0 {
+        msg_hdr_chirho.msg_controllen_chirho = 0;
+        msg_hdr_chirho.msg_flags_chirho = 0;
+        if let Err(errno_chirho) = write_msghdr_to_user_chirho(msg_chirho, &msg_hdr_chirho) {
+            return errno_chirho;
+        }
+        return 0;
+    }
+
+    let mut recv_buf_chirho = alloc::vec![0u8; total_capacity_chirho];
+    let recv_count_chirho = sys_recvfrom_chirho(
+        sockfd_chirho,
+        recv_buf_chirho.as_mut_ptr() as u64,
+        recv_buf_chirho.len() as u64,
+        flags_chirho,
+        0,
+        0,
+    );
+    if recv_count_chirho <= 0 {
+        return recv_count_chirho;
+    }
+
+    let recv_len_chirho = recv_count_chirho as usize;
+    if let Err(errno_chirho) = scatter_iovec_checked_chirho(
+        msg_hdr_chirho.msg_iov_chirho,
+        msg_hdr_chirho.msg_iovlen_chirho as usize,
+        &recv_buf_chirho[..recv_len_chirho],
+    ) {
+        return errno_chirho;
+    }
+
+    if msg_hdr_chirho.msg_name_chirho != 0 {
+        if let Ok(socket_idx_chirho) = socket_idx_from_fd_chirho(sockfd_chirho) {
+            let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+            if let Some(remote_addr_chirho) = table_chirho
+                .get(socket_idx_chirho)
+                .and_then(|slot_chirho| slot_chirho.as_ref())
+                .and_then(|socket_chirho| socket_chirho.remote_addr_chirho)
+            {
+                let remote_bytes_chirho =
+                    remote_addr_chirho.to_user_bytes_chirho(AddressFamilyChirho::AfInetChirho as u16);
+                let name_len_chirho = core::cmp::min(
+                    remote_bytes_chirho.len(),
+                    msg_hdr_chirho.msg_namelen_chirho as usize,
+                );
+                if crate::uaccess_chirho::copy_to_user_chirho(
+                    msg_hdr_chirho.msg_name_chirho,
+                    &remote_bytes_chirho[..name_len_chirho],
+                    name_len_chirho,
+                )
+                .is_err()
+                {
+                    return -EFAULT_CHIRHO;
+                }
+                msg_hdr_chirho.msg_namelen_chirho = remote_bytes_chirho.len() as u32;
+            }
+        }
+    }
+
+    msg_hdr_chirho.msg_controllen_chirho = 0;
+    msg_hdr_chirho.msg_flags_chirho = 0;
+    if let Err(errno_chirho) = write_msghdr_to_user_chirho(msg_chirho, &msg_hdr_chirho) {
+        return errno_chirho;
+    }
+
+    recv_count_chirho
 }
 
-/// `setsockopt(2)` — set socket options (stub — always succeeds).
+/// `setsockopt(2)` — set socket options on a socket.
 pub fn sys_setsockopt_chirho(
-    _sockfd_chirho: u64,
-    _level_chirho: u64,
-    _optname_chirho: u64,
-    _optval_chirho: u64,
-    _optlen_chirho: u64,
+    sockfd_chirho: u64,
+    level_chirho: u64,
+    optname_chirho: u64,
+    optval_chirho: u64,
+    optlen_chirho: u64,
 ) -> i64 {
-    0
+    let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
+        Ok(socket_idx_chirho) => socket_idx_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+    setsockopt_impl_chirho(
+        socket_idx_chirho,
+        level_chirho,
+        optname_chirho,
+        optval_chirho,
+        optlen_chirho,
+    )
 }
 
-/// `getsockopt(2)` — get socket options (stub — always succeeds).
+/// `getsockopt(2)` — get socket options from a socket.
 pub fn sys_getsockopt_chirho(
-    _sockfd_chirho: u64,
-    _level_chirho: u64,
-    _optname_chirho: u64,
-    _optval_chirho: u64,
-    _optlen_chirho: u64,
+    sockfd_chirho: u64,
+    level_chirho: u64,
+    optname_chirho: u64,
+    optval_chirho: u64,
+    optlen_chirho: u64,
 ) -> i64 {
-    0
+    let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
+        Ok(socket_idx_chirho) => socket_idx_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+    getsockopt_impl_chirho(
+        socket_idx_chirho,
+        level_chirho,
+        optname_chirho,
+        optval_chirho,
+        optlen_chirho,
+    )
 }
 
 /// `shutdown(2)` — shut down part of a full-duplex connection.
@@ -6554,31 +6683,184 @@ pub fn init_loopback_ip_chirho() {
 #[repr(C)] #[derive(Clone, Copy)] #[allow(dead_code)]
 pub struct IoVecChirho { pub iov_base_chirho: u64, pub iov_len_chirho: u64 }
 
+/// x86_64 musl/Linux `struct msghdr` layout used by `sendmsg(2)` / `recvmsg(2)`.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct MsgHdrChirho {
+    pub msg_name_chirho: u64,
+    pub msg_namelen_chirho: u32,
+    pub msg_name_pad_chirho: u32,
+    pub msg_iov_chirho: u64,
+    pub msg_iovlen_chirho: i32,
+    pub msg_iov_pad_chirho: i32,
+    pub msg_control_chirho: u64,
+    pub msg_controllen_chirho: u32,
+    pub msg_control_pad_chirho: u32,
+    pub msg_flags_chirho: i32,
+    pub msg_flags_pad_chirho: i32,
+}
+
+const MAX_MSG_IOV_CHIRHO: usize = 64;
+
+fn read_msghdr_from_user_chirho(msg_ptr_chirho: u64) -> Result<MsgHdrChirho, i64> {
+    if msg_ptr_chirho == 0 {
+        return Err(-EFAULT_CHIRHO);
+    }
+
+    let mut msg_hdr_chirho = MsgHdrChirho::default();
+    let msg_hdr_bytes_chirho = unsafe {
+        core::slice::from_raw_parts_mut(
+            (&mut msg_hdr_chirho as *mut MsgHdrChirho).cast::<u8>(),
+            core::mem::size_of::<MsgHdrChirho>(),
+        )
+    };
+    crate::uaccess_chirho::copy_from_user_chirho(
+        msg_hdr_bytes_chirho,
+        msg_ptr_chirho,
+        msg_hdr_bytes_chirho.len(),
+    )
+    .map_err(|_| -EFAULT_CHIRHO)?;
+    Ok(msg_hdr_chirho)
+}
+
+fn write_msghdr_to_user_chirho(
+    msg_ptr_chirho: u64,
+    msg_hdr_chirho: &MsgHdrChirho,
+) -> Result<(), i64> {
+    let msg_hdr_bytes_chirho = unsafe {
+        core::slice::from_raw_parts(
+            (msg_hdr_chirho as *const MsgHdrChirho).cast::<u8>(),
+            core::mem::size_of::<MsgHdrChirho>(),
+        )
+    };
+    crate::uaccess_chirho::copy_to_user_chirho(
+        msg_ptr_chirho,
+        msg_hdr_bytes_chirho,
+        msg_hdr_bytes_chirho.len(),
+    )
+    .map_err(|_| -EFAULT_CHIRHO)
+}
+
+fn read_iovec_array_chirho(
+    iov_ptr_chirho: u64,
+    iov_len_chirho: usize,
+) -> Result<Vec<IoVecChirho>, i64> {
+    if iov_len_chirho == 0 {
+        return Ok(Vec::new());
+    }
+    if iov_len_chirho > MAX_MSG_IOV_CHIRHO {
+        return Err(-EINVAL_CHIRHO);
+    }
+    if iov_ptr_chirho == 0 {
+        return Err(-EFAULT_CHIRHO);
+    }
+
+    let total_size_chirho = iov_len_chirho
+        .checked_mul(core::mem::size_of::<IoVecChirho>())
+        .ok_or(-EINVAL_CHIRHO)?;
+    let mut iovec_entries_chirho = alloc::vec![
+        IoVecChirho {
+            iov_base_chirho: 0,
+            iov_len_chirho: 0,
+        };
+        iov_len_chirho
+    ];
+    let iovec_bytes_chirho = unsafe {
+        core::slice::from_raw_parts_mut(
+            iovec_entries_chirho.as_mut_ptr().cast::<u8>(),
+            total_size_chirho,
+        )
+    };
+    crate::uaccess_chirho::copy_from_user_chirho(
+        iovec_bytes_chirho,
+        iov_ptr_chirho,
+        total_size_chirho,
+    )
+    .map_err(|_| -EFAULT_CHIRHO)?;
+    Ok(iovec_entries_chirho)
+}
+
+fn total_iovec_len_chirho(
+    iov_ptr_chirho: u64,
+    iov_len_chirho: usize,
+) -> Result<usize, i64> {
+    let iovec_entries_chirho = read_iovec_array_chirho(iov_ptr_chirho, iov_len_chirho)?;
+    let mut total_len_chirho = 0usize;
+    for iovec_entry_chirho in iovec_entries_chirho {
+        total_len_chirho = total_len_chirho
+            .saturating_add(iovec_entry_chirho.iov_len_chirho as usize)
+            .min(SOCKET_SEND_MAX_CHIRHO);
+    }
+    Ok(total_len_chirho)
+}
+
+fn gather_iovec_checked_chirho(
+    iov_ptr_chirho: u64,
+    iov_len_chirho: usize,
+) -> Result<Vec<u8>, i64> {
+    let iovec_entries_chirho = read_iovec_array_chirho(iov_ptr_chirho, iov_len_chirho)?;
+    let mut gathered_data_chirho =
+        Vec::with_capacity(total_iovec_len_chirho(iov_ptr_chirho, iov_len_chirho)?);
+    for iovec_entry_chirho in iovec_entries_chirho {
+        if iovec_entry_chirho.iov_base_chirho == 0 || iovec_entry_chirho.iov_len_chirho == 0 {
+            continue;
+        }
+        let remaining_capacity_chirho =
+            SOCKET_SEND_MAX_CHIRHO.saturating_sub(gathered_data_chirho.len());
+        if remaining_capacity_chirho == 0 {
+            break;
+        }
+        let chunk_len_chirho =
+            core::cmp::min(iovec_entry_chirho.iov_len_chirho as usize, remaining_capacity_chirho);
+        let start_len_chirho = gathered_data_chirho.len();
+        gathered_data_chirho.resize(start_len_chirho + chunk_len_chirho, 0);
+        crate::uaccess_chirho::copy_from_user_chirho(
+            &mut gathered_data_chirho[start_len_chirho..start_len_chirho + chunk_len_chirho],
+            iovec_entry_chirho.iov_base_chirho,
+            chunk_len_chirho,
+        )
+        .map_err(|_| -EFAULT_CHIRHO)?;
+    }
+    Ok(gathered_data_chirho)
+}
+
+fn scatter_iovec_checked_chirho(
+    iov_ptr_chirho: u64,
+    iov_len_chirho: usize,
+    data_chirho: &[u8],
+) -> Result<usize, i64> {
+    let iovec_entries_chirho = read_iovec_array_chirho(iov_ptr_chirho, iov_len_chirho)?;
+    let mut written_chirho = 0usize;
+    for iovec_entry_chirho in iovec_entries_chirho {
+        if written_chirho >= data_chirho.len() {
+            break;
+        }
+        if iovec_entry_chirho.iov_base_chirho == 0 || iovec_entry_chirho.iov_len_chirho == 0 {
+            continue;
+        }
+        let chunk_len_chirho = core::cmp::min(
+            iovec_entry_chirho.iov_len_chirho as usize,
+            data_chirho.len() - written_chirho,
+        );
+        crate::uaccess_chirho::copy_to_user_chirho(
+            iovec_entry_chirho.iov_base_chirho,
+            &data_chirho[written_chirho..written_chirho + chunk_len_chirho],
+            chunk_len_chirho,
+        )
+        .map_err(|_| -EFAULT_CHIRHO)?;
+        written_chirho += chunk_len_chirho;
+    }
+    Ok(written_chirho)
+}
+
 #[allow(dead_code)]
 pub fn gather_iovec_chirho(ip_chirho: u64, il_chirho: u64) -> Vec<u8> {
-    let mut r_chirho = Vec::new();
-    for i_chirho in 0..il_chirho {
-        let iv_chirho: IoVecChirho = unsafe { core::ptr::read_unaligned((ip_chirho + i_chirho * 16) as *const IoVecChirho) };
-        if iv_chirho.iov_base_chirho != 0 && iv_chirho.iov_len_chirho > 0 {
-            r_chirho.extend_from_slice(unsafe { core::slice::from_raw_parts(iv_chirho.iov_base_chirho as *const u8, iv_chirho.iov_len_chirho as usize) });
-        }
-    }
-    r_chirho
+    gather_iovec_checked_chirho(ip_chirho, il_chirho as usize).unwrap_or_else(|_| Vec::new())
 }
 
 #[allow(dead_code)]
 pub fn scatter_iovec_chirho(ip_chirho: u64, il_chirho: u64, data_chirho: &[u8]) -> usize {
-    let mut w_chirho = 0usize;
-    for i_chirho in 0..il_chirho {
-        if w_chirho >= data_chirho.len() { break; }
-        let iv_chirho: IoVecChirho = unsafe { core::ptr::read_unaligned((ip_chirho + i_chirho * 16) as *const IoVecChirho) };
-        if iv_chirho.iov_base_chirho != 0 && iv_chirho.iov_len_chirho > 0 {
-            let n_chirho = core::cmp::min(iv_chirho.iov_len_chirho as usize, data_chirho.len() - w_chirho);
-            unsafe { core::ptr::copy_nonoverlapping(data_chirho.as_ptr().add(w_chirho), iv_chirho.iov_base_chirho as *mut u8, n_chirho); }
-            w_chirho += n_chirho;
-        }
-    }
-    w_chirho
+    scatter_iovec_checked_chirho(ip_chirho, il_chirho as usize, data_chirho).unwrap_or(0)
 }
 
 // ============================================================================

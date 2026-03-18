@@ -158,16 +158,13 @@ impl FileOpsChirho for PipeReadOpsChirho {
                 // Write end closed and buffer empty => EOF.
                 return Ok(0);
             }
-            // SSH relay: if pipe is empty and there's TCP data on port 2222,
-            // inject it into the pipe buffer. This bridges dropbear's childpipe
-            // I/O with the TCP connection.
+            // Pipe is empty and write end is open — yield briefly then
+            // return EAGAIN. Do NOT relay TCP→pipe here: dropbear reads
+            // from the TCP socket fd directly, not through pipes.
             drop(pipe_chirho);
-            crate::net_chirho::relay_tcp_2222_to_pipe_chirho(&self.pipe_chirho);
 
-            for _retry_chirho in 0..100_000u32 {
-                // Poll network and inject TCP data into pipe
+            for _retry_chirho in 0..1000u32 {
                 crate::net_chirho::poll_network_chirho();
-                crate::net_chirho::relay_tcp_2222_to_pipe_chirho(&self.pipe_chirho);
                 core::hint::spin_loop();
                 let pipe_recheck_chirho = self.pipe_chirho.lock();
                 if !pipe_recheck_chirho.buffer_chirho.is_empty() {
