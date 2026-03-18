@@ -2873,6 +2873,8 @@ fn sys_arch_prctl_chirho(code_chirho: u64, addr_chirho: u64) -> i64 {
     const IA32_FS_BASE_CHIRHO: u32 = 0xC000_0100;
     /// IA32_GS_BASE MSR address.
     const IA32_GS_BASE_CHIRHO: u32 = 0xC000_0101;
+    /// IA32_KERNEL_GS_BASE MSR address.
+    const IA32_KERNEL_GS_BASE_CHIRHO: u32 = 0xC000_0102;
 
     match code_chirho {
         ARCH_SET_FS_CHIRHO => {
@@ -2880,6 +2882,9 @@ fn sys_arch_prctl_chirho(code_chirho: u64, addr_chirho: u64) -> i64 {
             let mut msr_chirho = Msr::new(IA32_FS_BASE_CHIRHO);
             unsafe {
                 msr_chirho.write(addr_chirho);
+            }
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                task_arc_chirho.lock().fs_base_chirho = addr_chirho;
             }
             crate::serial_debug_chirho!(
                 "[SYSCALL] arch_prctl(ARCH_SET_FS, {:#x})",
@@ -2901,9 +2906,15 @@ fn sys_arch_prctl_chirho(code_chirho: u64, addr_chirho: u64) -> i64 {
             0
         }
         ARCH_SET_GS_CHIRHO => {
-            let mut msr_chirho = Msr::new(IA32_GS_BASE_CHIRHO);
+            // While in kernel mode after SWAPGS, the user GS value lives in
+            // IA32_KERNEL_GS_BASE and will be restored on the next SWAPGS back
+            // to userspace.
+            let mut msr_chirho = Msr::new(IA32_KERNEL_GS_BASE_CHIRHO);
             unsafe {
                 msr_chirho.write(addr_chirho);
+            }
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                task_arc_chirho.lock().gs_base_chirho = addr_chirho;
             }
             crate::serial_debug_chirho!(
                 "[SYSCALL] arch_prctl(ARCH_SET_GS, {:#x})",
@@ -2915,7 +2926,7 @@ fn sys_arch_prctl_chirho(code_chirho: u64, addr_chirho: u64) -> i64 {
             if addr_chirho == 0 {
                 return -EFAULT_CHIRHO;
             }
-            let msr_chirho = Msr::new(IA32_GS_BASE_CHIRHO);
+            let msr_chirho = Msr::new(IA32_KERNEL_GS_BASE_CHIRHO);
             let gs_base_chirho = unsafe { msr_chirho.read() };
             unsafe {
                 *(addr_chirho as *mut u64) = gs_base_chirho;

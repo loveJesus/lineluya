@@ -233,13 +233,21 @@ pub fn init_scheduler_chirho() {
 /// logic in [`schedule_chirho`], making it easier to port to other
 /// architectures or to swap out page-table switching strategies.
 fn arch_prepare_switch_chirho(next_pid_chirho: u64) {
-    // Look up the target task's page table root.
-    let new_pt_root_chirho = {
+    // Look up the target task's address-space and thread-pointer state.
+    let (new_pt_root_chirho, new_fs_base_chirho, new_gs_base_chirho) = {
         let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
         list_chirho
             .iter()
             .find(|t_chirho| t_chirho.lock().pid_chirho == next_pid_chirho)
-            .and_then(|t_chirho| t_chirho.lock().page_table_root_chirho)
+            .map(|t_chirho| {
+                let task_guard_chirho = t_chirho.lock();
+                (
+                    task_guard_chirho.page_table_root_chirho,
+                    task_guard_chirho.fs_base_chirho,
+                    task_guard_chirho.gs_base_chirho,
+                )
+            })
+            .unwrap_or((None, 0, 0))
     };
 
     // Switch to the task's page table, or fall back to boot PML4.
@@ -256,6 +264,19 @@ fn arch_prepare_switch_chirho(next_pid_chirho: u64) {
                 crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
             }
         }
+    }
+
+    // Restore the task's TLS/thread-pointer state. FS is used by musl TLS.
+    // User GS is restored via SWAPGS, so while in kernel mode we program the
+    // user value into IA32_KERNEL_GS_BASE rather than clobbering the active
+    // kernel GS base.
+    use x86_64::registers::model_specific::Msr;
+    const IA32_FS_BASE_CHIRHO: u32 = 0xC000_0100;
+    const IA32_KERNEL_GS_BASE_CHIRHO: u32 = 0xC000_0102;
+
+    unsafe {
+        Msr::new(IA32_FS_BASE_CHIRHO).write(new_fs_base_chirho);
+        Msr::new(IA32_KERNEL_GS_BASE_CHIRHO).write(new_gs_base_chirho);
     }
 }
 
