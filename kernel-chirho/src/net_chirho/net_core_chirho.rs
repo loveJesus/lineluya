@@ -3058,43 +3058,29 @@ pub fn sys_recvfrom_chirho(
             return 0; // EOF — peer closed
         }
 
-        drop(table_chirho); // Release lock for network polling
+        // Quick poll: check for new packets once, then return EAGAIN.
+        // The old 500K/1K iteration polling loop blocked for too long,
+        // preventing dropbear from processing received SSH packets and
+        // computing the KEX_ECDH_REPLY. Dropbear's event loop calls
+        // poll() → read() in a tight loop — it needs fast EAGAIN returns
+        // to exit the read path and enter its crypto computation path.
+        drop(table_chirho);
+        poll_network_chirho();
 
-        // Poll network: receive packets through the standard path which
-        // runs the TCP state machine, updates rcv_nxt, sends ACKs, and
-        // buffers payload data in recv_buf_chirho.  After each poll round,
-        // re-acquire the socket table lock and check if data arrived.
-        for _poll_round_chirho in 0..NETWORK_POLL_SHORT_CHIRHO {
-            // Process all pending packets through the standard RX path.
-            // This calls deliver_tcp_from_frame_chirho which properly:
-            //   1. Runs process_segment_chirho (updates TCB + rcv_nxt)
-            //   2. Buffers payload into recv_buf_chirho
-            //   3. Sends ACK responses
-            poll_network_chirho();
-
-            // Check if data arrived in the socket's receive buffer.
-            let mut table_recheck_chirho = SOCKET_TABLE_CHIRHO.lock();
-            if let Some(ref sock_recheck_chirho) = table_recheck_chirho
-                .get(socket_idx_chirho)
-                .and_then(|s_chirho| s_chirho.as_ref())
-            {
-                if !sock_recheck_chirho.recv_buf_chirho.is_empty() {
-                    // Data available — fall through to the copy-out path below.
-                    // We need to re-bind socket_chirho so the code below works.
-                    drop(table_recheck_chirho);
-                    break;
-                }
-                // Check if peer closed while we were polling.
-                let tcp_state_chirho = sock_recheck_chirho.tcb_chirho.state_chirho;
-                if tcp_state_chirho == TcpStateChirho::CloseWaitChirho
-                    || tcp_state_chirho == TcpStateChirho::ClosedChirho
-                {
-                    return 0; // EOF
-                }
+        // Re-check once after polling
+        let table_recheck_chirho = SOCKET_TABLE_CHIRHO.lock();
+        if let Some(ref sock_recheck_chirho) = table_recheck_chirho
+            .get(socket_idx_chirho)
+            .and_then(|s_chirho| s_chirho.as_ref())
+        {
+            if !sock_recheck_chirho.recv_buf_chirho.is_empty() {
+                drop(table_recheck_chirho);
+                // Data arrived — fall through to copy-out below
+            } else {
+                return -11; // EAGAIN — no data yet
             }
-            drop(table_recheck_chirho);
-
-            core::hint::spin_loop();
+        } else {
+            return -11; // EAGAIN
         }
 
         // After polling, re-acquire the lock and fall through to copy-out.

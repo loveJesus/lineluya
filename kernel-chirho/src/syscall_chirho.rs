@@ -1420,7 +1420,23 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 if has_vfs_stdin_chirho {
                     crate::fs_chirho::sys_read_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
                 } else {
-                    sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
+                    // For the main shell (PID 0 or re-exec'd shell), block on
+                    // serial input. For daemon children (dropbear PID 3+),
+                    // return EAGAIN so they don't spin on empty stdin reads.
+                    let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    if pid_chirho <= 1 {
+                        sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
+                    } else {
+                        // Check serial port — if no data ready, return EAGAIN
+                        let lsr_chirho: u8 = unsafe {
+                            x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+                        };
+                        if lsr_chirho & 1 != 0 {
+                            sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
+                        } else {
+                            -11 // EAGAIN
+                        }
+                    }
                 }
             } else if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
                 // Socket fd → recvfrom
@@ -3263,8 +3279,31 @@ fn sys_poll_chirho(
                 revents_chirho |= POLLOUT_CHIRHO;
             }
         } else {
-            // Regular file/pipe: always ready for requested ops.
-            revents_chirho = pfd_chirho.events_chirho & (POLLIN_CHIRHO | POLLOUT_CHIRHO);
+            // Regular file/pipe
+            if pfd_chirho.events_chirho & POLLOUT_CHIRHO != 0 {
+                revents_chirho |= POLLOUT_CHIRHO;
+            }
+            if pfd_chirho.events_chirho & POLLIN_CHIRHO != 0 {
+                if fd_val_chirho == 0 {
+                    // stdin: for non-shell PIDs (daemons like dropbear),
+                    // only report POLLIN if serial actually has data.
+                    // The shell (PID 0/re-exec'd) needs unconditional
+                    // POLLIN so its blocking read loop works.
+                    let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    if pid_chirho <= 1 {
+                        revents_chirho |= POLLIN_CHIRHO; // shell: always
+                    } else {
+                        let lsr_chirho: u8 = unsafe {
+                            x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+                        };
+                        if lsr_chirho & 1 != 0 {
+                            revents_chirho |= POLLIN_CHIRHO;
+                        }
+                    }
+                } else {
+                    revents_chirho |= POLLIN_CHIRHO;
+                }
+            }
         }
 
         pfd_chirho.revents_chirho = revents_chirho;
@@ -3307,6 +3346,27 @@ fn sys_poll_chirho(
         total_size_chirho,
     ).is_err() {
         return -EFAULT_CHIRHO;
+    }
+
+    // One-shot debug: log poll result for PID >= 3
+    {
+        let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if pid_chirho >= 3 {
+            static POLL_LOG_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let cnt_chirho = POLL_LOG_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt_chirho < 5 {
+                let mut fds_str_chirho = alloc::string::String::new();
+                for pfd_chirho in pollfds_chirho.iter() {
+                    use core::fmt::Write;
+                    let _ = write!(fds_str_chirho, " fd={}(ev={:#x},rev={:#x})",
+                        pfd_chirho.fd_chirho, pfd_chirho.events_chirho, pfd_chirho.revents_chirho);
+                }
+                crate::serial_println_chirho!(
+                    "[POLL-DBG] pid={} nfds={} timeout={} ready={} fds:{}",
+                    pid_chirho, nfds_chirho, _timeout_chirho, ready_count_chirho, fds_str_chirho
+                );
+            }
+        }
     }
 
     ready_count_chirho
@@ -3360,12 +3420,29 @@ fn sys_select_chirho(
                         has_ready_chirho = true;
                         break;
                     }
-                    // Regular files are always "ready"
-                    // A2-PROC-003: Use lookup_fd_chirho (per-process first).
-                    let is_regular_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some();
-                    if is_regular_chirho && !crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
-                        has_ready_chirho = true;
-                        break;
+                    // Regular files are always "ready" — except fd=0
+                    // (stdin) for daemon processes (PID >= 2), which should
+                    // only be ready when serial has actual data. Without this,
+                    // dropbear spins in its select loop on empty stdin.
+                    if !crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
+                        if fd_chirho == 0 {
+                            let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                            if pid_chirho <= 1 {
+                                has_ready_chirho = true;
+                                break;
+                            }
+                            // Daemon: check serial LSR
+                            let lsr_chirho: u8 = unsafe {
+                                x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+                            };
+                            if lsr_chirho & 1 != 0 {
+                                has_ready_chirho = true;
+                                break;
+                            }
+                        } else if crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some() {
+                            has_ready_chirho = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -3385,9 +3462,16 @@ fn sys_select_chirho(
             {
                 let ready_chirho = if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
                     crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
+                } else if fd_chirho == 0 {
+                    // stdin: daemon PIDs check serial LSR
+                    let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    if pid_chirho <= 1 { true } else {
+                        let lsr_chirho: u8 = unsafe {
+                            x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+                        };
+                        lsr_chirho & 1 != 0
+                    }
                 } else {
-                    // Regular files/pipes are always ready.
-                    // A2-PROC-003: Use lookup_fd_chirho (per-process first).
                     crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some()
                 };
                 if ready_chirho {
@@ -3420,7 +3504,9 @@ fn sys_select_chirho(
             crate::scheduler_chirho::yield_current_chirho();
         }
 
-        let max_attempts_chirho = 200u32;
+        // Wait long enough for TCP data to arrive. 200 was too short —
+        // SSH client timed out before dropbear's select woke up.
+        let max_attempts_chirho = 50_000u32;
         for _attempt_chirho in 0..max_attempts_chirho {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
@@ -4324,7 +4410,23 @@ fn sys_fcntl_chirho(
                 _ => 0x8000, // O_LARGEFILE default
             }
         }
-        F_SETFL_CHIRHO => 0, // silently accept
+        F_SETFL_CHIRHO => {
+            // Linux only lets F_SETFL change a subset of status flags.
+            // Keep access mode and creation-time bits intact.
+            const F_SETFL_MUTABLE_FLAGS_CHIRHO: u32 =
+                crate::vfs_chirho::O_APPEND_CHIRHO | crate::vfs_chirho::O_NONBLOCK_CHIRHO;
+
+            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+                let mut file_chirho = file_arc_chirho.lock();
+                let requested_flags_chirho = arg_chirho as u32;
+                file_chirho.flags_chirho =
+                    (file_chirho.flags_chirho & !F_SETFL_MUTABLE_FLAGS_CHIRHO)
+                    | (requested_flags_chirho & F_SETFL_MUTABLE_FLAGS_CHIRHO);
+                return 0;
+            }
+
+            -EBADF_CHIRHO
+        }
         F_GETLK_CHIRHO => {
             // Advisory file locking: report "no lock held" by setting
             // l_type to F_UNLCK (2). sqlite3 uses this to probe locking.
