@@ -232,7 +232,26 @@ pub fn init_scheduler_chirho() {
 /// This helper separates arch-specific concerns from the scheduling policy
 /// logic in [`schedule_chirho`], making it easier to port to other
 /// architectures or to swap out page-table switching strategies.
-fn arch_prepare_switch_chirho(next_pid_chirho: u64) {
+fn arch_prepare_switch_chirho(old_pid_chirho: Option<u64>, next_pid_chirho: u64) {
+    use x86_64::registers::model_specific::Msr;
+    const IA32_FS_BASE_CHIRHO: u32 = 0xC000_0100;
+    const IA32_KERNEL_GS_BASE_CHIRHO: u32 = 0xC000_0102;
+
+    if let Some(old_pid_value_chirho) = old_pid_chirho {
+        let old_fs_base_chirho = unsafe { Msr::new(IA32_FS_BASE_CHIRHO).read() };
+        let old_gs_base_chirho = unsafe { Msr::new(IA32_KERNEL_GS_BASE_CHIRHO).read() };
+
+        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+        if let Some(old_task_arc_chirho) = list_chirho
+            .iter()
+            .find(|task_arc_chirho| task_arc_chirho.lock().pid_chirho == old_pid_value_chirho)
+        {
+            let mut old_task_guard_chirho = old_task_arc_chirho.lock();
+            old_task_guard_chirho.fs_base_chirho = old_fs_base_chirho;
+            old_task_guard_chirho.gs_base_chirho = old_gs_base_chirho;
+        }
+    }
+
     // Look up the target task's address-space and thread-pointer state.
     let (new_pt_root_chirho, new_fs_base_chirho, new_gs_base_chirho) = {
         let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
@@ -270,10 +289,6 @@ fn arch_prepare_switch_chirho(next_pid_chirho: u64) {
     // User GS is restored via SWAPGS, so while in kernel mode we program the
     // user value into IA32_KERNEL_GS_BASE rather than clobbering the active
     // kernel GS base.
-    use x86_64::registers::model_specific::Msr;
-    const IA32_FS_BASE_CHIRHO: u32 = 0xC000_0100;
-    const IA32_KERNEL_GS_BASE_CHIRHO: u32 = 0xC000_0102;
-
     unsafe {
         Msr::new(IA32_FS_BASE_CHIRHO).write(new_fs_base_chirho);
         Msr::new(IA32_KERNEL_GS_BASE_CHIRHO).write(new_gs_base_chirho);
@@ -412,7 +427,7 @@ pub fn schedule_chirho() {
                 // Switch CR3 to the new task's page table BEFORE context switch.
                 // This is safe because kernel stacks are in the upper half
                 // (PML4[256+]) which is shared across ALL page tables.
-                arch_prepare_switch_chirho(next_chirho);
+                arch_prepare_switch_chirho(old_pid_chirho, next_chirho);
 
                 // Set kernel stack + current task for the new task.
                 {
