@@ -1360,8 +1360,16 @@ pub fn process_ipv4_packet_chirho(data_chirho: &[u8]) -> Option<Vec<u8>> {
             deliver_udp_packet_chirho(&ip_hdr_chirho, &udp_chirho);
             None
         }
-        // TCP is handled by deliver_tcp_from_frame_chirho in poll_network_chirho.
-        // Do NOT also handle it here — double delivery corrupts recv_buf.
+        IP_PROTO_TCP_CHIRHO => {
+            // Deliver TCP segment to the matching socket's recv buffer.
+            // This is the interrupt-driven path (VirtIO-net → IP dispatch).
+            // poll_network_chirho also calls deliver_tcp_from_frame_chirho
+            // but only for packets it reads directly from the VirtIO ring —
+            // packets already consumed by the interrupt handler won't be
+            // seen by poll_network, so there's no double delivery.
+            deliver_tcp_from_frame_chirho(data_chirho);
+            None
+        }
         _ => {
             crate::serial_debug_chirho!(
                 "[NET] Unhandled IPv4 protocol {}",
@@ -4713,13 +4721,11 @@ fn process_received_frame_chirho(frame_data_chirho: &[u8], iface_idx_chirho: usi
             }
         }
         ETHERTYPE_IPV4_CHIRHO => {
-            // Process IPv4 packet.
+            // Process IPv4 packet (handles ICMP, UDP, and TCP).
+            // TCP is delivered to socket recv buffers inside process_ipv4.
             if let Some(response_chirho) = process_ipv4_packet_chirho(&frame_chirho.payload_chirho) {
-                // If there's a response (e.g., ICMP echo reply), send it out.
                 let _ = send_ip_packet_chirho(&response_chirho);
             }
-            // Also deliver TCP segments to sockets.
-            deliver_tcp_from_frame_chirho(&frame_chirho.payload_chirho);
         }
         _ => {
             // Unknown ethertype, ignore.
