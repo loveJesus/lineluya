@@ -790,10 +790,14 @@ impl TcpControlBlockChirho {
                     return Some(self.make_ack_chirho(local_port_chirho, segment_chirho.src_port_chirho));
                 }
 
-                // Data received
+                // Data received — only accept in-order segments
                 if !segment_chirho.payload_chirho.is_empty() {
-                    self.rcv_nxt_chirho = segment_chirho.seq_num_chirho
-                        .wrapping_add(segment_chirho.payload_chirho.len() as u32);
+                    if segment_chirho.seq_num_chirho == self.rcv_nxt_chirho {
+                        // In-order: advance rcv_nxt
+                        self.rcv_nxt_chirho = segment_chirho.seq_num_chirho
+                            .wrapping_add(segment_chirho.payload_chirho.len() as u32);
+                    }
+                    // Always ACK with current rcv_nxt (duplicate ACK for OOO)
                     return Some(self.make_ack_chirho(local_port_chirho, segment_chirho.src_port_chirho));
                 }
                 None
@@ -4541,32 +4545,46 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
     }
     drop(table_chirho);
     if let Some((idx_chirho, rport_chirho, rip_chirho, sip_chirho)) = info_chirho {
-        let mut t2_chirho = SOCKET_TABLE_CHIRHO.lock();
-        if let Some(Some(ref mut ts_chirho)) = t2_chirho.get_mut(idx_chirho) {
-            if let Some(seg_chirho) = ts_chirho.tcb_chirho.make_data_segment_chirho(
-                2222, rport_chirho, data_chirho,
-            ) {
-                let ck_chirho = seg_chirho.compute_checksum_chirho(sip_chirho, rip_chirho);
-                let mut sc_chirho = seg_chirho;
-                sc_chirho.checksum_chirho = ck_chirho;
-                let tb_chirho = sc_chirho.build_chirho();
-                let ih_chirho = Ipv4HeaderChirho {
-                    version_chirho: 4, ihl_chirho: 5, tos_chirho: 0,
-                    total_length_chirho: 20 + tb_chirho.len() as u16,
-                    id_chirho: 0, flags_chirho: 0x02, fragment_offset_chirho: 0,
-                    ttl_chirho: 64, protocol_chirho: IP_PROTO_TCP_CHIRHO,
-                    checksum_chirho: 0, src_ip_chirho: sip_chirho, dst_ip_chirho: rip_chirho,
-                };
-                let mut p_chirho = ih_chirho.build_chirho();
-                p_chirho.extend_from_slice(&tb_chirho);
-                drop(t2_chirho);
-                crate::serial_println_chirho!(
-                    "[NET] SSH-RELAY(pipe): {} bytes -> TCP seq={} ack={} dst={}:{}",
-                    data_chirho.len(), sc_chirho.seq_num_chirho, sc_chirho.ack_num_chirho,
-                    format_ip_chirho(rip_chirho), rport_chirho,
-                );
-                let _ = send_ip_packet_chirho(&p_chirho);
+        // MSS: max TCP payload per segment. Ethernet MTU=1500, minus
+        // 20 IP header, 20 TCP header = 1460 bytes max payload.
+        const MSS_CHIRHO: usize = 1460;
+        let mut offset_chirho: usize = 0;
+
+        while offset_chirho < data_chirho.len() {
+            let end_chirho = core::cmp::min(offset_chirho + MSS_CHIRHO, data_chirho.len());
+            let chunk_chirho = &data_chirho[offset_chirho..end_chirho];
+
+            let mut t2_chirho = SOCKET_TABLE_CHIRHO.lock();
+            if let Some(Some(ref mut ts_chirho)) = t2_chirho.get_mut(idx_chirho) {
+                if let Some(seg_chirho) = ts_chirho.tcb_chirho.make_data_segment_chirho(
+                    2222, rport_chirho, chunk_chirho,
+                ) {
+                    let ck_chirho = seg_chirho.compute_checksum_chirho(sip_chirho, rip_chirho);
+                    let mut sc_chirho = seg_chirho;
+                    sc_chirho.checksum_chirho = ck_chirho;
+                    let tb_chirho = sc_chirho.build_chirho();
+                    let ih_chirho = Ipv4HeaderChirho {
+                        version_chirho: 4, ihl_chirho: 5, tos_chirho: 0,
+                        total_length_chirho: 20 + tb_chirho.len() as u16,
+                        id_chirho: 0, flags_chirho: 0x02, fragment_offset_chirho: 0,
+                        ttl_chirho: 64, protocol_chirho: IP_PROTO_TCP_CHIRHO,
+                        checksum_chirho: 0, src_ip_chirho: sip_chirho, dst_ip_chirho: rip_chirho,
+                    };
+                    let mut p_chirho = ih_chirho.build_chirho();
+                    p_chirho.extend_from_slice(&tb_chirho);
+                    drop(t2_chirho);
+                    crate::serial_println_chirho!(
+                        "[NET] SSH-RELAY(pipe): {} bytes -> TCP seq={} ack={}",
+                        chunk_chirho.len(), sc_chirho.seq_num_chirho, sc_chirho.ack_num_chirho,
+                    );
+                    let _ = send_ip_packet_chirho(&p_chirho);
+                } else {
+                    break;
+                }
+            } else {
+                break;
             }
+            offset_chirho = end_chirho;
         }
     }
 }
