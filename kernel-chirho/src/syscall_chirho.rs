@@ -2700,16 +2700,9 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
     }
 
-    // Do NOT wake the parent wait queue here.  The current workaround does
-    // not return control to the waiting parent; it kills that parent shell
-    // and re-execs a fresh shell in the exiting task's context below.
-    //
-    // Waking the parent before that handoff introduces a race on faster KVM
-    // runs: the parent can become runnable, observe partial teardown, and then
-    // get removed from the scheduler underneath it.
-    //
-    // Context switch back to parent still fails even with Codex's naked
-    // wrapper, so keep the shell re-exec workaround but avoid the wakeup race.
+    // Shell re-exec workaround: kill the parent shell and re-exec a fresh
+    // shell in the exiting task's context. Context switch back to parent
+    // still has issues (3rd generation fork child hangs in userspace).
     let parent_pid_chirho = threads_chirho.first().map(|&(_, pp)| pp).unwrap_or(0);
     crate::scheduler_chirho::remove_task_chirho(parent_pid_chirho);
     if let Some(t_chirho) = crate::task_chirho::find_task_by_pid_chirho(parent_pid_chirho) {
@@ -2723,6 +2716,16 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         task_chirho.ppid_chirho = 0;
         task_chirho.state_chirho = crate::task_chirho::TaskStateChirho::RunningChirho;
         task_chirho.exit_code_chirho = 0;
+        // CRITICAL: Clear per-process page table so the re-exec'd shell
+        // uses the boot PML4. exec_init maps BusyBox into the boot PML4,
+        // not the per-process PT. If we keep the old PT, the next fork
+        // clones stale mappings instead of getting fresh ones from boot.
+        task_chirho.page_table_root_chirho = None;
+    }
+    // Switch back to boot PML4 before exec_init
+    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+    if boot_pml4_chirho.as_u64() != 0 {
+        unsafe { crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho); }
     }
     crate::exec_chirho::exec_init_chirho();
 
