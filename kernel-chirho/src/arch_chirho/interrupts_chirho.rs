@@ -377,13 +377,27 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     if is_present_chirho {
                         let page_chirho: Page<Size4KiB> = Page::containing_address(fault_addr_chirho);
                         if let Some(ref mut mapper_chirho) = *crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.lock() {
-                            let _ = unsafe { mapper_chirho.update_flags(page_chirho, rw_flags_chirho) }
-                                .map(|f_chirho| f_chirho.flush());
+                            match unsafe { mapper_chirho.update_flags(page_chirho, rw_flags_chirho) } {
+                                Ok(flush_chirho) => flush_chirho.flush(),
+                                Err(map_error_chirho) => {
+                                    crate::serial_println_chirho!(
+                                        "[PF] update_flags failed for {:#x}: {:?}",
+                                        page_vaddr_chirho,
+                                        map_error_chirho
+                                    );
+                                }
+                            }
                         }
                     }
-                    let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                    if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
                         current_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
-                    );
+                    ) {
+                        crate::serial_println_chirho!(
+                            "[PF] lazy migrate failed for {:#x}: {:?}",
+                            page_vaddr_chirho,
+                            map_error_chirho
+                        );
+                    }
                     x86_64::instructions::tlb::flush(fault_addr_chirho);
                     return;
                 }
@@ -401,11 +415,25 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
                     if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
                         let phys_chirho = frame_chirho.start_address().as_u64();
-                        let _ = unsafe { mapper_chirho.map_to(page_chirho, frame_chirho, rw_flags_chirho, alloc_chirho) }
-                            .map(|f_chirho| f_chirho.flush());
-                        let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                        match unsafe { mapper_chirho.map_to(page_chirho, frame_chirho, rw_flags_chirho, alloc_chirho) } {
+                            Ok(flush_chirho) => flush_chirho.flush(),
+                            Err(map_error_chirho) => {
+                                crate::serial_println_chirho!(
+                                    "[PF] boot map_to failed for {:#x}: {:?}",
+                                    page_vaddr_chirho,
+                                    map_error_chirho
+                                );
+                            }
+                        }
+                        if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
                             current_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
-                        );
+                        ) {
+                            crate::serial_println_chirho!(
+                                "[PF] per-process map failed for {:#x}: {:?}",
+                                page_vaddr_chirho,
+                                map_error_chirho
+                            );
+                        }
                         x86_64::instructions::tlb::flush(fault_addr_chirho);
                         unsafe { core::ptr::write_bytes(page_vaddr_chirho as *mut u8, 0, 4096); }
                         return;
@@ -476,12 +504,18 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     // ALSO map in the current (per-process) PML4.
                     // Without this, the page exists in the boot PML4 but
                     // not the current PML4, causing infinite page faults.
-                    let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                    if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
                         current_pml4_chirho,
                         page_vaddr_chirho,
                         frame_phys_chirho,
                         flags_chirho,
-                    );
+                    ) {
+                        crate::serial_println_chirho!(
+                            "[PF] user per-process map failed for {:#x}: {:?}",
+                            page_vaddr_chirho,
+                            map_error_chirho
+                        );
+                    }
                     x86_64::instructions::tlb::flush(fault_addr_chirho);
 
                     // Zero the page.

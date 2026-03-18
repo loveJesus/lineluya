@@ -3329,9 +3329,11 @@ fn sys_select_chirho(
     let mut fds_buf_chirho = [0u8; 128];
     let set_size_chirho = if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
         let sz_chirho = core::cmp::min(128, ((nfds_chirho as usize + 7) / 8));
-        let _ = crate::uaccess_chirho::copy_from_user_chirho(
+        if crate::uaccess_chirho::copy_from_user_chirho(
             &mut fds_buf_chirho[..sz_chirho], readfds_ptr_chirho, sz_chirho,
-        );
+        ).is_err() {
+            return -EFAULT_CHIRHO;
+        }
         sz_chirho
     } else {
         0
@@ -3389,9 +3391,11 @@ fn sys_select_chirho(
         }
         if count_chirho > 0 && readfds_ptr_chirho != 0 {
             // Write the modified fd_set back to userspace.
-            let _ = crate::uaccess_chirho::copy_to_user_chirho(
+            if crate::uaccess_chirho::copy_to_user_chirho(
                 readfds_ptr_chirho, &out_fds_chirho[..set_size_chirho], set_size_chirho,
-            );
+            ).is_err() {
+                return -EFAULT_CHIRHO;
+            }
         }
         count_chirho
     };
@@ -3696,8 +3700,8 @@ fn sys_mount_chirho(
                     }
                 }
 
-                // Demo item: write "Aleluya" to a new file on the loop mount
-                // Write "Aleluya" to a new file on the loop mount, then read it back.
+                // Demo: write "Aleluya" to a new file on the loop mount,
+                // then read it back to verify the full write pipeline.
                 crate::serial_println_chirho!("[MOUNT] Writing aleluya_chirho.txt...");
                 let write_data_chirho = b"Aleluya! Hallelujah! Glory to God in Jesus name!\n";
                 match crate::ext4_chirho::write_and_readback_chirho(
@@ -3730,13 +3734,18 @@ fn sys_mount_chirho(
                             flags_chirho: 0,
                             ops_chirho: dir_ops_chirho,
                         };
-                        let _ = file_chirho.ops_chirho.readdir_chirho(
+                        if let Err(readdir_error_chirho) = file_chirho.ops_chirho.readdir_chirho(
                             &mut file_chirho,
                             &mut |name_chirho, _ino, _type| {
                                 entries_chirho.push(alloc::string::String::from(name_chirho));
                                 true
                             },
-                        );
+                        ) {
+                            crate::serial_println_chirho!(
+                                "[MOUNT] /mnt readdir failed during debug listing: {}",
+                                readdir_error_chirho
+                            );
+                        }
                         crate::serial_println_chirho!(
                             "[MOUNT] /mnt/ listing: {:?}",
                             entries_chirho
@@ -5713,8 +5722,16 @@ fn sys_ppoll_chirho(
         ).is_err() {
             return -EFAULT_CHIRHO;
         }
-        let sec_chirho = i64::from_ne_bytes(ts_buf_chirho[0..8].try_into().unwrap());
-        let nsec_chirho = i64::from_ne_bytes(ts_buf_chirho[8..16].try_into().unwrap());
+        let sec_bytes_chirho = match <[u8; 8]>::try_from(&ts_buf_chirho[0..8]) {
+            Ok(bytes_chirho) => bytes_chirho,
+            Err(_) => return -EFAULT_CHIRHO,
+        };
+        let nsec_bytes_chirho = match <[u8; 8]>::try_from(&ts_buf_chirho[8..16]) {
+            Ok(bytes_chirho) => bytes_chirho,
+            Err(_) => return -EFAULT_CHIRHO,
+        };
+        let sec_chirho = i64::from_ne_bytes(sec_bytes_chirho);
+        let nsec_chirho = i64::from_ne_bytes(nsec_bytes_chirho);
         // Convert to milliseconds, cap at i32::MAX
         let ms_chirho = sec_chirho.saturating_mul(1000)
             .saturating_add(nsec_chirho / 1_000_000);
@@ -5757,8 +5774,16 @@ fn sys_clock_nanosleep_chirho(
         return -EFAULT_CHIRHO;
     }
 
-    let sec_chirho = i64::from_ne_bytes(ts_buf_chirho[0..8].try_into().unwrap());
-    let nsec_chirho = i64::from_ne_bytes(ts_buf_chirho[8..16].try_into().unwrap());
+    let sec_bytes_chirho = match <[u8; 8]>::try_from(&ts_buf_chirho[0..8]) {
+        Ok(bytes_chirho) => bytes_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+    let nsec_bytes_chirho = match <[u8; 8]>::try_from(&ts_buf_chirho[8..16]) {
+        Ok(bytes_chirho) => bytes_chirho,
+        Err(_) => return -EFAULT_CHIRHO,
+    };
+    let sec_chirho = i64::from_ne_bytes(sec_bytes_chirho);
+    let nsec_chirho = i64::from_ne_bytes(nsec_bytes_chirho);
 
     // Validate
     if nsec_chirho < 0 || nsec_chirho >= 1_000_000_000 {

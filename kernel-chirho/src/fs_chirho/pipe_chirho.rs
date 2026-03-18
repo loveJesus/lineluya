@@ -178,7 +178,16 @@ impl FileOpsChirho for PipeReadOpsChirho {
                     let mut pipe_drain_chirho = self.pipe_chirho.lock();
                     let actual_chirho = buf_chirho.len().min(pipe_drain_chirho.buffer_chirho.len());
                     for i_chirho in 0..actual_chirho {
-                        buf_chirho[i_chirho] = pipe_drain_chirho.buffer_chirho.pop_front().unwrap();
+                        let byte_chirho = match pipe_drain_chirho.buffer_chirho.pop_front() {
+                            Some(byte_chirho) => byte_chirho,
+                            None => {
+                                crate::serial_println_chirho!(
+                                    "[PIPE] read underflow after relay wake"
+                                );
+                                return Ok(i_chirho);
+                            }
+                        };
+                        buf_chirho[i_chirho] = byte_chirho;
                     }
                     return Ok(actual_chirho);
                 }
@@ -192,7 +201,14 @@ impl FileOpsChirho for PipeReadOpsChirho {
 
         let to_read_chirho = buf_chirho.len().min(pipe_chirho.buffer_chirho.len());
         for i_chirho in 0..to_read_chirho {
-            buf_chirho[i_chirho] = pipe_chirho.buffer_chirho.pop_front().unwrap();
+            let byte_chirho = match pipe_chirho.buffer_chirho.pop_front() {
+                Some(byte_chirho) => byte_chirho,
+                None => {
+                    crate::serial_println_chirho!("[PIPE] read underflow");
+                    return Ok(i_chirho);
+                }
+            };
+            buf_chirho[i_chirho] = byte_chirho;
         }
         Ok(to_read_chirho)
     }

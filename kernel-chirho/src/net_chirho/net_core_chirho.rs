@@ -1121,12 +1121,15 @@ impl RoutingTableChirho {
         for entry_chirho in &self.entries_chirho {
             if entry_chirho.matches_chirho(dst_chirho) {
                 let pfx_len_chirho = entry_chirho.prefix_len_chirho();
-                if best_chirho.is_none()
-                    || pfx_len_chirho > best_prefix_len_chirho
-                    || (pfx_len_chirho == best_prefix_len_chirho
-                        && entry_chirho.metric_chirho
-                            < best_chirho.unwrap().metric_chirho)
-                {
+                let should_replace_chirho = match best_chirho {
+                    None => true,
+                    Some(best_entry_chirho) => {
+                        pfx_len_chirho > best_prefix_len_chirho
+                            || (pfx_len_chirho == best_prefix_len_chirho
+                                && entry_chirho.metric_chirho < best_entry_chirho.metric_chirho)
+                    }
+                };
+                if should_replace_chirho {
                     best_chirho = Some(entry_chirho);
                     best_prefix_len_chirho = pfx_len_chirho;
                 }
@@ -1794,7 +1797,17 @@ impl FileOpsChirho for SocketFileOpsChirho {
                             .ok_or(-EBADF_CHIRHO)?;
                         let count_chirho = core::cmp::min(buf_chirho.len(), sock3_chirho.recv_buf_chirho.len());
                         for i_chirho in 0..count_chirho {
-                            buf_chirho[i_chirho] = sock3_chirho.recv_buf_chirho.pop_front().unwrap();
+                            let byte_chirho = match sock3_chirho.recv_buf_chirho.pop_front() {
+                                Some(byte_chirho) => byte_chirho,
+                                None => {
+                                    crate::serial_println_chirho!(
+                                        "[NET] socket recv underflow after wake on slot {}",
+                                        socket_idx_chirho
+                                    );
+                                    return Ok(i_chirho);
+                                }
+                            };
+                            buf_chirho[i_chirho] = byte_chirho;
                         }
                         return Ok(count_chirho);
                     }
@@ -1809,7 +1822,17 @@ impl FileOpsChirho for SocketFileOpsChirho {
 
         let count_chirho = core::cmp::min(buf_chirho.len(), socket_chirho.recv_buf_chirho.len());
         for i_chirho in 0..count_chirho {
-            buf_chirho[i_chirho] = socket_chirho.recv_buf_chirho.pop_front().unwrap();
+            let byte_chirho = match socket_chirho.recv_buf_chirho.pop_front() {
+                Some(byte_chirho) => byte_chirho,
+                None => {
+                    crate::serial_println_chirho!(
+                        "[NET] socket recv underflow on slot {}",
+                        socket_idx_chirho
+                    );
+                    return Ok(i_chirho);
+                }
+            };
+            buf_chirho[i_chirho] = byte_chirho;
         }
         Ok(count_chirho)
     }
@@ -2237,9 +2260,13 @@ pub fn sys_bind_chirho(
     }
 
     // Now mutate
-    let socket_chirho = table_chirho.get_mut(socket_idx_chirho)
+    let socket_chirho = match table_chirho
+        .get_mut(socket_idx_chirho)
         .and_then(|s_chirho| s_chirho.as_mut())
-        .unwrap();
+    {
+        Some(socket_chirho) => socket_chirho,
+        None => return -EBADF_CHIRHO,
+    };
 
     socket_chirho.local_addr_chirho = parsed_addr_chirho;
     socket_chirho.state_chirho = SocketStateChirho::BoundChirho;
@@ -2426,7 +2453,15 @@ pub fn sys_connect_chirho(
 
         // For SOCK_STREAM, perform TCP active open
         if sock_type_val_chirho == Some(SocketTypeChirho::SockStreamChirho) {
-            let local_port_chirho = local_addr_val_chirho.unwrap().port_chirho;
+            let local_port_chirho = match local_addr_val_chirho {
+                Some(local_addr_chirho) => local_addr_chirho.port_chirho,
+                None => {
+                    crate::serial_println_chirho!(
+                        "[NET] sys_connect: missing local address after bind"
+                    );
+                    return -EINVAL_CHIRHO;
+                }
+            };
             let remote_port_chirho = dest_addr_chirho.port_chirho;
 
             match socket_chirho.tcb_chirho.active_open_chirho(local_port_chirho, remote_port_chirho) {
@@ -2473,8 +2508,21 @@ pub fn sys_connect_chirho(
     if let Some(listener_idx_val_chirho) = listener_idx_chirho {
         // Extract listener properties
         let (listener_family_chirho, listener_sock_type_chirho, listener_local_addr_chirho) = {
-            let listener_chirho = table_chirho[listener_idx_val_chirho].as_ref().unwrap();
-            (listener_chirho.family_chirho, listener_chirho.sock_type_chirho, listener_chirho.local_addr_chirho)
+            let listener_chirho = match table_chirho[listener_idx_val_chirho].as_ref() {
+                Some(listener_chirho) => listener_chirho,
+                None => {
+                    crate::serial_println_chirho!(
+                        "[NET] sys_connect: listener slot {} disappeared",
+                        listener_idx_val_chirho
+                    );
+                    return -ECONNREFUSED_CHIRHO;
+                }
+            };
+            (
+                listener_chirho.family_chirho,
+                listener_chirho.sock_type_chirho,
+                listener_chirho.local_addr_chirho,
+            )
         };
 
         // Create the child (accepted) socket in ESTABLISHED state
@@ -2549,7 +2597,15 @@ pub fn sys_connect_chirho(
         return -99; // ENETUNREACH
     }
 
-    let local_port_chirho = local_addr_chirho.unwrap().port_chirho;
+    let local_port_chirho = match local_addr_chirho {
+        Some(local_addr_chirho) => local_addr_chirho.port_chirho,
+        None => {
+            crate::serial_println_chirho!(
+                "[NET] sys_connect: local address missing before SYN"
+            );
+            return -EINVAL_CHIRHO;
+        }
+    };
     let remote_port_chirho = dest_addr_chirho.port_chirho;
     let remote_ip_chirho = dest_addr_chirho.addr_chirho;
 
@@ -3052,7 +3108,16 @@ pub fn sys_recvfrom_chirho(
         if buf_chirho != 0 && count_chirho > 0 {
             let ptr_chirho = buf_chirho as *mut u8;
             for i_chirho in 0..count_chirho {
-                let byte_chirho = socket_final_chirho.recv_buf_chirho.pop_front().unwrap();
+                let byte_chirho = match socket_final_chirho.recv_buf_chirho.pop_front() {
+                    Some(byte_chirho) => byte_chirho,
+                    None => {
+                        crate::serial_println_chirho!(
+                            "[NET] recvfrom polled underflow on socket {}",
+                            socket_idx_chirho
+                        );
+                        return i_chirho as i64;
+                    }
+                };
                 unsafe { core::ptr::write_volatile(ptr_chirho.add(i_chirho), byte_chirho) };
             }
         }
@@ -3064,7 +3129,16 @@ pub fn sys_recvfrom_chirho(
     if buf_chirho != 0 && count_chirho > 0 {
         let ptr_chirho = buf_chirho as *mut u8;
         for i_chirho in 0..count_chirho {
-            let byte_chirho = socket_chirho.recv_buf_chirho.pop_front().unwrap();
+            let byte_chirho = match socket_chirho.recv_buf_chirho.pop_front() {
+                Some(byte_chirho) => byte_chirho,
+                None => {
+                    crate::serial_println_chirho!(
+                        "[NET] recvfrom underflow on socket {}",
+                        socket_idx_chirho
+                    );
+                    return i_chirho as i64;
+                }
+            };
             unsafe { core::ptr::write_volatile(ptr_chirho.add(i_chirho), byte_chirho) };
         }
     }
@@ -4692,9 +4766,10 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
     }
 
     // Use target_idx (connected socket) or listen_idx (fallback).
-    let sock_idx_chirho = target_idx_chirho.or(listen_idx_chirho);
-    if sock_idx_chirho.is_none() { return; }
-    let sock_idx_chirho = sock_idx_chirho.unwrap();
+    let sock_idx_chirho = match target_idx_chirho.or(listen_idx_chirho) {
+        Some(sock_idx_chirho) => sock_idx_chirho,
+        None => return,
+    };
 
     if let Some(ref mut sock_chirho) = table_chirho[sock_idx_chirho] {
         let local_port_chirho = sock_chirho.local_addr_chirho
@@ -5445,7 +5520,10 @@ pub fn tcp_connect_real_chirho(
 
     {
         let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
-        let sock_chirho = table_chirho[socket_idx_chirho].as_mut().unwrap();
+        let sock_chirho = match table_chirho[socket_idx_chirho].as_mut() {
+            Some(sock_chirho) => sock_chirho,
+            None => return Err(-EBADF_CHIRHO),
+        };
         sock_chirho.local_addr_chirho = Some(SockAddrInChirho {
             port_chirho: src_port_chirho,
             addr_chirho: src_ip_chirho,

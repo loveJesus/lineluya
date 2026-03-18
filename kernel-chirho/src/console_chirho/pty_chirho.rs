@@ -306,8 +306,19 @@ impl FileOpsChirho for PtyMasterOpsChirho {
         }
 
         let count_chirho = buf_chirho.len().min(ring_chirho.len());
+        let ino_chirho = file_chirho.inode_chirho.lock().ino_chirho;
         for i_chirho in 0..count_chirho {
-            buf_chirho[i_chirho] = ring_chirho.pop_front().unwrap();
+            let byte_chirho = match ring_chirho.pop_front() {
+                Some(byte_chirho) => byte_chirho,
+                None => {
+                    crate::serial_println_chirho!(
+                        "[PTY] master read underflow on inode {}",
+                        ino_chirho
+                    );
+                    return Ok(i_chirho);
+                }
+            };
+            buf_chirho[i_chirho] = byte_chirho;
         }
         Ok(count_chirho)
     }
@@ -407,8 +418,19 @@ impl FileOpsChirho for PtySlaveOpsChirho {
         }
 
         let count_chirho = buf_chirho.len().min(ring_chirho.len());
+        let ino_chirho = file_chirho.inode_chirho.lock().ino_chirho;
         for i_chirho in 0..count_chirho {
-            buf_chirho[i_chirho] = ring_chirho.pop_front().unwrap();
+            let byte_chirho = match ring_chirho.pop_front() {
+                Some(byte_chirho) => byte_chirho,
+                None => {
+                    crate::serial_println_chirho!(
+                        "[PTY] slave read underflow on inode {}",
+                        ino_chirho
+                    );
+                    return Ok(i_chirho);
+                }
+            };
+            buf_chirho[i_chirho] = byte_chirho;
         }
         Ok(count_chirho)
     }

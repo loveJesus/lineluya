@@ -1292,7 +1292,7 @@ pub fn exec_init_chirho() {
         let mut guard_chirho = mm_lock_chirho.lock();
         if let Some(mm_chirho) = guard_chirho.as_mut() {
             // Pre-map brk region (4MB after the last loaded segment)
-            let _ = mm_chirho.mmap_chirho(
+            if let Err(mmap_error_chirho) = mm_chirho.mmap_chirho(
                 brk_chirho,
                 heap_size_chirho,
                 crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
@@ -1301,11 +1301,17 @@ pub fn exec_init_chirho() {
                     | crate::mm_chirho::MAP_FIXED_CHIRHO,
                 -1i32,
                 0,
-            );
+            ) {
+                crate::serial_println_chirho!(
+                    "[EXEC] brk pre-map failed at {:#x}: {}",
+                    brk_chirho,
+                    mmap_error_chirho
+                );
+            }
             // Pre-map 1MB region covering musl's mmap area (grows down from 0x7F0000000000).
             let mmap_top_chirho: u64 = 0x7F00_0000_0000;
             let mmap_size_chirho: u64 = 1024 * 1024; // 1MB
-            let _ = mm_chirho.mmap_chirho(
+            if let Err(mmap_error_chirho) = mm_chirho.mmap_chirho(
                 mmap_top_chirho - mmap_size_chirho,
                 mmap_size_chirho,
                 crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
@@ -1314,12 +1320,18 @@ pub fn exec_init_chirho() {
                     | crate::mm_chirho::MAP_FIXED_CHIRHO,
                 -1i32,
                 0,
-            );
+            ) {
+                crate::serial_println_chirho!(
+                    "[EXEC] mmap arena pre-map failed at {:#x}: {}",
+                    mmap_top_chirho - mmap_size_chirho,
+                    mmap_error_chirho
+                );
+            }
             // Pre-map the gap between ELF segments (0x512000..0x711000).
             // BusyBox accesses this gap during init.
             let gap_start_chirho: u64 = 0x512000;
             let gap_end_chirho: u64 = 0x711000;
-            let _ = mm_chirho.mmap_chirho(
+            if let Err(mmap_error_chirho) = mm_chirho.mmap_chirho(
                 gap_start_chirho,
                 gap_end_chirho - gap_start_chirho,
                 crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
@@ -1328,7 +1340,13 @@ pub fn exec_init_chirho() {
                     | crate::mm_chirho::MAP_FIXED_CHIRHO,
                 -1i32,
                 0,
-            );
+            ) {
+                crate::serial_println_chirho!(
+                    "[EXEC] ELF gap pre-map failed at {:#x}: {}",
+                    gap_start_chirho,
+                    mmap_error_chirho
+                );
+            }
 
         }
         serial_debug_chirho!("[EXEC] Pre-mapped heap + mmap + ELF gap");

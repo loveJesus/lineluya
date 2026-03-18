@@ -2086,11 +2086,16 @@ fn probe_ext4_and_mount_chirho() {
         match crate::fs_chirho::resolve_parent_live_chirho("/mnt") {
             Ok((parent_chirho, name_chirho)) => {
                 let parent_guard_chirho = parent_chirho.lock();
-                let _ = parent_guard_chirho.ops_chirho.mkdir_chirho(
+                if let Err(mkdir_error_chirho) = parent_guard_chirho.ops_chirho.mkdir_chirho(
                     &parent_guard_chirho,
                     &name_chirho,
                     0o755,
-                );
+                ) {
+                    crate::serial_debug_chirho!(
+                        "[EXT4] verify mount: mkdir /mnt shim failed: {}",
+                        mkdir_error_chirho
+                    );
+                }
             }
             Err(_) => {}
         }
@@ -2130,13 +2135,18 @@ fn verify_ext4_mount_chirho() {
             };
 
             let mut entry_names_chirho: Vec<String> = Vec::new();
-            let _ = file_ops_chirho.readdir_chirho(
+            if let Err(readdir_error_chirho) = file_ops_chirho.readdir_chirho(
                 &mut file_chirho,
                 &mut |name_chirho: &str, _ino_chirho: u64, _dt_chirho: u8| -> bool {
                     entry_names_chirho.push(String::from(name_chirho));
                     true
                 },
-            );
+            ) {
+                crate::serial_debug_chirho!(
+                    "[EXT4] P2-007: /mnt readdir failed: {}",
+                    readdir_error_chirho
+                );
+            }
 
             if entry_names_chirho.is_empty() {
                 crate::serial_debug_chirho!(

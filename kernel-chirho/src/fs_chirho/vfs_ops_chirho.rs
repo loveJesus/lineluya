@@ -85,16 +85,44 @@ pub fn init_fs_chirho() {
             // These take precedence over ext4 entries when the tmpfs
             // live walk finds them first, avoiding ext4 path resolution
             // overhead for common directories.
-            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "dev", 0o755);
-            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "proc", 0o555);
-            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "tmp", 0o1777);
-            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "run", 0o755);
-            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "var", 0o755);
+            if let Err(mkdir_error_chirho) =
+                root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "dev", 0o755)
+            {
+                crate::serial_debug_chirho!("[VFS] init mkdir /dev failed: {}", mkdir_error_chirho);
+            }
+            if let Err(mkdir_error_chirho) =
+                root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "proc", 0o555)
+            {
+                crate::serial_debug_chirho!("[VFS] init mkdir /proc failed: {}", mkdir_error_chirho);
+            }
+            if let Err(mkdir_error_chirho) =
+                root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "tmp", 0o1777)
+            {
+                crate::serial_debug_chirho!("[VFS] init mkdir /tmp failed: {}", mkdir_error_chirho);
+            }
+            if let Err(mkdir_error_chirho) =
+                root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "run", 0o755)
+            {
+                crate::serial_debug_chirho!("[VFS] init mkdir /run failed: {}", mkdir_error_chirho);
+            }
+            if let Err(mkdir_error_chirho) =
+                root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "var", 0o755)
+            {
+                crate::serial_debug_chirho!("[VFS] init mkdir /var failed: {}", mkdir_error_chirho);
+            }
             // Create /bin and /sbin for BusyBox applet lookups.
             // Do NOT create /usr, /lib, /etc on tmpfs — those must resolve
             // to the ext4 rootfs so binaries like dropbear can be found.
-            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "bin", 0o755);
-            let _ = root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "sbin", 0o755);
+            if let Err(mkdir_error_chirho) =
+                root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "bin", 0o755)
+            {
+                crate::serial_debug_chirho!("[VFS] init mkdir /bin failed: {}", mkdir_error_chirho);
+            }
+            if let Err(mkdir_error_chirho) =
+                root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "sbin", 0o755)
+            {
+                crate::serial_debug_chirho!("[VFS] init mkdir /sbin failed: {}", mkdir_error_chirho);
+            }
         }
     }
 
@@ -1377,7 +1405,13 @@ pub fn close_fd_chirho(fd_chirho: u64) -> i64 {
     {
         let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
         if let Some(ref mut fd_table_chirho) = *fd_table_guard_chirho {
-            let _ = fd_table_chirho.close_chirho(fd_chirho as usize);
+            if let Err(close_error_chirho) = fd_table_chirho.close_chirho(fd_chirho as usize) {
+                crate::serial_debug_chirho!(
+                    "[VFS] global close({}) fallback failed: {}",
+                    fd_chirho,
+                    close_error_chirho
+                );
+            }
         }
     }
     if closed_in_task_chirho {

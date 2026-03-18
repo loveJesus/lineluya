@@ -589,8 +589,8 @@ mod tests_chirho {
         assert_eq!(slice_chirho.len_chirho(), 0);
 
         let mut buf_chirho = [0u8; 4];
-        let n_chirho = slice_chirho.read_to_chirho(&mut buf_chirho).unwrap();
-        assert_eq!(n_chirho, 0);
+        let n_chirho = slice_chirho.read_to_chirho(&mut buf_chirho);
+        assert_eq!(n_chirho, Ok(0));
     }
 
     #[test]

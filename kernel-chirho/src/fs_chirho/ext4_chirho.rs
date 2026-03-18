@@ -2554,11 +2554,17 @@ impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
             block_buf_chirho = [0u8; 4096];
 
             // Try to read the existing block data
-            let _ = mount_guard_chirho.read_block_by_logical_into_chirho(
+            if mount_guard_chirho.read_block_by_logical_into_chirho(
                 &ext4_inode_chirho,
                 blk_idx_chirho as u64,
                 &mut block_buf_chirho,
-            );
+            ).is_none() {
+                crate::serial_debug_chirho!(
+                    "[EXT4] write: logical block {} not readable before overwrite (ino={})",
+                    blk_idx_chirho,
+                    ino_chirho
+                );
+            }
 
             // Calculate the write range within this block
             let write_start_in_block_chirho = if block_start_chirho < pos_chirho {
@@ -2591,9 +2597,21 @@ impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
 
             if let Some(pb_chirho) = phys_block_chirho {
                 // Write the modified block to the existing physical block.
-                // Ignore errors — the root ext4 may be ReadOnly, but the
-                // loop mount's page cache will still have the data.
-                let _ = mount_guard_chirho.write_block_chirho(pb_chirho, &block_buf_chirho);
+                // Loop-device write-through intentionally tolerates a
+                // ReadOnly rootfs backing file, but all other failures
+                // should be surfaced in the log instead of discarded.
+                if let Err(write_error_chirho) =
+                    mount_guard_chirho.write_block_chirho(pb_chirho, &block_buf_chirho)
+                {
+                    if !matches!(write_error_chirho, Ext4ErrorChirho::ReadOnlyChirho) {
+                        crate::serial_println_chirho!(
+                            "[EXT4] write: block {} physical {} write failed: {}",
+                            blk_idx_chirho,
+                            pb_chirho,
+                            write_error_chirho
+                        );
+                    }
+                }
             } else {
                 // Block doesn't exist yet — need to allocate.
                 // For now, fall back to full-file write for new blocks.
@@ -2618,7 +2636,16 @@ impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
                     }
                 }
                 full_data_chirho[pos_chirho..new_end_chirho].copy_from_slice(buf_chirho);
-                let _ = mount_guard_chirho.write_file_data_chirho(ino_chirho, &full_data_chirho);
+                if let Err(write_error_chirho) =
+                    mount_guard_chirho.write_file_data_chirho(ino_chirho, &full_data_chirho)
+                {
+                    crate::serial_println_chirho!(
+                        "[EXT4] write: full-file fallback failed for inode {}: {}",
+                        ino_chirho,
+                        write_error_chirho
+                    );
+                    return Err(write_error_chirho.to_errno_chirho());
+                }
                 // Update inode size
                 let mut inode_guard2_chirho = file_chirho.inode_chirho.lock();
                 inode_guard2_chirho.size_chirho = final_size_chirho as u64;
@@ -3060,22 +3087,6 @@ pub fn write_and_readback_chirho(
     // through the loop device to the root VirtIO disk in that case).
     let inode_chirho = mount_chirho.read_inode_chirho(new_ino_chirho)
         .ok_or("inode read failed after write")?;
-
-    {
-        let sz_chirho = inode_chirho.size_chirho();
-        let fl_chirho = { inode_chirho.i_flags_chirho };
-        let ext_chirho = inode_chirho.uses_extents_chirho();
-        let b0_chirho = { inode_chirho.i_block_chirho[0] };
-        let b1_chirho = { inode_chirho.i_block_chirho[1] };
-        let b3_chirho = { inode_chirho.i_block_chirho[3] };
-        let b4_chirho = { inode_chirho.i_block_chirho[4] };
-        let b5_chirho = { inode_chirho.i_block_chirho[5] };
-        crate::serial_println_chirho!(
-            "[READBACK] ino={} size={} flags=0x{:x} ext={} b[0]=0x{:x} b[1]=0x{:x} b[3]=0x{:x} b[4]=0x{:x} b[5]=0x{:x}",
-            new_ino_chirho, sz_chirho, fl_chirho, ext_chirho,
-            b0_chirho, b1_chirho, b3_chirho, b4_chirho, b5_chirho,
-        );
-    }
 
     // Use the standard ext4 file data read (served from page cache)
     mount_chirho.read_file_data_chirho(&inode_chirho)
