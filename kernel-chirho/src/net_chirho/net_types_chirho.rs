@@ -148,7 +148,11 @@ pub const DEFAULT_DNS_CHIRHO: u32 = 0x08080808;
 pub const NETWORK_POLL_MAX_CHIRHO: u32 = 5_000_000;
 
 /// Spin-loop iterations for TCP recv / ARP / short polls.
-pub const NETWORK_POLL_SHORT_CHIRHO: u32 = 500_000;
+/// Reduced from 500K to 1K so recvfrom returns EAGAIN quickly.
+/// Dropbear calls read(fd, 1) in a loop — each call with 500K
+/// poll iterations blocked for ~1 second, preventing the SSH
+/// daemon from processing received data and computing the KEX response.
+pub const NETWORK_POLL_SHORT_CHIRHO: u32 = 1_000;
 
 /// Maximum bytes copied from user-space in a single send/sendto call.
 pub const SOCKET_SEND_MAX_CHIRHO: usize = 65536;

@@ -3254,8 +3254,12 @@ fn sys_poll_chirho(
             {
                 revents_chirho |= POLLIN_CHIRHO;
             }
-            // POLLOUT: sockets are always writable (simplified)
-            if pfd_chirho.events_chirho & POLLOUT_CHIRHO != 0 {
+            // POLLOUT: Don't report unconditionally — it causes dropbear
+            // to spin in its event loop (22K+ syscalls/sec) instead of
+            // processing received crypto data. Only set POLLOUT when the
+            // caller ONLY asked for POLLOUT (not POLLIN|POLLOUT together).
+            // When both are requested, let POLLIN drive the wake.
+            if pfd_chirho.events_chirho == POLLOUT_CHIRHO {
                 revents_chirho |= POLLOUT_CHIRHO;
             }
         } else {
