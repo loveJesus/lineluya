@@ -1075,6 +1075,8 @@ const F_DUPFD_CHIRHO: u64 = 0;
 const F_GETFD_CHIRHO: u64 = 1;
 /// Set file descriptor flags.
 const F_SETFD_CHIRHO: u64 = 2;
+/// `FD_CLOEXEC` bit used by `F_GETFD` / `F_SETFD`.
+const FD_CLOEXEC_CHIRHO: u64 = 1;
 /// Get file status flags.
 const F_GETFL_CHIRHO: u64 = 3;
 /// Set file status flags.
@@ -1506,7 +1508,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_CLOSE_CHIRHO => {
             let pid_dbg_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if pid_dbg_chirho >= 4 {
+            if pid_dbg_chirho >= 3 {
                 let fd0_exists_chirho = crate::fs_chirho::lookup_fd_chirho(0).is_some();
                 crate::serial_debug_chirho!(
                     "[CLOSE] pid={} close({}) fd0_exists={}",
@@ -3191,8 +3193,7 @@ fn sys_ioctl_real_chirho(
             }
         }
         FIOCLEX_CHIRHO => {
-            // Set close-on-exec: silently succeed (stub)
-            0
+            crate::fs_chirho::set_fd_cloexec_chirho(fd_chirho, true)
         }
         FIONBIO_CHIRHO => {
             if arg_chirho == 0 {
@@ -3460,9 +3461,12 @@ fn sys_select_chirho(
                             let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
                             let has_data_chirho = crate::net_chirho::socket_has_data_chirho(fd_chirho as u64);
                             let has_fd_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some();
+                            let inode_mode_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64)
+                                .map(|f| f.lock().inode_chirho.lock().mode_chirho)
+                                .unwrap_or(0);
                             crate::serial_println_chirho!(
-                                "[SELECT-DBG] fd={} sock={} data={} vfs={}",
-                                fd_chirho, is_sock_chirho, has_data_chirho, has_fd_chirho
+                                "[SELECT-DBG] fd={} sock={} data={} vfs={} mode={:#o}",
+                                fd_chirho, is_sock_chirho, has_data_chirho, has_fd_chirho, inode_mode_chirho
                             );
                         }
                     }
@@ -4469,12 +4473,33 @@ fn sys_fcntl_chirho(
     arg_chirho: u64,
 ) -> i64 {
     match cmd_chirho {
-        F_DUPFD_CHIRHO | F_DUPFD_CLOEXEC_CHIRHO => {
-            // Duplicate fd to lowest >= arg
+        F_DUPFD_CHIRHO => {
+            // TODO(exec-fd-compat-001): honor the minimum-fd arg precisely.
             crate::fs_chirho::sys_dup_chirho(fd_chirho)
         }
-        F_GETFD_CHIRHO => 0, // no close-on-exec set
-        F_SETFD_CHIRHO => 0, // silently accept
+        F_DUPFD_CLOEXEC_CHIRHO => {
+            let duplicated_fd_chirho = crate::fs_chirho::sys_dup_chirho(fd_chirho);
+            if duplicated_fd_chirho < 0 {
+                return duplicated_fd_chirho;
+            }
+            let cloexec_result_chirho =
+                crate::fs_chirho::set_fd_cloexec_chirho(duplicated_fd_chirho as u64, true);
+            if cloexec_result_chirho < 0 {
+                return cloexec_result_chirho;
+            }
+            duplicated_fd_chirho
+        }
+        F_GETFD_CHIRHO => {
+            match crate::fs_chirho::get_fd_cloexec_chirho(fd_chirho) {
+                Ok(true) => FD_CLOEXEC_CHIRHO as i64,
+                Ok(false) => 0,
+                Err(errno_chirho) => errno_chirho,
+            }
+        }
+        F_SETFD_CHIRHO => {
+            let enable_cloexec_chirho = (arg_chirho & FD_CLOEXEC_CHIRHO) != 0;
+            crate::fs_chirho::set_fd_cloexec_chirho(fd_chirho, enable_cloexec_chirho)
+        }
         F_GETFL_CHIRHO => {
             // Return the file's open flags from the VFS file table.
             // A2-PROC-003: Use lookup_fd_chirho (per-process first).
