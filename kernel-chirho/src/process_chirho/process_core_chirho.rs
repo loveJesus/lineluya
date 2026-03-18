@@ -105,6 +105,32 @@ const MAX_ARG_COUNT_CHIRHO: usize = 256;
 /// Maximum length of a single argv/envp string.
 const MAX_ARG_LEN_CHIRHO: usize = 4096;
 
+/// Kernel RFLAGS for the fork/clone child trampoline.
+///
+/// The child first resumes in `fork_child_return_chirho`, which is a short
+/// ring-0 trampoline that rebuilds an `iretq` frame and immediately returns to
+/// user mode. Keep interrupts masked in that transient kernel context so the
+/// timer cannot preempt the child while the frame is only partially rebuilt.
+const FORK_TRAMPOLINE_RFLAGS_CHIRHO: u64 = 0x2;
+
+fn debug_log_fork_frame_chirho(
+    kind_chirho: &str,
+    child_pid_chirho: u64,
+    frame_chirho: &SyscallFrameChirho,
+    child_pt_root_chirho: Option<x86_64::PhysAddr>,
+) {
+    let child_pt_phys_chirho = child_pt_root_chirho.map(|pt_chirho| pt_chirho.as_u64()).unwrap_or(0);
+    crate::serial_debug_chirho!(
+        "[PROCESS] {} child PID={} user_rip={:#x} user_rsp={:#x} user_rflags={:#x} child_pt={:#x}",
+        kind_chirho,
+        child_pid_chirho,
+        frame_chirho.rcx_chirho,
+        frame_chirho.rsp_chirho,
+        frame_chirho.r11_chirho,
+        child_pt_phys_chirho,
+    );
+}
+
 // ===========================================================================
 // sys_fork_chirho — REAL IMPLEMENTATION
 // ===========================================================================
@@ -160,6 +186,12 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             core::ptr::write(dst_ptr_chirho, *frame_chirho);
             // Set rax=0 in the child's copy so fork() returns 0 to the child.
             (*dst_ptr_chirho).rax_chirho = 0;
+            // CRITICAL: Set IF=1 in the child's user RFLAGS (r11 field).
+            // The parent's r11 has IF=0 because FMASK clears it on SYSCALL
+            // entry. Without this fix, the child enters userspace with
+            // interrupts disabled and can never be preempted or receive
+            // signals, causing a silent hang.
+            (*dst_ptr_chirho).r11_chirho |= 0x200; // IF flag
         }
 
         // The child's CpuContextChirho: when switch_context_chirho restores
@@ -168,7 +200,7 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
         let mut child_ctx_chirho = CpuContextChirho::zero_chirho();
         child_ctx_chirho.rip_chirho = fork_child_return_chirho as *const () as u64;
         child_ctx_chirho.rsp_chirho = frame_dst_chirho;
-        child_ctx_chirho.rflags_chirho = 0x200; // IF (interrupts enabled)
+        child_ctx_chirho.rflags_chirho = FORK_TRAMPOLINE_RFLAGS_CHIRHO;
 
         // A2-PROC-003: Clone the parent's per-process fd table.  The
         // per-process table is now the authoritative source of truth
@@ -241,6 +273,13 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
                 pt_chirho
             }
         };
+
+        debug_log_fork_frame_chirho(
+            "fork",
+            child_pid_chirho,
+            frame_chirho,
+            child_pt_root_chirho,
+        );
 
         TaskChirho {
             pid_chirho: child_pid_chirho,
@@ -352,6 +391,8 @@ pub fn sys_clone_chirho(
             let dst_ptr_chirho = frame_dst_chirho as *mut SyscallFrameChirho;
             core::ptr::write(dst_ptr_chirho, *frame_chirho);
             (*dst_ptr_chirho).rax_chirho = 0;
+            // Set IF=1 in child's user RFLAGS (parent's r11 has IF=0 from FMASK)
+            (*dst_ptr_chirho).r11_chirho |= 0x200;
             // If a custom stack was provided, use it for the child's
             // user-space RSP.
             if stack_chirho != 0 {
@@ -362,7 +403,7 @@ pub fn sys_clone_chirho(
         let mut child_ctx_chirho = CpuContextChirho::zero_chirho();
         child_ctx_chirho.rip_chirho = fork_child_return_chirho as *const () as u64;
         child_ctx_chirho.rsp_chirho = frame_dst_chirho;
-        child_ctx_chirho.rflags_chirho = 0x200;
+        child_ctx_chirho.rflags_chirho = FORK_TRAMPOLINE_RFLAGS_CHIRHO;
 
         // A2-PROC-003: Clone the parent's per-process fd table (authoritative).
         // Fall back to GLOBAL only if the parent has no per-process table.
@@ -401,6 +442,13 @@ pub fn sys_clone_chirho(
                 None => None,
             }
         };
+
+        debug_log_fork_frame_chirho(
+            "clone",
+            child_pid_chirho,
+            frame_chirho,
+            child_pt_root_chirho,
+        );
 
         TaskChirho {
             pid_chirho: child_pid_chirho,
@@ -642,6 +690,11 @@ fn reap_child_chirho(
 #[unsafe(naked)]
 unsafe extern "C" fn fork_child_return_chirho() {
     core::arch::naked_asm!(
+        // The child starts in a transient kernel trampoline, not at a normal
+        // syscall entry. Keep interrupts masked until `iretq` publishes the
+        // final user RIP/RSP/RFLAGS atomically.
+        "cli",
+
         // RSP points to the SyscallFrameChirho on the child's kernel stack.
         // Layout (offsets from RSP):
         //   0x00: rax (= 0, fork return value)
@@ -674,13 +727,34 @@ unsafe extern "C" fn fork_child_return_chirho() {
         "pop rax",
         "mov r15, rsp",                     // r15 = frame base
 
-        // Step 2: Read the three IRETQ inputs into callee-saved regs
-        //         that we will restore AFTER building the IRETQ frame.
-        //         We cannot use caller-saved regs because they get
-        //         overwritten by the GPR restore below.
-        //
-        //         r12 = user RIP,  r13 = user RFLAGS,  r14 = user RSP
+        // Debug: '1' after r15 set
+        "push rax",
+        "push rdx",
+        "mov dx, 0x3FD",
+        "3: in al, dx",
+        "test al, 0x20",
+        "jz 3b",
+        "mov dx, 0x3F8",
+        "mov al, 0x31",                     // '1'
+        "out dx, al",
+        "pop rdx",
+        "pop rax",
+
         "mov r12, [r15 + 0x38]",            // user RIP  (was in rcx)
+
+        // Debug: '2' after user RIP read
+        "push rax",
+        "push rdx",
+        "mov dx, 0x3FD",
+        "4: in al, dx",
+        "test al, 0x20",
+        "jz 4b",
+        "mov dx, 0x3F8",
+        "mov al, 0x32",                     // '2'
+        "out dx, al",
+        "pop rdx",
+        "pop rax",
+
         "mov r13, [r15 + 0x40]",            // user RFLAGS (was in r11)
         "mov r14, [r15 + 0x48]",            // user RSP
 
@@ -719,7 +793,22 @@ unsafe extern "C" fn fork_child_return_chirho() {
         "mov r14, [r15 + 0x70]",
         "mov r15, [r15 + 0x78]",            // last use of frame pointer
 
-        // Step 6: Switch GS base from kernel to user before returning.
+        // Debug: print 'I' before IRETQ
+        "push rax",
+        "push rdx",
+        "mov dx, 0x3FD",
+        "7: in al, dx",
+        "test al, 0x20",
+        "jz 7b",
+        "mov dx, 0x3F8",
+        "mov al, 0x49",                     // 'I'
+        "out dx, al",
+        "pop rdx",
+        "pop rax",
+
+        // Step 6: Switch GS base from kernel to user before IRETQ.
+        // Even though our SYSCALL entry doesn't use swapgs, the CPU
+        // requires proper GS state for exceptions in user mode.
         "swapgs",
 
         // Step 7: Return to userspace.  IRETQ pops RIP, CS, RFLAGS,
