@@ -282,14 +282,20 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
         child_pid_chirho
     );
 
-    // --- 5. Register the child in the global task list ---
+    // --- 5. Sync context to static slot BEFORE moving into Arc ---
+    crate::task_chirho::sync_context_to_slot_chirho(
+        child_pid_chirho,
+        &child_task_chirho.context_chirho,
+    );
+
+    // --- 6. Register the child in the global task list ---
     let child_arc_chirho = Arc::new(Mutex::new(child_task_chirho));
     register_task_chirho(Arc::clone(&child_arc_chirho));
 
-    // --- 6. Add the child to the scheduler run queue ---
+    // --- 7. Add the child to the scheduler run queue ---
     crate::scheduler_chirho::add_task_chirho(child_pid_chirho);
 
-    // --- 7. Real fork with IRETQ return ---
+    // --- 8. Real fork with IRETQ return ---
     child_pid_chirho as i64
 }
 
@@ -435,6 +441,12 @@ pub fn sys_clone_chirho(
         child_task_chirho.ppid_chirho,
         child_pid_chirho,
         flags_chirho
+    );
+
+    // Sync context to static slot BEFORE moving into Arc
+    crate::task_chirho::sync_context_to_slot_chirho(
+        child_pid_chirho,
+        &child_task_chirho.context_chirho,
     );
 
     let child_arc_chirho = Arc::new(Mutex::new(child_task_chirho));
@@ -648,6 +660,18 @@ unsafe extern "C" fn fork_child_return_chirho() {
         // Step 1: Save the frame base pointer so we can read it after
         //         restoring all registers.  Use r15 as temporary (we
         //         restore it last).
+        // Debug: write 'F' to serial to confirm fork_child_return reached
+        "push rax",
+        "push rdx",
+        "mov dx, 0x3FD",
+        "2: in al, dx",
+        "test al, 0x20",
+        "jz 2b",
+        "mov dx, 0x3F8",
+        "mov al, 0x46",                     // 'F'
+        "out dx, al",
+        "pop rdx",
+        "pop rax",
         "mov r15, rsp",                     // r15 = frame base
 
         // Step 2: Read the three IRETQ inputs into callee-saved regs

@@ -651,25 +651,38 @@ pub fn task_count_chirho() -> usize {
     TASK_LIST_CHIRHO.lock().len()
 }
 
-/// Boot context — used as a "save" target when context-switching away from
-/// the initial boot path for the first time.  This is a static that the
-/// scheduler can point at when no real "old" task context exists yet.
-static BOOT_CONTEXT_CHIRHO: Mutex<CpuContextChirho> = Mutex::new(CpuContextChirho::zero_chirho());
+/// Maximum PIDs for the static context array.
+const MAX_PIDS_CHIRHO: usize = 64;
 
-/// Get a raw mutable pointer to the CpuContext of the task with the given PID.
+/// Static array of CPU contexts — one per PID slot.
 ///
-/// # Safety
-/// The returned pointer is valid as long as the task's Arc is alive and the
-/// Mutex is held.  Callers must ensure no aliasing violations.
+/// CRITICAL: Context storage MUST be separate from the heap to prevent
+/// VirtIO DMA or heap allocator corruption from overwriting saved registers.
+/// Previously, contexts lived inside Arc<Mutex<TaskChirho>> on the heap,
+/// and the raw pointer returned by context_ptr_mut_chirho was vulnerable
+/// to heap corruption (DMA overlaps, allocator reuse, etc.).
+///
+/// Now: the scheduler reads/writes contexts through these fixed-address
+/// static slots. Fork/exec code syncs the TaskChirho.context_chirho to
+/// the corresponding slot. Pointers to these slots are valid forever.
+static mut CONTEXT_SLOTS_CHIRHO: [CpuContextChirho; MAX_PIDS_CHIRHO] =
+    [CpuContextChirho::zero_chirho(); MAX_PIDS_CHIRHO];
+
+/// Boot context slot (PID index 63, never used as a real PID).
+const BOOT_SLOT_CHIRHO: usize = MAX_PIDS_CHIRHO - 1;
+
+/// Get a raw mutable pointer to the CpuContext for the given PID.
+///
+/// Returns a pointer into the static `CONTEXT_SLOTS_CHIRHO` array.
+/// The pointer is valid for the kernel's lifetime — no heap involvement.
 pub fn context_ptr_mut_chirho(pid_chirho: u64) -> *mut CpuContextChirho {
-    let list_chirho = TASK_LIST_CHIRHO.lock();
-    if let Some(task_arc_chirho) = list_chirho
-        .iter()
-        .find(|t_chirho| t_chirho.lock().pid_chirho == pid_chirho)
-    {
-        let mut task_chirho = task_arc_chirho.lock();
-        &mut task_chirho.context_chirho as *mut CpuContextChirho
+    let idx_chirho = pid_chirho as usize;
+    if idx_chirho < MAX_PIDS_CHIRHO {
+        unsafe { &raw mut CONTEXT_SLOTS_CHIRHO[idx_chirho] }
     } else {
+        crate::serial_println_chirho!(
+            "[TASK] PID {} exceeds context slot limit {}", pid_chirho, MAX_PIDS_CHIRHO
+        );
         core::ptr::null_mut()
     }
 }
@@ -681,10 +694,16 @@ pub fn context_ptr_chirho(pid_chirho: u64) -> *const CpuContextChirho {
 
 /// Get a raw mutable pointer to the boot context (used during first schedule).
 pub fn boot_context_ptr_chirho() -> *mut CpuContextChirho {
-    // SAFETY: We return a pointer to the static boot context.  The caller
-    // (scheduler) must ensure it is only written to during context switch
-    // when no other reference exists.
-    &mut *BOOT_CONTEXT_CHIRHO.lock() as *mut CpuContextChirho
+    unsafe { &raw mut CONTEXT_SLOTS_CHIRHO[BOOT_SLOT_CHIRHO] }
+}
+
+/// Sync a context from a TaskChirho into the static slot.
+/// Must be called after fork/exec creates or modifies a task's context.
+pub fn sync_context_to_slot_chirho(pid_chirho: u64, ctx_chirho: &CpuContextChirho) {
+    let idx_chirho = pid_chirho as usize;
+    if idx_chirho < MAX_PIDS_CHIRHO {
+        unsafe { CONTEXT_SLOTS_CHIRHO[idx_chirho] = *ctx_chirho; }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -905,7 +905,7 @@ impl VirtioBlkDeviceChirho {
         // Heap allocations are virtually contiguous but may span non-contiguous
         // physical pages — the device expects contiguous physical memory.
         static VRING_PHYS_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0x800000); // Start at 8MB physical
+            core::sync::atomic::AtomicU64::new(0x1F000000); // Start at 496MB physical (avoid frame allocator conflict)
 
         let alloc_pages_chirho = ((total_bytes_chirho + 4095) / 4096) as u64;
         let phys_base_chirho = VRING_PHYS_NEXT_CHIRHO.fetch_add(
@@ -1189,7 +1189,7 @@ impl VirtioBlkDeviceChirho {
         // DMA buffer at fixed physical address (reused per request).
         // Layout: [header 16 bytes][data N bytes][status 1 byte]
         // N = data_size_chirho (512 for single sector, up to 4096 for block)
-        let req_phys_chirho: u64 = 0x900000; // 9MB physical — 2 pages available
+        let req_phys_chirho: u64 = 0x1F100000; // 497MB physical — avoid frame allocator conflict
         let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         let req_virt_chirho = (req_phys_chirho + phys_off_chirho) as *mut u8;
 
