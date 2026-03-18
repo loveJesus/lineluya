@@ -1435,12 +1435,12 @@ pub fn alloc_block_in_group_chirho(
         }
         for bit_chirho in 0..8u32 {
             if byte_chirho & (1 << bit_chirho) == 0 {
-                // Found a free block.
-                bitmap_data_chirho[byte_idx_chirho] |= 1 << bit_chirho;
                 let local_block_chirho = byte_idx_chirho as u32 * 8 + bit_chirho;
                 if local_block_chirho >= blocks_per_group_chirho {
                     return None; // past the end of this group
                 }
+                // Found a free block within the valid range.
+                bitmap_data_chirho[byte_idx_chirho] |= 1 << bit_chirho;
                 let global_block_chirho =
                     group_chirho as u64 * blocks_per_group_chirho as u64
                     + local_block_chirho as u64
@@ -1469,11 +1469,11 @@ pub fn alloc_inode_in_group_chirho(
         }
         for bit_chirho in 0..8u32 {
             if byte_chirho & (1 << bit_chirho) == 0 {
-                bitmap_data_chirho[byte_idx_chirho] |= 1 << bit_chirho;
                 let local_inode_chirho = byte_idx_chirho as u32 * 8 + bit_chirho;
                 if local_inode_chirho >= inodes_per_group_chirho {
                     return None;
                 }
+                bitmap_data_chirho[byte_idx_chirho] |= 1 << bit_chirho;
                 // Inode numbers are 1-based.
                 let global_inode_chirho =
                     group_chirho * inodes_per_group_chirho + local_inode_chirho + 1;
@@ -1754,9 +1754,13 @@ impl Ext4MountChirho {
         let dir_len_chirho = dir_data_chirho.len();
 
         // Find the last entry in the last block
-        let last_block_start_chirho = (dir_len_chirho / bs_chirho) * bs_chirho;
-        if last_block_start_chirho >= dir_len_chirho {
-            // Empty dir or no space
+        let last_block_start_chirho = if dir_len_chirho == 0 {
+            0
+        } else {
+            ((dir_len_chirho - 1) / bs_chirho) * bs_chirho
+        };
+        if dir_len_chirho == 0 {
+            // Empty directory: append the first entry directly.
             dir_data_chirho.extend_from_slice(&entry_bytes_chirho);
             self.write_file_data_chirho(dir_ino_chirho, &dir_data_chirho)?;
             // Update dir inode size
@@ -1896,7 +1900,21 @@ impl Ext4MountChirho {
         inode_chirho.i_blocks_lo_chirho = (allocated_blocks_chirho.len() * (bs_chirho / 512)) as u32;
 
         // Set up a single extent covering all allocated blocks (simplified).
+        // This is only valid for a contiguous run.
         if !allocated_blocks_chirho.is_empty() {
+            for window_chirho in allocated_blocks_chirho.windows(2) {
+                if window_chirho[1] != window_chirho[0] + 1 {
+                    crate::serial_println_chirho!(
+                        "[EXT4] write_file_data: non-contiguous block allocation for inode {} ({} then {})",
+                        ino_chirho,
+                        window_chirho[0],
+                        window_chirho[1]
+                    );
+                    return Err(Ext4ErrorChirho::UnsupportedFeatureChirho(
+                        "non-contiguous extent allocation",
+                    ));
+                }
+            }
             let first_phys_chirho = allocated_blocks_chirho[0];
             let num_blocks_chirho = allocated_blocks_chirho.len() as u16;
             // Write extent header + one extent in i_block.
