@@ -516,7 +516,11 @@ pub fn sys_rt_sigaction_chirho(
     };
 
     let mut task_chirho = task_arc_chirho.lock();
-    let idx_chirho = signum_chirho as usize;
+    // Signal numbers are 1-based (1..=64), array indices are 0-based (0..63)
+    let idx_chirho = (signum_chirho as usize).saturating_sub(1);
+    if idx_chirho >= MAX_SIGNAL_CHIRHO as usize {
+        return -22; // EINVAL — safety check
+    }
 
     // Write old action to userspace if oldact is non-null.
     if oldact_chirho != 0 {
@@ -787,7 +791,7 @@ pub fn deliver_sigpipe_to_current_chirho() {
 
         // Check the signal disposition — if SIGPIPE is ignored or has a
         // handler, the process won't be killed (matches Linux semantics).
-        let idx_chirho = SIGPIPE_CHIRHO as usize;
+        let idx_chirho = (SIGPIPE_CHIRHO as usize).saturating_sub(1);
         let action_chirho = &task_chirho.signal_state_chirho.actions_chirho[idx_chirho];
 
         match action_chirho {
@@ -845,7 +849,8 @@ pub fn check_fatal_signals_on_return_chirho() -> bool {
         };
 
         // Determine what to do based on the signal's disposition.
-        let idx_chirho = signo_chirho as usize;
+        // Signal numbers are 1-based, array indices are 0-based.
+        let idx_chirho = (signo_chirho as usize).saturating_sub(1);
         if idx_chirho < MAX_SIGNAL_CHIRHO as usize {
             let action_chirho = &task_chirho.signal_state_chirho.actions_chirho[idx_chirho];
             match action_chirho {
