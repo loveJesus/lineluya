@@ -3108,7 +3108,9 @@ pub fn sys_recvfrom_chirho(
         };
 
         if socket_final_chirho.recv_buf_chirho.is_empty() {
-            return 0; // Timeout — no data arrived
+            // Buffer empty after polling — return EAGAIN (not 0 which means EOF).
+            // Dropbear interprets 0 as connection closed and exits.
+            return -11; // EAGAIN
         }
 
         // Copy buffered data to userspace.
