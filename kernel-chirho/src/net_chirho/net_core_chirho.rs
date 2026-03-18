@@ -1779,6 +1779,11 @@ impl FileOpsChirho for SocketFileOpsChirho {
             {
                 return Ok(0); // EOF — connection closed.
             }
+
+            if (file_chirho.flags_chirho & crate::vfs_chirho::O_NONBLOCK_CHIRHO) != 0 {
+                return Err(-EAGAIN_CHIRHO);
+            }
+
             // Connection is still alive but no data yet.
             // Block: poll network + yield in a loop until data arrives.
             drop(table_chirho);
