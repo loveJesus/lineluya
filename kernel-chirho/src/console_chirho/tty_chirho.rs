@@ -489,7 +489,10 @@ impl FileOpsChirho for TtyFileOpsChirho {
             // TIOCGPGRP (0x540F) — return foreground process group
             0x540F => {
                 if arg_chirho != 0 {
-                    let pgid_chirho: i32 = 0; // current process group
+                    // Return the current task's pgid as the foreground group.
+                    let pgid_chirho: i32 = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pgid_chirho as i32)
+                        .unwrap_or(0);
                     let _ = crate::uaccess_chirho::copy_to_user_chirho(
                         arg_chirho,
                         &pgid_chirho.to_ne_bytes(),

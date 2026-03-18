@@ -415,7 +415,7 @@ impl MmChirho {
         self.vmas_chirho.insert(pos_chirho, vma_chirho);
         // Warn if VMA count is growing unexpectedly
         if self.vmas_chirho.len() > 100 && self.vmas_chirho.len() % 500 == 0 {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[MM] VMA count = {} (capacity {} bytes)",
                 self.vmas_chirho.len(),
                 self.vmas_chirho.capacity() * core::mem::size_of::<VmaChirho>(),

@@ -41,6 +41,7 @@ use crate::mm_chirho::{
     MAP_ANONYMOUS_CHIRHO, MAP_FIXED_CHIRHO, MAP_PRIVATE_CHIRHO,
 };
 use crate::serial_println_chirho;
+use crate::serial_debug_chirho;
 
 // ============================================================================
 // Constants
@@ -195,7 +196,7 @@ pub fn load_elf_into_memory_chirho(
         0
     };
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] ELF parsed: type={}, entry={:#x}, {} PT_LOAD segments, load_bias={:#x}",
         if elf_info_chirho.e_type_chirho == ET_DYN_CHIRHO { "ET_DYN (PIE)" } else { "ET_EXEC" },
         elf_info_chirho.entry_point_chirho,
@@ -239,7 +240,7 @@ pub fn load_elf_into_memory_chirho(
     let biased_entry_chirho = elf_info_chirho.entry_point_chirho.wrapping_add(load_bias_chirho);
     let biased_phdr_chirho = elf_info_chirho.phdr_addr_chirho.wrapping_add(load_bias_chirho);
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] All segments loaded. entry={:#x}, phdr={:#x}, brk={:#x}",
         biased_entry_chirho,
         biased_phdr_chirho,
@@ -270,7 +271,7 @@ fn load_segment_chirho(
     // Convert ELF segment flags to Linux PROT_* flags.
     let prot_chirho = elf_flags_to_prot_chirho(seg_chirho.flags_chirho);
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC]   Mapping segment: vaddr={:#x}, memsz={:#x}, filesz={:#x}, prot={:#x}, pages={:#x}..{:#x}",
         seg_chirho.vaddr_chirho,
         seg_chirho.memsz_chirho,
@@ -392,13 +393,13 @@ pub fn load_elf_with_interp_chirho(
     // main binary's program headers and .dynamic section.
     // -----------------------------------------------------------------------
     if exe_load_bias_chirho != 0 {
-        serial_println_chirho!(
+        serial_debug_chirho!(
             "[EXEC] Parsing .dynamic for main binary (bias={:#x})",
             exe_load_bias_chirho
         );
         match parse_dynamic_section_chirho(elf_data_chirho, exe_load_bias_chirho) {
             Ok(dyn_info_chirho) => {
-                serial_println_chirho!(
+                serial_debug_chirho!(
                     "[EXEC] Main binary RELA: addr={:#x}, size={:#x}, entsize={:#x}",
                     dyn_info_chirho.rela_addr_chirho,
                     dyn_info_chirho.rela_size_chirho,
@@ -412,13 +413,13 @@ pub fn load_elf_with_interp_chirho(
                         exe_load_bias_chirho,
                     );
                 }
-                serial_println_chirho!(
+                serial_debug_chirho!(
                     "[EXEC] R_X86_64_RELATIVE relocations applied to main binary"
                 );
             }
             Err(err_chirho) => {
                 // Not all binaries have PT_DYNAMIC (static PIE). Log and continue.
-                serial_println_chirho!(
+                serial_debug_chirho!(
                     "[EXEC] Main binary .dynamic parse skipped: {:?}",
                     err_chirho
                 );
@@ -430,7 +431,7 @@ pub fn load_elf_with_interp_chirho(
     let interp_path_chirho = find_interp_in_phdrs_chirho(elf_data_chirho);
 
     if let Some(ref path_chirho) = interp_path_chirho {
-        serial_println_chirho!(
+        serial_debug_chirho!(
             "[EXEC] PT_INTERP found: \"{}\"",
             path_chirho
         );
@@ -438,7 +439,7 @@ pub fn load_elf_with_interp_chirho(
         // Load the interpreter ELF at a separate base address
         if let Some(interp_elf_chirho) = interp_data_chirho {
             let interp_base_chirho = interp_load_base_chirho();
-            serial_println_chirho!(
+            serial_debug_chirho!(
                 "[EXEC] Loading interpreter at base {:#x}",
                 interp_base_chirho
             );
@@ -450,7 +451,7 @@ pub fn load_elf_with_interp_chirho(
                 ExecErrorChirho::ElfParseChirho("interpreter load failed")
             })?;
 
-            serial_println_chirho!(
+            serial_debug_chirho!(
                 "[EXEC] Interpreter loaded: entry={:#x}, base={:#x}",
                 interp_loaded_chirho.entry_point_chirho,
                 interp_base_chirho
@@ -466,13 +467,13 @@ pub fn load_elf_with_interp_chirho(
             // GOT and data pointers are correct from the very first
             // instruction.  This mirrors what Linux's load_elf_interp does.
             // ---------------------------------------------------------------
-            serial_println_chirho!(
+            serial_debug_chirho!(
                 "[EXEC] Parsing .dynamic for interpreter (bias={:#x})",
                 interp_base_chirho
             );
             match parse_dynamic_section_chirho(interp_elf_chirho, interp_base_chirho) {
                 Ok(interp_dyn_info_chirho) => {
-                    serial_println_chirho!(
+                    serial_debug_chirho!(
                         "[EXEC] Interpreter RELA: addr={:#x}, size={:#x}, entsize={:#x}",
                         interp_dyn_info_chirho.rela_addr_chirho,
                         interp_dyn_info_chirho.rela_size_chirho,
@@ -486,7 +487,7 @@ pub fn load_elf_with_interp_chirho(
                             interp_base_chirho,
                         );
                     }
-                    serial_println_chirho!(
+                    serial_debug_chirho!(
                         "[EXEC] R_X86_64_RELATIVE relocations applied to interpreter"
                     );
 
@@ -503,7 +504,7 @@ pub fn load_elf_with_interp_chirho(
                     if let Ok(exe_dyn_info_chirho) =
                         parse_dynamic_section_chirho(elf_data_chirho, exe_load_bias_chirho)
                     {
-                        serial_println_chirho!(
+                        serial_debug_chirho!(
                             "[EXEC] Resolving GLOB_DAT/JUMP_SLOT: exe symtab={:#x}, strtab={:#x}",
                             exe_dyn_info_chirho.symtab_addr_chirho,
                             exe_dyn_info_chirho.strtab_addr_chirho
@@ -516,13 +517,13 @@ pub fn load_elf_with_interp_chirho(
                                 interp_base_chirho,
                             );
                         }
-                        serial_println_chirho!(
+                        serial_debug_chirho!(
                             "[EXEC] Symbol resolution complete for main binary"
                         );
                     }
                 }
                 Err(err_chirho) => {
-                    serial_println_chirho!(
+                    serial_debug_chirho!(
                         "[EXEC] Interpreter .dynamic parse skipped: {:?}",
                         err_chirho
                     );
@@ -535,7 +536,7 @@ pub fn load_elf_with_interp_chirho(
                 interp_base_chirho,
             });
         } else {
-            serial_println_chirho!(
+            serial_debug_chirho!(
                 "[EXEC] WARNING: PT_INTERP=\"{}\" but no interpreter data provided; running as static",
                 path_chirho
             );
@@ -567,7 +568,7 @@ pub fn setup_user_stack_chirho(
     // The stack occupies [STACK_TOP - STACK_SIZE, STACK_TOP).
     let stack_bottom_chirho = USER_STACK_TOP_CHIRHO - USER_STACK_SIZE_CHIRHO;
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] Allocating user stack: {:#x}..{:#x} ({} MiB)",
         stack_bottom_chirho,
         USER_STACK_TOP_CHIRHO,
@@ -714,7 +715,7 @@ pub fn setup_user_stack_chirho(
     // Push argc = 1.
     push_u64_chirho(&mut sp_chirho, 1);
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] User stack set up. RSP={:#x} (16-byte aligned: {})",
         sp_chirho,
         sp_chirho % 16 == 0
@@ -756,7 +757,7 @@ pub fn setup_user_stack_with_args_chirho(
 
     let stack_bottom_chirho = USER_STACK_TOP_CHIRHO - USER_STACK_SIZE_CHIRHO;
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] Allocating user stack (execve): {:#x}..{:#x} ({} MiB)",
         stack_bottom_chirho,
         USER_STACK_TOP_CHIRHO,
@@ -902,7 +903,7 @@ pub fn setup_user_stack_with_args_chirho(
     // Push argc.
     push_u64_chirho(&mut sp_chirho, argc_chirho);
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] User stack set up (execve). RSP={:#x}, argc={}, envc={} (16-byte aligned: {})",
         sp_chirho,
         argc_chirho,
@@ -935,7 +936,7 @@ pub fn setup_user_stack_dynlink_chirho(
 
     let stack_bottom_chirho = USER_STACK_TOP_CHIRHO - USER_STACK_SIZE_CHIRHO;
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] Allocating user stack (dynlink): {:#x}..{:#x}",
         stack_bottom_chirho,
         USER_STACK_TOP_CHIRHO,
@@ -1075,7 +1076,7 @@ pub fn setup_user_stack_dynlink_chirho(
     // Push argc.
     push_u64_chirho(&mut sp_chirho, argc_chirho);
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] User stack set up (dynlink). RSP={:#x}, argc={}, AT_BASE={:#x}, AT_ENTRY={:#x}",
         sp_chirho,
         argc_chirho,
@@ -1112,12 +1113,28 @@ pub fn setup_user_stack_dynlink_chirho(
 /// Marked as `-> !` because the function never returns; execution continues
 /// at the user-space entry point.
 pub fn jump_to_userspace_chirho(entry_point_chirho: u64, user_rsp_chirho: u64) -> ! {
+    // Set TSS.RSP0 to the current task's allocated kernel stack so that
+    // syscalls from userspace land on the correct stack (not the boot stack).
+    // This is critical for PID 0 which was never formally "scheduled" via
+    // schedule_chirho and thus never had its kernel stack set up in the TSS.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let kstack_top_chirho = task_arc_chirho.lock().kernel_stack_chirho;
+        unsafe {
+            crate::gdt_chirho::set_tss_rsp0_chirho(kstack_top_chirho);
+        }
+        crate::syscall_entry_chirho::set_kernel_stack_top_chirho(kstack_top_chirho);
+        serial_debug_chirho!(
+            "[EXEC] Set TSS.RSP0={:#x} for current task",
+            kstack_top_chirho
+        );
+    }
+
     serial_println_chirho!(
         "[EXEC] Jumping to userspace: entry={:#x}, rsp={:#x}",
         entry_point_chirho,
         user_rsp_chirho
     );
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] CS={:#x}, SS={:#x}",
         USER_CS_CHIRHO,
         USER_DS_CHIRHO
@@ -1200,8 +1217,8 @@ pub fn exec_init_chirho() {
         ("hello-chirho", HELLO_ELF_CHIRHO)
     };
 
-    serial_println_chirho!("[EXEC] === Loading {} ELF binary ===", elf_name_chirho);
-    serial_println_chirho!(
+    serial_debug_chirho!("[EXEC] === Loading {} ELF binary ===", elf_name_chirho);
+    serial_debug_chirho!(
         "[EXEC] Embedded ELF size: {} bytes",
         elf_data_chirho.len()
     );
@@ -1215,7 +1232,7 @@ pub fn exec_init_chirho() {
         }
     };
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] ELF loaded: entry={:#x}, phdr={:#x}, brk={:#x}",
         loaded_chirho.entry_point_chirho,
         loaded_chirho.phdr_addr_chirho,
@@ -1251,8 +1268,6 @@ pub fn exec_init_chirho() {
         alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
         alloc::string::String::from("PYTHONIOENCODING=utf-8"),
         alloc::string::String::from("PYTHONCOERCECLOCALE=0"),
-        // Tell ash to source /etc/profile on startup (auto-starts dropbear SSH)
-        alloc::string::String::from("ENV=/etc/profile"),
     ];
     let user_rsp_chirho = setup_user_stack_with_args_chirho(
         &loaded_chirho,
@@ -1260,7 +1275,7 @@ pub fn exec_init_chirho() {
         &envp_chirho,
     );
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[EXEC] Ready to enter userspace. entry={:#x}, rsp={:#x}",
         loaded_chirho.entry_point_chirho,
         user_rsp_chirho
@@ -1316,7 +1331,7 @@ pub fn exec_init_chirho() {
             );
 
         }
-        serial_println_chirho!("[EXEC] Pre-mapped heap + mmap + ELF gap");
+        serial_debug_chirho!("[EXEC] Pre-mapped heap + mmap + ELF gap");
     }
 
     // Step 3: Jump to userspace. This never returns.

@@ -181,7 +181,7 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
 
                 entries_chirho.push((String::from(name_chirho), new_inode_chirho));
                 if entries_chirho.len() > 200 {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[TMPFS] dir has {} entries after adding '{}'",
                         entries_chirho.len(), name_chirho,
                     );
@@ -239,7 +239,7 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
 
                 entries_chirho.push((String::from(name_chirho), new_inode_chirho));
                 if entries_chirho.len() > 200 {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[TMPFS] dir has {} entries after adding '{}'",
                         entries_chirho.len(), name_chirho,
                     );
@@ -388,7 +388,7 @@ impl InodeOpsChirho for TmpfsInodeOpsChirho {
 
                 entries_chirho.push((String::from(name_chirho), new_inode_chirho.clone()));
                 if entries_chirho.len() > 200 {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[TMPFS] dir has {} entries after adding '{}'",
                         entries_chirho.len(), name_chirho,
                     );
@@ -734,7 +734,7 @@ pub fn write_tmpfs_file_chirho(path_chirho: &str, content_chirho: &[u8]) {
                         }
                     }
                 }
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[TMPFS] Overwrote {} ({} bytes)",
                     path_chirho,
                     content_chirho.len(),
@@ -760,7 +760,7 @@ pub fn write_tmpfs_file_chirho(path_chirho: &str, content_chirho: &[u8]) {
             ),
         }));
         entries_chirho.push((String::from(file_name_chirho), new_inode_chirho));
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[TMPFS] Created {} ({} bytes)",
             path_chirho,
             content_chirho.len(),

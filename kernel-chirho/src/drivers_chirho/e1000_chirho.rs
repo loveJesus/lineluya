@@ -374,7 +374,7 @@ pub fn discover_e1000_chirho(phys_offset_chirho: u64) -> Vec<E1000DeviceChirho> 
                     dev_chirho.function_chirho,
                     bar0_virt_chirho,
                 );
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[e1000] Found NIC at PCI {:02x}:{:02x}.{} devid={:#06x}",
                     dev_chirho.bus_chirho,
                     dev_chirho.device_chirho,
@@ -387,7 +387,7 @@ pub fn discover_e1000_chirho(phys_offset_chirho: u64) -> Vec<E1000DeviceChirho> 
     }
 
     if nics_chirho.is_empty() {
-        crate::serial_println_chirho!("[e1000] No Intel NICs found on PCI bus 0");
+        crate::serial_debug_chirho!("[e1000] No Intel NICs found on PCI bus 0");
     }
 
     nics_chirho

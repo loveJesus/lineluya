@@ -17,7 +17,7 @@ use spin::Mutex;
 
 use crate::vfs_chirho::{
     DentryChirho, FileChirho, FileOpsChirho, InodeChirho, InodeOpsChirho,
-    S_IFCHR_CHIRHO, S_IFDIR_CHIRHO, SEEK_CUR_CHIRHO, SEEK_END_CHIRHO, SEEK_SET_CHIRHO,
+    S_IFBLK_CHIRHO, S_IFCHR_CHIRHO, S_IFDIR_CHIRHO, SEEK_CUR_CHIRHO, SEEK_END_CHIRHO, SEEK_SET_CHIRHO,
     StatfsChirho, SuperOpsChirho, SuperblockChirho,
 };
 use crate::pty_chirho::PTS_DIR_OPS_CHIRHO;
@@ -449,115 +449,30 @@ struct DevNodeChirho {
     major_chirho: u32,
     minor_chirho: u32,
     ops_chirho: &'static dyn FileOpsChirho,
+    /// True for block devices (S_IFBLK), false for character devices (S_IFCHR).
+    is_block_chirho: bool,
 }
 
 /// Essential device nodes pre-populated on mount.
 static DEV_NODES_CHIRHO: &[DevNodeChirho] = &[
-    DevNodeChirho {
-        name_chirho: "null",
-        major_chirho: 1,
-        minor_chirho: 3,
-        ops_chirho: &DEV_NULL_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "zero",
-        major_chirho: 1,
-        minor_chirho: 5,
-        ops_chirho: &DEV_ZERO_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "urandom",
-        major_chirho: 1,
-        minor_chirho: 9,
-        ops_chirho: &DEV_URANDOM_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "console",
-        major_chirho: 5,
-        minor_chirho: 1,
-        ops_chirho: &DEV_CONSOLE_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "tty",
-        major_chirho: 5,
-        minor_chirho: 0,
-        ops_chirho: &DEV_CONSOLE_OPS_CHIRHO, // same behaviour as console for now
-    },
-    DevNodeChirho {
-        name_chirho: "ptmx",
-        major_chirho: 5,
-        minor_chirho: 2,
-        ops_chirho: &crate::pty_chirho::PTMX_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "fb0",
-        major_chirho: 29,
-        minor_chirho: 0,
-        ops_chirho: &crate::fb_device_chirho::FB_DEVICE_OPS_CHIRHO,
-    },
-    // A2-SOUND-002: /dev/dsp OSS audio device
-    DevNodeChirho {
-        name_chirho: "dsp",
-        major_chirho: 14,
-        minor_chirho: 3,
-        ops_chirho: &crate::sound_chirho::DEV_DSP_OPS_CHIRHO,
-    },
-    // A2-LOOP-001: /dev/loop-control
-    DevNodeChirho {
-        name_chirho: "loop-control",
-        major_chirho: 10,
-        minor_chirho: 237,
-        ops_chirho: &crate::loop_device_chirho::LOOP_CONTROL_OPS_CHIRHO,
-    },
-    // A2-LOOP-002: /dev/loop0 through /dev/loop7
-    DevNodeChirho {
-        name_chirho: "loop0",
-        major_chirho: 7,
-        minor_chirho: 0,
-        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "loop1",
-        major_chirho: 7,
-        minor_chirho: 1,
-        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "loop2",
-        major_chirho: 7,
-        minor_chirho: 2,
-        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "loop3",
-        major_chirho: 7,
-        minor_chirho: 3,
-        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "loop4",
-        major_chirho: 7,
-        minor_chirho: 4,
-        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "loop5",
-        major_chirho: 7,
-        minor_chirho: 5,
-        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "loop6",
-        major_chirho: 7,
-        minor_chirho: 6,
-        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
-    },
-    DevNodeChirho {
-        name_chirho: "loop7",
-        major_chirho: 7,
-        minor_chirho: 7,
-        ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO,
-    },
+    DevNodeChirho { name_chirho: "null", major_chirho: 1, minor_chirho: 3, ops_chirho: &DEV_NULL_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "zero", major_chirho: 1, minor_chirho: 5, ops_chirho: &DEV_ZERO_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "urandom", major_chirho: 1, minor_chirho: 9, ops_chirho: &DEV_URANDOM_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "console", major_chirho: 5, minor_chirho: 1, ops_chirho: &DEV_CONSOLE_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "tty", major_chirho: 5, minor_chirho: 0, ops_chirho: &DEV_CONSOLE_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "ptmx", major_chirho: 5, minor_chirho: 2, ops_chirho: &crate::pty_chirho::PTMX_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "fb0", major_chirho: 29, minor_chirho: 0, ops_chirho: &crate::fb_device_chirho::FB_DEVICE_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "dsp", major_chirho: 14, minor_chirho: 3, ops_chirho: &crate::sound_chirho::DEV_DSP_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "loop-control", major_chirho: 10, minor_chirho: 237, ops_chirho: &crate::loop_device_chirho::LOOP_CONTROL_OPS_CHIRHO, is_block_chirho: false },
+    // A2-LOOP-002: /dev/loop0..7 — BLOCK devices (S_IFBLK), required for losetup/mount
+    DevNodeChirho { name_chirho: "loop0", major_chirho: 7, minor_chirho: 0, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },
+    DevNodeChirho { name_chirho: "loop1", major_chirho: 7, minor_chirho: 1, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },
+    DevNodeChirho { name_chirho: "loop2", major_chirho: 7, minor_chirho: 2, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },
+    DevNodeChirho { name_chirho: "loop3", major_chirho: 7, minor_chirho: 3, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },
+    DevNodeChirho { name_chirho: "loop4", major_chirho: 7, minor_chirho: 4, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },
+    DevNodeChirho { name_chirho: "loop5", major_chirho: 7, minor_chirho: 5, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },
+    DevNodeChirho { name_chirho: "loop6", major_chirho: 7, minor_chirho: 6, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },
+    DevNodeChirho { name_chirho: "loop7", major_chirho: 7, minor_chirho: 7, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -586,9 +501,14 @@ pub fn mount_devtmpfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             | (node_chirho.minor_chirho as u64);
         let _ = dev_chirho; // stored conceptually; major/minor in DevNodeDataChirho
 
+        let type_flag_chirho = if node_chirho.is_block_chirho {
+            S_IFBLK_CHIRHO
+        } else {
+            S_IFCHR_CHIRHO
+        };
         let inode_chirho = Arc::new(Mutex::new(InodeChirho {
             ino_chirho: alloc_dev_ino_chirho(),
-            mode_chirho: S_IFCHR_CHIRHO | 0o666,
+            mode_chirho: type_flag_chirho | 0o666,
             uid_chirho: 0,
             gid_chirho: 0,
             size_chirho: 0,

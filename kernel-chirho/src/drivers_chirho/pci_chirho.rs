@@ -716,11 +716,11 @@ pub unsafe fn find_by_id_chirho(
 /// Scan PCI bus 0 and log every device found (backward-compatible entry).
 #[allow(dead_code)]
 pub fn enumerate_pci_bus_chirho() {
-    crate::serial_println_chirho!("PCI: enumerating bus 0 ...");
+    crate::serial_debug_chirho!("PCI: enumerating bus 0 ...");
     let devices_chirho = unsafe { scan_bus_chirho(0) };
 
     for dev_chirho in &devices_chirho {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "  PCI {:02x}:{:02x}.{} vendor={:#06x} device={:#06x} class={:#04x} sub={:#04x} prog_if={:#04x} rev={:#04x}",
             dev_chirho.bus_chirho,
             dev_chirho.device_chirho,
@@ -741,7 +741,7 @@ pub fn enumerate_pci_bus_chirho() {
             } else {
                 "IO"
             };
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    BAR{}: {} base={:#018x} size={:#x}{}",
                 bar_chirho.index_chirho,
                 type_str_chirho,
@@ -754,7 +754,7 @@ pub fn enumerate_pci_bus_chirho() {
         // Log capabilities
         let caps_chirho = unsafe { walk_capabilities_chirho(dev_chirho) };
         for cap_chirho in &caps_chirho {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    CAP: id={:#04x} ({}) at offset {:#04x}",
                 cap_chirho.id_chirho,
                 capability_name_chirho(cap_chirho.id_chirho),
@@ -763,7 +763,7 @@ pub fn enumerate_pci_bus_chirho() {
         }
     }
 
-    crate::serial_println_chirho!("PCI: found {} device(s) on bus 0", devices_chirho.len());
+    crate::serial_debug_chirho!("PCI: found {} device(s) on bus 0", devices_chirho.len());
 }
 
 /// Kernel boot-time PCI initialisation entry point.
@@ -846,7 +846,7 @@ pub unsafe fn pci_assign_bar_chirho(
     // Check if it is a memory BAR (bit 0 == 0).
     let is_io_chirho = size_mask_chirho & 1 != 0;
     if is_io_chirho {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "PCI BAR{}: I/O BAR, skipping MMIO assignment",
             bar_index_chirho
         );
@@ -856,7 +856,7 @@ pub unsafe fn pci_assign_bar_chirho(
     // Mask out type bits (bits 3:0) to get the size mask.
     let masked_chirho = size_mask_chirho & 0xFFFF_FFF0;
     if masked_chirho == 0 {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "PCI BAR{}: size probe returned zero, BAR not implemented",
             bar_index_chirho
         );
@@ -866,7 +866,7 @@ pub unsafe fn pci_assign_bar_chirho(
     // Size = ~(masked) + 1  (two's complement of the writable bits).
     let bar_size_chirho = (!(masked_chirho as u64 | 0xFFFF_FFFF_0000_0000)).wrapping_add(1);
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "PCI BAR{}: size={:#x} bytes",
         bar_index_chirho,
         bar_size_chirho
@@ -896,7 +896,7 @@ pub unsafe fn pci_assign_bar_chirho(
         }
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "PCI BAR{}: assigning MMIO address {:#010x}",
         bar_index_chirho,
         assigned_addr_chirho
@@ -931,7 +931,7 @@ pub unsafe fn pci_assign_bar_chirho(
             bar_offset_chirho,
         )
     };
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "PCI BAR{}: readback={:#010x} (expected {:#010x})",
         bar_index_chirho,
         readback_chirho,

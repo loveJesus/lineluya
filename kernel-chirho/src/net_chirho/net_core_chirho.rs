@@ -1089,7 +1089,7 @@ impl RoutingTableChirho {
 
     /// Add a route entry.
     pub fn add_route_chirho(&mut self, entry_chirho: RouteEntryChirho) {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[NET] Route added: {}.{}.{}.{}/{} via {}.{}.{}.{} dev{}",
             (entry_chirho.dest_chirho >> 24) & 0xFF,
             (entry_chirho.dest_chirho >> 16) & 0xFF,
@@ -1191,7 +1191,7 @@ fn init_routing_table_chirho() {
         metric_chirho: 100,
     });
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[NET] Routing table initialized ({} routes)",
         rt_chirho.len_chirho()
     );
@@ -1229,7 +1229,7 @@ pub fn handle_icmp_echo_chirho(
         return None; // Only handle echo requests.
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[ICMP] Echo request from {}.{}.{}.{} id={} seq={}",
         (ip_hdr_chirho.src_ip_chirho >> 24) & 0xFF,
         (ip_hdr_chirho.src_ip_chirho >> 16) & 0xFF,
@@ -1269,7 +1269,7 @@ pub fn handle_icmp_echo_chirho(
     let mut packet_chirho = reply_ip_chirho.build_chirho();
     packet_chirho.extend_from_slice(&icmp_bytes_chirho);
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[ICMP] Sending echo reply to {}.{}.{}.{} ({} bytes)",
         (ip_hdr_chirho.src_ip_chirho >> 24) & 0xFF,
         (ip_hdr_chirho.src_ip_chirho >> 16) & 0xFF,
@@ -1321,7 +1321,7 @@ pub fn send_icmp_echo_request_chirho(
     let mut packet_chirho = ip_hdr_chirho.build_chirho();
     packet_chirho.extend_from_slice(&icmp_bytes_chirho);
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[ICMP] Sending echo request to {}.{}.{}.{} id={} seq={}",
         (dst_ip_chirho >> 24) & 0xFF,
         (dst_ip_chirho >> 16) & 0xFF,
@@ -1357,7 +1357,7 @@ pub fn process_ipv4_packet_chirho(data_chirho: &[u8]) -> Option<Vec<u8>> {
             None // UDP delivery is fire-and-forget into socket buffers
         }
         _ => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[NET] Unhandled IPv4 protocol {}",
                 ip_hdr_chirho.protocol_chirho
             );
@@ -1499,7 +1499,7 @@ fn deliver_udp_packet_chirho(
     ip_hdr_chirho: &Ipv4HeaderChirho,
     udp_chirho: &UdpDatagramChirho,
 ) {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[UDP] Received {}:{} -> {}:{} ({} bytes)",
         format_ip_chirho(ip_hdr_chirho.src_ip_chirho),
         udp_chirho.src_port_chirho,
@@ -1533,7 +1533,7 @@ fn deliver_udp_packet_chirho(
                     for byte_chirho in &udp_chirho.payload_chirho {
                         sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
                     }
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[UDP] Delivered {} bytes to socket on port {}",
                         udp_chirho.payload_chirho.len(),
                         udp_chirho.dst_port_chirho,
@@ -1544,7 +1544,7 @@ fn deliver_udp_packet_chirho(
         }
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[UDP] No socket bound to port {}, packet dropped",
         udp_chirho.dst_port_chirho,
     );
@@ -1602,10 +1602,10 @@ pub fn init_networking_chirho() {
     if nic_count_chirho > 1 {
         // VirtIO-net was registered BEFORE loopback (during init_virtio),
         // so it's at index 0. Run DHCP on interface 0 (the VirtIO NIC).
-        crate::serial_println_chirho!("[NET] Running DHCP on interface 0 (VirtIO NIC) ({} interfaces total)...", nic_count_chirho);
+        crate::serial_debug_chirho!("[NET] Running DHCP on interface 0 (VirtIO NIC) ({} interfaces total)...", nic_count_chirho);
         let _dhcp_result_chirho = dhcp_discover_chirho(0);
     } else {
-        crate::serial_println_chirho!("[NET] No NIC found yet, skipping DHCP ({} interfaces)", nic_count_chirho);
+        crate::serial_debug_chirho!("[NET] No NIC found yet, skipping DHCP ({} interfaces)", nic_count_chirho);
     }
 }
 
@@ -1871,7 +1871,7 @@ impl FileOpsChirho for SocketFileOpsChirho {
                         let mut p_chirho = ih_chirho.build_chirho();
                         p_chirho.extend_from_slice(&tb_chirho);
                         drop(t2_chirho);
-                        crate::serial_println_chirho!(
+                        crate::serial_debug_chirho!(
                             "[NET] SSH-RELAY(write): {} bytes Unix->TCP", buf_chirho.len()
                         );
                         let _ = send_ip_packet_chirho(&p_chirho);
@@ -1922,14 +1922,14 @@ impl FileOpsChirho for SocketFileOpsChirho {
         // Send the TCP segment over the network.
         match segment_chirho {
             Some(seg_chirho) => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[NET] socket write: {} bytes -> {}:{}",
                     buf_chirho.len(), format_ip_chirho(remote_ip_chirho), remote_port_chirho,
                 );
                 send_tcp_response_chirho(&seg_chirho, src_ip_chirho, remote_ip_chirho);
             }
             None => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[NET] socket write: make_data_segment returned None (idx={}, state check failed)",
                     socket_idx_chirho,
                 );
@@ -2150,7 +2150,7 @@ pub fn sys_socket_chirho(
     type_chirho: u64,
     protocol_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[NET] sys_socket(domain={}, type={}, proto={})",
         domain_chirho,
         type_chirho,
@@ -2179,7 +2179,7 @@ pub fn sys_socket_chirho(
     // Register in the VFS fd table
     match register_socket_fd_chirho(socket_idx_chirho) {
         Ok(fd_chirho) => {
-            crate::serial_println_chirho!("[NET] sys_socket -> fd={} (socket_idx={})", fd_chirho, socket_idx_chirho);
+            crate::serial_debug_chirho!("[NET] sys_socket -> fd={} (socket_idx={})", fd_chirho, socket_idx_chirho);
             fd_chirho
         }
         Err(e_chirho) => {
@@ -2197,7 +2197,7 @@ pub fn sys_bind_chirho(
     addr_chirho: u64,
     addrlen_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!("[NET] sys_bind(fd={})", sockfd_chirho);
+    crate::serial_debug_chirho!("[NET] sys_bind(fd={})", sockfd_chirho);
 
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
@@ -2244,13 +2244,13 @@ pub fn sys_bind_chirho(
     socket_chirho.local_addr_chirho = parsed_addr_chirho;
     socket_chirho.state_chirho = SocketStateChirho::BoundChirho;
 
-    crate::serial_println_chirho!("[NET] sys_bind -> 0 (addr={:?})", socket_chirho.local_addr_chirho);
+    crate::serial_debug_chirho!("[NET] sys_bind -> 0 (addr={:?})", socket_chirho.local_addr_chirho);
     0
 }
 
 /// `listen(2)` — mark a socket as a passive socket to accept connections.
 pub fn sys_listen_chirho(sockfd_chirho: u64, backlog_chirho: u64) -> i64 {
-    crate::serial_println_chirho!("[NET] sys_listen(fd={}, backlog={})", sockfd_chirho, backlog_chirho);
+    crate::serial_debug_chirho!("[NET] sys_listen(fd={}, backlog={})", sockfd_chirho, backlog_chirho);
 
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
@@ -2289,7 +2289,7 @@ pub fn sys_listen_chirho(sockfd_chirho: u64, backlog_chirho: u64) -> i64 {
     // Set the TCP control block to LISTEN state
     let _ = socket_chirho.tcb_chirho.passive_open_chirho();
 
-    crate::serial_println_chirho!("[NET] sys_listen -> 0");
+    crate::serial_debug_chirho!("[NET] sys_listen -> 0");
     0
 }
 
@@ -2299,7 +2299,7 @@ pub fn sys_accept_chirho(
     _addr_chirho: u64,
     _addrlen_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!("[NET] sys_accept(fd={})", sockfd_chirho);
+    crate::serial_debug_chirho!("[NET] sys_accept(fd={})", sockfd_chirho);
 
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
@@ -2324,7 +2324,7 @@ pub fn sys_accept_chirho(
         let new_fd_result_chirho = register_socket_fd_chirho(pending_idx_chirho as usize);
         match new_fd_result_chirho {
             Ok(new_fd_chirho) => {
-                crate::serial_println_chirho!("[NET] sys_accept -> fd={}", new_fd_chirho);
+                crate::serial_debug_chirho!("[NET] sys_accept -> fd={}", new_fd_chirho);
 
                 // Write peer address to user buffer if requested.
                 // struct sockaddr_in: { u16 family=2, u16 port, u32 addr, u8[8] zero }
@@ -2360,7 +2360,7 @@ pub fn sys_accept_chirho(
     }
 
     // No pending connections
-    crate::serial_println_chirho!("[NET] sys_accept -> -EAGAIN");
+    crate::serial_debug_chirho!("[NET] sys_accept -> -EAGAIN");
     -EAGAIN_CHIRHO
 }
 
@@ -2382,7 +2382,7 @@ pub fn sys_connect_chirho(
     addr_chirho: u64,
     addrlen_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!("[NET] sys_connect(fd={})", sockfd_chirho);
+    crate::serial_debug_chirho!("[NET] sys_connect(fd={})", sockfd_chirho);
 
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
@@ -2431,7 +2431,7 @@ pub fn sys_connect_chirho(
 
             match socket_chirho.tcb_chirho.active_open_chirho(local_port_chirho, remote_port_chirho) {
                 Ok(_syn_segment_chirho) => {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[NET] sys_connect: SYN sent to port {}",
                         remote_port_chirho,
                     );
@@ -2443,7 +2443,7 @@ pub fn sys_connect_chirho(
         } else {
             // SOCK_DGRAM: just set connected
             socket_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
-            crate::serial_println_chirho!("[NET] sys_connect -> 0 (dgram)");
+            crate::serial_debug_chirho!("[NET] sys_connect -> 0 (dgram)");
             return 0;
         }
     };
@@ -2519,7 +2519,7 @@ pub fn sys_connect_chirho(
                 connecting_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
             }
 
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[NET] sys_connect: 3-way handshake completed (loopback), child_idx={}",
                 child_idx_val_chirho,
             );
@@ -2545,7 +2545,7 @@ pub fn sys_connect_chirho(
     };
     let src_ip_chirho = get_interface_ip_chirho(iface_idx_chirho);
     if src_ip_chirho == 0 {
-        crate::serial_println_chirho!("[NET] sys_connect: no IP assigned, -ENETUNREACH");
+        crate::serial_debug_chirho!("[NET] sys_connect: no IP assigned, -ENETUNREACH");
         return -99; // ENETUNREACH
     }
 
@@ -2553,7 +2553,7 @@ pub fn sys_connect_chirho(
     let remote_port_chirho = dest_addr_chirho.port_chirho;
     let remote_ip_chirho = dest_addr_chirho.addr_chirho;
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[NET] sys_connect: sending SYN to {}.{}.{}.{}:{}",
         (remote_ip_chirho >> 24) & 0xFF, (remote_ip_chirho >> 16) & 0xFF,
         (remote_ip_chirho >> 8) & 0xFF, remote_ip_chirho & 0xFF,
@@ -2586,7 +2586,7 @@ pub fn sys_connect_chirho(
                                             && seg_chirho.src_port_chirho == remote_port_chirho
                                             && (seg_chirho.flags_chirho & 0x12) == 0x12 // SYN+ACK
                                         {
-                                            crate::serial_println_chirho!(
+                                            crate::serial_debug_chirho!(
                                                 "[NET] sys_connect: SYN-ACK received! seq={} ack={}",
                                                 seg_chirho.seq_num_chirho,
                                                 seg_chirho.ack_num_chirho,
@@ -2622,7 +2622,7 @@ pub fn sys_connect_chirho(
                                                 });
                                             }
 
-                                            crate::serial_println_chirho!("[NET] sys_connect: ESTABLISHED!");
+                                            crate::serial_debug_chirho!("[NET] sys_connect: ESTABLISHED!");
                                             return 0;
                                         }
                                     }
@@ -2635,11 +2635,11 @@ pub fn sys_connect_chirho(
         }
 
         if poll_chirho > 0 && poll_chirho % 2_000_000 == 0 {
-            crate::serial_println_chirho!("[NET] sys_connect: waiting for SYN-ACK ({}/10M)...", poll_chirho);
+            crate::serial_debug_chirho!("[NET] sys_connect: waiting for SYN-ACK ({}/10M)...", poll_chirho);
         }
     }
 
-    crate::serial_println_chirho!("[NET] sys_connect: timeout waiting for SYN-ACK");
+    crate::serial_debug_chirho!("[NET] sys_connect: timeout waiting for SYN-ACK");
     let mut t_chirho = SOCKET_TABLE_CHIRHO.lock();
     if let Some(ref mut s_chirho) = t_chirho[socket_idx_chirho] {
         s_chirho.tcb_chirho.state_chirho = TcpStateChirho::ClosedChirho;
@@ -2739,7 +2739,7 @@ pub fn sys_sendto_chirho(
                     Err(e_chirho) => return e_chirho,
                 }
             }
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[NET] sendto fd={} NOT a socket (err={}), no VFS entry either",
                 sockfd_chirho, err_chirho
             );
@@ -2770,7 +2770,7 @@ pub fn sys_sendto_chirho(
             let preview_len_chirho = core::cmp::min(data_chirho.len(), 40);
             let preview_chirho = core::str::from_utf8(&data_chirho[..preview_len_chirho])
                 .unwrap_or("<binary>");
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[NET] SSH-RELAY check: {} bytes from Unix socket: '{}'",
                 data_chirho.len(), preview_chirho
             );
@@ -2815,7 +2815,7 @@ pub fn sys_sendto_chirho(
                         let mut pkt_chirho = ip_hdr_chirho.build_chirho();
                         pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
                         drop(table2_chirho);
-                        crate::serial_println_chirho!(
+                        crate::serial_debug_chirho!(
                             "[NET] SSH-RELAY: {} bytes Unix->TCP port 2222", data_chirho.len()
                         );
                         let _ = send_ip_packet_chirho(&pkt_chirho);
@@ -2842,7 +2842,7 @@ pub fn sys_sendto_chirho(
     if sock_type_chirho == Some(SocketTypeChirho::SockStreamChirho)
         && eff_state_chirho != SocketStateChirho::ConnectedChirho
     {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[NET] sendto fd={} ENOTCONN: eff_state={:?} tcb_state={:?} sock_state={:?}",
             sockfd_chirho, eff_state_chirho,
             socket_chirho.tcb_chirho.state_chirho,
@@ -2876,7 +2876,7 @@ pub fn sys_sendto_chirho(
                 raw_local_ip_chirho
             };
 
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[NET] sendto TCP: {} bytes state={:?} src={}:{} dst={}:{}",
                 data_chirho.len(), socket_chirho.tcb_chirho.state_chirho,
                 format_ip_chirho(src_ip_chirho), local_port_chirho,
@@ -2961,7 +2961,7 @@ pub fn sys_recvfrom_chirho(
     _src_addr_chirho: u64,
     _addrlen_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[NET] sys_recvfrom(fd={}, len={})",
         sockfd_chirho,
         len_chirho,
@@ -3079,7 +3079,7 @@ pub fn sys_sendmsg_chirho(
     _msg_chirho: u64,
     _flags_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!("[NET] sys_sendmsg(fd={}) -> 0 (stub)", _sockfd_chirho);
+    crate::serial_debug_chirho!("[NET] sys_sendmsg(fd={}) -> 0 (stub)", _sockfd_chirho);
     0
 }
 
@@ -3089,7 +3089,7 @@ pub fn sys_recvmsg_chirho(
     _msg_chirho: u64,
     _flags_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!("[NET] sys_recvmsg(fd={}) -> 0 (stub)", _sockfd_chirho);
+    crate::serial_debug_chirho!("[NET] sys_recvmsg(fd={}) -> 0 (stub)", _sockfd_chirho);
     0
 }
 
@@ -3117,7 +3117,7 @@ pub fn sys_getsockopt_chirho(
 
 /// `shutdown(2)` — shut down part of a full-duplex connection.
 pub fn sys_shutdown_chirho(sockfd_chirho: u64, how_chirho: u64) -> i64 {
-    crate::serial_println_chirho!("[NET] sys_shutdown(fd={}, how={})", sockfd_chirho, how_chirho);
+    crate::serial_debug_chirho!("[NET] sys_shutdown(fd={}, how={})", sockfd_chirho, how_chirho);
 
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
@@ -3187,7 +3187,7 @@ pub fn sys_getpeername_chirho(
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
         Err(e_chirho) => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[NET] getpeername(fd={}) -> err {} (not a socket)",
                 sockfd_chirho, e_chirho,
             );
@@ -3202,7 +3202,7 @@ pub fn sys_getpeername_chirho(
     };
 
     let eff_state_chirho = socket_chirho.effective_state_chirho();
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[NET] getpeername(fd={}, idx={}) state={:?} remote={:?}",
         sockfd_chirho, socket_idx_chirho, eff_state_chirho,
         socket_chirho.remote_addr_chirho,
@@ -3590,7 +3590,7 @@ pub fn resolve_hostname_chirho(hostname_chirho: &str) -> Option<u32> {
 
     // Fallback: log the query and return None (no NIC available).
     let query_chirho = build_dns_query_chirho(hostname_chirho);
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[DNS] Resolving '{}' ({} bytes query, no NIC — stub)",
         hostname_chirho,
         query_chirho.len(),
@@ -3648,7 +3648,7 @@ pub fn ping_loopback_chirho() -> Option<Vec<u8>> {
         b"lineluya-ping-chirho",
     )?;
 
-    crate::serial_println_chirho!("[LOOPBACK] Sending ping to 127.0.0.1");
+    crate::serial_debug_chirho!("[LOOPBACK] Sending ping to 127.0.0.1");
     loopback_send_and_receive_chirho(&echo_packet_chirho)
 }
 
@@ -3871,7 +3871,7 @@ impl VirtioNetDeviceChirho {
 
         // Perform the initialization handshake (reset, ack, driver, features, driver_ok).
         if transport_chirho.init_device_chirho().is_err() {
-            crate::serial_println_chirho!("[VNET] Device init handshake failed at {:#x}", base_addr_chirho);
+            crate::serial_debug_chirho!("[VNET] Device init handshake failed at {:#x}", base_addr_chirho);
             return None;
         }
 
@@ -3883,7 +3883,7 @@ impl VirtioNetDeviceChirho {
             };
         }
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[VNET] MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             mac_chirho[0], mac_chirho[1], mac_chirho[2],
             mac_chirho[3], mac_chirho[4], mac_chirho[5],
@@ -3892,7 +3892,7 @@ impl VirtioNetDeviceChirho {
         // Set up receiveq (queue 0).
         let rx_max_chirho = transport_chirho.queue_num_max_chirho(0);
         if rx_max_chirho == 0 {
-            crate::serial_println_chirho!("[VNET] RX queue not available");
+            crate::serial_debug_chirho!("[VNET] RX queue not available");
             return None;
         }
         let rx_size_chirho = core::cmp::min(rx_max_chirho as u16, 128);
@@ -3914,7 +3914,7 @@ impl VirtioNetDeviceChirho {
         // Set up transmitq (queue 1).
         let tx_max_chirho = transport_chirho.queue_num_max_chirho(1);
         if tx_max_chirho == 0 {
-            crate::serial_println_chirho!("[VNET] TX queue not available");
+            crate::serial_debug_chirho!("[VNET] TX queue not available");
             return None;
         }
         let tx_size_chirho = core::cmp::min(tx_max_chirho as u16, 128);
@@ -3963,7 +3963,7 @@ impl VirtioNetDeviceChirho {
         // Notify the device that RX buffers are available (queue 0).
         transport_chirho.notify_queue_chirho(0);
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[VNET] Initialized at {:#x} — rx_bufs={} tx_size={}",
             base_addr_chirho, rx_buffers_chirho.len(), tx_size_chirho,
         );
@@ -4039,7 +4039,7 @@ impl VirtioNetDeviceChirho {
         let hdr_desc_idx_chirho = match self.tx_vq_chirho.alloc_desc_chirho() {
             Some(d_chirho) => d_chirho,
             None => {
-                crate::serial_println_chirho!("[VNET] TX: no free descriptors");
+                crate::serial_debug_chirho!("[VNET] TX: no free descriptors");
                 return;
             }
         };
@@ -4049,7 +4049,7 @@ impl VirtioNetDeviceChirho {
             Some(d_chirho) => d_chirho,
             None => {
                 self.tx_vq_chirho.free_desc_chirho(hdr_desc_idx_chirho);
-                crate::serial_println_chirho!("[VNET] TX: no free descriptors for data");
+                crate::serial_debug_chirho!("[VNET] TX: no free descriptors for data");
                 return;
             }
         };
@@ -4199,7 +4199,7 @@ pub fn arp_request_chirho(target_ip_chirho: u32, iface_idx_chirho: usize) {
         payload_chirho: arp_chirho.build_chirho(),
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[ARP] Sending request: who-has {}.{}.{}.{}?",
         (target_ip_chirho >> 24) & 0xFF,
         (target_ip_chirho >> 16) & 0xFF,
@@ -4235,7 +4235,7 @@ pub fn arp_resolve_chirho(target_ip_chirho: u32, iface_idx_chirho: usize) -> Opt
         }
     }
 
-    crate::serial_println_chirho!("[ARP] Resolution failed for {}.{}.{}.{}",
+    crate::serial_debug_chirho!("[ARP] Resolution failed for {}.{}.{}.{}",
         (target_ip_chirho >> 24) & 0xFF, (target_ip_chirho >> 16) & 0xFF,
         (target_ip_chirho >> 8) & 0xFF, target_ip_chirho & 0xFF);
     None
@@ -4262,7 +4262,7 @@ pub fn set_interface_ip_chirho(iface_idx_chirho: usize, ip_chirho: u32) {
         ips_chirho.push(0);
     }
     ips_chirho[iface_idx_chirho] = ip_chirho;
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[NET] Interface {} IP set to {}.{}.{}.{}",
         iface_idx_chirho,
         (ip_chirho >> 24) & 0xFF, (ip_chirho >> 16) & 0xFF,
@@ -4325,7 +4325,7 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
                 let mut p_chirho = ih_chirho.build_chirho();
                 p_chirho.extend_from_slice(&tb_chirho);
                 drop(t2_chirho);
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[NET] SSH-RELAY(pipe): {} bytes -> TCP port 2222", data_chirho.len()
                 );
                 let _ = send_ip_packet_chirho(&p_chirho);
@@ -4348,7 +4348,7 @@ pub fn relay_tcp_2222_to_pipe_chirho(pipe_chirho: &alloc::sync::Arc<spin::Mutex<
         let mut found_chirho = 0u32;
         for (i, s) in table_chirho.iter().enumerate() {
             if let Some(ref sock) = s {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[RELAY-DBG] socket[{}]: family={} state={:?} port={:?} recv={}",
                     i, sock.family_chirho, sock.tcb_chirho.state_chirho,
                     sock.local_addr_chirho.map(|a| a.port_chirho),
@@ -4357,7 +4357,7 @@ pub fn relay_tcp_2222_to_pipe_chirho(pipe_chirho: &alloc::sync::Arc<spin::Mutex<
                 found_chirho += 1;
             }
         }
-        crate::serial_println_chirho!("[RELAY-DBG] {} sockets found", found_chirho);
+        crate::serial_debug_chirho!("[RELAY-DBG] {} sockets found", found_chirho);
     }
 
     for slot_chirho in table_chirho.iter_mut() {
@@ -4375,7 +4375,7 @@ pub fn relay_tcp_2222_to_pipe_chirho(pipe_chirho: &alloc::sync::Arc<spin::Mutex<
                     }
                 }
                 if count_chirho > 0 {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[NET] SSH-RELAY(tcp->pipe): {} bytes from TCP port 2222",
                         count_chirho
                     );
@@ -4545,7 +4545,7 @@ fn handle_arp_chirho(
                 dev_chirho.send_packet_chirho(&eth_reply_chirho.build_chirho());
             }
 
-            crate::serial_println_chirho!("[ARP] Replied to request from {}.{}.{}.{}",
+            crate::serial_debug_chirho!("[ARP] Replied to request from {}.{}.{}.{}",
                 (arp_chirho.sender_pa_chirho >> 24) & 0xFF,
                 (arp_chirho.sender_pa_chirho >> 16) & 0xFF,
                 (arp_chirho.sender_pa_chirho >> 8) & 0xFF,
@@ -4554,7 +4554,7 @@ fn handle_arp_chirho(
     }
 
     if arp_chirho.operation_chirho == ARP_OP_REPLY_CHIRHO {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[ARP] Reply: {}.{}.{}.{} is {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             (arp_chirho.sender_pa_chirho >> 24) & 0xFF,
             (arp_chirho.sender_pa_chirho >> 16) & 0xFF,
@@ -4670,7 +4670,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
                     *slot_chirho = Some(child_sock_chirho);
                     child_idx_chirho = Some(i_chirho);
 
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[TCP] New child socket {} for {}:{} -> port {}",
                         i_chirho, format_ip_chirho(remote_ip_chirho),
                         remote_port_chirho, local_port_chirho,
@@ -4726,7 +4726,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
                     '.'
                 })
                 .collect();
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[TCP] Delivered {} bytes to port {} [{}]",
                 segment_chirho.payload_chirho.len(),
                 local_port_chirho,
@@ -4740,7 +4740,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
             && sock_chirho.state_chirho != SocketStateChirho::ConnectedChirho
         {
             sock_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[TCP] Connection ESTABLISHED on socket {} port {}",
                 sock_idx_chirho, local_port_chirho,
             );
@@ -4749,7 +4749,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
             if let Some(listen_idx_val_chirho) = listen_idx_chirho {
                 if let Some(ref mut listener_chirho) = table_chirho[listen_idx_val_chirho] {
                     listener_chirho.accept_queue_chirho.push_back(sock_idx_chirho as u64);
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[TCP] Queued socket {} for accept on listener {}",
                         sock_idx_chirho, listen_idx_val_chirho,
                     );
@@ -5037,7 +5037,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
     // Use the last 4 bytes of MAC as xid for simplicity.
     let xid_chirho = u32::from_be_bytes([mac_chirho[2], mac_chirho[3], mac_chirho[4], mac_chirho[5]]);
 
-    crate::serial_println_chirho!("[DHCP] Sending DISCOVER on interface {}...", iface_idx_chirho);
+    crate::serial_debug_chirho!("[DHCP] Sending DISCOVER on interface {}...", iface_idx_chirho);
 
     // Build DHCP DISCOVER.
     let discover_payload_chirho = build_dhcp_packet_chirho(
@@ -5103,7 +5103,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
 
         // Every 100k iterations, log a progress dot for debugging.
         if poll_i_chirho > 0 && poll_i_chirho % NETWORK_POLL_SHORT_CHIRHO == 0 {
-            crate::serial_println_chirho!("[DHCP] Polling for OFFER... ({}/5M)", poll_i_chirho);
+            crate::serial_debug_chirho!("[DHCP] Polling for OFFER... ({}/5M)", poll_i_chirho);
         }
 
         // Poll for incoming frames.
@@ -5141,7 +5141,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
                                             offer_dns_chirho = dns_v_chirho;
                                             offer_server_chirho = srv_chirho;
                                             got_offer_chirho = true;
-                                            crate::serial_println_chirho!(
+                                            crate::serial_debug_chirho!(
                                                 "[DHCP] OFFER: IP={}.{}.{}.{} GW={}.{}.{}.{} DNS={}.{}.{}.{}",
                                                 (ip_chirho >> 24) & 0xFF, (ip_chirho >> 16) & 0xFF,
                                                 (ip_chirho >> 8) & 0xFF, ip_chirho & 0xFF,
@@ -5163,12 +5163,12 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
     }
 
     if !got_offer_chirho {
-        crate::serial_println_chirho!("[DHCP] No OFFER received, giving up");
+        crate::serial_debug_chirho!("[DHCP] No OFFER received, giving up");
         return None;
     }
 
     // Send DHCP REQUEST for the offered IP.
-    crate::serial_println_chirho!("[DHCP] Sending REQUEST for {}.{}.{}.{}",
+    crate::serial_debug_chirho!("[DHCP] Sending REQUEST for {}.{}.{}.{}",
         (offer_ip_chirho >> 24) & 0xFF, (offer_ip_chirho >> 16) & 0xFF,
         (offer_ip_chirho >> 8) & 0xFF, offer_ip_chirho & 0xFF);
 
@@ -5241,7 +5241,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
                                             parse_dhcp_options_chirho(&udp_d_chirho.payload_chirho);
                                         if mt_chirho == DHCP_ACK_CHIRHO {
                                             got_ack_chirho = true;
-                                            crate::serial_println_chirho!("[DHCP] ACK received!");
+                                            crate::serial_debug_chirho!("[DHCP] ACK received!");
                                             break;
                                         }
                                     }
@@ -5255,7 +5255,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
     }
 
     if !got_ack_chirho {
-        crate::serial_println_chirho!("[DHCP] No ACK received, using OFFER values anyway");
+        crate::serial_debug_chirho!("[DHCP] No ACK received, using OFFER values anyway");
     }
 
     // Configure the interface.
@@ -5338,7 +5338,7 @@ pub fn dhcp_discover_chirho(iface_idx_chirho: usize) -> Option<DhcpResultChirho>
 pub fn resolve_hostname_real_chirho(hostname_chirho: &str) -> Option<u32> {
     let dns_server_chirho = *DNS_SERVER_IP_CHIRHO.lock();
     if dns_server_chirho == 0 {
-        crate::serial_println_chirho!("[DNS] No DNS server configured");
+        crate::serial_debug_chirho!("[DNS] No DNS server configured");
         return None;
     }
 
@@ -5354,7 +5354,7 @@ pub fn resolve_hostname_real_chirho(hostname_chirho: &str) -> Option<u32> {
         src_ip_chirho, dns_server_chirho, src_port_chirho, DNS_PORT_CHIRHO, &query_chirho,
     );
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[DNS] Querying {} for '{}' (src_port={})",
         format_ip_chirho(dns_server_chirho), hostname_chirho, src_port_chirho,
     );
@@ -5398,7 +5398,7 @@ pub fn resolve_hostname_real_chirho(hostname_chirho: &str) -> Option<u32> {
                                     {
                                         let answers_chirho = parse_dns_response_chirho(&udp_chirho.payload_chirho);
                                         if let Some(first_chirho) = answers_chirho.first() {
-                                            crate::serial_println_chirho!(
+                                            crate::serial_debug_chirho!(
                                                 "[DNS] Resolved '{}' -> {}.{}.{}.{}",
                                                 hostname_chirho,
                                                 (first_chirho.addr_chirho >> 24) & 0xFF,
@@ -5418,7 +5418,7 @@ pub fn resolve_hostname_real_chirho(hostname_chirho: &str) -> Option<u32> {
         }
     }
 
-    crate::serial_println_chirho!("[DNS] Resolution timed out for '{}'", hostname_chirho);
+    crate::serial_debug_chirho!("[DNS] Resolution timed out for '{}'", hostname_chirho);
     None
 }
 
@@ -5484,7 +5484,7 @@ pub fn tcp_connect_real_chirho(
         send_ip_packet_chirho(&pkt_chirho)?;
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[TCP] SYN sent to {}:{} from {}:{}",
         format_ip_chirho(dst_ip_chirho), dst_port_chirho,
         format_ip_chirho(src_ip_chirho), src_port_chirho,
@@ -5498,7 +5498,7 @@ pub fn tcp_connect_real_chirho(
         let table_chirho = SOCKET_TABLE_CHIRHO.lock();
         if let Some(ref sock_chirho) = table_chirho[socket_idx_chirho] {
             if sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[TCP] Connection established to {}:{}",
                     format_ip_chirho(dst_ip_chirho), dst_port_chirho,
                 );
@@ -5510,7 +5510,7 @@ pub fn tcp_connect_real_chirho(
         }
     }
 
-    crate::serial_println_chirho!("[TCP] Connection timed out to {}:{}", format_ip_chirho(dst_ip_chirho), dst_port_chirho);
+    crate::serial_debug_chirho!("[TCP] Connection timed out to {}:{}", format_ip_chirho(dst_ip_chirho), dst_port_chirho);
     Err(-110) // ETIMEDOUT
 }
 
@@ -5713,7 +5713,7 @@ pub fn sys_sendto_real_chirho(
 /// Probe VirtIO-net devices from PCI + MMIO and register them as network interfaces.
 #[allow(dead_code)]
 pub fn probe_virtio_net_chirho() {
-    crate::serial_println_chirho!("[VNET] Probing for VirtIO-net devices...");
+    crate::serial_debug_chirho!("[VNET] Probing for VirtIO-net devices...");
 
     // Probe PCI bus for VirtIO-net.
     let pci_devs_chirho = crate::virtio_chirho::scan_pci_virtio_chirho();
@@ -5728,12 +5728,12 @@ pub fn probe_virtio_net_chirho() {
             if mmio_base_chirho == 0 {
                 continue;
             }
-            crate::serial_println_chirho!("[VNET] Probing PCI VirtIO-net at MMIO {:#x}", mmio_base_chirho);
+            crate::serial_debug_chirho!("[VNET] Probing PCI VirtIO-net at MMIO {:#x}", mmio_base_chirho);
             if let Some(net_dev_chirho) = VirtioNetDeviceChirho::probe_mmio_chirho(mmio_base_chirho) {
                 let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
                 devs_chirho.push(Box::new(net_dev_chirho));
                 let idx_chirho = devs_chirho.len() - 1;
-                crate::serial_println_chirho!("[VNET] Registered VirtIO-net as interface {}", idx_chirho);
+                crate::serial_debug_chirho!("[VNET] Registered VirtIO-net as interface {}", idx_chirho);
             }
         }
     }
@@ -5753,12 +5753,12 @@ pub fn probe_virtio_net_chirho() {
             continue;
         }
 
-        crate::serial_println_chirho!("[VNET] Probing MMIO VirtIO-net at {:#x}", addr_chirho);
+        crate::serial_debug_chirho!("[VNET] Probing MMIO VirtIO-net at {:#x}", addr_chirho);
         if let Some(net_dev_chirho) = VirtioNetDeviceChirho::probe_mmio_chirho(addr_chirho) {
             let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
             devs_chirho.push(Box::new(net_dev_chirho));
             let idx_chirho = devs_chirho.len() - 1;
-            crate::serial_println_chirho!("[VNET] Registered VirtIO-net MMIO as interface {}", idx_chirho);
+            crate::serial_debug_chirho!("[VNET] Registered VirtIO-net MMIO as interface {}", idx_chirho);
         }
     }
 
@@ -5772,13 +5772,13 @@ pub fn probe_virtio_net_chirho() {
     };
 
     if nic_count_chirho > 1 {
-        crate::serial_println_chirho!("[VNET] Running DHCP on interface 1...");
+        crate::serial_debug_chirho!("[VNET] Running DHCP on interface 1...");
         let _dhcp_result_chirho = dhcp_discover_chirho(1);
     } else {
-        crate::serial_println_chirho!("[VNET] No NIC found, skipping DHCP");
+        crate::serial_debug_chirho!("[VNET] No NIC found, skipping DHCP");
     }
 
-    crate::serial_println_chirho!("[VNET] VirtIO-net probe complete ({} interfaces total)", nic_count_chirho);
+    crate::serial_debug_chirho!("[VNET] VirtIO-net probe complete ({} interfaces total)", nic_count_chirho);
 }
 
 // ============================================================================
@@ -5859,13 +5859,13 @@ impl VirtioNetIoDeviceChirho {
         transport_chirho.select_queue_chirho(queue_idx_chirho);
         let queue_size_chirho = transport_chirho.read_queue_size_chirho();
         if queue_size_chirho == 0 {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    [VNET-IO] Queue {} size is 0, aborting",
                 queue_idx_chirho
             );
             return None;
         }
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    [VNET-IO] Queue {} max size = {}",
             queue_idx_chirho,
             queue_size_chirho
@@ -5887,7 +5887,7 @@ impl VirtioNetIoDeviceChirho {
         // Allocate contiguous physical DMA memory.
         let (phys_base_chirho, virt_base_chirho) = Self::alloc_dma_chirho(total_bytes_chirho);
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    [VNET-IO] Queue {} virt={:#x} phys={:#x} size={} total_bytes={}",
             queue_idx_chirho,
             virt_base_chirho,
@@ -5924,7 +5924,7 @@ impl VirtioNetIoDeviceChirho {
     pub fn probe_io_chirho(io_base_chirho: u16) -> Option<Self> {
         let transport_chirho = VirtioIoTransportChirho::new_chirho(io_base_chirho);
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    [VNET-IO] Probing VirtIO-net at I/O base {:#06x}",
             io_base_chirho
         );
@@ -5942,7 +5942,7 @@ impl VirtioNetIoDeviceChirho {
 
         // Step 4: Feature negotiation.
         let device_features_chirho = transport_chirho.read_device_features_chirho();
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    [VNET-IO] Device features = {:#010x}",
             device_features_chirho
         );
@@ -5966,7 +5966,7 @@ impl VirtioNetIoDeviceChirho {
         transport_chirho.write_status_chirho(status_chirho);
         let verify_status_chirho = transport_chirho.read_status_chirho();
         if verify_status_chirho & 8 == 0 {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    [VNET-IO] WARNING: FEATURES_OK not accepted by device"
             );
         }
@@ -5976,7 +5976,7 @@ impl VirtioNetIoDeviceChirho {
         transport_chirho.write_status_chirho(status_chirho);
 
         let final_status_chirho = transport_chirho.read_status_chirho();
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    [VNET-IO] Device status after init = {:#04x}",
             final_status_chirho
         );
@@ -5988,7 +5988,7 @@ impl VirtioNetIoDeviceChirho {
             mac_chirho[i_chirho as usize] = transport_chirho.read_config8_chirho(i_chirho);
         }
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    [VNET-IO] MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             mac_chirho[0], mac_chirho[1], mac_chirho[2],
             mac_chirho[3], mac_chirho[4], mac_chirho[5],
@@ -6006,7 +6006,7 @@ impl VirtioNetIoDeviceChirho {
         let (rx_buf_phys_chirho, rx_buf_virt_chirho) =
             Self::alloc_dma_chirho(total_rx_buf_bytes_chirho);
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    [VNET-IO] RX buffers: {} x {} bytes at phys {:#x}",
             num_rx_bufs_chirho, buf_size_chirho, rx_buf_phys_chirho
         );
@@ -6062,7 +6062,7 @@ impl VirtioNetIoDeviceChirho {
         fence(NetOrdering::SeqCst);
         transport_chirho.notify_queue_chirho(0);
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    [VNET-IO] Initialized — {} RX bufs posted, device ready",
             num_rx_bufs_chirho
         );
@@ -6216,7 +6216,7 @@ impl VirtioNetIoDeviceChirho {
 
         // Allocate 2 descriptors (header + data).
         if self.tx_vq_chirho.num_free_chirho < 2 {
-            crate::serial_println_chirho!("[VNET-IO] TX: no free descriptors");
+            crate::serial_debug_chirho!("[VNET-IO] TX: no free descriptors");
             return;
         }
         let d0_chirho = match self.tx_vq_chirho.alloc_desc_chirho() {
@@ -6311,7 +6311,7 @@ impl VirtioNetIoDeviceChirho {
             core::hint::spin_loop();
             spins_chirho += 1;
             if spins_chirho > NETWORK_POLL_SHORT_CHIRHO {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[VNET-IO] TX timeout after {} spins",
                     spins_chirho
                 );
@@ -6352,7 +6352,7 @@ impl NetDeviceChirho for VirtioNetIoDeviceChirho {
 /// with an I/O BAR is detected.  Probes the device, registers it in
 /// `NET_DEVICES_CHIRHO`, and logs the result.
 pub fn probe_virtio_net_io_chirho(io_base_chirho: u16) {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[VNET-IO] Probing VirtIO-net I/O at base {:#06x}",
         io_base_chirho
     );
@@ -6363,7 +6363,7 @@ pub fn probe_virtio_net_io_chirho(io_base_chirho: u16) {
             let mut devs_chirho = NET_DEVICES_CHIRHO.lock();
             devs_chirho.push(Box::new(net_dev_chirho));
             let idx_chirho = devs_chirho.len() - 1;
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[VNET-IO] Registered VirtIO-net (I/O) as interface {} — MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                 idx_chirho,
                 mac_chirho[0], mac_chirho[1], mac_chirho[2],
@@ -6371,7 +6371,7 @@ pub fn probe_virtio_net_io_chirho(io_base_chirho: u16) {
             );
         }
         None => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[VNET-IO] Probe failed at I/O base {:#06x}",
                 io_base_chirho
             );
@@ -6467,7 +6467,7 @@ static IFACE_CONFIG_CHIRHO: Mutex<Vec<IfaceConfigChirho>> = Mutex::new(Vec::new(
 pub fn init_loopback_ip_chirho() {
     let mut c_chirho = IFACE_CONFIG_CHIRHO.lock();
     c_chirho.push(IfaceConfigChirho { name_chirho: alloc::string::String::from("lo"), ipv4_addr_chirho: LOOPBACK_IPV4_CHIRHO, netmask_chirho: LOOPBACK_NETMASK_CHIRHO, flags_chirho: IFF_UP_CHIRHO | IFF_LOOPBACK_CHIRHO | IFF_RUNNING_CHIRHO, mtu_val_chirho: LOOPBACK_MTU_CHIRHO as u32 });
-    crate::serial_println_chirho!("[NET] Loopback: 127.0.0.1/8");
+    crate::serial_debug_chirho!("[NET] Loopback: 127.0.0.1/8");
 }
 
 // ============================================================================

@@ -33,6 +33,7 @@ use crate::mm_chirho::{
     PROT_EXEC_CHIRHO, PROT_READ_CHIRHO, PROT_WRITE_CHIRHO,
 };
 use crate::serial_println_chirho;
+use crate::serial_debug_chirho;
 
 // ============================================================================
 // Constants
@@ -524,7 +525,7 @@ pub fn load_elf_at_base_chirho(
     let first_vaddr_chirho = elf_info_chirho.segments_chirho[0].vaddr_chirho;
     let load_bias_chirho = base_addr_chirho.wrapping_sub(first_vaddr_chirho);
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[DYNLINK] Loading ET_DYN ELF: base={:#x}, bias={:#x}, entry={:#x}",
         base_addr_chirho,
         load_bias_chirho,
@@ -547,7 +548,7 @@ pub fn load_elf_at_base_chirho(
 
         let _prot_chirho = elf_flags_to_prot_chirho(seg_chirho.flags_chirho);
 
-        serial_println_chirho!(
+        serial_debug_chirho!(
             "[DYNLINK]   Segment: vaddr={:#x} -> {:#x}, memsz={:#x}, filesz={:#x}",
             seg_chirho.vaddr_chirho,
             biased_vaddr_chirho,
@@ -590,7 +591,7 @@ pub fn load_elf_at_base_chirho(
                 if seg_chirho.offset_chirho <= 0x38bc0 && seg_chirho.offset_chirho + seg_chirho.filesz_chirho > 0x38bc0 {
                     let check_off_chirho = (0x38bc0 - seg_chirho.offset_chirho) as usize;
                     if check_off_chirho + 8 <= data_chirho.len() {
-                        serial_println_chirho!(
+                        serial_debug_chirho!(
                             "[DYNLINK]   VERIFY file[0x38bc0]: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                             data_chirho[check_off_chirho], data_chirho[check_off_chirho+1],
                             data_chirho[check_off_chirho+2], data_chirho[check_off_chirho+3],
@@ -605,7 +606,7 @@ pub fn load_elf_at_base_chirho(
                             core::ptr::read_volatile(mem_ptr_chirho.add(2)),
                             core::ptr::read_volatile(mem_ptr_chirho.add(3)),
                         ) };
-                        serial_println_chirho!(
+                        serial_debug_chirho!(
                             "[DYNLINK]   VERIFY mem[{:#x}]: {:02x} {:02x} {:02x} {:02x}",
                             biased_vaddr_chirho + check_off_chirho as u64, m0, m1, m2, m3
                         );
@@ -671,7 +672,7 @@ pub unsafe fn apply_relative_relocs_chirho(
     let entry_size_chirho = relaent_size_chirho.max(mem::size_of::<Elf64RelaChirho>() as u64);
     let num_entries_chirho = rela_size_chirho / entry_size_chirho;
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[DYNLINK] Applying {} RELA relocations (bias={:#x})",
         num_entries_chirho,
         load_bias_chirho
@@ -714,7 +715,7 @@ pub unsafe fn apply_relative_relocs_chirho(
             }
             _ => {
                 // Unknown relocation type — skip with warning.
-                serial_println_chirho!(
+                serial_debug_chirho!(
                     "[DYNLINK] Skipping relocation type {} at offset {:#x}",
                     rela_type_chirho,
                     rela_chirho.r_offset_chirho
@@ -748,7 +749,7 @@ pub unsafe fn setup_plt_got_chirho(
     let entry_size_chirho = mem::size_of::<Elf64RelaChirho>() as u64;
     let num_entries_chirho = pltrelsz_chirho / entry_size_chirho;
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[DYNLINK] Setting up PLT/GOT: {} entries, pltgot={:#x}",
         num_entries_chirho,
         pltgot_addr_chirho
@@ -1175,7 +1176,7 @@ pub unsafe fn resolve_symbol_relocs_chirho(
 ) {
     // Determine how many symbols the interpreter exports.
     let interp_sym_count_chirho = symtab_count_from_hash_chirho(interp_info_chirho);
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[SYMRES] Interpreter symbol count: {} (hash={:#x}, gnu_hash={:#x})",
         interp_sym_count_chirho,
         interp_info_chirho.hash_addr_chirho,
@@ -1183,7 +1184,7 @@ pub unsafe fn resolve_symbol_relocs_chirho(
     );
 
     if interp_sym_count_chirho == 0 {
-        serial_println_chirho!("[SYMRES] WARNING: no symbols found in interpreter, skipping");
+        serial_debug_chirho!("[SYMRES] WARNING: no symbols found in interpreter, skipping");
         return;
     }
 
@@ -1231,7 +1232,7 @@ pub unsafe fn resolve_symbol_relocs_chirho(
         &mut unresolved_count_chirho,
     );
 
-    serial_println_chirho!(
+    serial_debug_chirho!(
         "[SYMRES] Symbol resolution complete: {} resolved, {} unresolved",
         resolved_count_chirho,
         unresolved_count_chirho
@@ -1328,7 +1329,7 @@ unsafe fn resolve_rela_table_chirho(
                     if let Ok(name_str_chirho) =
                         core::str::from_utf8(&log_buf_chirho[..log_len_chirho])
                     {
-                        serial_println_chirho!(
+                        serial_debug_chirho!(
                             "[SYMRES]   {} -> {:#x} (GOT@{:#x})",
                             name_str_chirho,
                             resolved_addr_chirho,

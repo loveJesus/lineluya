@@ -621,6 +621,20 @@ pub fn register_task_chirho(task_chirho: Arc<Mutex<TaskChirho>>) {
     TASK_LIST_CHIRHO.lock().push(task_chirho);
 }
 
+/// Check if a task is still runnable (not zombie/dead).
+/// Used by the scheduler to decide whether to re-queue a task.
+pub fn is_task_runnable_chirho(pid_chirho: u64) -> bool {
+    let list_chirho = TASK_LIST_CHIRHO.lock();
+    if let Some(task_arc_chirho) = list_chirho
+        .iter()
+        .find(|t_chirho| t_chirho.lock().pid_chirho == pid_chirho)
+    {
+        !task_arc_chirho.lock().is_exited_chirho()
+    } else {
+        false
+    }
+}
+
 /// Look up a task by PID.
 ///
 /// Returns `None` if no task with the given PID exists.
@@ -707,7 +721,12 @@ pub fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
     // Find a free virtual address range for the stack.
     // Use a simple bump allocator for stack addresses.
     use core::sync::atomic::{AtomicU64, Ordering};
-    static NEXT_STACK_ADDR_CHIRHO: AtomicU64 = AtomicU64::new(0x4666_0000_0000);
+    // Kernel stacks MUST be in the upper half (PML4[256+]) so they are
+    // automatically shared across ALL per-process page tables.  The old
+    // address 0x4666_0000_0000 was in PML4[140] (lower half) which caused
+    // GPF when context-switching back to a parent task — the child's page
+    // table didn't map the parent's kernel stack.
+    static NEXT_STACK_ADDR_CHIRHO: AtomicU64 = AtomicU64::new(0xFFFF_8100_0000_0000);
     let base_vaddr_chirho = NEXT_STACK_ADDR_CHIRHO.fetch_add(
         (num_pages_chirho as u64 + 1) * 4096, // +1 guard page
         Ordering::SeqCst,
@@ -736,14 +755,9 @@ pub fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
                 }
                 .map(|flush_chirho| flush_chirho.flush());
 
-                // Also map in current per-process PT.
-                let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
-                let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
-                    current_pml4_chirho,
-                    page_addr_chirho,
-                    frame_chirho.start_address().as_u64(),
-                    flags_chirho,
-                );
+                // No need to map in per-process PT — kernel stacks are in
+                // the upper half (PML4[256+]) which is shared automatically
+                // by all page tables via create_user_page_table_chirho.
             }
         }
 

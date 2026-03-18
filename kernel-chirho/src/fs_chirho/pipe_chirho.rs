@@ -379,7 +379,7 @@ fn pipe_common_chirho(fds_ptr_chirho: u64) -> i64 {
     let pid_pipe_chirho = crate::task_chirho::current_task_chirho()
         .map(|t| t.lock().pid_chirho).unwrap_or(0);
     if pid_pipe_chirho >= 3 {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[PIPE] pid={} pipe() fd0_before={}", pid_pipe_chirho, fd0_before_chirho
         );
     }
@@ -416,7 +416,7 @@ fn pipe_common_chirho(fds_ptr_chirho: u64) -> i64 {
         return -EFAULT_CHIRHO;
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PIPE] pipe created: read_fd={}, write_fd={}",
         read_fd_chirho,
         write_fd_chirho,
@@ -434,7 +434,7 @@ pub fn sys_pipe_chirho(fds_ptr_chirho: u64) -> i64 {
         return -EFAULT_CHIRHO;
     }
 
-    crate::serial_println_chirho!("[PIPE] sys_pipe called (fds_ptr={:#x})", fds_ptr_chirho);
+    crate::serial_debug_chirho!("[PIPE] sys_pipe called (fds_ptr={:#x})", fds_ptr_chirho);
     pipe_common_chirho(fds_ptr_chirho)
 }
 
@@ -447,7 +447,7 @@ pub fn sys_pipe2_chirho(fds_ptr_chirho: u64, flags_chirho: u32) -> i64 {
         return -EFAULT_CHIRHO;
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PIPE] sys_pipe2 called (fds_ptr={:#x}, flags={:#x})",
         fds_ptr_chirho,
         flags_chirho,

@@ -17,8 +17,8 @@ use x86_64::instructions::port::Port;
 /// Base I/O port address for COM1.
 const COM1_BASE_CHIRHO: u16 = 0x3F8;
 
-/// Baud rate divisor for 38400 baud (115200 / 38400 = 3).
-const BAUD_DIVISOR_LOW_CHIRHO: u8 = 0x03;
+/// Baud rate divisor for 115200 baud (115200 / 115200 = 1).
+const BAUD_DIVISOR_LOW_CHIRHO: u8 = 0x01;
 const BAUD_DIVISOR_HIGH_CHIRHO: u8 = 0x00;
 
 /// Line control: 8 data bits, no parity, 1 stop bit.

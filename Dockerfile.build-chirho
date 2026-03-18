@@ -50,8 +50,8 @@ RUN cd userspace-chirho/hello-chirho && cargo +nightly-2026-03-10 build --releas
 # Force rebuild by touching source files (cargo fingerprints are from Stage 2 stubs)
 RUN touch kernel-chirho/src/main_chirho.rs kernel-core-chirho/src/lib.rs
 
-# Build the kernel
-RUN cd kernel-chirho && cargo +nightly-2026-03-10 build --release 2>&1 | tail -3
+# Build the kernel (set pipefail so cargo errors aren't swallowed by tail)
+RUN set -o pipefail && cd kernel-chirho && cargo +nightly-2026-03-10 build --release 2>&1 | tail -20
 
 # Create disk images using the pre-built tool from stage 1
 RUN /image-builder-chirho/target/release/image-builder-chirho \

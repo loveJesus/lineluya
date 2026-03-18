@@ -77,7 +77,7 @@ const DEFAULT_CHANNELS_CHIRHO: i64 = 2;
 /// This is called during kernel init to detect Intel AC97 and HDA
 /// controllers. No hardware initialization is performed yet.
 pub fn detect_sound_cards_chirho() {
-    crate::serial_println_chirho!("SOUND: scanning PCI bus 0 for audio controllers...");
+    crate::serial_debug_chirho!("SOUND: scanning PCI bus 0 for audio controllers...");
 
     let devices_chirho = unsafe { scan_bus_chirho(0) };
     let mut found_count_chirho: u32 = 0;
@@ -235,7 +235,7 @@ impl FileOpsChirho for DevDspOpsChirho {
                 Ok(0)
             }
             _ => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "SOUND: /dev/dsp unhandled ioctl cmd={:#x} arg={:#x}",
                     cmd_chirho,
                     arg_chirho
@@ -298,7 +298,7 @@ static AC97_CONTROLLER_CHIRHO: spin::Mutex<Option<Ac97ControllerChirho>> =
 /// Does NOT perform full codec reset or DMA buffer setup — that comes in a
 /// later task when we actually want to push PCM samples to hardware.
 pub fn init_ac97_chirho() {
-    crate::serial_println_chirho!("AC97: probing PCI bus 0 for Intel AC97 controller...");
+    crate::serial_debug_chirho!("AC97: probing PCI bus 0 for Intel AC97 controller...");
 
     let devices_chirho = unsafe { scan_bus_chirho(0) };
 
@@ -339,7 +339,7 @@ pub fn init_ac97_chirho() {
         let nam_port_chirho = (bar0_raw_chirho & 0xFFFC) as u16;
         let nabm_port_chirho = (bar1_raw_chirho & 0xFFFC) as u16;
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "AC97: found at PCI {:02x}:{:02x}.{} — NAM(BAR0)={:#06x} NABM(BAR1)={:#06x} IRQ={}",
             dev_chirho.bus_chirho,
             dev_chirho.device_chirho,
@@ -359,11 +359,11 @@ pub fn init_ac97_chirho() {
         };
 
         *AC97_CONTROLLER_CHIRHO.lock() = Some(controller_chirho);
-        crate::serial_println_chirho!("AC97: controller registered (DMA not yet enabled)");
+        crate::serial_debug_chirho!("AC97: controller registered (DMA not yet enabled)");
         return;
     }
 
-    crate::serial_println_chirho!("AC97: no Intel AC97 controller found on PCI bus 0");
+    crate::serial_debug_chirho!("AC97: no Intel AC97 controller found on PCI bus 0");
 }
 
 /// Returns `true` if an AC97 controller was detected and initialized.

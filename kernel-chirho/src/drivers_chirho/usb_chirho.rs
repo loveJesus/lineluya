@@ -296,7 +296,7 @@ pub fn discover_xhci_chirho(phys_offset_chirho: u64) -> Vec<XhciControllerChirho
                     dev_chirho.function_chirho,
                     bar0_virt_chirho,
                 );
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[USB] Found XHCI controller at PCI {:02x}:{:02x}.{}",
                     dev_chirho.bus_chirho,
                     dev_chirho.device_chirho,
@@ -308,7 +308,7 @@ pub fn discover_xhci_chirho(phys_offset_chirho: u64) -> Vec<XhciControllerChirho
     }
 
     if controllers_chirho.is_empty() {
-        crate::serial_println_chirho!("[USB] No XHCI controllers found");
+        crate::serial_debug_chirho!("[USB] No XHCI controllers found");
     }
 
     controllers_chirho

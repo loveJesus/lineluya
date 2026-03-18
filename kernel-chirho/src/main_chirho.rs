@@ -354,12 +354,15 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     fb_println_chirho!("[OK] Syscall interface initialized");
 
     unsafe { syscall_entry_chirho::init_syscall_entry_chirho() };
-    // Sync PID 0's kernel_stack with the boot syscall stack so the
-    // scheduler sets the correct KERNEL_STACK_TOP when switching back.
+    // Set the syscall entry kernel stack to PID 0's properly allocated stack
+    // (from the bump allocator at 0x466600...).  We must NOT use the boot stack
+    // because the context switch assumes all tasks have stable kernel stacks
+    // in the bump-allocated range.
     unsafe {
-        let boot_kstack_chirho = syscall_entry_chirho::KERNEL_STACK_TOP_CHIRHO;
         if let Some(task_arc_chirho) = task_chirho::current_task_chirho() {
-            task_arc_chirho.lock().kernel_stack_chirho = boot_kstack_chirho;
+            let kstack_chirho = task_arc_chirho.lock().kernel_stack_chirho;
+            syscall_entry_chirho::set_kernel_stack_top_chirho(kstack_chirho);
+            crate::gdt_chirho::set_tss_rsp0_chirho(kstack_chirho);
         }
     }
     fb_println_chirho!("[OK] Syscall entry trampoline initialized");
@@ -428,12 +431,12 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     // Create /etc/profile on tmpfs to auto-start dropbear SSH server.
     // Uses the tmpfs write API directly since ext4 disk may not have this file.
     {
-        let profile_content_chirho = "# Auto-start dropbear SSH on port 2222\ndropbear -p 2222 -B -R 2>/dev/null &\n";
+        let profile_content_chirho = "# Lineluya shell profile\nexport PS1='lineluya# '\n";
         tmpfs_chirho::write_tmpfs_file_chirho(
             "/etc/profile",
             profile_content_chirho.as_bytes(),
         );
-        serial_println_chirho!("[INIT] Created /etc/profile (dropbear auto-start)");
+        serial_println_chirho!("[INIT] Created /etc/profile");
     }
 
     // Load and execute the hello world binary

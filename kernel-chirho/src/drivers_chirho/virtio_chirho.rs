@@ -834,7 +834,7 @@ impl VirtioBlkDeviceChirho {
     pub fn probe_io_chirho(io_base_chirho: u16) -> Option<Self> {
         let transport_chirho = VirtioIoTransportChirho::new_chirho(io_base_chirho);
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk I/O: probing at I/O base {:#06x}",
             io_base_chirho
         );
@@ -853,7 +853,7 @@ impl VirtioBlkDeviceChirho {
         // Step 4: Feature negotiation.
         // Read what the device offers.
         let device_features_chirho = transport_chirho.read_device_features_chirho();
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk I/O: device features = {:#010x}",
             device_features_chirho
         );
@@ -867,13 +867,13 @@ impl VirtioBlkDeviceChirho {
         // Step 5: Set up virtqueue 0.
         transport_chirho.select_queue_chirho(0);
         let queue_size_chirho = transport_chirho.read_queue_size_chirho();
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk I/O: queue 0 max size = {}",
             queue_size_chirho
         );
 
         if queue_size_chirho == 0 {
-            crate::serial_println_chirho!("    VirtIO-blk I/O: queue size is 0, aborting");
+            crate::serial_debug_chirho!("    VirtIO-blk I/O: queue size is 0, aborting");
             return None;
         }
 
@@ -918,7 +918,7 @@ impl VirtioBlkDeviceChirho {
         // Zero the physically contiguous DMA region
         unsafe { core::ptr::write_bytes(aligned_ptr_chirho as *mut u8, 0, total_bytes_chirho); }
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk I/O: vq virt={:#x} phys={:#x} size={} total_bytes={}",
             aligned_ptr_chirho,
             phys_base_chirho,
@@ -931,7 +931,7 @@ impl VirtioBlkDeviceChirho {
         let pfn_chirho = (phys_base_chirho >> 12) as u32;
         transport_chirho.write_queue_pfn_chirho(pfn_chirho);
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk I/O: queue PFN = {:#x} (phys page {:#x})",
             pfn_chirho,
             pfn_chirho as u64 * 4096
@@ -943,7 +943,7 @@ impl VirtioBlkDeviceChirho {
         // Verify FEATURES_OK is still set (device may clear it if unhappy)
         let verify_status_chirho = transport_chirho.read_status_chirho();
         if verify_status_chirho & 8 == 0 {
-            crate::serial_println_chirho!("    VirtIO-blk I/O: WARNING: FEATURES_OK not accepted");
+            crate::serial_debug_chirho!("    VirtIO-blk I/O: WARNING: FEATURES_OK not accepted");
         }
 
         // Step 6: Driver OK — device is live.
@@ -955,7 +955,7 @@ impl VirtioBlkDeviceChirho {
         transport_chirho.select_queue_chirho(0);
         let readback_pfn_chirho = unsafe { transport_chirho.read32_chirho(VIRTIO_IO_QUEUE_ADDRESS_CHIRHO) };
         let readback_size_chirho = transport_chirho.read_queue_size_chirho();
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk I/O: device status after init = {:#04x}, queue PFN readback = {:#x} (expected {:#x}), qsize = {}",
             final_status_chirho, readback_pfn_chirho, pfn_chirho, readback_size_chirho
         );
@@ -963,7 +963,7 @@ impl VirtioBlkDeviceChirho {
         // Step 7: Read capacity from device-specific config.
         // For virtio-blk, capacity is a u64 at config offset 0.
         let capacity_chirho = transport_chirho.read_config64_chirho(0);
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk I/O: capacity = {} sectors ({} MiB)",
             capacity_chirho,
             capacity_chirho / 2048
@@ -1315,7 +1315,7 @@ impl VirtioBlkDeviceChirho {
             if spins_chirho > 1_000_000 {
                 let used_flags_chirho = unsafe { ptr::read_volatile(used_base_chirho) };
                 let used_idx_final_chirho = unsafe { ptr::read_volatile(used_base_chirho.add(1)) };
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "    [VirtIO-IO] TIMEOUT: last_used={} used_flags={} used_idx={} isr={}",
                     last_used_chirho, used_flags_chirho, used_idx_final_chirho,
                     match &self.transport_chirho {
@@ -1351,7 +1351,7 @@ impl VirtioBlkDeviceChirho {
         if final_status_chirho == VIRTIO_BLK_S_OK_CHIRHO {
             Ok(())
         } else {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    VirtIO-blk I/O: request failed, status={}",
                 final_status_chirho
             );
@@ -1409,7 +1409,7 @@ impl BlockDeviceChirho for VirtioBlkDeviceChirho {
         tmp_chirho.copy_from_slice(buf_chirho);
         let result_chirho = self.submit_and_wait_chirho(block_nr_chirho, &mut tmp_chirho, true);
         if let Err(err_chirho) = &result_chirho {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[VirtIO-blk] WRITE FAILED sector={} err={}",
                 block_nr_chirho,
                 err_chirho
@@ -1560,15 +1560,15 @@ static VIRTIO_IO_BASES_CHIRHO: spin::Mutex<alloc::vec::Vec<u16>> =
 /// initialised, read sector 0 and log the first 16 bytes as a smoke test
 /// (P2-001 / P2-002).
 pub fn init_virtio_chirho() {
-    crate::serial_println_chirho!("VirtIO: scanning PCI bus for VirtIO devices...");
+    crate::serial_debug_chirho!("VirtIO: scanning PCI bus for VirtIO devices...");
 
     let devices_chirho = scan_pci_virtio_chirho();
 
     if devices_chirho.is_empty() {
-        crate::serial_println_chirho!("VirtIO: no VirtIO devices found on PCI bus 0");
+        crate::serial_debug_chirho!("VirtIO: no VirtIO devices found on PCI bus 0");
     } else {
         for dev_chirho in &devices_chirho {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "  VirtIO PCI {:02x}:{:02x}.{} device_id={:#06x} class={:#04x}",
                 dev_chirho.bus_chirho,
                 dev_chirho.device_chirho,
@@ -1577,12 +1577,12 @@ pub fn init_virtio_chirho() {
                 dev_chirho.class_code_chirho,
             );
             if is_virtio_blk_chirho(dev_chirho) {
-                crate::serial_println_chirho!("    -> VirtIO-blk device detected");
+                crate::serial_debug_chirho!("    -> VirtIO-blk device detected");
                 probe_and_test_blk_chirho(dev_chirho);
             }
             // P3-001: Detect VirtIO-net devices
             if is_virtio_net_chirho(dev_chirho) {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "    -> VirtIO-net device detected (PCI {:02x}:{:02x}.{}, device_id={:#06x})",
                     dev_chirho.bus_chirho,
                     dev_chirho.device_chirho,
@@ -1595,7 +1595,7 @@ pub fn init_virtio_chirho() {
                 if is_io_bar_chirho {
                     // I/O port transport — probe via net_chirho
                     let io_base_chirho = (bar0_chirho & 0xFFFC) as u16;
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "    VirtIO-net BAR0 is I/O port: raw={:#x} base={:#06x}",
                         bar0_chirho,
                         io_base_chirho
@@ -1605,7 +1605,7 @@ pub fn init_virtio_chirho() {
                     crate::net_chirho::probe_virtio_net_io_chirho(io_base_chirho);
                 } else {
                     // MMIO transport — log but skip (crashes in UEFI)
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "    VirtIO-net BAR0 is MMIO: {:#010x} — skipping (UEFI unsafe)",
                         bar0_chirho
                     );
@@ -1620,7 +1620,7 @@ pub fn init_virtio_chirho() {
         probe_qemu_mmio_chirho();
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "VirtIO: scan complete, {} PCI device(s) found",
         devices_chirho.len()
     );
@@ -1643,7 +1643,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
     if is_io_bar_chirho {
         // ---- I/O port transport (legacy VirtIO PCI) ----
         let io_base_chirho = (bar0_raw_chirho & 0xFFFC) as u16;
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk BAR0 is I/O port: raw={:#x} base={:#06x}",
             bar0_raw_chirho,
             io_base_chirho
@@ -1655,7 +1655,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
 
         match VirtioBlkDeviceChirho::probe_io_chirho(io_base_chirho) {
             Some(blk_dev_chirho) => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "    VirtIO-blk I/O init OK — capacity {} sectors ({} MiB)",
                     blk_dev_chirho.capacity_sectors_chirho,
                     blk_dev_chirho.capacity_sectors_chirho / 2048
@@ -1668,16 +1668,16 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
                 use alloc::string::String;
                 let name_chirho = String::from("vda");
                 let reg_result_chirho = crate::block_chirho::BLOCK_REGISTRY_CHIRHO
-                    .register_chirho(name_chirho, Box::new(blk_dev_chirho));
+                    .register_chirho(name_chirho, alloc::sync::Arc::new(blk_dev_chirho));
                 match reg_result_chirho {
                     Ok(idx_chirho) => {
-                        crate::serial_println_chirho!(
+                        crate::serial_debug_chirho!(
                             "    Registered VirtIO-blk (I/O) as block device index {}",
                             idx_chirho
                         );
                     }
                     Err(err_chirho) => {
-                        crate::serial_println_chirho!(
+                        crate::serial_debug_chirho!(
                             "    Failed to register VirtIO-blk (I/O): {}",
                             err_chirho
                         );
@@ -1685,7 +1685,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
                 }
             }
             None => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "    VirtIO-blk I/O probe failed at base={:#06x}",
                     io_base_chirho
                 );
@@ -1700,19 +1700,19 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
     // If BAR0 is zero the UEFI firmware did not assign an MMIO address.
     // Program one ourselves using the PCI BAR bump allocator.
     if mmio_phys_chirho == 0 {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "    VirtIO-blk BAR0 is zero — assigning MMIO via pci_assign_bar_chirho"
         );
         match unsafe { pci_assign_bar_chirho(pci_dev_chirho, 0) } {
             Some(assigned_chirho) => {
                 mmio_phys_chirho = assigned_chirho;
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "    VirtIO-blk BAR0 assigned at phys {:#010x}",
                     mmio_phys_chirho
                 );
             }
             None => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "    VirtIO-blk BAR0 assignment failed — cannot probe"
                 );
                 return;
@@ -1728,7 +1728,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
     let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
     let mmio_virt_chirho = (mmio_phys_chirho + phys_offset_chirho) as usize;
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "    Probing VirtIO-blk MMIO: phys={:#010x} virt={:#x}...",
         mmio_phys_chirho,
         mmio_virt_chirho
@@ -1736,7 +1736,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
 
     match VirtioBlkDeviceChirho::probe_mmio_chirho(mmio_virt_chirho) {
         Some(blk_dev_chirho) => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    VirtIO-blk init OK — capacity {} sectors ({} MiB)",
                 blk_dev_chirho.capacity_sectors_chirho,
                 blk_dev_chirho.capacity_sectors_chirho / 2048
@@ -1749,16 +1749,16 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
             use alloc::string::String;
             let name_chirho = String::from("vda");
             let reg_result_chirho = crate::block_chirho::BLOCK_REGISTRY_CHIRHO
-                .register_chirho(name_chirho, Box::new(blk_dev_chirho));
+                .register_chirho(name_chirho, alloc::sync::Arc::new(blk_dev_chirho));
             match reg_result_chirho {
                 Ok(idx_chirho) => {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "    Registered VirtIO-blk as block device index {}",
                         idx_chirho
                     );
                 }
                 Err(err_chirho) => {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "    Failed to register VirtIO-blk: {}",
                         err_chirho
                     );
@@ -1766,7 +1766,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
             }
         }
         None => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    VirtIO-blk MMIO probe failed at phys={:#010x} virt={:#x}",
                 mmio_phys_chirho,
                 mmio_virt_chirho
@@ -1800,7 +1800,7 @@ pub fn enable_io_and_busmaster_chirho(dev_chirho: &PciDeviceChirho) {
         );
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "    PCI: enabled I/O space + bus master for {:02x}:{:02x}.{}",
         dev_chirho.bus_chirho,
         dev_chirho.device_chirho,
@@ -1821,7 +1821,7 @@ fn probe_qemu_mmio_chirho() {
             continue;
         }
         let dev_id_chirho = transport_chirho.device_id_chirho();
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "  VirtIO-MMIO at {:#x}: device_type={} vendor={:#x}",
             addr_chirho,
             dev_id_chirho,
@@ -1829,23 +1829,23 @@ fn probe_qemu_mmio_chirho() {
         );
         // Type 2 = block device
         if dev_id_chirho == 2 {
-            crate::serial_println_chirho!("    -> VirtIO-blk (MMIO transport)");
+            crate::serial_debug_chirho!("    -> VirtIO-blk (MMIO transport)");
             match VirtioBlkDeviceChirho::probe_mmio_chirho(addr_chirho) {
                 Some(blk_dev_chirho) => {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "    VirtIO-blk MMIO init OK — capacity {} sectors",
                         blk_dev_chirho.capacity_sectors_chirho
                     );
                     test_read_sector0_chirho(&blk_dev_chirho);
                 }
                 None => {
-                    crate::serial_println_chirho!("    VirtIO-blk MMIO probe failed");
+                    crate::serial_debug_chirho!("    VirtIO-blk MMIO probe failed");
                 }
             }
         }
         // P3-001: Type 1 = network device
         if dev_id_chirho == 1 {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    -> VirtIO-net (MMIO transport) at {:#x}, vendor={:#x}",
                 addr_chirho,
                 transport_chirho.vendor_id_chirho()
@@ -1862,7 +1862,7 @@ fn test_read_sector0_chirho(dev_chirho: &VirtioBlkDeviceChirho) {
     let mut buf_chirho = vec![0u8; SECTOR_SIZE_CHIRHO];
     match dev_chirho.read_block_chirho(0, &mut buf_chirho) {
         Ok(()) => {
-            crate::serial_println_chirho!("    Sector 0 read OK — first 16 bytes:");
+            crate::serial_debug_chirho!("    Sector 0 read OK — first 16 bytes:");
             // Format the first 16 bytes as hex.
             let mut hex_chirho = [0u8; 48]; // 16 * 3 max
             let mut pos_chirho = 0usize;
@@ -1875,18 +1875,18 @@ fn test_read_sector0_chirho(dev_chirho: &VirtioBlkDeviceChirho) {
                 pos_chirho += 3;
             }
             if let Ok(hex_str_chirho) = core::str::from_utf8(&hex_chirho[..pos_chirho]) {
-                crate::serial_println_chirho!("    {}", hex_str_chirho);
+                crate::serial_debug_chirho!("    {}", hex_str_chirho);
             }
             // Check for MBR/GPT signatures.
             if buf_chirho[510] == 0x55 && buf_chirho[511] == 0xAA {
-                crate::serial_println_chirho!("    MBR boot signature detected (0x55AA)");
+                crate::serial_debug_chirho!("    MBR boot signature detected (0x55AA)");
             }
             if &buf_chirho[0..8] == b"EFI PART" {
-                crate::serial_println_chirho!("    GPT header signature detected");
+                crate::serial_debug_chirho!("    GPT header signature detected");
             }
         }
         Err(err_chirho) => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "    Sector 0 read FAILED (err={}). Expected if no disk attached or \
                  MMIO addresses not identity-mapped.",
                 err_chirho
@@ -1921,13 +1921,13 @@ fn probe_ext4_and_mount_chirho() {
     };
 
     let device_count_chirho = BLOCK_REGISTRY_CHIRHO.count_chirho();
-    crate::serial_println_chirho!("[EXT4] Block device count: {}", device_count_chirho);
+    crate::serial_debug_chirho!("[EXT4] Block device count: {}", device_count_chirho);
     if device_count_chirho == 0 {
-        crate::serial_println_chirho!("[EXT4] No block devices registered, skipping ext4 probe");
+        crate::serial_debug_chirho!("[EXT4] No block devices registered, skipping ext4 probe");
         return;
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4] Probing device 0 for ext4 superblock (byte offset {})...",
         SUPERBLOCK_OFFSET_CHIRHO
     );
@@ -1944,7 +1944,7 @@ fn probe_ext4_and_mount_chirho() {
             sb_start_sector_chirho + i_chirho,
             &mut sb_data_chirho[(i_chirho as usize * 512)..((i_chirho as usize + 1) * 512)],
         ) {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[EXT4] Failed to read superblock sector {} (err={})",
                 sb_start_sector_chirho + i_chirho,
                 err_chirho
@@ -1957,7 +1957,7 @@ fn probe_ext4_and_mount_chirho() {
     let sb_chirho = match parse_superblock_chirho(&sb_data_chirho) {
         Some(sb_chirho) => sb_chirho,
         None => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[EXT4] No valid ext4 superblock found (magic mismatch)"
             );
             return;
@@ -1973,37 +1973,37 @@ fn probe_ext4_and_mount_chirho() {
     let free_inodes_chirho = sb_chirho.s_free_inodes_count_chirho;
     let bg_count_chirho = sb_chirho.block_group_count_chirho();
 
-    crate::serial_println_chirho!("[EXT4] === Superblock parsed successfully ===");
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!("[EXT4] === Superblock parsed successfully ===");
+    crate::serial_debug_chirho!(
         "[EXT4]   Block size:     {} bytes",
         block_size_chirho
     );
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4]   Total blocks:   {} ({} MiB)",
         total_blocks_chirho,
         (total_blocks_chirho * block_size_chirho as u64) / (1024 * 1024)
     );
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4]   Free blocks:    {}",
         free_blocks_chirho
     );
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4]   Total inodes:   {}",
         inodes_count_chirho
     );
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4]   Free inodes:    {}",
         free_inodes_chirho
     );
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4]   Block groups:   {}",
         bg_count_chirho
     );
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4]   Volume name:    \"{}\"",
         if volume_name_chirho.is_empty() { "<none>" } else { &volume_name_chirho }
     );
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4]   Features:       extents={} 64bit={} journal={}",
         sb_chirho.has_extents_chirho(),
         sb_chirho.has_64bit_chirho(),
@@ -2038,7 +2038,7 @@ fn probe_ext4_and_mount_chirho() {
             }
         }
         if !read_ok_chirho {
-            crate::serial_println_chirho!("[EXT4] Failed to read GDT block, aborting mount");
+            crate::serial_debug_chirho!("[EXT4] Failed to read GDT block, aborting mount");
             return;
         }
         gdt_data_chirho.extend_from_slice(&buf_chirho);
@@ -2047,7 +2047,7 @@ fn probe_ext4_and_mount_chirho() {
     let group_descs_chirho =
         parse_group_descs_chirho(&gdt_data_chirho, bg_count_chirho, gd_size_chirho);
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4] Read {} block group descriptors",
         group_descs_chirho.len()
     );
@@ -2096,7 +2096,7 @@ fn probe_ext4_and_mount_chirho() {
         }
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[EXT4] ext4 filesystem mounted at / and /mnt ({} block groups, {} blocks)",
         bg_count_chirho,
         total_blocks_chirho
@@ -2119,7 +2119,7 @@ fn verify_ext4_mount_chirho() {
 
     match crate::fs_chirho::resolve_path_chirho("/mnt") {
         Ok((inode_chirho, file_ops_chirho)) => {
-            crate::serial_println_chirho!("[EXT4] P2-006: /mnt resolved successfully");
+            crate::serial_debug_chirho!("[EXT4] P2-006: /mnt resolved successfully");
 
             // Create a temporary File to call readdir through the VFS file ops.
             let mut file_chirho = crate::vfs_chirho::FileChirho {
@@ -2139,11 +2139,11 @@ fn verify_ext4_mount_chirho() {
             );
 
             if entry_names_chirho.is_empty() {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[EXT4] P2-007: WARNING: /mnt readdir returned 0 entries"
                 );
             } else {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[EXT4] P2-007: ls /mnt => {} entries: {:?}",
                     entry_names_chirho.len(),
                     &entry_names_chirho[..core::cmp::min(entry_names_chirho.len(), 20)]
@@ -2151,7 +2151,7 @@ fn verify_ext4_mount_chirho() {
             }
         }
         Err(errno_chirho) => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[EXT4] P2-006: ERROR: failed to resolve /mnt (errno={})",
                 errno_chirho
             );

@@ -433,12 +433,12 @@ fn resolve_path_depth_chirho(
     {
         let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
         if debug_resolve_chirho {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[VFS-DBG] mount table has {} entries for path '{}'",
                 mounts_chirho.len(), path_chirho
             );
             for (i_chirho, m_chirho) in mounts_chirho.iter().enumerate() {
-                crate::serial_println_chirho!("[VFS-DBG]   mount[{}] = '{}'", i_chirho, m_chirho.path_chirho);
+                crate::serial_debug_chirho!("[VFS-DBG]   mount[{}] = '{}'", i_chirho, m_chirho.path_chirho);
             }
         }
         for mount_chirho in mounts_chirho.iter() {
@@ -454,8 +454,9 @@ fn resolve_path_depth_chirho(
             }
             // Normal mount: path must start with mount_path and be
             // followed by '/' or be an exact match
+            // Use >= so the LAST mount at the same path wins (mount stacking).
             if path_chirho.starts_with(mount_path_chirho.as_str())
-                && mount_path_chirho.len() > mount_prefix_len_chirho
+                && mount_path_chirho.len() >= mount_prefix_len_chirho
                 && (path_chirho.len() == mount_path_chirho.len()
                     || path_chirho.as_bytes().get(mount_path_chirho.len()) == Some(&b'/'))
             {
@@ -466,7 +467,7 @@ fn resolve_path_depth_chirho(
     }
 
     if debug_resolve_chirho {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[VFS-DBG] mount walk result: prefix_len={}, has_sb={}",
             mount_prefix_len_chirho, current_sb_chirho.is_some()
         );
@@ -555,7 +556,7 @@ fn resolve_path_depth_chirho(
         let is_last_chirho = idx_chirho == remaining_components_chirho.len() - 1;
 
         if debug_resolve_chirho {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[VFS-DBG] resolve '{}': walking component [{}]='{}' (is_last={})",
                 path_chirho, idx_chirho, component_chirho, is_last_chirho,
             );
@@ -590,7 +591,7 @@ fn resolve_path_depth_chirho(
 
         if let Some(child_arc_chirho) = live_child_chirho {
             if debug_resolve_chirho {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[VFS-DBG] tmpfs live walk FOUND '{}' (mode={:#o})",
                     component_chirho,
                     child_arc_chirho.lock().mode_chirho
@@ -778,7 +779,7 @@ fn resolve_path_depth_chirho(
                                 }
                             }
                             if debug_resolve_chirho && result_chirho.is_none() {
-                                crate::serial_println_chirho!(
+                                crate::serial_debug_chirho!(
                                     "[VFS-DBG] ext4 fallback: no ext4 root mount found ({} mounts checked)",
                                     mounts_chirho.len()
                                 );
@@ -792,7 +793,7 @@ fn resolve_path_depth_chirho(
                             };
                             if let Ok(child_chirho) = ext4_lookup_chirho {
                                 if debug_resolve_chirho {
-                                    crate::serial_println_chirho!(
+                                    crate::serial_debug_chirho!(
                                         "[VFS-DBG] ext4 fallback found '{}'",
                                         component_chirho
                                     );
@@ -988,7 +989,7 @@ fn create_file_at_path_chirho(
     path_chirho: &str,
     mode_chirho: u32,
 ) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
-    crate::serial_println_chirho!("[FS-CREATE] creating '{}'", path_chirho);
+    crate::serial_debug_chirho!("[FS-CREATE] creating '{}'", path_chirho);
     // Create the file in the parent directory
     {
         let (parent_inode_chirho, name_chirho) = match resolve_parent_live_chirho(path_chirho) {

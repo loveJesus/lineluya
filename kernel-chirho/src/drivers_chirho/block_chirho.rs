@@ -11,6 +11,7 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -22,7 +23,7 @@ use spin::Mutex;
 pub const SECTOR_SIZE_CHIRHO: usize = 512;
 
 /// Maximum number of block devices that can be registered.
-const MAX_BLOCK_DEVICES_CHIRHO: usize = 16;
+const MAX_BLOCK_DEVICES_CHIRHO: usize = 128;
 
 // ============================================================================
 // BioDirectionChirho -- direction of a block I/O request
@@ -122,6 +123,119 @@ pub trait BlockDeviceChirho: Send + Sync {
     fn total_blocks_chirho(&self) -> u64;
 }
 
+/// Placeholder device used to fill sparse registry slots.
+struct UnboundBlockDeviceChirho;
+
+impl BlockDeviceChirho for UnboundBlockDeviceChirho {
+    fn read_block_chirho(
+        &self,
+        _block_nr_chirho: u64,
+        _buf_chirho: &mut [u8],
+    ) -> Result<(), i64> {
+        Err(-crate::syscall_chirho::ENODEV_CHIRHO)
+    }
+
+    fn write_block_chirho(
+        &self,
+        _block_nr_chirho: u64,
+        _buf_chirho: &[u8],
+    ) -> Result<(), i64> {
+        Err(-crate::syscall_chirho::ENODEV_CHIRHO)
+    }
+
+    fn block_size_chirho(&self) -> usize { SECTOR_SIZE_CHIRHO }
+
+    fn total_blocks_chirho(&self) -> u64 { 0 }
+}
+
+/// Block device adapter that forwards sector reads and writes through an open
+/// loop-device file.
+struct LoopFileBlockDeviceChirho {
+    backing_file_chirho: Arc<Mutex<crate::vfs_chirho::FileChirho>>,
+}
+
+impl BlockDeviceChirho for LoopFileBlockDeviceChirho {
+    fn read_block_chirho(
+        &self,
+        block_nr_chirho: u64,
+        buf_chirho: &mut [u8],
+    ) -> Result<(), i64> {
+        let mut file_guard_chirho = self.backing_file_chirho.lock();
+        let saved_pos_chirho = file_guard_chirho.pos_chirho;
+        file_guard_chirho.pos_chirho = block_nr_chirho * SECTOR_SIZE_CHIRHO as u64;
+
+        let read_result_chirho =
+            file_guard_chirho.ops_chirho.read_chirho(&mut file_guard_chirho, buf_chirho);
+        file_guard_chirho.pos_chirho = saved_pos_chirho;
+
+        match read_result_chirho {
+            Ok(bytes_read_chirho) if bytes_read_chirho == buf_chirho.len() => Ok(()),
+            Ok(bytes_read_chirho) => {
+                crate::serial_println_chirho!(
+                    "[BLOCK] loop read short: sector={} requested={} got={}",
+                    block_nr_chirho,
+                    buf_chirho.len(),
+                    bytes_read_chirho
+                );
+                Err(-crate::syscall_chirho::EIO_CHIRHO)
+            }
+            Err(errno_chirho) => {
+                crate::serial_println_chirho!(
+                    "[BLOCK] loop read failed: sector={} len={} errno={}",
+                    block_nr_chirho,
+                    buf_chirho.len(),
+                    errno_chirho
+                );
+                Err(errno_chirho)
+            }
+        }
+    }
+
+    fn write_block_chirho(
+        &self,
+        block_nr_chirho: u64,
+        buf_chirho: &[u8],
+    ) -> Result<(), i64> {
+        let mut file_guard_chirho = self.backing_file_chirho.lock();
+        let saved_pos_chirho = file_guard_chirho.pos_chirho;
+        file_guard_chirho.pos_chirho = block_nr_chirho * SECTOR_SIZE_CHIRHO as u64;
+
+        let write_result_chirho =
+            file_guard_chirho.ops_chirho.write_chirho(&mut file_guard_chirho, buf_chirho);
+        file_guard_chirho.pos_chirho = saved_pos_chirho;
+
+        match write_result_chirho {
+            Ok(bytes_written_chirho) if bytes_written_chirho == buf_chirho.len() => Ok(()),
+            Ok(bytes_written_chirho) => {
+                crate::serial_println_chirho!(
+                    "[BLOCK] loop write short: sector={} requested={} got={}",
+                    block_nr_chirho,
+                    buf_chirho.len(),
+                    bytes_written_chirho
+                );
+                Err(-crate::syscall_chirho::EIO_CHIRHO)
+            }
+            Err(errno_chirho) => {
+                crate::serial_println_chirho!(
+                    "[BLOCK] loop write failed: sector={} len={} errno={}",
+                    block_nr_chirho,
+                    buf_chirho.len(),
+                    errno_chirho
+                );
+                Err(errno_chirho)
+            }
+        }
+    }
+
+    fn block_size_chirho(&self) -> usize { SECTOR_SIZE_CHIRHO }
+
+    fn total_blocks_chirho(&self) -> u64 {
+        let file_guard_chirho = self.backing_file_chirho.lock();
+        let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+        inode_guard_chirho.size_chirho / SECTOR_SIZE_CHIRHO as u64
+    }
+}
+
 // ============================================================================
 // RequestQueueChirho -- queue of BioChirho requests
 // ============================================================================
@@ -172,7 +286,7 @@ struct BlockDeviceEntryChirho {
     /// Human-readable name (e.g. "sda", "vda").
     name_chirho: String,
     /// The device driver.
-    device_chirho: Box<dyn BlockDeviceChirho>,
+    device_chirho: alloc::sync::Arc<dyn BlockDeviceChirho + Send + Sync>,
     /// Per-device request queue.
     queue_chirho: RequestQueueChirho,
 }
@@ -201,7 +315,7 @@ impl BlockDeviceRegistryChirho {
     pub fn register_chirho(
         &self,
         name_chirho: String,
-        device_chirho: Box<dyn BlockDeviceChirho>,
+        device_chirho: alloc::sync::Arc<dyn BlockDeviceChirho + Send + Sync>,
     ) -> Result<usize, i64> {
         let mut devices_chirho = self.devices_chirho.lock();
         if devices_chirho.len() >= MAX_BLOCK_DEVICES_CHIRHO {
@@ -231,13 +345,32 @@ impl BlockDeviceRegistryChirho {
         block_nr_chirho: u64,
         buf_chirho: &mut [u8],
     ) -> Result<(), i64> {
-        let devices_chirho = self.devices_chirho.lock();
-        if device_idx_chirho >= devices_chirho.len() {
-            return Err(-19); // ENODEV
+        // Clone the device Arc THEN drop the lock, so the read itself
+        // doesn't hold the registry lock.  This prevents deadlock when
+        // a loop-backed device reads from an ext4 file, which in turn
+        // calls read_block_chirho on device 0 (VirtIO).
+        let device_arc_chirho = {
+            let devices_chirho = self.devices_chirho.lock();
+            if device_idx_chirho >= devices_chirho.len() {
+                return Err(-19); // ENODEV
+            }
+            devices_chirho[device_idx_chirho].device_chirho.clone()
+        };
+        // Lock is released — safe to call read which may re-enter the registry.
+        if device_idx_chirho >= 1 {
+            crate::serial_println_chirho!(
+                "[BLOCK] read dev={} sector={} len={}",
+                device_idx_chirho, block_nr_chirho, buf_chirho.len()
+            );
         }
-        devices_chirho[device_idx_chirho]
-            .device_chirho
-            .read_block_chirho(block_nr_chirho, buf_chirho)
+        let result_chirho = device_arc_chirho.read_block_chirho(block_nr_chirho, buf_chirho);
+        if device_idx_chirho >= 1 {
+            crate::serial_println_chirho!(
+                "[BLOCK] read dev={} done: {:?}",
+                device_idx_chirho, result_chirho.is_ok()
+            );
+        }
+        result_chirho
     }
 
     /// Write a single block (sector) to a registered device by index.
@@ -250,14 +383,54 @@ impl BlockDeviceRegistryChirho {
         block_nr_chirho: u64,
         buf_chirho: &[u8],
     ) -> Result<(), i64> {
-        let devices_chirho = self.devices_chirho.lock();
-        if device_idx_chirho >= devices_chirho.len() {
-            return Err(-19); // ENODEV
-        }
-        devices_chirho[device_idx_chirho]
-            .device_chirho
-            .write_block_chirho(block_nr_chirho, buf_chirho)
+        let device_arc_chirho = {
+            let devices_chirho = self.devices_chirho.lock();
+            if device_idx_chirho >= devices_chirho.len() {
+                return Err(-19); // ENODEV
+            }
+            devices_chirho[device_idx_chirho].device_chirho.clone()
+        };
+        device_arc_chirho.write_block_chirho(block_nr_chirho, buf_chirho)
     }
+}
+
+/// Register or replace a loop-backed block device at a specific registry slot.
+pub fn register_loop_block_device_chirho(
+    device_id_chirho: usize,
+    backing_file_chirho: Arc<Mutex<crate::vfs_chirho::FileChirho>>,
+) -> Result<(), i64> {
+    if device_id_chirho >= MAX_BLOCK_DEVICES_CHIRHO {
+        crate::serial_println_chirho!(
+            "[BLOCK] loop registration rejected: device_id={} max={}",
+            device_id_chirho,
+            MAX_BLOCK_DEVICES_CHIRHO
+        );
+        return Err(-crate::syscall_chirho::ENOMEM_CHIRHO);
+    }
+
+    let mut devices_chirho = BLOCK_REGISTRY_CHIRHO.devices_chirho.lock();
+    while devices_chirho.len() <= device_id_chirho {
+        let placeholder_name_chirho = alloc::format!("unbound{}", devices_chirho.len());
+        devices_chirho.push(BlockDeviceEntryChirho {
+            name_chirho: placeholder_name_chirho,
+            device_chirho: alloc::sync::Arc::new(UnboundBlockDeviceChirho),
+            queue_chirho: RequestQueueChirho::new_chirho(),
+        });
+    }
+
+    let loop_name_chirho = alloc::format!("loop{}", device_id_chirho);
+    devices_chirho[device_id_chirho] = BlockDeviceEntryChirho {
+        name_chirho: loop_name_chirho.clone(),
+        device_chirho: alloc::sync::Arc::new(LoopFileBlockDeviceChirho { backing_file_chirho }),
+        queue_chirho: RequestQueueChirho::new_chirho(),
+    };
+
+    crate::serial_println_chirho!(
+        "[BLOCK] registered loop-backed block device '{}' at slot {}",
+        loop_name_chirho,
+        device_id_chirho
+    );
+    Ok(())
 }
 
 /// The single, global block device registry.

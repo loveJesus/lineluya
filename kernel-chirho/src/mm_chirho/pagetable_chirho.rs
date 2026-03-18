@@ -252,18 +252,24 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
         entry_chirho.set_unused();
     }
 
-    // Read the current (kernel) PML4 from CR3.
-    let (current_pml4_frame_chirho, _flags_chirho) = Cr3::read();
-    let current_pml4_chirho =
-        unsafe { table_from_phys_chirho(current_pml4_frame_chirho.start_address()) };
+    // Copy kernel-space entries (upper half: 256..511) from the BOOT PML4.
+    // CRITICAL: Always use the boot PML4 as the authoritative source for
+    // kernel-space mappings, NOT the current CR3.  The boot PML4 is where
+    // GLOBAL_MAPPER_CHIRHO writes all kernel mappings (heap, kernel stacks,
+    // module memory).  Using Cr3::read() would copy from a per-process PML4
+    // that may be missing entries added after it was created.
+    let boot_pml4_phys_chirho = get_boot_pml4_chirho();
+    let source_pml4_chirho = if boot_pml4_phys_chirho.as_u64() != 0 {
+        unsafe { table_from_phys_chirho(boot_pml4_phys_chirho) }
+    } else {
+        // Fallback: before save_boot_pml4 is called, use current CR3
+        let (current_pml4_frame_chirho, _flags_chirho) = Cr3::read();
+        unsafe { table_from_phys_chirho(current_pml4_frame_chirho.start_address()) }
+    };
 
-    // Copy kernel-space entries (upper half: 256..511).
     for i_chirho in KERNEL_PML4_START_CHIRHO..ENTRIES_PER_TABLE_CHIRHO {
-        let entry_chirho = &current_pml4_chirho[i_chirho];
+        let entry_chirho = &source_pml4_chirho[i_chirho];
         if !entry_chirho.is_unused() {
-            // Share the kernel page table entries directly — all processes
-            // see the same kernel mapping. We copy the raw entry value so
-            // both PML4s point to the same PDPT/PD/PT frames.
             new_pml4_chirho[i_chirho].set_addr(
                 entry_chirho.addr(),
                 entry_chirho.flags(),
@@ -281,13 +287,13 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
     if phys_offset_chirho != 0 {
         let phys_pml4_idx_chirho = ((phys_offset_chirho >> 39) & 0x1FF) as usize;
         if phys_pml4_idx_chirho < KERNEL_PML4_START_CHIRHO {
-            let entry_chirho = &current_pml4_chirho[phys_pml4_idx_chirho];
+            let entry_chirho = &source_pml4_chirho[phys_pml4_idx_chirho];
             if !entry_chirho.is_unused() {
                 new_pml4_chirho[phys_pml4_idx_chirho].set_addr(
                     entry_chirho.addr(),
                     entry_chirho.flags(),
                 );
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[PAGETABLE] Copied phys-mem window PML4[{}] (offset {:#x})",
                     phys_pml4_idx_chirho,
                     phys_offset_chirho,
@@ -308,15 +314,15 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
     // the boot PML4's lower half — they're added per-process by execve
     // and the page fault handler's lazy migration.
     for i_chirho in 0..KERNEL_PML4_START_CHIRHO {
-        if !current_pml4_chirho[i_chirho].is_unused() {
+        if !source_pml4_chirho[i_chirho].is_unused() {
             new_pml4_chirho[i_chirho].set_addr(
-                current_pml4_chirho[i_chirho].addr(),
-                current_pml4_chirho[i_chirho].flags(),
+                source_pml4_chirho[i_chirho].addr(),
+                source_pml4_chirho[i_chirho].flags(),
             );
         }
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PAGETABLE] Created user page table: PML4 phys={:#x}",
         pml4_phys_chirho.as_u64()
     );
@@ -362,7 +368,7 @@ pub fn clone_page_table_chirho(source_pml4_phys_chirho: PhysAddr) -> Option<Phys
         new_pml4_chirho[i_chirho].set_addr(cloned_frame_chirho, entry_chirho.flags());
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PAGETABLE] Cloned page table: source={:#x} -> new={:#x}",
         source_pml4_phys_chirho.as_u64(),
         new_pml4_phys_chirho.as_u64()
@@ -537,7 +543,7 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
         match alloc_lock_chirho.as_mut().and_then(|a_chirho| a_chirho.allocate_frame()) {
             Some(f_chirho) => f_chirho,
             None => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[PAGETABLE] COW: OOM — cannot allocate frame for {:#x}",
                     faulting_addr_chirho.as_u64()
                 );
@@ -571,7 +577,7 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
     // Flush the TLB entry for this page.
     x86_64::instructions::tlb::flush(faulting_addr_chirho);
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PAGETABLE] COW resolved: addr={:#x}, old_frame={:#x}, new_frame={:#x}",
         faulting_addr_chirho.as_u64(),
         old_frame_phys_chirho.as_u64(),

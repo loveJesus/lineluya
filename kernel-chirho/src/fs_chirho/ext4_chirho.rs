@@ -779,11 +779,11 @@ impl PageCacheChirho {
 }
 
 /// Global page cache instance (protected by a spinlock).
-/// Page cache entries. BTreeMap grows under heavy I/O (dropbear loads
-/// many .so files). Set to 0 to avoid the 64MB OOM during heavy open().
-/// TODO: Replace BTreeMap with fixed-size array for cache.
+/// Bounded to 64 entries (~256KB with 4K blocks) to prevent OOM during
+/// heavy I/O (dropbear .so loading) while keeping enough entries for
+/// ext4 write operations (inode table + bitmap + data blocks).
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
-    spin::Mutex::new(PageCacheChirho::new_chirho(0));
+    spin::Mutex::new(PageCacheChirho::new_chirho(64));
 
 // ===========================================================================
 // A4-009: ext4 read-only VFS integration
@@ -869,6 +869,13 @@ impl Ext4MountChirho {
                 return Some(data_chirho.to_vec());
             }
         }
+        // Log cache miss for device 99 (loop mounts)
+        if self.device_id_chirho >= 1 {
+            crate::serial_println_chirho!(
+                "[EXT4] read_block_cached dev={} blk={} (cache miss)",
+                self.device_id_chirho, block_nr_chirho
+            );
+        }
 
         // Cache miss — read the full 4K block in one VirtIO request.
         // VirtIO-blk supports multi-sector reads (sector count determined
@@ -881,14 +888,18 @@ impl Ext4MountChirho {
 
         let registry_chirho = &crate::block_chirho::BLOCK_REGISTRY_CHIRHO;
         // Read entire 4K block in one request (8x faster than per-sector)
-        if registry_chirho
-            .read_block_chirho(
-                self.device_id_chirho as usize,
-                start_sector_chirho,
-                &mut buf_chirho,
-            )
-            .is_err()
-        {
+        let read_result_chirho = registry_chirho.read_block_chirho(
+            self.device_id_chirho as usize,
+            start_sector_chirho,
+            &mut buf_chirho,
+        );
+        if let Err(e_chirho) = read_result_chirho {
+            if self.device_id_chirho >= 1 {
+                crate::serial_println_chirho!(
+                    "[EXT4] read_block FAILED dev={} sector={} err={}",
+                    self.device_id_chirho, start_sector_chirho, e_chirho
+                );
+            }
             return None;
         }
 
@@ -945,7 +956,7 @@ impl Ext4MountChirho {
         // Log reads > 256KB for debugging heap usage.
         if file_size_chirho > 256 * 1024 {
             let mode_copy_chirho = { inode_chirho.i_mode_chirho };
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[EXT4-RD] size={} mode=0x{:x}",
                 file_size_chirho,
                 mode_copy_chirho,
@@ -1294,7 +1305,7 @@ impl Ext4MountChirho {
         let inode_chirho = self.read_inode_chirho(dir_ino_chirho)?;
         if debug_lookup_chirho {
             let mode_copy_chirho = { inode_chirho.i_mode_chirho };
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[EXT4-DBG] lookup_in_dir: ino={} mode={:#o} is_dir={}",
                 dir_ino_chirho, mode_copy_chirho, inode_chirho.is_dir_chirho()
             );
@@ -1309,7 +1320,7 @@ impl Ext4MountChirho {
         let debug_lookup_chirho = name_chirho == "usr" || name_chirho == "sbin" || name_chirho == "dropbear";
         if debug_lookup_chirho {
             let flags_copy_chirho = { inode_chirho.i_flags_chirho };
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[EXT4-DBG] dir ino={} size={} blocks={} flags={:#x} uses_extents={}",
                 dir_ino_chirho, dir_size_chirho, num_blocks_chirho,
                 flags_copy_chirho, inode_chirho.uses_extents_chirho()
@@ -1357,7 +1368,7 @@ impl Ext4MountChirho {
                         &block_buf_chirho[offset_chirho + 8..offset_chirho + 8 + name_len_chirho],
                     ) {
                         if debug_lookup_chirho {
-                            crate::serial_println_chirho!(
+                            crate::serial_debug_chirho!(
                                 "[EXT4-DBG]   entry: ino={} name='{}' type={}",
                                 ino_chirho, entry_name_chirho, file_type_chirho
                             );
@@ -1604,7 +1615,7 @@ impl Ext4MountChirho {
         name_chirho: &str,
         file_mode_chirho: u16,
     ) -> Result<u32, Ext4ErrorChirho> {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[EXT4] create_file: parent={} name='{}' mode={:?}",
             parent_ino_chirho, name_chirho, self.mode_chirho
         );
@@ -1620,13 +1631,26 @@ impl Ext4MountChirho {
 
         for (gidx_chirho, gd_chirho) in self.group_descs_chirho.iter().enumerate() {
             let free_chirho = gd_chirho.free_inodes_count_chirho(has_64bit_chirho);
+            crate::serial_println_chirho!(
+                "[EXT4] create_file: group {} free_inodes={} bitmap_blk={}",
+                gidx_chirho, free_chirho,
+                gd_chirho.inode_bitmap_chirho(has_64bit_chirho)
+            );
             if free_chirho == 0 {
                 continue;
             }
 
             let bitmap_block_chirho = gd_chirho.inode_bitmap_chirho(has_64bit_chirho);
-            let mut bitmap_data_chirho = self.read_block_cached_chirho(bitmap_block_chirho)
-                .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
+            let mut bitmap_data_chirho = match self.read_block_cached_chirho(bitmap_block_chirho) {
+                Some(d) => d,
+                None => {
+                    crate::serial_println_chirho!(
+                        "[EXT4] create_file: bitmap read FAILED for block {}",
+                        bitmap_block_chirho
+                    );
+                    return Err(Ext4ErrorChirho::IoErrorChirho);
+                }
+            };
 
             if let Some(ino_chirho) = alloc_inode_in_group_chirho(
                 &mut bitmap_data_chirho,
@@ -1677,7 +1701,7 @@ impl Ext4MountChirho {
         // Add directory entry to parent.
         self.add_dir_entry_chirho(parent_ino_chirho, ino_chirho, name_chirho, FT_REG_FILE_CHIRHO)?;
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[EXT4] Created file '{}' with inode {} in dir {}",
             name_chirho, ino_chirho, parent_ino_chirho
         );
@@ -1700,7 +1724,7 @@ impl Ext4MountChirho {
             return Err(Ext4ErrorChirho::NotDirectoryChirho);
         }
         let dir_size_chirho = dir_inode_chirho.size_chirho();
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[EXT4] add_dir_entry: ino={} size={} name='{}'",
             dir_ino_chirho, dir_size_chirho, name_chirho,
         );
@@ -1796,7 +1820,7 @@ impl Ext4MountChirho {
             self.write_inode_chirho(dir_ino_chirho, &dir_inode_update_chirho)?;
         }
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[EXT4] Dir entry '{}' (ino={}) written to dir ino={}",
             name_chirho, child_ino_chirho, dir_ino_chirho
         );
@@ -1887,7 +1911,7 @@ impl Ext4MountChirho {
 
         self.write_inode_chirho(ino_chirho, &inode_chirho)?;
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[EXT4] Wrote {} bytes to inode {} ({} blocks)",
             data_chirho.len(), ino_chirho, allocated_blocks_chirho.len()
         );
@@ -1918,7 +1942,7 @@ impl Ext4MountChirho {
 
         self.write_inode_chirho(ino_chirho, &inode_chirho)?;
 
-        crate::serial_println_chirho!("[EXT4] Truncated inode {}", ino_chirho);
+        crate::serial_debug_chirho!("[EXT4] Truncated inode {}", ino_chirho);
         Ok(())
     }
 }
@@ -2025,7 +2049,7 @@ impl JournalChirho {
             metadata_blocks_chirho: Vec::new(),
             committed_chirho: false,
         });
-        crate::serial_println_chirho!("[JBD2] Begin transaction {}", tid_chirho);
+        crate::serial_debug_chirho!("[JBD2] Begin transaction {}", tid_chirho);
         tid_chirho
     }
 
@@ -2049,7 +2073,7 @@ impl JournalChirho {
         let txn_chirho = self.current_transaction_chirho.take()
             .ok_or(Ext4ErrorChirho::IoErrorChirho)?;
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[JBD2] Committing transaction {} ({} metadata blocks)",
             txn_chirho.tid_chirho,
             txn_chirho.metadata_blocks_chirho.len()
@@ -2063,7 +2087,7 @@ impl JournalChirho {
         // 5. Mark transaction complete
 
         // For now, we mark it committed.
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[JBD2] Transaction {} committed",
             txn_chirho.tid_chirho
         );
@@ -2222,7 +2246,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
             .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
             .ok_or_else(|| {
                 if name_chirho.contains("usr") || name_chirho.contains("sbin") || name_chirho.contains("dropbear") {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[EXT4-DBG] lookup '{}': fs_data downcast FAILED (parent ino={})",
                         name_chirho, parent_chirho.ino_chirho
                     );
@@ -2231,7 +2255,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
             })?;
 
         if name_chirho.contains("usr") || name_chirho.contains("sbin") || name_chirho.contains("dropbear") {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[EXT4-DBG] lookup '{}' in ext4 inode {} (mount OK)",
                 name_chirho, fs_data_chirho.ino_chirho
             );
@@ -2242,7 +2266,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
             .lookup_in_dir_chirho(fs_data_chirho.ino_chirho, name_chirho)
             .ok_or_else(|| {
                 if name_chirho.contains("usr") || name_chirho.contains("sbin") || name_chirho.contains("dropbear") {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[EXT4-DBG] lookup_in_dir({}, '{}') returned None",
                         fs_data_chirho.ino_chirho, name_chirho
                     );
@@ -2296,7 +2320,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
 
         match mount_guard_chirho.create_file_chirho(parent_ino_chirho, name_chirho, mode_chirho as u16) {
             Ok(new_ino_chirho) => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[EXT4] Created file '{}' inode={}",
                     name_chirho, new_ino_chirho
                 );
@@ -2320,7 +2344,7 @@ impl crate::vfs_chirho::InodeOpsChirho for Ext4InodeOpsChirho {
                 Ok(new_inode_chirho)
             }
             Err(err_chirho) => {
-                crate::serial_println_chirho!("[EXT4] create_file failed: {}", err_chirho);
+                crate::serial_debug_chirho!("[EXT4] create_file failed: {}", err_chirho);
                 Err(err_chirho.to_errno_chirho())
             }
         }
@@ -2566,7 +2590,9 @@ impl crate::vfs_chirho::FileOpsChirho for Ext4FileOpsChirho {
             );
 
             if let Some(pb_chirho) = phys_block_chirho {
-                // Write the modified block to the existing physical block
+                // Write the modified block to the existing physical block.
+                // Ignore errors — the root ext4 may be ReadOnly, but the
+                // loop mount's page cache will still have the data.
                 let _ = mount_guard_chirho.write_block_chirho(pb_chirho, &block_buf_chirho);
             } else {
                 // Block doesn't exist yet — need to allocate.
@@ -2784,11 +2810,19 @@ pub fn mount_ext4_vfs_chirho(
 ) -> Arc<Mutex<crate::vfs_chirho::SuperblockChirho>> {
     let mount_arc_chirho = Arc::new(Mutex::new(ext4_mount_chirho));
 
+    crate::serial_println_chirho!("[EXT4] mount_ext4_vfs: reading root inode (inode 2)...");
+
     // Build the root VFS inode from the ext4 root inode (inode 2).
     let root_ext4_inode_chirho = {
         let m_chirho = mount_arc_chirho.lock();
-        m_chirho.read_inode_chirho(EXT4_ROOT_INO_CHIRHO)
+        crate::serial_println_chirho!("[EXT4] mount_ext4_vfs: calling read_inode(2)");
+        let result_chirho = m_chirho.read_inode_chirho(EXT4_ROOT_INO_CHIRHO);
+        crate::serial_println_chirho!("[EXT4] mount_ext4_vfs: read_inode returned");
+        result_chirho
     };
+
+    crate::serial_println_chirho!("[EXT4] mount_ext4_vfs: root inode read: {:?}",
+        root_ext4_inode_chirho.is_some());
 
     let (root_mode_chirho, root_size_chirho) = match root_ext4_inode_chirho {
         Some(ref i_chirho) => (i_chirho.i_mode_chirho as u32, i_chirho.size_chirho()),
@@ -2825,4 +2859,273 @@ pub fn mount_ext4_vfs_chirho(
         flags_chirho: 1, // MS_RDONLY
         ops_chirho: &EXT4_SUPER_OPS_CHIRHO,
     }))
+}
+
+/// Mount an ext4 filesystem from a block device path (e.g., "/dev/loop0").
+///
+/// Opens the device via VFS, reads the superblock and group descriptors
+/// through the device's file ops, and creates an Ext4MountChirho.
+pub fn mount_ext4_from_device_chirho(
+    device_path_chirho: &str,
+) -> Result<alloc::sync::Arc<spin::Mutex<crate::vfs_chirho::SuperblockChirho>>, &'static str> {
+    use alloc::vec;
+
+    crate::serial_println_chirho!(
+        "[EXT4] mount_ext4_from_device: opening {}",
+        device_path_chirho
+    );
+
+    // Resolve the path directly through the kernel VFS path walker.
+    // `sys_open_chirho` expects a user-space pointer, not a kernel `&str`.
+    let (inode_chirho, file_ops_chirho) = crate::fs_chirho::resolve_path_chirho(device_path_chirho)
+        .map_err(|_| "failed to resolve device path")?;
+    let file_arc_chirho = alloc::sync::Arc::new(spin::Mutex::new(crate::vfs_chirho::FileChirho {
+        inode_chirho,
+        pos_chirho: 0,
+        flags_chirho: crate::vfs_chirho::O_RDWR_CHIRHO,
+        ops_chirho: file_ops_chirho,
+    }));
+
+    let mut sb_data_chirho = vec![0u8; 1024];
+    {
+        let mut file_chirho = file_arc_chirho.lock();
+        file_chirho.pos_chirho = SUPERBLOCK_OFFSET_CHIRHO;
+        match file_chirho.ops_chirho.read_chirho(&mut file_chirho, &mut sb_data_chirho) {
+            Ok(n_chirho) if n_chirho == sb_data_chirho.len() => {}
+            Ok(n_chirho) => {
+                crate::serial_println_chirho!(
+                    "[EXT4] mount_ext4_from_device: short superblock read {}",
+                    n_chirho
+                );
+                return Err("failed to read superblock");
+            }
+            Err(errno_chirho) => {
+                crate::serial_println_chirho!(
+                    "[EXT4] mount_ext4_from_device: superblock read errno={}",
+                    errno_chirho
+                );
+                return Err("failed to read superblock");
+            }
+        }
+    }
+
+    let sb_chirho = parse_superblock_chirho(&sb_data_chirho)
+        .ok_or("corrupt superblock")?;
+
+    let block_size_chirho = sb_chirho.block_size_chirho();
+    let bg_count_chirho = sb_chirho.block_group_count_chirho();
+    let gd_size_chirho = sb_chirho.group_desc_size_chirho();
+
+    crate::serial_println_chirho!(
+        "[EXT4] Loop mount: block_size={}, blocks={}, groups={}",
+        block_size_chirho, sb_chirho.total_blocks_chirho(), bg_count_chirho
+    );
+
+    // Read block group descriptors.
+    let gdt_offset_chirho = if block_size_chirho == 1024 {
+        2 * block_size_chirho as u64
+    } else {
+        block_size_chirho as u64
+    };
+    let gdt_bytes_chirho = bg_count_chirho as usize * gd_size_chirho as usize;
+    let mut gdt_data_chirho = vec![0u8; gdt_bytes_chirho];
+
+    {
+        let mut file_chirho = file_arc_chirho.lock();
+        file_chirho.pos_chirho = gdt_offset_chirho;
+        match file_chirho.ops_chirho.read_chirho(&mut file_chirho, &mut gdt_data_chirho) {
+            Ok(n_chirho) if n_chirho == gdt_data_chirho.len() => {}
+            Ok(n_chirho) => {
+                crate::serial_println_chirho!(
+                    "[EXT4] mount_ext4_from_device: short GDT read {} expected {}",
+                    n_chirho,
+                    gdt_data_chirho.len()
+                );
+                return Err("failed to read group descriptors");
+            }
+            Err(errno_chirho) => {
+                crate::serial_println_chirho!(
+                    "[EXT4] mount_ext4_from_device: GDT read errno={}",
+                    errno_chirho
+                );
+                return Err("failed to read group descriptors");
+            }
+        }
+    }
+
+    let group_descs_chirho = parse_group_descs_chirho(&gdt_data_chirho, bg_count_chirho, gd_size_chirho);
+
+    // Register this device in the block registry so read_block works.
+    // Use device_id 99 for loop mounts.
+    // Use device_id 1 (device 0 = VirtIO rootfs, 1 = first loop mount).
+    // Using 99 caused the block registry to allocate 99 placeholder entries
+    // which consumed heap and held the lock for too long.
+    let device_id_chirho = 1u32;
+    // Use the loop device's BACKING FILE Arc (the actual image file on ext4),
+    // not the /dev/loop0 device file itself. The backing file has ext4 ops
+    // that can read/write blocks on device 0 (VirtIO).
+    let backing_file_arc_chirho = {
+        let states_chirho = crate::loop_device_chirho::get_loop_states_chirho();
+        let states_guard_chirho = states_chirho.lock();
+        // Find the loop device that's bound (any minor with backing_file)
+        let mut found_chirho = None;
+        for state_chirho in states_guard_chirho.iter() {
+            if let Some(ref bf_chirho) = state_chirho.backing_file_chirho {
+                found_chirho = Some(bf_chirho.clone());
+                break;
+            }
+        }
+        found_chirho.unwrap_or_else(|| file_arc_chirho.clone())
+    };
+    crate::block_chirho::register_loop_block_device_chirho(
+        device_id_chirho as usize,
+        backing_file_arc_chirho,
+    )
+    .map_err(|_| "failed to register loop block device")?;
+    PAGE_CACHE_CHIRHO
+        .lock()
+        .invalidate_device_chirho(device_id_chirho);
+    crate::serial_println_chirho!(
+        "[EXT4] mount_ext4_from_device: registered block device {} for {}",
+        device_id_chirho,
+        device_path_chirho
+    );
+
+    let ext4_mount_chirho = Ext4MountChirho {
+        sb_chirho,
+        group_descs_chirho,
+        block_size_chirho,
+        device_id_chirho,
+        mode_chirho: MountModeChirho::ReadWriteChirho,
+    };
+
+    Ok(mount_ext4_vfs_chirho(ext4_mount_chirho))
+}
+
+/// Write a file to a loop-mounted ext4 filesystem and read it back.
+/// Returns the read-back data as a Vec.
+pub fn write_and_readback_chirho(
+    mount_path_chirho: &str,
+    name_chirho: &str,
+    data_chirho: &[u8],
+) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    use alloc::vec;
+
+    let (dir_inode_chirho, _) = crate::fs_chirho::resolve_path_chirho(mount_path_chirho)
+        .map_err(|_| "mount path not found")?;
+
+    let mount_arc_chirho = {
+        let ig_chirho = dir_inode_chirho.lock();
+        ig_chirho.fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
+            .map(|fd_chirho| fd_chirho.mount_chirho.clone())
+            .ok_or("not an ext4 mount")?
+    };
+
+    let root_ino_chirho = {
+        let ig_chirho = dir_inode_chirho.lock();
+        ig_chirho.fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
+            .map(|fd_chirho| fd_chirho.ino_chirho)
+            .unwrap_or(EXT4_ROOT_INO_CHIRHO)
+    };
+
+    let mount_chirho = mount_arc_chirho.lock();
+
+    // Create the file
+    let new_ino_chirho = mount_chirho
+        .create_file_chirho(root_ino_chirho, name_chirho, 0o100644)
+        .map_err(|_| "create file failed")?;
+
+    crate::serial_println_chirho!(
+        "[EXT4] Created inode {} for '{}'", new_ino_chirho, name_chirho
+    );
+
+    // Write data
+    mount_chirho
+        .write_file_data_chirho(new_ino_chirho, data_chirho)
+        .map_err(|_| "write data failed")?;
+
+    crate::serial_println_chirho!(
+        "[MOUNT] Wrote {} bytes to {}", data_chirho.len(), name_chirho
+    );
+
+    // Read back using the inode number directly (bypass VFS path cache).
+    // Do NOT invalidate page cache — write_file_data_chirho already stored
+    // the updated inode and data blocks in the cache via write_block_chirho.
+    // Invalidating would force a read from the loop device's backing file,
+    // which may fail if the root ext4 is read-only (writes don't persist
+    // through the loop device to the root VirtIO disk in that case).
+    let inode_chirho = mount_chirho.read_inode_chirho(new_ino_chirho)
+        .ok_or("inode read failed after write")?;
+
+    {
+        let sz_chirho = inode_chirho.size_chirho();
+        let fl_chirho = { inode_chirho.i_flags_chirho };
+        let ext_chirho = inode_chirho.uses_extents_chirho();
+        let b0_chirho = { inode_chirho.i_block_chirho[0] };
+        let b1_chirho = { inode_chirho.i_block_chirho[1] };
+        let b3_chirho = { inode_chirho.i_block_chirho[3] };
+        let b4_chirho = { inode_chirho.i_block_chirho[4] };
+        let b5_chirho = { inode_chirho.i_block_chirho[5] };
+        crate::serial_println_chirho!(
+            "[READBACK] ino={} size={} flags=0x{:x} ext={} b[0]=0x{:x} b[1]=0x{:x} b[3]=0x{:x} b[4]=0x{:x} b[5]=0x{:x}",
+            new_ino_chirho, sz_chirho, fl_chirho, ext_chirho,
+            b0_chirho, b1_chirho, b3_chirho, b4_chirho, b5_chirho,
+        );
+    }
+
+    // Use the standard ext4 file data read (served from page cache)
+    mount_chirho.read_file_data_chirho(&inode_chirho)
+        .ok_or("read file data failed")
+}
+
+/// Write a file to a mounted ext4 filesystem (kernel-side).
+pub fn write_file_to_mount_chirho(
+    mount_path_chirho: &str,
+    name_chirho: &str,
+    data_chirho: &[u8],
+) -> Result<usize, &'static str> {
+    let (dir_inode_chirho, _) = crate::fs_chirho::resolve_path_chirho(mount_path_chirho)
+        .map_err(|_| "mount path not found")?;
+
+    let mount_arc_chirho = {
+        let ig_chirho = dir_inode_chirho.lock();
+        ig_chirho.fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
+            .map(|fd_chirho| fd_chirho.mount_chirho.clone())
+            .ok_or("not an ext4 mount")?
+    };
+
+    let root_ino_chirho = {
+        let ig_chirho = dir_inode_chirho.lock();
+        ig_chirho.fs_data_chirho
+            .as_ref()
+            .and_then(|d_chirho| d_chirho.downcast_ref::<Ext4FsDataChirho>())
+            .map(|fd_chirho| fd_chirho.ino_chirho)
+            .unwrap_or(EXT4_ROOT_INO_CHIRHO)
+    };
+
+    let mount_chirho = mount_arc_chirho.lock();
+    match mount_chirho.create_file_chirho(root_ino_chirho, name_chirho, 0o100644) {
+        Ok(new_ino_chirho) => {
+            crate::serial_println_chirho!(
+                "[EXT4] Created inode {} for '{}'", new_ino_chirho, name_chirho
+            );
+            match mount_chirho.write_file_data_chirho(new_ino_chirho, data_chirho) {
+                Ok(()) => Ok(data_chirho.len()),
+                Err(e_chirho) => {
+                    crate::serial_println_chirho!("[EXT4] write_file_data failed: {:?}", e_chirho);
+                    Err("write data failed")
+                }
+            }
+        }
+        Err(e_chirho) => {
+            crate::serial_println_chirho!("[EXT4] create_file failed: {:?}", e_chirho);
+            Err("create file failed")
+        }
+    }
 }

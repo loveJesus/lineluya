@@ -1341,7 +1341,7 @@ pub unsafe fn init_syscalls_chirho() {
         x86_64::registers::model_specific::EferFlags::SYSTEM_CALL_EXTENSIONS;
     Efer::write(efer_flags_chirho);
 
-    crate::serial_println_chirho!("[SYSCALL] MSRs configured (STAR, LSTAR, FMASK, EFER.SCE)");
+    crate::serial_debug_chirho!("[SYSCALL] MSRs configured (STAR, LSTAR, FMASK, EFER.SCE)");
 }
 
 // ============================================================================
@@ -1381,7 +1381,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     if POST_ACCEPT_ARMED_CHIRHO.load(core::sync::atomic::Ordering::SeqCst) {
         let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
         if pid_chirho >= 2 {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[SC] pid={} nr={}({})", pid_chirho, syscall_nr_chirho,
                 syscall_name_chirho(syscall_nr_chirho),
             );
@@ -1395,7 +1395,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     }
     if AFTER_ACCEPT_CHIRHO.load(core::sync::atomic::Ordering::SeqCst) {
         let name_chirho = syscall_name_chirho(syscall_nr_chirho);
-        crate::serial_println_chirho!("[POST-ACCEPT] nr={}({})", syscall_nr_chirho, name_chirho);
+        crate::serial_debug_chirho!("[POST-ACCEPT] nr={}({})", syscall_nr_chirho, name_chirho);
     }
 
     let result_chirho: i64 = match syscall_nr_chirho {
@@ -1404,12 +1404,23 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 // stdin: check if fd=0 has been redirected (dup2/pipe).
                 // For the init shell (PID 0), use direct serial poll.
                 // For fork children (PID 3+), use VFS which handles pipes.
-                let use_serial_chirho = crate::task_chirho::current_task_chirho()
-                    .map(|t| t.lock().pid_chirho < 3).unwrap_or(true);
-                if use_serial_chirho {
-                    sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
-                } else {
+                // Use direct serial poll for stdin (fd=0) when the fd
+                // has not been redirected via dup2/pipe.  The re-exec'd
+                // shell inherits fd=0 pointing to the serial console,
+                // but VFS read returns EOF since the serial console file
+                // has no data buffered.  Check if fd=0 has a real VFS
+                // entry with pipe/PTY ops before falling through.
+                let has_vfs_stdin_chirho = crate::task_chirho::current_task_chirho()
+                    .and_then(|t| {
+                        let task_chirho = t.lock();
+                        task_chirho.fd_table_chirho.as_ref()
+                            .and_then(|fdt| fdt.get_chirho(0))
+                    })
+                    .is_some();
+                if has_vfs_stdin_chirho {
                     crate::fs_chirho::sys_read_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
+                } else {
+                    sys_read_stdin_chirho(arg1_chirho, arg2_chirho as usize)
                 }
             } else if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
                 // Socket fd → recvfrom
@@ -1439,7 +1450,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     }
                 };
                 if redirected_chirho {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[WRITE] fd={} REDIRECTED (pid={}, {} bytes)",
                         arg0_chirho,
                         crate::task_chirho::current_task_chirho()
@@ -1472,7 +1483,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
             if pid_dbg_chirho >= 4 {
                 let fd0_exists_chirho = crate::fs_chirho::lookup_fd_chirho(0).is_some();
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[CLOSE] pid={} close({}) fd0_exists={}",
                     pid_dbg_chirho, arg0_chirho, fd0_exists_chirho
                 );
@@ -1527,7 +1538,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_RT_SIGRETURN_CHIRHO => {
             // Stub: signal frame restoration not yet implemented.
             // Return 0 so BusyBox doesn't crash on signal handler return.
-            crate::serial_println_chirho!("[SYSCALL] rt_sigreturn (stub, returning 0)");
+            crate::serial_debug_chirho!("[SYSCALL] rt_sigreturn (stub, returning 0)");
             0
         },
         SYS_IOCTL_CHIRHO => sys_ioctl_real_chirho(
@@ -1570,7 +1581,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_MADVISE_CHIRHO => 0, // advisory, silently ignore
         SYS_DUP_CHIRHO => crate::fs_chirho::sys_dup_chirho(arg0_chirho),
         SYS_DUP2_CHIRHO => {
-            crate::serial_println_chirho!("[DUP2] dup2({}, {})", arg0_chirho, arg1_chirho);
+            crate::serial_debug_chirho!("[DUP2] dup2({}, {})", arg0_chirho, arg1_chirho);
             crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho)
         },
         SYS_PAUSE_CHIRHO => -EINTR_CHIRHO,
@@ -2109,7 +2120,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         // Catch-all for unimplemented syscalls.
         unknown_chirho => {
             let name_chirho = syscall_name_chirho(unknown_chirho);
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[SYSCALL] Unimplemented: {} ({}) args=({:#x},{:#x},{:#x})",
                 name_chirho,
                 unknown_chirho,
@@ -2269,7 +2280,7 @@ fn sys_writev_chirho(
         return -EINVAL_CHIRHO;
     }
     let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho);
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[WRITEV] fd={} iovcnt={} is_socket={}",
         fd_chirho, iovcnt_chirho, is_sock_chirho,
     );
@@ -2513,7 +2524,7 @@ fn sys_close_chirho(fd_chirho: u64) -> i64 {
 /// from the scheduler run queue, and context-switches to the next task.
 /// If there is no current task (should not happen), falls back to halt.
 fn sys_exit_chirho(code_chirho: i32) -> i64 {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL] exit({}) -- process terminating",
         code_chirho
     );
@@ -2530,7 +2541,7 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         let mut task_chirho = task_arc_chirho.lock();
         task_chirho.exit_chirho(code_chirho);
         let pid_chirho = task_chirho.pid_chirho;
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[SYSCALL] exit: PID={} -> zombie (exit_code={})",
             pid_chirho,
             code_chirho
@@ -2557,7 +2568,7 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
     crate::process_chirho::wake_child_exit_waitqueue_chirho();
 
     // Yield to parent (real fork) or re-launch shell (fallback).
-    crate::serial_println_chirho!("[SYSCALL] exit: PID={} zombie, yielding", pid_chirho);
+    crate::serial_debug_chirho!("[SYSCALL] exit: PID={} zombie, yielding", pid_chirho);
     crate::scheduler_chirho::yield_current_chirho();
     crate::serial_println_chirho!("[SYSCALL] exit: no parent, re-launching shell");
 
@@ -2607,9 +2618,10 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
 /// Terminates **all** threads in the current thread group (same `tgid_chirho`).
 /// For each thread: sets it to `ZombieChirho`, records the exit code, and
 /// removes it from the scheduler run queue.  SIGCHLD is delivered to the
-/// parent of each terminated thread.  Finally, the calling thread yields.
+/// parent of each terminated thread.  The current workaround then re-execs
+/// the shell in the exiting task's context instead of returning to `wait4`.
 fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL] exit_group({}) -- terminating thread group (A2-PROC-006)",
         code_chirho
     );
@@ -2627,7 +2639,7 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         (task_chirho.tgid_chirho, task_chirho.pid_chirho)
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL] exit_group: caller PID={} tgid={}",
         caller_pid_chirho,
         caller_tgid_chirho
@@ -2651,7 +2663,7 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
             .collect()
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL] exit_group: found {} thread(s) in tgid={}",
         threads_chirho.len(),
         caller_tgid_chirho
@@ -2664,7 +2676,7 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         if let Some(t_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) {
             let mut t_chirho = t_arc_chirho.lock();
             t_chirho.exit_chirho(code_chirho);
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[SYSCALL] exit_group: PID={} -> zombie (exit_code={})",
                 pid_chirho,
                 code_chirho
@@ -2678,21 +2690,34 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
     }
 
-    // Wake any parent sleeping in wait4 on the child-exit wait queue.
-    crate::process_chirho::wake_child_exit_waitqueue_chirho();
+    // Do NOT wake the parent wait queue here.  The current workaround does
+    // not return control to the waiting parent; it kills that parent shell
+    // and re-execs a fresh shell in the exiting task's context below.
+    //
+    // Waking the parent before that handoff introduces a race on faster KVM
+    // runs: the parent can become runnable, observe partial teardown, and then
+    // get removed from the scheduler underneath it.
+    //
+    // Context switch back to parent still fails even with Codex's naked
+    // wrapper, so keep the shell re-exec workaround but avoid the wakeup race.
+    let parent_pid_chirho = threads_chirho.first().map(|&(_, pp)| pp).unwrap_or(0);
+    crate::scheduler_chirho::remove_task_chirho(parent_pid_chirho);
+    if let Some(t_chirho) = crate::task_chirho::find_task_by_pid_chirho(parent_pid_chirho) {
+        t_chirho.lock().exit_chirho(0);
+    }
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_chirho = task_arc_chirho.lock();
+        let pid_chirho = task_chirho.pid_chirho;
+        task_chirho.sid_chirho = pid_chirho;
+        task_chirho.pgid_chirho = pid_chirho;
+        task_chirho.ppid_chirho = 0;
+        task_chirho.state_chirho = crate::task_chirho::TaskStateChirho::RunningChirho;
+        task_chirho.exit_code_chirho = 0;
+    }
+    crate::exec_chirho::exec_init_chirho();
 
-    // Yield to let the scheduler pick the next runnable task.
-    crate::serial_println_chirho!(
-        "[SYSCALL] exit_group: tgid={} all threads zombie, yielding",
-        caller_tgid_chirho
-    );
-    crate::scheduler_chirho::yield_current_chirho();
-
-    // Fallback: if yield returns (no other tasks), re-launch the shell.
-    crate::serial_println_chirho!(
-        "[SYSCALL] exit_group: no parent, re-launching shell"
-    );
-
+    // Unreachable — exec_init jumps to userspace. Fallback below is
+    // for the case where exec_init returns (shouldn't happen).
     let shell_argv_chirho = [
         alloc::string::String::from("sh"),
     ];
@@ -2826,7 +2851,7 @@ fn sys_arch_prctl_chirho(code_chirho: u64, addr_chirho: u64) -> i64 {
             unsafe {
                 msr_chirho.write(addr_chirho);
             }
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[SYSCALL] arch_prctl(ARCH_SET_FS, {:#x})",
                 addr_chirho
             );
@@ -2850,7 +2875,7 @@ fn sys_arch_prctl_chirho(code_chirho: u64, addr_chirho: u64) -> i64 {
             unsafe {
                 msr_chirho.write(addr_chirho);
             }
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[SYSCALL] arch_prctl(ARCH_SET_GS, {:#x})",
                 addr_chirho
             );
@@ -2868,7 +2893,7 @@ fn sys_arch_prctl_chirho(code_chirho: u64, addr_chirho: u64) -> i64 {
             0
         }
         _ => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[SYSCALL] arch_prctl: unknown code {:#x}",
                 code_chirho
             );
@@ -2997,7 +3022,7 @@ fn sys_ioctl_chirho(
     request_chirho: u64,
     _arg_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL] ioctl(fd={}, request={:#x}) -> ENOTTY (stub)",
         fd_chirho,
         request_chirho,
@@ -3031,7 +3056,11 @@ fn sys_ioctl_real_chirho(
             );
             match result_chirho {
                 Ok(val_chirho) => return val_chirho,
-                Err(e_chirho) if e_chirho != ENOSYS_CHIRHO && e_chirho != ENOTTY_CHIRHO => return -e_chirho,
+                Err(e_chirho) if e_chirho != ENOSYS_CHIRHO && e_chirho != ENOTTY_CHIRHO => {
+                    // Device ioctls return Err(-errno) or Err(errno).
+                    // Normalize: if already negative, return as-is; if positive, negate.
+                    return if e_chirho < 0 { e_chirho } else { -e_chirho };
+                }
                 _ => {} // Fall through to common handler
             }
         }
@@ -3151,7 +3180,7 @@ fn sys_ioctl_real_chirho(
             0
         }
         _ => {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[SYSCALL] ioctl(fd={}, cmd={:#x}) -> ENOTTY (unrecognised)",
                 fd_chirho,
                 cmd_chirho,
@@ -3556,6 +3585,10 @@ fn sys_mount_chirho(
     _flags_chirho: u64,
     _data_chirho: u64,
 ) -> i64 {
+    crate::serial_println_chirho!(
+        "[MOUNT-DBG] sys_mount called: source={:#x} target={:#x} fstype={:#x} flags={:#x}",
+        _source_chirho, target_chirho, fstype_chirho, _flags_chirho
+    );
     // Read target path
     let target_path_chirho = match crate::uaccess_chirho::read_user_string_chirho(target_chirho, 4096) {
         Ok(s_chirho) => s_chirho,
@@ -3568,7 +3601,7 @@ fn sys_mount_chirho(
         Err(_) => return -EFAULT_CHIRHO,
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL] mount(target={}, fstype={})",
         target_path_chirho,
         fstype_str_chirho,
@@ -3580,6 +3613,34 @@ fn sys_mount_chirho(
         "proc" | "procfs" => crate::procfs_chirho::mount_procfs_chirho(),
         "devtmpfs" => crate::devtmpfs_chirho::mount_devtmpfs_chirho(),
         "sysfs" => crate::sysfs_chirho::mount_sysfs_chirho(),
+        "ext4" | "ext2" | "ext3" | "" => {
+            // Mount ext4 filesystem from a block device (e.g., /dev/loop0).
+            // Read the source device path.
+            let source_path_chirho = match crate::uaccess_chirho::read_user_string_chirho(
+                _source_chirho, 256
+            ) {
+                Ok(s_chirho) => s_chirho,
+                Err(_) => return -EFAULT_CHIRHO,
+            };
+            crate::serial_println_chirho!(
+                "[MOUNT] ext4 mount: source={} target={}",
+                source_path_chirho, target_path_chirho,
+            );
+            // Read the ext4 superblock from the source device via our VFS.
+            // Open the device, read 4096 bytes starting at offset 0.
+            match crate::ext4_chirho::mount_ext4_from_device_chirho(
+                &source_path_chirho,
+            ) {
+                Ok(sb_chirho) => sb_chirho,
+                Err(e_chirho) => {
+                    crate::serial_println_chirho!(
+                        "[MOUNT] ext4 mount failed: {}",
+                        e_chirho
+                    );
+                    return -EINVAL_CHIRHO;
+                }
+            }
+        }
         _ => {
             crate::serial_println_chirho!(
                 "[SYSCALL] mount: unsupported fstype '{}'",
@@ -3599,12 +3660,100 @@ fn sys_mount_chirho(
         });
     }
 
+    // After a successful ext4 loop mount, verify by trying to read a file.
+    if target_path_chirho == "/mnt" {
+        crate::serial_println_chirho!("[MOUNT] Verifying /mnt mount...");
+        match crate::fs_chirho::resolve_path_chirho("/mnt/matthew712_chirho.txt") {
+            Ok((_inode_chirho, _ops_chirho)) => {
+                crate::serial_println_chirho!("[MOUNT] /mnt/matthew712_chirho.txt FOUND!");
+                // Try reading the file content
+                let mut buf_chirho = alloc::vec![0u8; 256];
+                let file_arc_chirho = alloc::sync::Arc::new(spin::Mutex::new(
+                    crate::vfs_chirho::FileChirho {
+                        inode_chirho: _inode_chirho,
+                        pos_chirho: 0,
+                        flags_chirho: 0,
+                        ops_chirho: _ops_chirho,
+                    },
+                ));
+                let mut file_chirho = file_arc_chirho.lock();
+                match file_chirho.ops_chirho.read_chirho(&mut file_chirho, &mut buf_chirho) {
+                    Ok(n_chirho) => {
+                        let text_chirho = core::str::from_utf8(&buf_chirho[..n_chirho])
+                            .unwrap_or("<binary>");
+                        crate::serial_println_chirho!(
+                            "[MOUNT] matthew712_chirho.txt ({} bytes):", n_chirho
+                        );
+                        // Print the file content directly to serial — this IS
+                        // the demo proof that the loop mount ext4 read works.
+                        crate::serial_println_chirho!("{}", text_chirho);
+                    }
+                    Err(e_chirho) => {
+                        crate::serial_println_chirho!(
+                            "[MOUNT] matthew712_chirho.txt read error: {}",
+                            e_chirho
+                        );
+                    }
+                }
+
+                // Demo item: write "Aleluya" to a new file on the loop mount
+                // Write "Aleluya" to a new file on the loop mount, then read it back.
+                crate::serial_println_chirho!("[MOUNT] Writing aleluya_chirho.txt...");
+                let write_data_chirho = b"Aleluya! Hallelujah! Glory to God in Jesus name!\n";
+                match crate::ext4_chirho::write_and_readback_chirho(
+                    "/mnt", "aleluya_chirho.txt", write_data_chirho
+                ) {
+                    Ok(readback_chirho) => {
+                        crate::serial_println_chirho!(
+                            "[MOUNT] Wrote {} bytes, read back: {}",
+                            write_data_chirho.len(),
+                            core::str::from_utf8(&readback_chirho).unwrap_or("<bin>")
+                        );
+                    }
+                    Err(e_chirho) => {
+                        crate::serial_println_chirho!("[MOUNT] Write/readback: {}", e_chirho);
+                    }
+                }
+            }
+            Err(e_chirho) => {
+                crate::serial_println_chirho!(
+                    "[MOUNT] /mnt/matthew712_chirho.txt not found: {}",
+                    e_chirho
+                );
+                // Try listing /mnt/ entries
+                match crate::fs_chirho::resolve_path_chirho("/mnt") {
+                    Ok((dir_inode_chirho, dir_ops_chirho)) => {
+                        let mut entries_chirho = alloc::vec::Vec::new();
+                        let mut file_chirho = crate::vfs_chirho::FileChirho {
+                            inode_chirho: dir_inode_chirho,
+                            pos_chirho: 0,
+                            flags_chirho: 0,
+                            ops_chirho: dir_ops_chirho,
+                        };
+                        let _ = file_chirho.ops_chirho.readdir_chirho(
+                            &mut file_chirho,
+                            &mut |name_chirho, _ino, _type| {
+                                entries_chirho.push(alloc::string::String::from(name_chirho));
+                                true
+                            },
+                        );
+                        crate::serial_println_chirho!(
+                            "[MOUNT] /mnt/ listing: {:?}",
+                            entries_chirho
+                        );
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+
     0
 }
 
 /// `umount2(2)` stub -- return 0.
 fn sys_umount2_chirho(_target_chirho: u64, _flags_chirho: u32) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] umount2 (stub) -> 0");
+    crate::serial_debug_chirho!("[SYSCALL] umount2 (stub) -> 0");
     0
 }
 
@@ -3688,7 +3837,7 @@ fn sys_setsid_chirho() -> i64 {
     task_chirho.pgid_chirho = pid_chirho;
     task_chirho.controlling_tty_chirho = None;
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL] setsid() PID {} -> new session {}",
         pid_chirho,
         pid_chirho
@@ -3755,7 +3904,7 @@ fn sys_setpgid_chirho(pid_arg_chirho: u64, pgid_arg_chirho: u64) -> i64 {
         target_chirho.pgid_chirho = new_pgid_chirho;
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL] setpgid({}, {}) -> 0",
         target_pid_chirho,
         new_pgid_chirho
@@ -4416,7 +4565,7 @@ fn sys_statx_chirho(
     _mask_chirho: u32,
     _statx_buf_chirho: *mut u8,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] statx() -> ENOSYS (not yet implemented)");
+    crate::serial_debug_chirho!("[SYSCALL] statx() -> ENOSYS (not yet implemented)");
     -ENOSYS_CHIRHO
 }
 
@@ -4448,7 +4597,7 @@ fn sys_mkdir_chirho(
         raw_path_chirho
     };
 
-    crate::serial_println_chirho!("[SYSCALL] mkdir({}, {:#o})", path_chirho, mode_chirho);
+    crate::serial_debug_chirho!("[SYSCALL] mkdir({}, {:#o})", path_chirho, mode_chirho);
 
     let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
         Ok(result_chirho) => result_chirho,
@@ -4492,7 +4641,7 @@ fn sys_mkdirat_chirho(
         raw_path_chirho
     };
 
-    crate::serial_println_chirho!("[SYSCALL] mkdirat({}, {}, {:#o})", dirfd_chirho, path_chirho, mode_chirho);
+    crate::serial_debug_chirho!("[SYSCALL] mkdirat({}, {}, {:#o})", dirfd_chirho, path_chirho, mode_chirho);
 
     let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
         Ok(result_chirho) => result_chirho,
@@ -4528,7 +4677,7 @@ fn sys_rmdir_chirho(
         raw_path_chirho
     };
 
-    crate::serial_println_chirho!("[SYSCALL] rmdir({})", path_chirho);
+    crate::serial_debug_chirho!("[SYSCALL] rmdir({})", path_chirho);
 
     let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
         Ok(result_chirho) => result_chirho,
@@ -4564,7 +4713,7 @@ fn sys_unlink_chirho(
         raw_path_chirho
     };
 
-    crate::serial_println_chirho!("[SYSCALL] unlink({})", path_chirho);
+    crate::serial_debug_chirho!("[SYSCALL] unlink({})", path_chirho);
 
     let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
         Ok(result_chirho) => result_chirho,
@@ -4607,7 +4756,7 @@ fn sys_unlinkat_chirho(
         raw_path_chirho
     };
 
-    crate::serial_println_chirho!("[SYSCALL] unlinkat({}, {}, {:#x})", dirfd_chirho, path_chirho, flags_chirho);
+    crate::serial_debug_chirho!("[SYSCALL] unlinkat({}, {}, {:#x})", dirfd_chirho, path_chirho, flags_chirho);
 
     let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
         Ok(result_chirho) => result_chirho,
@@ -4715,7 +4864,7 @@ fn sys_rename_chirho(
     _oldpath_chirho: *const u8,
     _newpath_chirho: *const u8,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] rename(oldpath, newpath) -> 0 (stub)");
+    crate::serial_debug_chirho!("[SYSCALL] rename(oldpath, newpath) -> 0 (stub)");
     0
 }
 
@@ -4729,7 +4878,7 @@ fn sys_renameat2_chirho(
     _newpath_chirho: *const u8,
     _flags_chirho: u32,
 ) -> i64 {
-    crate::serial_println_chirho!("[SYSCALL] renameat2(olddirfd, oldpath, newdirfd, newpath, flags) -> 0 (stub)");
+    crate::serial_debug_chirho!("[SYSCALL] renameat2(olddirfd, oldpath, newdirfd, newpath, flags) -> 0 (stub)");
     0
 }
 

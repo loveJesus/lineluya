@@ -236,18 +236,14 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
     // Save the syscall number before dispatch overwrites rax with the result.
     let syscall_nr_chirho = frame_chirho.rax_chirho;
 
-    // Debug: log stack pointer for context switch investigation
-    let current_rsp_chirho: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) current_rsp_chirho); }
-    let pid_chirho = crate::task_chirho::current_task_chirho()
-        .map(|t| t.lock().pid_chirho).unwrap_or(999);
-    if pid_chirho >= 3 && (syscall_nr_chirho == 23 || syscall_nr_chirho == 0) {
-        // Log RSP for select(23) and read(0) from PID 3+
-        crate::serial_println_chirho!(
-            "[STACK-DBG] pid={} sc={} rsp={:#x} KERNEL_STACK_TOP={:#x}",
-            pid_chirho, syscall_nr_chirho, current_rsp_chirho,
-            unsafe { KERNEL_STACK_TOP_CHIRHO }
-        );
+    // Syscall counter — print every 1000th to show progress without flooding serial
+    {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static SC_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let count_chirho = SC_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if count_chirho % 1000 == 0 {
+            crate::serial_println_chirho!("[SC#{}] nr={}", count_chirho, syscall_nr_chirho);
+        }
     }
 
     let result_chirho = crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho);
@@ -343,7 +339,7 @@ pub unsafe fn init_syscall_entry_chirho() {
     let stack_top_chirho = (stack_base_chirho + SYSCALL_STACK_SIZE_CHIRHO as u64) & !0xF;
     KERNEL_STACK_TOP_CHIRHO = stack_top_chirho;
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL-ENTRY] Kernel syscall stack allocated: base=0x{:x}, top=0x{:x}",
         stack_base_chirho,
         stack_top_chirho,
@@ -371,7 +367,7 @@ pub unsafe fn init_syscall_entry_chirho() {
                 x86_64::VirtAddr::new(rsp0_top_chirho - 16384);
         }
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[SYSCALL-ENTRY] TSS.RSP0={:#x}, IST[1]={:#x} (heap)",
             rsp0_top_chirho,
             rsp0_top_chirho - 16384
@@ -384,7 +380,7 @@ pub unsafe fn init_syscall_entry_chirho() {
     let mut lstar_msr_chirho = Msr::new(IA32_LSTAR_CHIRHO);
     lstar_msr_chirho.write(entry_addr_chirho);
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SYSCALL-ENTRY] LSTAR updated to assembly trampoline at 0x{:x}",
         entry_addr_chirho,
     );

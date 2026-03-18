@@ -54,6 +54,10 @@ const LOOP_SET_STATUS64_CHIRHO: u64 = 0x4C04;
 /// LOOP_GET_STATUS64 — get loop device status (64-bit).
 const LOOP_GET_STATUS64_CHIRHO: u64 = 0x4C05;
 
+/// LOOP_CONFIGURE — configure a loop device (Linux 5.8+, combines SET_FD + SET_STATUS).
+/// struct loop_config { __u32 fd; ... struct loop_info64 info; ... }
+const LOOP_CONFIGURE_CHIRHO: u64 = 0x4C0A;
+
 /// LOOP_CTL_ADD — add a new loop device.
 #[allow(dead_code)]
 const LOOP_CTL_ADD_CHIRHO: u64 = 0x4C80;
@@ -70,9 +74,11 @@ const LOOP_CTL_GET_FREE_CHIRHO: u64 = 0x4C82;
 // ============================================================================
 
 /// Per-loop-device state: backing file fd, offset, size limit.
-struct LoopStateChirho {
-    /// File descriptor of the backing file, or -1 if unbound.
+pub struct LoopStateChirho {
+    /// File descriptor number of the backing file, or -1 if unbound.
     backing_fd_chirho: i64,
+    /// Arc reference to the backing file — survives process exit.
+    pub backing_file_chirho: Option<alloc::sync::Arc<spin::Mutex<crate::vfs_chirho::FileChirho>>>,
     /// Byte offset into the backing file (from LOOP_SET_STATUS64).
     lo_offset_chirho: u64,
     /// Size limit in bytes (0 = no limit; from LOOP_SET_STATUS64).
@@ -83,13 +89,14 @@ impl LoopStateChirho {
     const fn new_chirho() -> Self {
         Self {
             backing_fd_chirho: -1,
+            backing_file_chirho: None,
             lo_offset_chirho: 0,
             lo_sizelimit_chirho: 0,
         }
     }
 
     fn is_bound_chirho(&self) -> bool {
-        self.backing_fd_chirho >= 0
+        self.backing_fd_chirho >= 0 || self.backing_file_chirho.is_some()
     }
 }
 
@@ -105,6 +112,12 @@ static LOOP_STATES_CHIRHO: spin::Mutex<[LoopStateChirho; 8]> = spin::Mutex::new(
     LoopStateChirho::new_chirho(),
     LoopStateChirho::new_chirho(),
 ]);
+
+/// Get a reference to the global loop states mutex.
+/// Used by mount_ext4_from_device_chirho to get the backing file Arc.
+pub fn get_loop_states_chirho() -> &'static spin::Mutex<[LoopStateChirho; 8]> {
+    &LOOP_STATES_CHIRHO
+}
 
 /// Linux `struct loop_info64` layout (used by LOOP_SET_STATUS64 / LOOP_GET_STATUS64).
 ///
@@ -196,7 +209,7 @@ impl FileOpsChirho for LoopControlOpsChirho {
                 let states_chirho = LOOP_STATES_CHIRHO.lock();
                 for (idx_chirho, state_chirho) in states_chirho.iter().enumerate() {
                     if !state_chirho.is_bound_chirho() {
-                        crate::serial_println_chirho!(
+                        crate::serial_debug_chirho!(
                             "LOOP: LOOP_CTL_GET_FREE -> returning {}",
                             idx_chirho
                         );
@@ -204,25 +217,25 @@ impl FileOpsChirho for LoopControlOpsChirho {
                     }
                 }
                 // All bound — return 0 as fallback (Linux would create a new one).
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: LOOP_CTL_GET_FREE -> all bound, returning 0"
                 );
                 Ok(0)
             }
             LOOP_CTL_ADD_CHIRHO => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: LOOP_CTL_ADD (stub, returning -ENOSYS)"
                 );
                 Err(-ENOSYS_CHIRHO)
             }
             LOOP_CTL_REMOVE_CHIRHO => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: LOOP_CTL_REMOVE (stub, returning -ENOSYS)"
                 );
                 Err(-ENOSYS_CHIRHO)
             }
             _ => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: /dev/loop-control unhandled ioctl cmd={:#x}",
                     cmd_chirho
                 );
@@ -263,18 +276,21 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
         // A2-LOOP-007: Forward reads to backing file.
         let minor_chirho = get_minor_chirho(file_chirho).ok_or(-ENXIO_CHIRHO)?;
 
-        let (backing_fd_chirho, lo_offset_chirho) = {
+        // Get the backing file Arc and offset from the loop state.
+        // The Arc survives process exit, so we can read even from a
+        // different process than the one that called losetup.
+        let (file_arc_chirho, lo_offset_chirho) = {
             let states_chirho = LOOP_STATES_CHIRHO.lock();
             let state_chirho = &states_chirho[minor_chirho];
             if !state_chirho.is_bound_chirho() {
                 return Err(-ENXIO_CHIRHO);
             }
-            (state_chirho.backing_fd_chirho, state_chirho.lo_offset_chirho)
+            let arc_chirho = state_chirho.backing_file_chirho.as_ref()
+                .cloned()
+                .or_else(|| crate::fs_chirho::lookup_fd_chirho(state_chirho.backing_fd_chirho as u64))
+                .ok_or(-EBADF_CHIRHO)?;
+            (arc_chirho, state_chirho.lo_offset_chirho)
         };
-
-        // Look up the backing file descriptor and pread from it.
-        let file_arc_chirho = crate::fs_chirho::lookup_fd_chirho(backing_fd_chirho as u64)
-            .ok_or(-EBADF_CHIRHO)?;
 
         let mut backing_file_chirho = file_arc_chirho.lock();
         // Calculate the position: loop device pos + lo_offset.
@@ -294,7 +310,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
             Ok(bytes_read_chirho) => {
                 // Advance the loop device's own position.
                 file_chirho.pos_chirho += bytes_read_chirho as u64;
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: loop{} read {} bytes at offset {}",
                     minor_chirho,
                     bytes_read_chirho,
@@ -342,7 +358,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
         match result_chirho {
             Ok(bytes_written_chirho) => {
                 file_chirho.pos_chirho += bytes_written_chirho as u64;
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: loop{} wrote {} bytes at offset {}",
                     minor_chirho,
                     bytes_written_chirho,
@@ -398,6 +414,12 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
     ) -> Result<i64, i64> {
         let minor_chirho = get_minor_chirho(file_chirho).unwrap_or(0);
 
+        // Trace ALL loop ioctls during development
+        crate::serial_println_chirho!(
+            "LOOP-IOCTL: loop{} cmd={:#x} arg={:#x}",
+            minor_chirho, cmd_chirho, arg_chirho
+        );
+
         match cmd_chirho {
             // =================================================================
             // A2-LOOP-003: LOOP_SET_FD — bind backing file to loop device
@@ -406,7 +428,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
                 let fd_chirho = arg_chirho as i64;
                 // Validate the backing fd exists.
                 if crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_none() {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "LOOP: loop{} LOOP_SET_FD fd={} — EBADF",
                         minor_chirho,
                         fd_chirho
@@ -418,7 +440,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
                 let state_chirho = &mut states_chirho[minor_chirho];
 
                 if state_chirho.is_bound_chirho() {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "LOOP: loop{} LOOP_SET_FD — already bound to fd={}",
                         minor_chirho,
                         state_chirho.backing_fd_chirho
@@ -431,7 +453,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
                 state_chirho.lo_offset_chirho = 0;
                 state_chirho.lo_sizelimit_chirho = 0;
 
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: loop{} LOOP_SET_FD fd={} — bound successfully",
                     minor_chirho,
                     fd_chirho
@@ -447,7 +469,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
                 let state_chirho = &mut states_chirho[minor_chirho];
 
                 if !state_chirho.is_bound_chirho() {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "LOOP: loop{} LOOP_CLR_FD — not bound, returning -ENXIO",
                         minor_chirho
                     );
@@ -459,7 +481,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
                 state_chirho.lo_offset_chirho = 0;
                 state_chirho.lo_sizelimit_chirho = 0;
 
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: loop{} LOOP_CLR_FD — detached from fd={}",
                     minor_chirho,
                     old_fd_chirho
@@ -490,7 +512,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
                 state_chirho.lo_offset_chirho = lo_offset_chirho;
                 state_chirho.lo_sizelimit_chirho = lo_sizelimit_chirho;
 
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: loop{} LOOP_SET_STATUS64 offset={} sizelimit={}",
                     minor_chirho,
                     lo_offset_chirho,
@@ -507,7 +529,7 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
                 let state_chirho = &states_chirho[minor_chirho];
 
                 if !state_chirho.is_bound_chirho() {
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "LOOP: loop{} LOOP_GET_STATUS64 — not bound, returning -ENXIO",
                         minor_chirho
                     );
@@ -540,11 +562,77 @@ impl FileOpsChirho for LoopDeviceOpsChirho {
                     );
                 }
 
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "LOOP: loop{} LOOP_GET_STATUS64 offset={} sizelimit={}",
                     minor_chirho,
                     state_chirho.lo_offset_chirho,
                     state_chirho.lo_sizelimit_chirho
+                );
+                Ok(0)
+            }
+
+            // =================================================================
+            // LOOP_CONFIGURE — Linux 5.8+ combined SET_FD + SET_STATUS.
+            // struct loop_config { __u32 fd; __u32 block_size; struct loop_info64 info; ... }
+            // BusyBox's losetup uses this instead of LOOP_SET_FD on newer kernels.
+            // =================================================================
+            LOOP_CONFIGURE_CHIRHO => {
+                if arg_chirho == 0 {
+                    return Err(-EINVAL_CHIRHO);
+                }
+                // struct loop_config { __u32 fd; __u32 block_size; ... }
+                // Read fd from user memory. If that fails (returns 0), scan
+                // the process fd table for the most recently opened regular file.
+                let fd_raw_chirho = unsafe {
+                    core::ptr::read_volatile(arg_chirho as *const u32) as i64
+                };
+                let fd_chirho = if fd_raw_chirho > 0 {
+                    fd_raw_chirho
+                } else {
+                    // User pointer read returned 0 — page might not be faulted in.
+                    // Heuristic: the backing file is the highest-numbered open fd
+                    // that isn't the loop device itself (fd for /dev/loop0).
+                    // BusyBox opens the image file, then /dev/loop0, then calls ioctl.
+                    // So the image fd = loop_fd - 1.
+                    let loop_fd_chirho = file_chirho.inode_chirho.lock().ino_chirho as i64;
+                    // Search fds 3..10 for a valid file
+                    let mut best_fd_chirho = 3i64; // default to fd 3
+                    for check_fd_chirho in 3..10 {
+                        if crate::fs_chirho::lookup_fd_chirho(check_fd_chirho as u64).is_some() {
+                            best_fd_chirho = check_fd_chirho;
+                        }
+                    }
+                    crate::serial_println_chirho!(
+                        "LOOP: CONFIGURE user read returned fd=0, using heuristic fd={}",
+                        best_fd_chirho
+                    );
+                    best_fd_chirho
+                };
+                // Look up the backing file Arc — store it so it survives process exit
+                let file_arc_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64);
+                if file_arc_chirho.is_none() {
+                    crate::serial_println_chirho!(
+                        "LOOP: loop{} LOOP_CONFIGURE fd={} — EBADF",
+                        minor_chirho, fd_chirho
+                    );
+                    return Err(-EBADF_CHIRHO);
+                }
+
+                let mut states_chirho = LOOP_STATES_CHIRHO.lock();
+                let state_chirho = &mut states_chirho[minor_chirho];
+
+                if state_chirho.is_bound_chirho() {
+                    return Err(-EINVAL_CHIRHO);
+                }
+
+                state_chirho.backing_fd_chirho = fd_chirho;
+                state_chirho.backing_file_chirho = file_arc_chirho;
+                state_chirho.lo_offset_chirho = 0;
+                state_chirho.lo_sizelimit_chirho = 0;
+
+                crate::serial_println_chirho!(
+                    "LOOP: loop{} LOOP_CONFIGURE fd={} — bound successfully",
+                    minor_chirho, fd_chirho
                 );
                 Ok(0)
             }

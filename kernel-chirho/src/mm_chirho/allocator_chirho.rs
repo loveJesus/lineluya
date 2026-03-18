@@ -125,7 +125,7 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
             }
             AllocationClassChirho::OversizedChirho => {
                 // Hard cap — refuse the allocation.
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[ALLOC] REJECTED {:?} {}B a={}",
                     class_chirho, size_chirho, layout_chirho.align(),
                 );
@@ -139,7 +139,7 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
             let sc_chirho = crate::syscall_chirho::LAST_SYSCALL_NR_CHIRHO
                 .load(core::sync::atomic::Ordering::Relaxed);
             let sc_name_chirho = crate::syscall_chirho::syscall_name_chirho(sc_chirho);
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[ALLOC] {:?} {}B a={} sc={}({})",
                 class_chirho, size_chirho, layout_chirho.align(), sc_chirho, sc_name_chirho,
             );
@@ -151,7 +151,7 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
     unsafe fn dealloc(&self, ptr_chirho: *mut u8, layout_chirho: core::alloc::Layout) {
         // Track large deallocations to detect leaks vs. Vec doubling.
         if layout_chirho.size() > 1024 * 1024 && layout_chirho.align() == 8 {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[DEALLOC] {}B a=8",
                 layout_chirho.size(),
             );

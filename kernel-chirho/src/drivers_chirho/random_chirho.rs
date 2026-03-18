@@ -196,12 +196,12 @@ pub fn init_random_chirho() {
 
     if seeded_count_chirho > 0 {
         POOL_SEEDED_CHIRHO.store(true, Ordering::Relaxed);
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[RANDOM] Entropy pool seeded with {} hardware random values",
             seeded_count_chirho
         );
     } else {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[RANDOM] WARNING: No hardware RNG available, using TSC-only entropy"
         );
         // Seed with multiple TSC reads

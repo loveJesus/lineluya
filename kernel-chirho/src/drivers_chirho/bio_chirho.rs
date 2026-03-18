@@ -567,8 +567,8 @@ pub static BIO_QUEUE_CHIRHO: BioQueueChirho = BioQueueChirho::new_chirho();
 /// when drivers probe hardware.
 #[allow(dead_code)]
 pub fn init_bio_chirho() {
-    crate::serial_println_chirho!("BIO: block I/O integration layer initialized");
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!("BIO: block I/O integration layer initialized");
+    crate::serial_debug_chirho!(
         "BIO: {} device(s) registered, {} mount(s) active",
         BIO_REGISTRY_CHIRHO.device_count_chirho(),
         BIO_REGISTRY_CHIRHO.mount_count_chirho(),

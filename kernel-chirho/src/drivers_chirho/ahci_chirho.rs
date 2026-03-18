@@ -365,17 +365,17 @@ impl IdentifyResultChirho {
         let fw_str_chirho =
             core::str::from_utf8(&self.firmware_chirho).unwrap_or("???").trim();
 
-        crate::serial_println_chirho!("AHCI IDENTIFY DEVICE:");
-        crate::serial_println_chirho!("  Model:    {}", model_str_chirho);
-        crate::serial_println_chirho!("  Serial:   {}", serial_str_chirho);
-        crate::serial_println_chirho!("  Firmware: {}", fw_str_chirho);
-        crate::serial_println_chirho!("  LBA48:    {}", self.lba48_supported_chirho);
-        crate::serial_println_chirho!("  Sectors:  {}", self.total_sectors_chirho);
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!("AHCI IDENTIFY DEVICE:");
+        crate::serial_debug_chirho!("  Model:    {}", model_str_chirho);
+        crate::serial_debug_chirho!("  Serial:   {}", serial_str_chirho);
+        crate::serial_debug_chirho!("  Firmware: {}", fw_str_chirho);
+        crate::serial_debug_chirho!("  LBA48:    {}", self.lba48_supported_chirho);
+        crate::serial_debug_chirho!("  Sectors:  {}", self.total_sectors_chirho);
+        crate::serial_debug_chirho!(
             "  Capacity: {} MiB",
             self.total_sectors_chirho * self.sector_size_chirho as u64 / (1024 * 1024)
         );
-        crate::serial_println_chirho!("  Sector:   {} bytes", self.sector_size_chirho);
+        crate::serial_debug_chirho!("  Sector:   {} bytes", self.sector_size_chirho);
     }
 }
 
@@ -432,7 +432,7 @@ pub unsafe fn port_stop_cmd_chirho(port_chirho: &mut HbaPortChirho) {
         }
         timeout_chirho -= 1;
         if timeout_chirho == 0 {
-            crate::serial_println_chirho!("AHCI: timeout waiting for CR to clear");
+            crate::serial_debug_chirho!("AHCI: timeout waiting for CR to clear");
             break;
         }
     }
@@ -451,7 +451,7 @@ pub unsafe fn port_stop_cmd_chirho(port_chirho: &mut HbaPortChirho) {
         }
         timeout_chirho -= 1;
         if timeout_chirho == 0 {
-            crate::serial_println_chirho!("AHCI: timeout waiting for FR to clear");
+            crate::serial_debug_chirho!("AHCI: timeout waiting for FR to clear");
             break;
         }
     }
@@ -472,7 +472,7 @@ pub unsafe fn port_start_cmd_chirho(port_chirho: &mut HbaPortChirho) {
         }
         timeout_chirho -= 1;
         if timeout_chirho == 0 {
-            crate::serial_println_chirho!("AHCI: timeout waiting for CR before start");
+            crate::serial_debug_chirho!("AHCI: timeout waiting for CR before start");
             return;
         }
     }
@@ -509,7 +509,7 @@ pub unsafe fn enable_ahci_chirho(hba_chirho: &mut HbaMemChirho) {
     ghc_chirho |= GHC_AE_CHIRHO;
     unsafe { ptr::write_volatile(&mut hba_chirho.ghc_chirho, ghc_chirho) };
     fence(Ordering::SeqCst);
-    crate::serial_println_chirho!("AHCI: AHCI mode enabled");
+    crate::serial_debug_chirho!("AHCI: AHCI mode enabled");
 }
 
 /// Probe all implemented ports and log attached devices.
@@ -524,7 +524,7 @@ pub unsafe fn probe_ports_chirho(hba_chirho: &HbaMemChirho) {
     let num_ports_chirho = (cap_chirho & 0x1F) + 1;
     let num_cmd_slots_chirho = ((cap_chirho >> 8) & 0x1F) + 1;
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "AHCI: version={}.{} ports={} cmd_slots={} PI={:#010x}",
         vs_chirho >> 16,
         vs_chirho & 0xFFFF,
@@ -541,7 +541,7 @@ pub unsafe fn probe_ports_chirho(hba_chirho: &HbaMemChirho) {
         if unsafe { port_has_device_chirho(port_chirho) } {
             let dev_type_chirho = unsafe { port_device_type_chirho(port_chirho) };
             let sig_chirho = unsafe { ptr::read_volatile(&port_chirho.sig_chirho) };
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "  Port {}: {} device (sig={:#010x})",
                 i_chirho,
                 dev_type_chirho,
@@ -564,7 +564,7 @@ pub unsafe fn probe_ports_chirho(hba_chirho: &HbaMemChirho) {
 /// Performs PCI and MMIO access.
 #[allow(dead_code)]
 pub unsafe fn init_ahci_chirho(phys_offset_chirho: u64) {
-    crate::serial_println_chirho!("AHCI: scanning PCI for SATA controllers...");
+    crate::serial_debug_chirho!("AHCI: scanning PCI for SATA controllers...");
 
     let devices_chirho = unsafe { pci_chirho::scan_bus_chirho(0) };
     for dev_chirho in &devices_chirho {
@@ -574,7 +574,7 @@ pub unsafe fn init_ahci_chirho(phys_offset_chirho: u64) {
             continue;
         }
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "AHCI: found SATA controller at PCI {:02x}:{:02x}.{} (prog_if={:#04x})",
             dev_chirho.bus_chirho,
             dev_chirho.device_chirho,
@@ -583,7 +583,7 @@ pub unsafe fn init_ahci_chirho(phys_offset_chirho: u64) {
         );
 
         if dev_chirho.prog_if_chirho != PCI_PROGIF_AHCI_CHIRHO {
-            crate::serial_println_chirho!("AHCI: not AHCI prog_if, skipping");
+            crate::serial_debug_chirho!("AHCI: not AHCI prog_if, skipping");
             continue;
         }
 
@@ -595,12 +595,12 @@ pub unsafe fn init_ahci_chirho(phys_offset_chirho: u64) {
         let abar_chirho = match bar5_chirho {
             Some(bar_chirho) if bar_chirho.is_memory_chirho => bar_chirho.base_address_chirho,
             _ => {
-                crate::serial_println_chirho!("AHCI: BAR5 not a memory BAR");
+                crate::serial_debug_chirho!("AHCI: BAR5 not a memory BAR");
                 continue;
             }
         };
 
-        crate::serial_println_chirho!("AHCI: ABAR at {:#018x}", abar_chirho);
+        crate::serial_debug_chirho!("AHCI: ABAR at {:#018x}", abar_chirho);
 
         // Map ABAR to virtual address
         let hba_virt_chirho = phys_offset_chirho + abar_chirho;
@@ -616,7 +616,7 @@ pub unsafe fn init_ahci_chirho(phys_offset_chirho: u64) {
         return;
     }
 
-    crate::serial_println_chirho!("AHCI: no AHCI controller found");
+    crate::serial_debug_chirho!("AHCI: no AHCI controller found");
 }
 
 // ============================================================================

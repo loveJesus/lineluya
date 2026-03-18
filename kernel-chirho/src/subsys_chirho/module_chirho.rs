@@ -47,32 +47,39 @@ pub fn sys_finit_module_chirho(
     const MAX_KO_SIZE_CHIRHO: usize = 4 * 1024 * 1024;
     let mut ko_buf_chirho = vec![0u8; MAX_KO_SIZE_CHIRHO];
 
-    // Read the .ko file from the fd into our buffer.
-    let bytes_read_chirho = crate::fs_chirho::sys_read_real_chirho(
-        fd_chirho,
-        ko_buf_chirho.as_mut_ptr() as u64,
-        MAX_KO_SIZE_CHIRHO,
-    );
+    // Read the .ko file from the fd into our buffer in a loop (VFS may
+    // return partial reads at page boundaries).
+    let mut total_read_chirho: usize = 0;
+    loop {
+        let chunk_chirho = crate::fs_chirho::sys_read_real_chirho(
+            fd_chirho,
+            (ko_buf_chirho.as_mut_ptr() as u64) + total_read_chirho as u64,
+            MAX_KO_SIZE_CHIRHO - total_read_chirho,
+        );
+        if chunk_chirho <= 0 { break; }
+        total_read_chirho += chunk_chirho as usize;
+        if total_read_chirho >= MAX_KO_SIZE_CHIRHO { break; }
+    }
 
-    if bytes_read_chirho <= 0 {
+    if total_read_chirho == 0 {
         crate::serial_println_chirho!(
-            "[MODULE] finit_module: failed to read from fd {}: {}",
-            fd_chirho, bytes_read_chirho
+            "[MODULE] finit_module: failed to read from fd {}",
+            fd_chirho
         );
         return -ENOSYS_CHIRHO;
     }
 
-    ko_buf_chirho.truncate(bytes_read_chirho as usize);
+    ko_buf_chirho.truncate(total_read_chirho);
 
     crate::serial_println_chirho!(
         "[MODULE] finit_module: read {} bytes from fd {}",
-        bytes_read_chirho, fd_chirho
+        total_read_chirho, fd_chirho
     );
 
     // Delegate to init_module with the buffer pointer and length.
     crate::ko_loader_chirho::sys_init_module_impl_chirho(
         ko_buf_chirho.as_ptr() as u64,
-        bytes_read_chirho as u64,
+        total_read_chirho as u64,
         params_ptr_chirho,
     )
 }

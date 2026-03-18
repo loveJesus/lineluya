@@ -384,7 +384,7 @@ pub fn send_signal_chirho(pid_chirho: u64, signo_chirho: u32) -> Result<(), i64>
         }
     }
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[SIGNAL] signal {} sent to PID {} via kill()",
         signo_chirho,
         pid_chirho
@@ -768,7 +768,7 @@ pub fn deliver_sigchld_chirho(parent_pid_chirho: u64, child_pid_chirho: u64) {
             parent_chirho.state_chirho = TaskStateChirho::ReadyChirho;
         }
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[SIGNAL] SIGCHLD delivered to PID {} (child PID {} exited)",
             parent_pid_chirho,
             child_pid_chirho
@@ -805,7 +805,7 @@ pub fn deliver_sigpipe_to_current_chirho() {
             pid_chirho: 0, // kernel-generated
         });
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[SIGNAL] SIGPIPE pending on PID {} (write to broken pipe)",
             task_chirho.pid_chirho
         );
@@ -895,7 +895,7 @@ pub fn check_fatal_signals_on_return_chirho() -> bool {
                     .signal_state_chirho
                     .pending_chirho
                     .dequeue_chirho(signo_chirho);
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[SIGNAL] PID {} stopped by signal {}",
                     task_chirho.pid_chirho,
                     signo_chirho
@@ -935,7 +935,7 @@ pub fn check_fatal_signals_on_return_chirho() -> bool {
         // Wake any parent sleeping in wait4.
         crate::process_chirho::wake_child_exit_waitqueue_chirho();
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[SIGNAL] PID {} removed from scheduler after signal {}",
             pid_chirho,
             signo_chirho

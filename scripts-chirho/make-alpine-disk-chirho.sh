@@ -330,8 +330,10 @@ apk --root /mnt-chirho --initdb \
     python3 \
     dropbear dropbear-scp \
     mpg123 \
-    xvfb xterm twm font-misc-misc font-cursor-misc xauth \
+    xterm \
     >&2 2>&1
+
+# loop.ko is injected after disk build via inject-loop-ko-chirho.sh
 
 # Verify installation
 ls /mnt-chirho/usr/bin/sqlite3 >/dev/null 2>&1 && echo "[DOCKER] sqlite3 INSTALLED" >&2 || echo "[DOCKER] sqlite3 MISSING" >&2

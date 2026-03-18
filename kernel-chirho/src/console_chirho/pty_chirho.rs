@@ -169,6 +169,17 @@ pub fn get_pty_chirho(nr_chirho: u32) -> Option<Arc<PtyPairChirho>> {
     table_chirho.get(nr_chirho as usize).and_then(|slot_chirho| slot_chirho.clone())
 }
 
+/// Set the foreground process group on ALL allocated PTY pairs.
+/// Used during shell re-exec to fix terminal ownership.
+pub fn set_all_foreground_pgrp_chirho(pgrp_chirho: u32) {
+    let table_chirho = PTY_TABLE_CHIRHO.lock();
+    for slot_chirho in table_chirho.iter() {
+        if let Some(pair_chirho) = slot_chirho {
+            pair_chirho.foreground_pgrp_chirho.store(pgrp_chirho, core::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 // ============================================================================
 // PtmxFileOpsChirho -- /dev/ptmx file operations
 // ============================================================================

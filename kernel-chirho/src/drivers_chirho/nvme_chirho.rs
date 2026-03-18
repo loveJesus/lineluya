@@ -377,7 +377,7 @@ pub fn discover_nvme_chirho(phys_offset_chirho: u64) -> Vec<NvmeControllerChirho
                     bar0_virt_chirho,
                 );
 
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[NVMe] Found controller at PCI {:02x}:{:02x}.{} BAR0={:#x}",
                     dev_chirho.bus_chirho,
                     dev_chirho.device_chirho,
@@ -391,7 +391,7 @@ pub fn discover_nvme_chirho(phys_offset_chirho: u64) -> Vec<NvmeControllerChirho
     }
 
     if controllers_chirho.is_empty() {
-        crate::serial_println_chirho!("[NVMe] No NVMe controllers found on PCI bus 0");
+        crate::serial_debug_chirho!("[NVMe] No NVMe controllers found on PCI bus 0");
     }
 
     controllers_chirho

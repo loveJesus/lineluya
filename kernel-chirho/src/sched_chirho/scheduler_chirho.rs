@@ -92,6 +92,34 @@ extern "C" {
     );
 }
 
+/// Thin wrapper around [`switch_context_chirho`] so the resumed task lands in
+/// a tiny post-switch frame first, not directly in the middle of the larger
+/// `schedule_chirho` body.
+///
+/// The raw assembly already preserves the resumed task's callee-saved state.
+/// This wrapper's job is only to keep the immediate post-switch resume path
+/// structurally simple and to re-enable interrupts before returning to the
+/// caller.
+#[unsafe(naked)]
+unsafe extern "C" fn switch_context_return_wrapper_chirho(
+    old_context_chirho: *mut crate::task_chirho::CpuContextChirho,
+    new_context_chirho: *const crate::task_chirho::CpuContextChirho,
+) {
+    core::arch::naked_asm!(
+        // Enter switch_context_chirho with a synthetic return address to the
+        // local resume label below. This avoids a compiler-generated wrapper
+        // frame while still giving switch_context_chirho the call/return shape
+        // it expects: [RSP] holds the continuation RIP.
+        "lea rax, [rip + 2f]",
+        "push rax",
+        "jmp {switch_context_chirho}",
+        "2:",
+        "sti",
+        "ret",
+        switch_context_chirho = sym switch_context_chirho,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Run queue
 // ---------------------------------------------------------------------------
@@ -257,63 +285,79 @@ fn arch_prepare_switch_chirho(next_pid_chirho: u64) {
 /// - Interrupts are disabled while this function executes.
 /// - The task table (`crate::task_chirho`) has valid context structures for the
 ///   involved PIDs.
+#[inline(never)]
 pub fn schedule_chirho() {
-    // Disable interrupts for the duration of the scheduling decision and the
-    // context switch.  We re-enable them after the switch (the new task will
-    // return with interrupts enabled because its saved rflags has IF set).
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut scheduler_guard_chirho = SCHEDULER_CHIRHO.lock();
-        let scheduler_chirho = match scheduler_guard_chirho.as_mut() {
-            Some(s_chirho) => s_chirho,
-            None => return, // Scheduler not yet initialised — nothing to schedule.
-        };
+    // Disable interrupts manually (CLI/STI) instead of using without_interrupts.
+    // The without_interrupts closure saves RFLAGS on the stack before calling
+    // the closure.  After switch_context returns (to a DIFFERENT invocation of
+    // schedule), the saved RFLAGS is at a stack location that belongs to the
+    // restored task's schedule call — not the original one.  This mismatch
+    // causes without_interrupts to read garbage and crash.
+    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+
+    let mut scheduler_guard_chirho = SCHEDULER_CHIRHO.lock();
+    let scheduler_chirho = match scheduler_guard_chirho.as_mut() {
+        Some(s_chirho) => {
+            s_chirho
+        }
+        None => {
+            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+            return;
+        }
+    };
 
         // 1. Clear the reschedule flag.
         scheduler_chirho.need_resched_chirho = false;
         NEED_RESCHED_ATOMIC_CHIRHO.store(false, Ordering::Release);
 
         // 2. If there is a current task, push it to the back of the run queue
-        //    so it participates in future rounds.
-        //    EXCEPTION: if the current task is yielding from select and there
-        //    are fork children, DON'T push back — let the child run alone.
-        //    This prevents context switch corruption when switching back.
+        //    so it participates in future rounds — but only if it is still
+        //    runnable (not zombie/exited).
         let old_pid_chirho = scheduler_chirho.current_pid_chirho;
         if let Some(pid_chirho) = old_pid_chirho {
-            // Don't push back when children exist — prevents context switch
-            // crash when switching back. The SSH relay is handled in-kernel.
-            if scheduler_chirho.tasks_chirho.is_empty() {
+            let is_runnable_chirho = crate::task_chirho::is_task_runnable_chirho(pid_chirho);
+            if is_runnable_chirho {
                 scheduler_chirho.tasks_chirho.push_back(pid_chirho);
             }
         }
 
-        // 3. Pop the next task from the front.
+        // 3. Pop the next RUNNABLE task from the front, skipping dead/zombie.
         let queue_len_chirho = scheduler_chirho.tasks_chirho.len();
-        let next_pid_chirho = scheduler_chirho.tasks_chirho.pop_front();
+        let mut next_pid_chirho = None;
+        for _ in 0..queue_len_chirho {
+            if let Some(candidate_chirho) = scheduler_chirho.tasks_chirho.pop_front() {
+                if crate::task_chirho::is_task_runnable_chirho(candidate_chirho) {
+                    next_pid_chirho = Some(candidate_chirho);
+                    break;
+                }
+                // Dead/zombie task — discard silently.
+            }
+        }
 
         // Debug: log scheduler decisions when PID 3+ is involved
         if queue_len_chirho > 1 || (next_pid_chirho.is_some() && next_pid_chirho != old_pid_chirho) {
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[SCHED] queue_len={} old={:?} next={:?}",
                 queue_len_chirho, old_pid_chirho, next_pid_chirho
             );
         }
 
-        match next_pid_chirho {
-            None => {
-                // No runnable tasks.  Clear the current PID and return — the
-                // kernel's idle loop will take over.
-                scheduler_chirho.current_pid_chirho = None;
-                return;
-            }
-            Some(next_chirho) => {
+    match next_pid_chirho {
+        None => {
+            // No runnable tasks.  Clear the current PID and return.
+            scheduler_chirho.current_pid_chirho = None;
+            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+            return;
+        }
+        Some(next_chirho) => {
                 // 4. If the next task is the same as the old one, no context
                 //    switch is necessary — just reset the time slice.
-                if old_pid_chirho == Some(next_chirho) {
-                    scheduler_chirho.current_pid_chirho = Some(next_chirho);
-                    scheduler_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
-                    crate::serial_debug_chirho!("[SCHED] same task {:?}, no switch", old_pid_chirho);
-                    return;
-                }
+            if old_pid_chirho == Some(next_chirho) {
+                scheduler_chirho.current_pid_chirho = Some(next_chirho);
+                scheduler_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
+                unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+                return;
+            }
 
                 // 5. Different task — perform a context switch.
                 scheduler_chirho.current_pid_chirho = Some(next_chirho);
@@ -344,9 +388,9 @@ pub fn schedule_chirho() {
                 // switch so that the new task can acquire it if needed.
                 drop(scheduler_guard_chirho);
 
-                // Perform arch-specific context switch preparation (CR3 / page
-                // table switch).  This is factored out so the scheduling policy
-                // remains architecture-agnostic.
+                // Switch CR3 to the new task's page table BEFORE context switch.
+                // This is safe because kernel stacks are in the upper half
+                // (PML4[256+]) which is shared across ALL page tables.
                 arch_prepare_switch_chirho(next_chirho);
 
                 // Set kernel stack + current task for the new task.
@@ -383,19 +427,24 @@ pub fn schedule_chirho() {
                     // For RESUMED tasks, validate the return address at saved RSP.
                     // First-time tasks have a zero-filled stack — detect by checking
                     // if the value at RSP is 0 (entry point is in rip, not on stack).
-                    let stack_ok_chirho = if new_rsp_chirho >= 0x4000_0000_0000 {
+                    // Validate the saved context is reasonable.
+                    // Kernel code can be at various addresses depending on
+                    // the bootloader and QEMU mode (TCG vs KVM):
+                    //   TCG:  0x1_0000_0000_0000 range (PML4[2])
+                    //   KVM:  0x0000_8000_0000 range (lower address)
+                    // Accept any non-zero address above 0x1000 as "kernel code".
+                    let rip_ok_chirho = new_rip_chirho > 0x1000;
+                    let rsp_ok_chirho = new_rsp_chirho >= 0x4000_0000_0000
+                        || new_rsp_chirho >= 0xFFFF_8000_0000_0000;
+                    let stack_ok_chirho = if rsp_ok_chirho {
                         let stack_top_ret_chirho = core::ptr::read_volatile(new_rsp_chirho as *const u64);
-                        // Allow zero (first-time dispatch) or valid kernel address
-                        stack_top_ret_chirho == 0
-                            || (stack_top_ret_chirho >= 0x1000_0000_000
-                                && stack_top_ret_chirho <= 0x2000_0000_000)
+                        // Allow zero (first-time dispatch) or any kernel address
+                        stack_top_ret_chirho == 0 || stack_top_ret_chirho > 0x1000
                     } else {
                         false
                     };
 
-                    // Kernel code is around 0x10000xxxxxx (~68GB virtual).
-                    if new_rip_chirho < 0x1000_0000_000 || new_rip_chirho > 0x2000_0000_000
-                        || !stack_ok_chirho {
+                    if !rip_ok_chirho || !stack_ok_chirho {
                         crate::serial_println_chirho!(
                             "[SCHED] ABORT switch {:?}->{}: rip={:#x} rsp={:#x} stack_ok={}",
                             old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
@@ -403,15 +452,21 @@ pub fn schedule_chirho() {
                         );
                         return; // Don't switch to corrupted context
                     }
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[SCHED] switch {:?}->{}: rip={:#x} rsp={:#x}",
                         old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
                     );
-                    switch_context_chirho(old_ctx_ptr_chirho, new_ctx_ptr_chirho);
-                }
+                    switch_context_return_wrapper_chirho(
+                        old_ctx_ptr_chirho,
+                        new_ctx_ptr_chirho,
+                    );
+                    // After the wrapper returns we are back on the restored
+                    // task's stack and interrupts have already been re-enabled.
+                    return;
             }
         }
-    });
+    }
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 }
 
 // ---------------------------------------------------------------------------
@@ -539,10 +594,13 @@ pub fn remove_task_chirho(pid_chirho: u64) {
             None => return,
         };
 
-        // If the task is the currently running one, clear it.  The next
-        // schedule_chirho() call will notice `current_pid_chirho == None`.
+        // If the task is the currently running one, DON'T clear current_pid.
+        // The task is still executing (e.g., running its exit path). Clearing
+        // current_pid would cause schedule_chirho to save the context to the
+        // boot context instead of the task's CpuContextChirho, corrupting
+        // the next task's restore. Instead, just set need_resched so the
+        // scheduler will switch away from this task at the next yield.
         if scheduler_chirho.current_pid_chirho == Some(pid_chirho) {
-            scheduler_chirho.current_pid_chirho = None;
             scheduler_chirho.need_resched_chirho = true;
             NEED_RESCHED_ATOMIC_CHIRHO.store(true, Ordering::Release);
             return;

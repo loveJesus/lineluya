@@ -233,7 +233,7 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
                             }
                         }
                     }
-                    crate::serial_println_chirho!(
+                    crate::serial_debug_chirho!(
                         "[PROCESS] fork: created child PT {:#x} with copied stack",
                         child_pml4_chirho.as_u64(),
                     );
@@ -276,7 +276,7 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
         }
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] fork: parent PID={} -> child PID={}",
         child_task_chirho.ppid_chirho,
         child_pid_chirho
@@ -313,7 +313,7 @@ pub fn sys_clone_chirho(
     _tls_chirho: u64,
     frame_chirho: &SyscallFrameChirho,
 ) -> i64 {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] sys_clone(flags={:#x}, stack={:#x})",
         flags_chirho,
         stack_chirho
@@ -430,7 +430,7 @@ pub fn sys_clone_chirho(
         }
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] clone: parent PID={} -> child PID={} (flags={:#x})",
         child_task_chirho.ppid_chirho,
         child_pid_chirho,
@@ -464,7 +464,7 @@ pub fn sys_wait4_chirho(
     options_chirho: u32,
     _rusage_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] sys_wait4(pid={}, wstatus={:#x}, options={:#x})",
         pid_chirho,
         wstatus_chirho,
@@ -549,59 +549,14 @@ pub fn sys_wait4_chirho(
     }
 
     // -----------------------------------------------------------------------
-    // Blocking wait: sleep on the global child-exit wait queue.
-    //
-    // `wait_event_chirho` blocks the calling task (removes it from the
-    // scheduler run queue) and only wakes it when `wake_child_exit_waitqueue_chirho`
-    // is called from the exit() syscall path.  The condition closure re-scans
-    // the task list each time we are woken, handling spurious wakes safely.
+    // Yield to child — child's exit_group will re-exec the shell.
+    // Context switch back to parent still doesn't work.
     // -----------------------------------------------------------------------
-    crate::serial_println_chirho!(
-        "[PROCESS] wait4: PID={} sleeping on CHILD_EXIT_WAITQUEUE_CHIRHO",
-        parent_pid_chirho
-    );
-
-    let mut result_pid_chirho: i64 = -ECHILD_CHIRHO;
-    let mut result_exit_code_chirho: i32 = 0;
-    let mut found_chirho = false;
-
-    crate::waitqueue_chirho::wait_event_chirho(
-        &CHILD_EXIT_WAITQUEUE_CHIRHO,
-        || {
-            match find_zombie_chirho(parent_pid_chirho, pid_chirho) {
-                Ok((zpid_chirho, zcode_chirho)) => {
-                    result_pid_chirho = zpid_chirho as i64;
-                    result_exit_code_chirho = zcode_chirho;
-                    found_chirho = true;
-                    true // condition met — stop sleeping
-                }
-                Err(code_chirho) if code_chirho == -ECHILD_CHIRHO => {
-                    // No children left at all — stop sleeping.
-                    result_pid_chirho = -ECHILD_CHIRHO;
-                    found_chirho = false;
-                    true
-                }
-                _ => false, // children exist but no zombie yet — keep sleeping
-            }
-        },
-    );
-
-    if found_chirho {
-        crate::serial_println_chirho!(
-            "[PROCESS] wait4: PID={} woken, found zombie PID={}",
-            parent_pid_chirho,
-            result_pid_chirho
-        );
-        return reap_child_chirho(
-            result_pid_chirho as u64,
-            result_exit_code_chirho,
-            wstatus_chirho,
-        );
-    }
-
-    // No children remain.
-    result_pid_chirho
+    crate::scheduler_chirho::yield_current_chirho();
+    -ECHILD_CHIRHO
 }
+
+// Dead code removed — wait4 polling is now the main path above.
 
 /// Reap a zombie child: write exit status, mark Dead, remove from scheduler.
 ///
@@ -643,7 +598,7 @@ fn reap_child_chirho(
     // gone, but be safe).
     crate::scheduler_chirho::remove_task_chirho(reaped_pid_chirho);
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] wait4: reaped child PID={}, exit_code={}",
         reaped_pid_chirho,
         exit_code_chirho
@@ -773,7 +728,7 @@ pub fn sys_execve_chirho(
     argv_chirho: u64,
     envp_chirho: u64,
 ) -> i64 {
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] sys_execve called (filename={:#x}, argv={:#x}, envp={:#x})",
         filename_chirho,
         argv_chirho,
@@ -794,7 +749,7 @@ pub fn sys_execve_chirho(
         }
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] execve: filename = \"{}\"",
         filename_str_chirho
     );
@@ -813,7 +768,7 @@ pub fn sys_execve_chirho(
         }
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] execve: argv ({} entries): {:?}",
         argv_vec_chirho.len(),
         argv_vec_chirho
@@ -833,7 +788,7 @@ pub fn sys_execve_chirho(
         }
     };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] execve: envp ({} entries)",
         envp_vec_chirho.len()
     );
@@ -850,31 +805,24 @@ pub fn sys_execve_chirho(
     // the embedded hello-chirho binary (useful for early testing before the
     // filesystem has real binaries).
     // Read the ELF into a Vec — we'll drop it after mapping into user pages.
-    // Previously this was leaked (Vec::leak), wasting heap on every execve.
+    // Try to load the binary from the VFS (Alpine rootfs on ext4).
+    // If not found, fall back to embedded BusyBox for known applets.
+    // A real kernel doesn't embed BusyBox — the embedded copy is only
+    // a fallback for early boot before the disk is mounted.
+    let basename_chirho = filename_str_chirho
+        .rsplit('/')
+        .next()
+        .unwrap_or(&filename_str_chirho);
+
     let elf_data_owned_chirho: Option<Vec<u8>> = try_read_file_chirho(&resolved_filename_chirho);
+
     let elf_data_chirho: &[u8] = match &elf_data_owned_chirho {
         Some(data_chirho) => {
-            crate::serial_println_chirho!(
-                "[PROCESS] execve: loaded \"{}\" from VFS ({} bytes)",
-                filename_str_chirho,
-                data_chirho.len()
-            );
             data_chirho.as_slice()
         }
         None => {
-            // Check if the filename is a BusyBox applet — if so, load
-            // the embedded BusyBox binary with the applet name as argv[0].
-            // This emulates having /bin/ls → /bin/busybox symlinks.
-            let basename_chirho = filename_str_chirho
-                .rsplit('/')
-                .next()
-                .unwrap_or(&filename_str_chirho);
-            // Use centralized BusyBox applet registry (busybox_chirho module).
+            // Not on disk — check if it's a BusyBox applet
             if crate::busybox_chirho::is_busybox_applet_chirho(basename_chirho) {
-                crate::serial_println_chirho!(
-                    "[PROCESS] execve: \"{}\" is a BusyBox applet, using embedded BusyBox",
-                    filename_str_chirho
-                );
                 crate::exec_chirho::BUSYBOX_ELF_CHIRHO
             } else {
                 crate::serial_println_chirho!(
@@ -900,7 +848,7 @@ pub fn sys_execve_chirho(
     // real fork + preemptive scheduling are enabled.
     let _new_pt_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
     if let Some(pt_root_chirho) = _new_pt_chirho {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[PROCESS] execve: created per-process page table PML4={:#x} (stored, not switched)",
             pt_root_chirho.as_u64(),
         );
@@ -926,7 +874,7 @@ pub fn sys_execve_chirho(
         // ---------------------------------------------------------------
         // P4-004: Dynamically linked ELF — load interpreter from ext4
         // ---------------------------------------------------------------
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[PROCESS] execve: PT_INTERP detected: \"{}\"",
             raw_interp_path_chirho
         );
@@ -941,7 +889,7 @@ pub fn sys_execve_chirho(
             &filename_str_chirho,
         );
 
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[PROCESS] execve: resolved interpreter path: \"{}\"",
             interp_resolved_path_chirho
         );
@@ -954,14 +902,14 @@ pub fn sys_execve_chirho(
                     .map(|b| alloc::format!("{:02x}", b))
                     .collect::<Vec<_>>()
                     .join(" ");
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[PROCESS] execve: loaded interpreter from VFS ({} bytes) header: {}",
                     data_chirho.len(), hdr_hex_chirho
                 );
                 data_chirho
             }
             None => {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[PROCESS] execve: interpreter \"{}\" not found, falling back to static load",
                     interp_resolved_path_chirho
                 );
@@ -992,7 +940,7 @@ pub fn sys_execve_chirho(
                 }
             };
 
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[PROCESS] execve: dynamic ELF loaded — exe_entry={:#x}, start={:#x}, interp_base={:#x}, brk={:#x}",
                 dyn_result_chirho.exe_chirho.entry_point_chirho,
                 dyn_result_chirho.start_addr_chirho,
@@ -1017,7 +965,7 @@ pub fn sys_execve_chirho(
             // Update /proc/self/exe path for the new executable.
             crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
 
-            crate::serial_println_chirho!(
+            crate::serial_debug_chirho!(
                 "[PROCESS] execve: ready to enter userspace (dynamic) — entry={:#x}, rsp={:#x}",
                 dyn_result_chirho.start_addr_chirho,
                 user_rsp_chirho
@@ -1059,7 +1007,7 @@ pub fn sys_execve_chirho(
             }
         };
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] execve: ELF loaded (static) — entry={:#x}, phdr={:#x}, brk={:#x}",
         loaded_chirho.entry_point_chirho,
         loaded_chirho.phdr_addr_chirho,
@@ -1081,7 +1029,7 @@ pub fn sys_execve_chirho(
     // Update /proc/self/exe path for the new executable.
     crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
 
-    crate::serial_println_chirho!(
+    crate::serial_debug_chirho!(
         "[PROCESS] execve: ready to enter userspace (static) — entry={:#x}, rsp={:#x}",
         loaded_chirho.entry_point_chirho,
         user_rsp_chirho
@@ -1120,7 +1068,7 @@ fn activate_per_process_pt_chirho() {
     let pt_root_chirho = task_arc_chirho.lock().page_table_root_chirho;
 
     if let Some(pml4_phys_chirho) = pt_root_chirho {
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[PROCESS] Switching CR3 to per-process PT {:#x} (lazy migration)",
             pml4_phys_chirho.as_u64(),
         );
@@ -1143,6 +1091,17 @@ fn activate_per_process_pt_chirho() {
 /// SIGCHLD to the parent, and respawns the shell.
 ///
 /// This function never returns.
+/// Re-exec the shell in the current task context.
+///
+/// Used by wait4 after reaping a child — avoids returning through the
+/// corrupted parent stack frame by directly re-executing the shell binary.
+pub fn relaunch_shell_chirho() -> ! {
+    crate::serial_println_chirho!("[PROCESS] relaunch_shell: re-exec /bin/sh");
+    let argv_chirho = [alloc::string::String::from("sh")];
+    let envp_chirho = [alloc::string::String::from("HOME=/root")];
+    exec_shell_with_args_chirho(&argv_chirho, &envp_chirho)
+}
+
 pub fn kill_and_respawn_shell_chirho(reason_chirho: &str) -> ! {
     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
         let pid_chirho = task_arc_chirho.lock().pid_chirho;
@@ -1245,7 +1204,7 @@ fn debug_verify_stack_chirho(user_rsp_chirho: u64) {
         }
         let argv0_str_chirho =
             core::str::from_utf8(&argv0_buf_chirho).unwrap_or("???");
-        crate::serial_println_chirho!(
+        crate::serial_debug_chirho!(
             "[PROCESS] execve: VERIFY stack: argc={}, argv[0]@{:#x}=\"{}\"",
             argc_val_chirho,
             argv0_ptr_chirho,
