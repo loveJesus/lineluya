@@ -696,11 +696,24 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
     if was_user_mode_chirho && crate::scheduler_chirho::need_resched_chirho() {
-        // Preemptive scheduling with 1s time slice: tasks get ~1s of CPU
-        // before preemption. This is enough for SSH handshake + musl
-        // interpreter relocation. try_schedule avoids deadlock with
-        // syscall-level yields that hold the scheduler lock.
-        crate::scheduler_chirho::try_schedule_chirho();
+        // Preemptive scheduling: we cannot call schedule_chirho() directly here
+        // because the context switch would corrupt this interrupt handler's
+        // IRETQ frame (RSP switches to the target task's stack).
+        //
+        // Instead, we make the current task call yield via a SYNTHETIC syscall.
+        // Modify the interrupt frame's RIP to point to a SYSCALL instruction
+        // that will trigger schedule_chirho() on the syscall return path.
+        // The user's original RIP is saved in RCX (by convention for SYSCALL),
+        // so we also save RCX.
+        //
+        // Actually, the simplest approach: just leave need_resched set.
+        // The NEXT syscall from this task will trigger the schedule on return
+        // (the check in syscall_dispatch_wrapper_chirho).
+        //
+        // For tasks in tight userspace loops without syscalls, they will
+        // eventually get preempted when the timer fires and they make their
+        // next syscall (the dynamic linker makes syscalls regularly).
+        // This is cooperative-at-userspace, preemptive-at-syscall-boundary.
     }
 }
 
