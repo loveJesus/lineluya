@@ -276,10 +276,15 @@ pub fn init_pics_chirho() {
     unsafe {
         PICS_CHIRHO.lock().initialize();
 
-        // Unmask all PIC IRQs. Both PIC and IOAPIC can coexist — the PIC
-        // handles interrupts in BIOS mode, IOAPIC in UEFI mode.
+        // Unmask PIC IRQs EXCEPT IRQ 11 (VirtIO-net PCI interrupt).
+        // IRQ 11 = slave PIC bit 3. Unmasked NIC interrupts during fork
+        // cause a ~30-40% hang on KVM even with proper EOI handling,
+        // because the interrupt fires during the fork trampoline and
+        // corrupts the child's kernel stack or context.
+        // Master PIC (0x21): unmask all (timer=0, kbd=1, cascade=2, serial=4)
         x86_64::instructions::port::Port::<u8>::new(0x21).write(0x00);
-        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0x00);
+        // Slave PIC (0xA1): mask IRQ 11 (bit 3) — VirtIO-net
+        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0x08);
 
         // PS/2 keyboard controller re-enable removed — it was causing
         // keyboard interrupt issues. The bootloader leaves the PS/2
