@@ -1881,7 +1881,7 @@ impl FileOpsChirho for SocketFileOpsChirho {
             for (idx_chirho, slot_chirho) in table_relay_chirho.iter().enumerate() {
                 if let Some(ref s_chirho) = slot_chirho {
                     if s_chirho.family_chirho == 2
-                        && s_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+                        && matches!(s_chirho.tcb_chirho.state_chirho, TcpStateChirho::EstablishedChirho | TcpStateChirho::CloseWaitChirho)
                         && s_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(2222)
                     {
                         tcp_info_chirho = Some((
@@ -2149,6 +2149,24 @@ pub fn is_socket_fd_chirho(fd_chirho: u64) -> bool {
 /// Public wrapper for socket_idx_from_fd (used by epoll).
 pub fn socket_idx_from_fd_pub_chirho(fd_chirho: u64) -> Result<usize, i64> {
     socket_idx_from_fd_chirho(fd_chirho)
+}
+
+/// Check if any established TCP socket on the given port has data.
+/// Used by poll() to report POLLIN on pipes that relay TCP SSH data.
+pub fn has_tcp_data_for_port_chirho(port_chirho: u16) -> bool {
+    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    for slot_chirho in table_chirho.iter() {
+        if let Some(ref sock_chirho) = slot_chirho {
+            if sock_chirho.family_chirho == 2
+                && matches!(sock_chirho.tcb_chirho.state_chirho, TcpStateChirho::EstablishedChirho | TcpStateChirho::CloseWaitChirho)
+                && sock_chirho.local_addr_chirho.map(|a_chirho| a_chirho.port_chirho) == Some(port_chirho)
+                && !sock_chirho.recv_buf_chirho.is_empty()
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Check if a socket fd has pending data or connections.
@@ -2892,7 +2910,7 @@ pub fn sys_sendto_chirho(
             for (idx_chirho, slot_chirho) in table_relay_chirho.iter().enumerate() {
                 if let Some(ref sock_chirho) = slot_chirho {
                     if sock_chirho.family_chirho == 2
-                        && sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+                        && matches!(sock_chirho.tcb_chirho.state_chirho, TcpStateChirho::EstablishedChirho | TcpStateChirho::CloseWaitChirho)
                         && sock_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(2222)
                     {
                         let rp_chirho = sock_chirho.remote_addr_chirho.map(|a| a.port_chirho).unwrap_or(0);
@@ -4530,7 +4548,7 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
     for (idx_chirho, slot_chirho) in table_chirho.iter().enumerate() {
         if let Some(ref s_chirho) = slot_chirho {
             if s_chirho.family_chirho == 2
-                && s_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+                && matches!(s_chirho.tcb_chirho.state_chirho, TcpStateChirho::EstablishedChirho | TcpStateChirho::CloseWaitChirho)
                 && s_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(2222)
             {
                 info_chirho = Some((
@@ -4635,10 +4653,33 @@ pub fn relay_tcp_2222_to_pipe_chirho(pipe_chirho: &alloc::sync::Arc<spin::Mutex<
         crate::serial_debug_chirho!("[RELAY-DBG] {} sockets found", found_chirho);
     }
 
+    // One-shot log: show what we find
+    {
+        static RELAY_CALL_COUNT_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let cnt_chirho = RELAY_CALL_COUNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if cnt_chirho < 3 {
+            let mut found_chirho = 0u32;
+            for (i_chirho, s_chirho) in table_chirho.iter().enumerate() {
+                if let Some(ref sock_chirho) = s_chirho {
+                    if sock_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(2222) {
+                        crate::serial_println_chirho!(
+                            "[RELAY-CALL] socket[{}] port=2222 state={:?} recv_buf={}",
+                            i_chirho, sock_chirho.tcb_chirho.state_chirho, sock_chirho.recv_buf_chirho.len()
+                        );
+                        found_chirho += 1;
+                    }
+                }
+            }
+            if found_chirho == 0 {
+                crate::serial_println_chirho!("[RELAY-CALL] no socket on port 2222 found");
+            }
+        }
+    }
+
     for slot_chirho in table_chirho.iter_mut() {
         if let Some(ref mut s_chirho) = slot_chirho {
             if s_chirho.family_chirho == 2
-                && s_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+                && matches!(s_chirho.tcb_chirho.state_chirho, TcpStateChirho::EstablishedChirho | TcpStateChirho::CloseWaitChirho)
                 && s_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(2222)
                 && !s_chirho.recv_buf_chirho.is_empty()
             {
@@ -5010,7 +5051,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
 
         // When TCP transitions to ESTABLISHED, update socket state
         // and push to the listening socket's accept queue.
-        if sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho
+        if matches!(sock_chirho.tcb_chirho.state_chirho, TcpStateChirho::EstablishedChirho | TcpStateChirho::CloseWaitChirho)
             && sock_chirho.state_chirho != SocketStateChirho::ConnectedChirho
         {
             sock_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
@@ -5774,7 +5815,7 @@ pub fn tcp_connect_real_chirho(
 
         let table_chirho = SOCKET_TABLE_CHIRHO.lock();
         if let Some(ref sock_chirho) = table_chirho[socket_idx_chirho] {
-            if sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::EstablishedChirho {
+            if matches!(sock_chirho.tcb_chirho.state_chirho, TcpStateChirho::EstablishedChirho | TcpStateChirho::CloseWaitChirho) {
                 crate::serial_debug_chirho!(
                     "[TCP] Connection established to {}:{}",
                     format_ip_chirho(dst_ip_chirho), dst_port_chirho,

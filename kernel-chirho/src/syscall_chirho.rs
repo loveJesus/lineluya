@@ -3367,10 +3367,18 @@ fn sys_poll_chirho(
                     if is_interactive_shell_chirho() {
                         revents_chirho |= POLLIN_CHIRHO; // shell: always
                     } else {
+                        // Daemon (dropbear): check serial AND TCP port 2222.
+                        // Dropbear reads SSH data from fd=0 (pipe). TCP data
+                        // on port 2222 is relayed to the pipe during read().
+                        // Report POLLIN if either serial or TCP has data.
                         let lsr_chirho: u8 = unsafe {
                             x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
                         };
                         if lsr_chirho & 1 != 0 {
+                            revents_chirho |= POLLIN_CHIRHO;
+                        }
+                        // Also check TCP port 2222 for SSH data
+                        if crate::net_chirho::has_tcp_data_for_port_chirho(2222) {
                             revents_chirho |= POLLIN_CHIRHO;
                         }
                     }
@@ -3539,11 +3547,13 @@ fn sys_select_chirho(
                                 has_ready_chirho = true;
                                 break;
                             }
-                            // Daemon: check serial LSR
+                            // Daemon: check serial LSR AND TCP port 2222
                             let lsr_chirho: u8 = unsafe {
                                 x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
                             };
-                            if lsr_chirho & 1 != 0 {
+                            if lsr_chirho & 1 != 0
+                                || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
+                            {
                                 has_ready_chirho = true;
                                 break;
                             }
@@ -3571,13 +3581,13 @@ fn sys_select_chirho(
                 let ready_chirho = if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
                     crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
                 } else if fd_chirho == 0 {
-                    // stdin: daemon PIDs check serial LSR
-                    
+                    // stdin: daemon PIDs check serial LSR + TCP port 2222
                     if is_interactive_shell_chirho() { true } else {
                         let lsr_chirho: u8 = unsafe {
                             x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
                         };
                         lsr_chirho & 1 != 0
+                            || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
                     }
                 } else {
                     crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some()
