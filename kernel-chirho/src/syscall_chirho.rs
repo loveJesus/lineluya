@@ -1169,12 +1169,37 @@ const CLOCK_MONOTONIC_CHIRHO: u64 = 1;
 /// Global xorshift64 PRNG state, seeded from TSC on first use.
 pub static PRNG_STATE_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
-/// Check if the current process is the interactive shell (not a daemon).
-/// The shell has ppid=0 (set by exit_group re-exec). Daemons (dropbear)
-/// have ppid != 0 because they were forked from the shell.
+/// PID of the process that called listen() (0 = no daemon yet).
+/// The shell never calls listen(); dropbear does. Storing the PID lets us
+/// distinguish the two even though both have ppid=0 from exit_group re-exec.
+static DAEMON_LISTENER_PID_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Called from sys_listen to record which PID is the daemon.
+pub fn mark_daemon_listener_chirho() {
+    let pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t_chirho| t_chirho.lock().pid_chirho)
+        .unwrap_or(0);
+    if pid_chirho != 0 {
+        DAEMON_LISTENER_PID_CHIRHO.store(pid_chirho, Ordering::Relaxed);
+        crate::serial_println_chirho!("[DAEMON] PID {} called listen — marked as daemon", pid_chirho);
+    }
+}
+
 fn is_interactive_shell_chirho() -> bool {
     crate::task_chirho::current_task_chirho()
-        .map(|t_chirho| t_chirho.lock().ppid_chirho == 0)
+        .map(|t_chirho| {
+            let task_chirho = t_chirho.lock();
+            // Forked children (ppid != 0) are never the main shell.
+            if task_chirho.ppid_chirho != 0 {
+                return false;
+            }
+            // ppid=0: check if this PID is the daemon that called listen().
+            let daemon_pid_chirho = DAEMON_LISTENER_PID_CHIRHO.load(Ordering::Relaxed);
+            if daemon_pid_chirho != 0 && task_chirho.pid_chirho == daemon_pid_chirho {
+                return false; // this is the daemon, not the shell
+            }
+            true
+        })
         .unwrap_or(true)
 }
 
@@ -3118,10 +3143,16 @@ fn sys_munmap_chirho(
 /// `set_tid_address(2)` implementation.
 ///
 /// The kernel stores `tidptr_chirho` so it can perform a futex wake when the
-/// thread exits.  For now we just record it and return the current TID (1).
+/// thread exits.  Returns the caller's TID (= PID for single-threaded).
+/// CRITICAL: must return a unique value per process — musl uses the TID
+/// to own internal locks. If parent and child share the same TID after fork,
+/// musl detects a false recursive lock and calls a_crash() (HLT → GPF).
 fn sys_set_tid_address_chirho(_tidptr_chirho: *mut i32) -> i64 {
-    // TODO: Store tidptr in the current task struct for clear_child_tid logic.
-    1 // Current TID
+    // Return a unique TID per process. TID must be >= 1 because musl uses
+    // CAS(lock, 0, tid) for locking — tid=0 makes a_cas a no-op.
+    // The tid_ptr write is deferred — musl handles it in __init_tp.
+    let pid_chirho = sys_getpid_chirho();
+    if pid_chirho < 1 { 1 } else { pid_chirho }
 }
 
 /// `ioctl(2)` stub.
@@ -4282,9 +4313,10 @@ fn sys_getresgid_chirho(rgid_ptr_chirho: u64, egid_ptr_chirho: u64, sgid_ptr_chi
 }
 
 /// `gettid(2)` -- return thread ID (= PID for single-threaded).
+/// TID must be >= 1 (musl uses 0 as "unlocked" sentinel).
 fn sys_gettid_chirho() -> i64 {
-    // For single-threaded processes, TID == PID.
-    sys_getpid_chirho()
+    let pid_chirho = sys_getpid_chirho();
+    if pid_chirho < 1 { 1 } else { pid_chirho }
 }
 
 /// Compute monotonic seconds and nanoseconds from the tick counter.

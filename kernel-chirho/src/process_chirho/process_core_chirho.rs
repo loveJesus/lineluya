@@ -992,6 +992,24 @@ pub fn sys_execve_with_filename_chirho(
     );
 
     // -----------------------------------------------------------------------
+    // Step 3b: Clear old user mappings from boot PML4
+    // -----------------------------------------------------------------------
+    // After fork marks boot PML4 user pages as COW, the old pages must be
+    // unmapped before loading the new ELF to avoid PageAlreadyMapped errors.
+    // This also clears COW markings. Safe: fork child has its own PT copy.
+    // argv/envp strings were already copied to kernel heap above.
+    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+    if boot_pml4_chirho.as_u64() != 0 {
+        let cleared_chirho = crate::pagetable_chirho::clear_user_pages_chirho(boot_pml4_chirho);
+        if cleared_chirho > 0 {
+            crate::serial_println_chirho!(
+                "[EXECVE] Cleared {} user pages from boot PML4 for new ELF",
+                cleared_chirho,
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Step 4: Obtain the ELF binary data
     // -----------------------------------------------------------------------
     // Resolve procfd exec paths used by libc fallbacks when execveat is
@@ -1145,37 +1163,11 @@ pub fn sys_execve_with_filename_chirho(
                 dyn_result_chirho.exe_chirho.brk_addr_chirho
             );
 
-            // Set up the user stack with AT_BASE for the dynamic linker.
-            // AT_ENTRY must be the main executable's entry so the
-            // interpreter can jump to it after self-relocation.
-            let user_rsp_chirho = exec_chirho::setup_user_stack_dynlink_chirho(
-                &dyn_result_chirho.exe_chirho,
-                &effective_argv_chirho,
-                &envp_vec_chirho,
-                dyn_result_chirho.interp_base_chirho,
-                dyn_result_chirho.exe_chirho.entry_point_chirho,
-            );
-
-            // Debug: verify argv[0] on the user stack
-            debug_verify_stack_chirho(user_rsp_chirho);
-
-            // Update /proc/self/exe path for the new executable.
-            crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
-            preserve_fd_table_across_exec_chirho();
-
-            crate::serial_debug_chirho!(
-                "[PROCESS] execve: ready to enter userspace (dynamic) — entry={:#x}, rsp={:#x}",
-                dyn_result_chirho.start_addr_chirho,
-                user_rsp_chirho
-            );
-
-            // Dynamic ELFs still rely on the shared boot page tables.
-            // The dynamic loader performs many mmap/mprotect transitions, but
-            // GLOBAL_MAPPER_CHIRHO is not rebound on scheduler switches.
-            // Leaving the task on an inherited per-process PT means later
-            // mprotect() calls can update a different page table than the one
-            // userspace is actually executing on. Clear the task-local PT and
-            // switch back to the boot PML4 before entering the interpreter.
+            // Switch to boot PML4 BEFORE setting up user stack. Stack writes
+            // must go into boot PML4 (via GLOBAL_MAPPER) so they're visible
+            // when we IRETQ to userspace. If we write the stack while on the
+            // per-process PT, COW resolves create frames only in the child PT,
+            // and they're lost after switching to boot PML4.
             if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
                 task_arc_chirho.lock().page_table_root_chirho = None;
             }
@@ -1189,6 +1181,26 @@ pub fn sys_execve_with_filename_chirho(
                     crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
                 }
             }
+
+            // Set up the user stack with AT_BASE for the dynamic linker.
+            let user_rsp_chirho = exec_chirho::setup_user_stack_dynlink_chirho(
+                &dyn_result_chirho.exe_chirho,
+                &effective_argv_chirho,
+                &envp_vec_chirho,
+                dyn_result_chirho.interp_base_chirho,
+                dyn_result_chirho.exe_chirho.entry_point_chirho,
+            );
+
+            debug_verify_stack_chirho(user_rsp_chirho);
+
+            crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
+            preserve_fd_table_across_exec_chirho();
+
+            crate::serial_debug_chirho!(
+                "[PROCESS] execve: ready to enter userspace (dynamic) — entry={:#x}, rsp={:#x}",
+                dyn_result_chirho.start_addr_chirho,
+                user_rsp_chirho
+            );
 
             // Drop ELF data BEFORE jumping — frees heap memory that was
             // previously leaked via Vec::leak on every execve.

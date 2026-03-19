@@ -2419,6 +2419,10 @@ pub fn sys_listen_chirho(sockfd_chirho: u64, backlog_chirho: u64) -> i64 {
     // Set the TCP control block to LISTEN state
     let _ = socket_chirho.tcb_chirho.passive_open_chirho();
 
+    // Mark this process as the daemon so is_interactive_shell_chirho() returns
+    // false for it — needed for SSH relay to send writev data via TCP.
+    crate::syscall_chirho::mark_daemon_listener_chirho();
+
     crate::serial_debug_chirho!("[NET] sys_listen -> 0");
     0
 }
@@ -2905,6 +2909,18 @@ pub fn sys_sendto_chirho(
             return len_chirho as i64;
         }
     };
+
+    // Check if this is a Unix domain socket (syslog) — short-circuit to avoid
+    // heap allocation and user-memory reads that can trigger GPFs in forked children.
+    {
+        let table_check_chirho = SOCKET_TABLE_CHIRHO.lock();
+        if let Some(Some(sock_check_chirho)) = table_check_chirho.get(socket_idx_chirho) {
+            if sock_check_chirho.family_chirho == 1 {
+                // AF_UNIX: not supported, silently discard
+                return len_chirho as i64;
+            }
+        }
+    }
 
     // Read data from user-space
     let count_chirho = core::cmp::min(len_chirho as usize, SOCKET_SEND_MAX_CHIRHO);

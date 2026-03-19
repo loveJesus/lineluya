@@ -530,12 +530,29 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
     let old_frame_phys_chirho = pte_chirho.addr();
 
     let new_frame_chirho = {
-        let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
-        match alloc_lock_chirho.as_mut().and_then(|a_chirho| a_chirho.allocate_frame()) {
+        // Use try_lock to avoid deadlock if the allocator is already locked
+        // (e.g., COW fault during mmap/brk allocation call).
+        let mut alloc_guard_chirho = match GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() {
+            Some(g_chirho) => g_chirho,
+            None => {
+                crate::serial_println_chirho!(
+                    "[COW] Frame allocator locked, spinning for {:#x}",
+                    faulting_addr_chirho.as_u64()
+                );
+                // Spin briefly — the allocator lock should be released quickly.
+                loop {
+                    if let Some(g_chirho) = GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() {
+                        break g_chirho;
+                    }
+                    core::hint::spin_loop();
+                }
+            }
+        };
+        match alloc_guard_chirho.as_mut().and_then(|a_chirho| a_chirho.allocate_frame()) {
             Some(f_chirho) => f_chirho,
             None => {
-                crate::serial_debug_chirho!(
-                    "[PAGETABLE] COW: OOM — cannot allocate frame for {:#x}",
+                crate::serial_println_chirho!(
+                    "[COW] OOM — cannot allocate frame for {:#x}",
                     faulting_addr_chirho.as_u64()
                 );
                 return false;
@@ -635,6 +652,112 @@ pub fn mark_user_pages_cow_chirho(pml4_phys_chirho: PhysAddr) -> u64 {
     ); }
 
     marked_chirho
+}
+
+/// Clear (unmap) all user-accessible pages from a page table's leaf entries.
+///
+/// Called during execve to clean the address space before loading a new binary.
+/// Only clears leaf PT entries (4 KiB pages); intermediate page table frames
+/// (PDPT, PD, PT) are left intact so they can be reused by the new mappings.
+///
+/// Returns the number of pages cleared.
+pub fn clear_user_pages_chirho(pml4_phys_chirho: PhysAddr) -> u64 {
+    let pml4_chirho = unsafe { table_from_phys_chirho(pml4_phys_chirho) };
+    let mut cleared_chirho: u64 = 0;
+
+    for pml4_idx_chirho in 0..KERNEL_PML4_START_CHIRHO {
+        if pml4_chirho[pml4_idx_chirho].is_unused() { continue; }
+        let pdpt_flags_chirho = pml4_chirho[pml4_idx_chirho].flags();
+        if !pdpt_flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+
+        let pdpt_chirho = unsafe { table_from_phys_chirho(pml4_chirho[pml4_idx_chirho].addr()) };
+        for pdpt_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+            if pdpt_chirho[pdpt_idx_chirho].is_unused() { continue; }
+            if pdpt_chirho[pdpt_idx_chirho].flags().contains(PageTableFlags::HUGE_PAGE) { continue; }
+            if !pdpt_chirho[pdpt_idx_chirho].flags().contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+
+            let pd_chirho = unsafe { table_from_phys_chirho(pdpt_chirho[pdpt_idx_chirho].addr()) };
+            for pd_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+                if pd_chirho[pd_idx_chirho].is_unused() { continue; }
+                if pd_chirho[pd_idx_chirho].flags().contains(PageTableFlags::HUGE_PAGE) { continue; }
+                if !pd_chirho[pd_idx_chirho].flags().contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+
+                let pt_chirho = unsafe { table_from_phys_chirho(pd_chirho[pd_idx_chirho].addr()) };
+                for pt_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+                    if pt_chirho[pt_idx_chirho].is_unused() { continue; }
+                    let page_flags_chirho = pt_chirho[pt_idx_chirho].flags();
+                    if !page_flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+
+                    pt_chirho[pt_idx_chirho].set_unused();
+                    cleared_chirho += 1;
+                }
+            }
+        }
+    }
+
+    // Flush TLB
+    unsafe {
+        let (frame_chirho, flags_chirho) = x86_64::registers::control::Cr3::read();
+        x86_64::registers::control::Cr3::write(frame_chirho, flags_chirho);
+    }
+
+    cleared_chirho
+}
+
+/// Restore COW-marked user pages back to writable in a page table.
+///
+/// Called during execve: after fork marked boot PML4 pages as COW, the
+/// child has its own PT copy. When the parent (or child) exec's a new binary,
+/// the old COW pages need to become writable again so the new ELF can be
+/// loaded without PageAlreadyMapped conflicts from read-only COW pages.
+///
+/// Safe because the fork child has its own PT — restoring writability in
+/// boot PML4 doesn't affect the child's view.
+pub fn restore_cow_to_writable_chirho(pml4_phys_chirho: PhysAddr) -> u64 {
+    let pml4_chirho = unsafe { table_from_phys_chirho(pml4_phys_chirho) };
+    let mut restored_chirho: u64 = 0;
+
+    for pml4_idx_chirho in 0..KERNEL_PML4_START_CHIRHO {
+        if pml4_chirho[pml4_idx_chirho].is_unused() { continue; }
+        let pdpt_flags_chirho = pml4_chirho[pml4_idx_chirho].flags();
+        if !pdpt_flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+
+        let pdpt_chirho = unsafe { table_from_phys_chirho(pml4_chirho[pml4_idx_chirho].addr()) };
+        for pdpt_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+            if pdpt_chirho[pdpt_idx_chirho].is_unused() { continue; }
+            if pdpt_chirho[pdpt_idx_chirho].flags().contains(PageTableFlags::HUGE_PAGE) { continue; }
+            if !pdpt_chirho[pdpt_idx_chirho].flags().contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+
+            let pd_chirho = unsafe { table_from_phys_chirho(pdpt_chirho[pdpt_idx_chirho].addr()) };
+            for pd_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+                if pd_chirho[pd_idx_chirho].is_unused() { continue; }
+                if pd_chirho[pd_idx_chirho].flags().contains(PageTableFlags::HUGE_PAGE) { continue; }
+                if !pd_chirho[pd_idx_chirho].flags().contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+
+                let pt_chirho = unsafe { table_from_phys_chirho(pd_chirho[pd_idx_chirho].addr()) };
+                for pt_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+                    if pt_chirho[pt_idx_chirho].is_unused() { continue; }
+                    let page_flags_chirho = pt_chirho[pt_idx_chirho].flags();
+                    // Only restore pages that have the COW bit set
+                    if page_flags_chirho.bits() & COW_BIT_CHIRHO == 0 { continue; }
+
+                    let page_addr_chirho = pt_chirho[pt_idx_chirho].addr();
+                    let restored_flags_chirho = (page_flags_chirho | PageTableFlags::WRITABLE)
+                        & !PageTableFlags::from_bits_truncate(COW_BIT_CHIRHO);
+                    pt_chirho[pt_idx_chirho].set_addr(page_addr_chirho, restored_flags_chirho);
+                    restored_chirho += 1;
+                }
+            }
+        }
+    }
+
+    // Flush TLB
+    unsafe {
+        let (frame_chirho, flags_chirho) = x86_64::registers::control::Cr3::read();
+        x86_64::registers::control::Cr3::write(frame_chirho, flags_chirho);
+    }
+
+    restored_chirho
 }
 
 /// Walk a 4-level page table to find the PTE (level 1 entry) for a given
