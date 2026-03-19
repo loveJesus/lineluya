@@ -1576,12 +1576,24 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         ),
         SYS_WRITEV_CHIRHO => {
             // SSH redirect: daemon writev to fd=1/2 → fd=0 (TCP socket)
+            let is_shell_chirho = is_interactive_shell_chirho();
+            let fd0_is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(0);
             let writev_fd_chirho = if (arg0_chirho == 1 || arg0_chirho == 2)
-                && !is_interactive_shell_chirho()
-                && crate::net_chirho::is_socket_fd_chirho(0)
+                && !is_shell_chirho
+                && fd0_is_sock_chirho
             {
+                crate::serial_println_chirho!(
+                    "[SSH-REDIR] writev fd={} -> fd=0 (shell={} sock0={})",
+                    arg0_chirho, is_shell_chirho, fd0_is_sock_chirho
+                );
                 0u64
             } else {
+                if arg0_chirho == 1 && !is_shell_chirho {
+                    crate::serial_println_chirho!(
+                        "[SSH-REDIR] writev fd=1 NOT redirected: shell={} sock0={}",
+                        is_shell_chirho, fd0_is_sock_chirho
+                    );
+                }
                 arg0_chirho
             };
             sys_writev_chirho(

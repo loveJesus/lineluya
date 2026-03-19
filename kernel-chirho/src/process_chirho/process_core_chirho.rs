@@ -73,6 +73,24 @@ fn try_read_file_from_fd_chirho(fd_chirho: u64) -> Option<Vec<u8>> {
 
 fn resolve_exec_source_chirho(filename_chirho: &str) -> (String, Option<Vec<u8>>) {
     if let Some(fd_chirho) = parse_proc_fd_exec_path_chirho(filename_chirho) {
+        // When resolving /proc/self/fd/N for fexecve (dropbear re-exec),
+        // also set up stdin/stdout/stderr to the TCP socket. Dropbear
+        // expects fexecve to fail so it can dup2 afterward — but since
+        // our procfd resolution makes it succeed, the dup2 is skipped.
+        // Scan fds 3-15 to find the TCP accept socket and dup2 to 0/1/2.
+        for scan_fd_chirho in 3u64..16 {
+            if crate::net_chirho::is_socket_fd_chirho(scan_fd_chirho) {
+                crate::serial_println_chirho!(
+                    "[PROCESS] procfd exec: found TCP socket at fd={}, dup2 to 0/1/2",
+                    scan_fd_chirho
+                );
+                crate::fs_chirho::sys_dup2_chirho(scan_fd_chirho, 0);
+                crate::fs_chirho::sys_dup2_chirho(scan_fd_chirho, 1);
+                crate::fs_chirho::sys_dup2_chirho(scan_fd_chirho, 2);
+                break;
+            }
+        }
+
         if let Some(fd_path_chirho) = crate::fs_chirho::get_fd_path_chirho(fd_chirho) {
             crate::serial_debug_chirho!(
                 "[PROCESS] execve: resolved {} -> {} via fd table",
