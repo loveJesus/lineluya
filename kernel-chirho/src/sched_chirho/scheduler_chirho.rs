@@ -45,7 +45,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// which is a reasonable starting point for interactive responsiveness vs.
 /// throughput.  Linux's CFS/EEVDF uses a more dynamic scheme, but round-robin
 /// with a fixed quantum is fine for the initial bring-up.
-pub const DEFAULT_TIME_SLICE_CHIRHO: u64 = 10;
+/// Time slice in timer ticks. Each tick ≈ 10ms, so 100 ticks = ~1 second.
+/// Increased from 10 to give PID 4 (SSH shell) enough time to complete
+/// musl interpreter relocation (CPU-bound, ~100ms) before preemption.
+pub const DEFAULT_TIME_SLICE_CHIRHO: u64 = 100;
 
 /// Maximum number of tasks the scheduler supports concurrently.
 ///
@@ -368,9 +371,11 @@ pub fn schedule_chirho() {
             }
         }
 
-        // Debug: log scheduler decisions when PID 3+ is involved
-        if queue_len_chirho > 1 || (next_pid_chirho.is_some() && next_pid_chirho != old_pid_chirho) {
-            crate::serial_debug_chirho!(
+        // Log ALL scheduler decisions for PIDs 3+
+        let any_high_pid_chirho = old_pid_chirho.map_or(false, |p| p >= 3)
+            || next_pid_chirho.map_or(false, |p| p >= 3);
+        if any_high_pid_chirho || (next_pid_chirho.is_some() && next_pid_chirho != old_pid_chirho) {
+            crate::serial_println_chirho!(
                 "[SCHED] queue_len={} old={:?} next={:?}",
                 queue_len_chirho, old_pid_chirho, next_pid_chirho
             );
@@ -723,6 +728,19 @@ pub fn unblock_task_chirho(pid_chirho: u64) {
 ///
 /// If there are no other runnable tasks the same task will be immediately
 /// rescheduled (with a fresh time slice).
+/// Non-blocking schedule attempt. Used from the timer interrupt handler
+/// to preempt userspace tasks. Skips scheduling if the scheduler lock
+/// is already held (avoids deadlock with syscall-level yields).
+pub fn try_schedule_chirho() {
+    // Only attempt if the scheduler lock is available.
+    if SCHEDULER_CHIRHO.try_lock().is_some() {
+        // Lock was free — drop the trial lock and do a real schedule.
+        // (We can't use the trial lock guard for scheduling because
+        // schedule_chirho needs to drop it before the context switch.)
+        schedule_chirho();
+    }
+}
+
 pub fn yield_current_chirho() {
     // Forcibly set the reschedule flag and invoke the scheduler.
     x86_64::instructions::interrupts::without_interrupts(|| {

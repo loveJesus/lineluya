@@ -689,8 +689,21 @@ pub fn sys_wait4_chirho(
         _ => {} // no zombie yet — fall through
     }
 
-    // WNOHANG: return 0 immediately if no zombie found.
+    // WNOHANG: yield to give child tasks CPU time, then return 0.
+    // Without this yield, the parent monopolizes the CPU and the child
+    // (e.g., PID 4 SSH shell) never gets scheduled after execve.
     if (options_chirho & WNOHANG_CHIRHO) != 0 {
+        crate::scheduler_chirho::yield_current_chirho();
+        // Re-check for zombie after yield — child might have exited
+        if let Ok((reaped_pid_chirho, exit_code_chirho)) =
+            find_zombie_chirho(parent_pid_chirho, pid_chirho)
+        {
+            return reap_child_chirho(
+                reaped_pid_chirho,
+                exit_code_chirho,
+                wstatus_chirho,
+            );
+        }
         return 0;
     }
 
@@ -698,6 +711,10 @@ pub fn sys_wait4_chirho(
     // on each wake. With static context slots and stale-PT fix, context
     // switching back to the parent works correctly now.
     for _attempt_chirho in 0..10000u32 {
+        // HLT to wait for next timer interrupt before yielding.
+        // Without this, the yield loop floods the scheduler with switches,
+        // starving the SSH handshake task of CPU time.
+        unsafe { core::arch::asm!("sti; hlt; cli", options(nomem, nostack)); }
         crate::scheduler_chirho::yield_current_chirho();
 
         // Re-check for zombie children after being scheduled back.
