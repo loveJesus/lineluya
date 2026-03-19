@@ -695,12 +695,31 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     let interrupted_cs_chirho = _stack_frame_chirho.code_segment.0;
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
-    // Timer preemption DISABLED: calling schedule_chirho() from the timer
-    // interrupt handler corrupts PID 4's context (RSP=0, RIP in kernel space)
-    // because the interrupt frame and CpuContext are separate save mechanisms.
-    // Scheduling is cooperative: select/wait4 HLT loops yield via
-    // schedule_chirho() which properly saves/restores CpuContext.
-    // See Codex commit d645ba6 for the select yield fix.
+    if was_user_mode_chirho && crate::scheduler_chirho::need_resched_chirho() {
+        // Deferred preemption via interrupt frame modification:
+        // Instead of calling schedule_chirho() (which corrupts CpuContext),
+        // modify the interrupt frame so IRETQ returns to a SYSCALL gadget
+        // in the user's own code. The SYSCALL triggers sched_yield in the
+        // kernel via the normal syscall path, which properly saves/restores
+        // CpuContext.
+        //
+        // Find a SYSCALL instruction (0F 05) in the user's code. Every
+        // musl binary has many. We use the address the task was interrupted
+        // at minus some offset to find a nearby SYSCALL gadget.
+        // For simplicity, save the interrupted RIP in the task struct and
+        // redirect RIP to our sched_yield syscall handler. The user's
+        // registers (RCX, R11, RAX) are modified by SYSCALL so we save
+        // them in the interrupt frame.
+        //
+        // Actually, the simplest approach: just use the syscall entry stub
+        // address directly. Map a user-accessible trampoline page during
+        // init with: mov eax, 24; syscall; (then restored RIP)
+        //
+        // For now: leave need_resched set. The NEXT syscall from the task
+        // will trigger schedule on return. Tasks stuck in CPU loops without
+        // syscalls will not be preempted until proper interrupt-safe
+        // context switching is implemented.
+    }
 }
 
 /// Write LAPIC End-Of-Interrupt register via typed enum (A2-AUDIT-010).
