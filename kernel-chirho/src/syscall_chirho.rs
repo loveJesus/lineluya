@@ -1459,45 +1459,19 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             }
         },
         SYS_WRITE_CHIRHO => {
-            if arg0_chirho == 1 || arg0_chirho == 2 {
-                // Check if stdout/stderr has been redirected (via dup2).
-                // Compare the file ops pointer against the boot console ops.
-                // If different, the fd was redirected to a file.
-                // A2-PROC-003: Use lookup_fd_chirho (per-process first).
-                let redirected_chirho = {
-                    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(arg0_chirho) {
-                        let file_chirho = file_arc_chirho.lock();
-                        let ops_ptr_chirho = file_chirho.ops_chirho
-                            as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
-                        let console_ptr_chirho = &crate::devtmpfs_chirho::DEV_CONSOLE_OPS_CHIRHO
-                            as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
-                        ops_ptr_chirho != console_ptr_chirho
-                    } else {
-                        false
-                    }
-                };
-                if redirected_chirho {
+            if fd_uses_console_stdio_chirho(arg0_chirho) {
+                sys_write_chirho(arg0_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
+            } else {
+                if arg0_chirho == 1 || arg0_chirho == 2 {
                     crate::serial_debug_chirho!(
-                        "[WRITE] fd={} REDIRECTED (pid={}, {} bytes)",
+                        "[WRITE] fd={} redirected away from console (pid={}, {} bytes)",
                         arg0_chirho,
                         crate::task_chirho::current_task_chirho()
                             .map(|t| t.lock().pid_chirho).unwrap_or(999),
                         arg2_chirho
-                    );
-                    crate::fs_chirho::sys_write_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
-                } else {
-                    sys_write_chirho(arg0_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
-                }
-            } else {
-                // Check if it's a socket fd — if so, route to sendto
-                if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
-                    crate::net_chirho::sys_sendto_chirho(
-                        arg0_chirho, arg1_chirho, arg2_chirho, 0, 0, 0,
                     )
-                } else {
-                    // Regular file fd → VFS path
-                    crate::fs_chirho::sys_write_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
                 }
+                sys_write_fd_dispatch_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
             }
         },
         SYS_OPEN_CHIRHO => crate::fs_chirho::sys_open_chirho(
@@ -2301,6 +2275,43 @@ fn sys_write_chirho(
     }
 }
 
+fn fd_uses_console_stdio_chirho(fd_chirho: u64) -> bool {
+    if fd_chirho != 1 && fd_chirho != 2 {
+        return false;
+    }
+
+    let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) else {
+        return true;
+    };
+
+    let file_guard_chirho = file_arc_chirho.lock();
+    let ops_ptr_chirho =
+        file_guard_chirho.ops_chirho as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
+    let console_ptr_chirho =
+        &crate::devtmpfs_chirho::DEV_CONSOLE_OPS_CHIRHO
+            as *const dyn crate::vfs_chirho::FileOpsChirho as *const u8;
+    ops_ptr_chirho == console_ptr_chirho
+}
+
+fn sys_write_fd_dispatch_chirho(
+    fd_chirho: u64,
+    buf_addr_chirho: u64,
+    count_chirho: usize,
+) -> i64 {
+    if crate::net_chirho::is_socket_fd_chirho(fd_chirho) {
+        crate::net_chirho::sys_sendto_chirho(
+            fd_chirho,
+            buf_addr_chirho,
+            count_chirho as u64,
+            0,
+            0,
+            0,
+        )
+    } else {
+        crate::fs_chirho::sys_write_real_chirho(fd_chirho, buf_addr_chirho, count_chirho)
+    }
+}
+
 /// `writev(2)` implementation.
 ///
 /// Writes scatter/gather buffers to the serial console for stdout/stderr.
@@ -2341,17 +2352,14 @@ fn sys_writev_chirho(
         if iov_base_chirho == 0 || iov_len_chirho == 0 {
             continue;
         }
-        // Route through direct serial for stdout/stderr, VFS for others
-        let result_chirho = if fd_chirho == 1 || fd_chirho == 2 {
+        let result_chirho = if fd_uses_console_stdio_chirho(fd_chirho) {
             sys_write_chirho(
                 fd_chirho,
                 iov_base_chirho as *const u8,
                 iov_len_chirho,
             )
-        } else if crate::net_chirho::is_socket_fd_chirho(fd_chirho) {
-            crate::net_chirho::sys_sendto_chirho(fd_chirho, iov_base_chirho, iov_len_chirho as u64, 0, 0, 0)
         } else {
-            crate::fs_chirho::sys_write_real_chirho(fd_chirho, iov_base_chirho, iov_len_chirho)
+            sys_write_fd_dispatch_chirho(fd_chirho, iov_base_chirho, iov_len_chirho)
         };
         if result_chirho < 0 {
             if total_written_chirho > 0 {
