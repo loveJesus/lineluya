@@ -2518,6 +2518,18 @@ pub fn sys_connect_chirho(
 ) -> i64 {
     crate::serial_debug_chirho!("[NET] sys_connect(fd={})", sockfd_chirho);
 
+    // Check address family: AF_UNIX (1) connections are not supported.
+    // Return ENOENT so musl's __nscd_query falls back to /etc/group
+    // (instead of returning -1 from getgrouplist → initgroups fails).
+    if addr_chirho != 0 && addrlen_chirho >= 2 {
+        let mut family_buf_chirho = [0u8; 2];
+        let _ = crate::uaccess_chirho::copy_from_user_chirho(&mut family_buf_chirho, addr_chirho, 2);
+        let family_chirho = u16::from_ne_bytes(family_buf_chirho);
+        if family_chirho == 1 {
+            return -2; // ENOENT — path doesn't exist
+        }
+    }
+
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
         Err(e_chirho) => return e_chirho,

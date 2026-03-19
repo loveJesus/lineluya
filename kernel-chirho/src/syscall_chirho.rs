@@ -2223,6 +2223,21 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Store the return value so the caller (assembly stub) can put it in rax.
     frame_chirho.rax_chirho = result_chirho as u64;
 
+    // Debug: trace credential syscall results for PID 4+
+    if syscall_nr_chirho == SYS_SETGID_CHIRHO || syscall_nr_chirho == SYS_SETUID_CHIRHO
+        || syscall_nr_chirho == SYS_SETGROUPS_CHIRHO
+    {
+        let dbg_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if dbg_pid_chirho >= 4 {
+            crate::serial_println_chirho!(
+                "[CRED] pid={} nr={} arg0={} result={} frame.rax={}",
+                dbg_pid_chirho, syscall_nr_chirho, arg0_chirho,
+                result_chirho, frame_chirho.rax_chirho,
+            );
+        }
+    }
+
     let is_blocking_chirho = matches!(
         syscall_nr_chirho,
         SYS_SELECT_CHIRHO | SYS_POLL_CHIRHO | SYS_PPOLL_CHIRHO
