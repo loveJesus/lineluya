@@ -722,6 +722,43 @@ unsafe extern "C" fn fork_child_return_chirho() {
         // final user RIP/RSP/RFLAGS atomically.
         "cli",
 
+        // Timing experiment for the intermittent post-fork hang: burn a tiny
+        // delay window before touching the copied syscall frame so Claude can
+        // test whether the failure is sensitive to the first few cycles after
+        // the context switch lands here on KVM.
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+        "rep nop",
+
         // RSP points to the SyscallFrameChirho on the child's kernel stack.
         // Layout (offsets from RSP):
         //   0x00: rax (= 0, fork return value)
