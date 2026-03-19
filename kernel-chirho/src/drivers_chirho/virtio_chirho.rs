@@ -42,6 +42,11 @@ const VIRTIO_NET_DEVICE_ID_CHIRHO: u16 = 0x1000;
 /// VirtIO-net modern (non-transitional) PCI device ID.
 const VIRTIO_NET_MODERN_DEVICE_ID_CHIRHO: u16 = 0x1041;
 
+/// Temporary debug kill-switch for isolating VirtIO-net bring-up from mere
+/// device presence. Leave `false` by default; use kernel cmdline for normal
+/// toggling and only flip this locally when bootloader args are inconvenient.
+const FORCE_DISABLE_VIRTIO_NET_PROBE_CHIRHO: bool = false;
+
 /// PCI Subsystem ID for block devices in transitional mode.
 #[allow(dead_code)]
 const VIRTIO_BLK_SUBSYS_ID_CHIRHO: u16 = 0x0002;
@@ -1555,6 +1560,30 @@ pub fn is_virtio_net_chirho(device_chirho: &PciDeviceChirho) -> bool {
             || device_chirho.device_id_chirho == VIRTIO_NET_MODERN_DEVICE_ID_CHIRHO)
 }
 
+fn should_skip_virtio_net_probe_chirho() -> bool {
+    if FORCE_DISABLE_VIRTIO_NET_PROBE_CHIRHO {
+        return true;
+    }
+
+    if crate::cmdline_chirho::has_flag_chirho("novnet")
+        || crate::cmdline_chirho::has_flag_chirho("novnet_chirho")
+        || crate::cmdline_chirho::has_flag_chirho("no_virtio_net_chirho")
+    {
+        return true;
+    }
+
+    if let Some(mode_chirho) = crate::cmdline_chirho::get_param_chirho("virtio_net")
+        .or_else(|| crate::cmdline_chirho::get_param_chirho("virtio_net_chirho"))
+    {
+        matches!(
+            mode_chirho.as_str(),
+            "0" | "off" | "disable" | "disabled" | "skip" | "skip_probe"
+        )
+    } else {
+        false
+    }
+}
+
 /// Read a PCI BAR (Base Address Register) for a device.
 ///
 /// `bar_index_chirho` is 0–5.  Returns the raw BAR value (address + type bits).
@@ -1599,6 +1628,12 @@ static VIRTIO_IO_BASES_CHIRHO: spin::Mutex<alloc::vec::Vec<u16>> =
 /// (P2-001 / P2-002).
 pub fn init_virtio_chirho() {
     crate::serial_debug_chirho!("VirtIO: scanning PCI bus for VirtIO devices...");
+    let skip_virtio_net_probe_chirho = should_skip_virtio_net_probe_chirho();
+    if skip_virtio_net_probe_chirho {
+        crate::serial_println_chirho!(
+            "[VNET] VirtIO-net probe disabled by config; device may exist but no driver will attach"
+        );
+    }
 
     let devices_chirho = scan_pci_virtio_chirho();
 
@@ -1620,6 +1655,12 @@ pub fn init_virtio_chirho() {
             }
             // P3-001: Detect VirtIO-net devices
             if is_virtio_net_chirho(dev_chirho) {
+                if skip_virtio_net_probe_chirho {
+                    crate::serial_debug_chirho!(
+                        "    -> VirtIO-net device detected but probe is disabled"
+                    );
+                    continue;
+                }
                 crate::serial_debug_chirho!(
                     "    -> VirtIO-net device detected (PCI {:02x}:{:02x}.{}, device_id={:#06x})",
                     dev_chirho.bus_chirho,
