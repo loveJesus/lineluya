@@ -1468,8 +1468,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             // TCP socket but our kernel doesn't dup2 them automatically.
             let write_fd_chirho = if (arg0_chirho == 1 || arg0_chirho == 2)
                 && !is_interactive_shell_chirho()
-                && crate::net_chirho::has_tcp_data_for_port_chirho(2222)
+                && (
+                    crate::net_chirho::has_tcp_data_for_port_chirho(2222)
                     || crate::net_chirho::has_established_tcp_chirho(2222)
+                )
             {
                 // Send directly via TCP, bypass fd table
                 let data_count_chirho = core::cmp::min(arg2_chirho as usize, 65536);

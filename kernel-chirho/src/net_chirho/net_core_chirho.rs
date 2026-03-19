@@ -2186,6 +2186,22 @@ pub fn has_established_tcp_chirho(port_chirho: u16) -> bool {
     false
 }
 
+fn preview_payload_ascii_chirho(data_chirho: &[u8]) -> alloc::string::String {
+    use alloc::string::String;
+
+    let preview_len_chirho = core::cmp::min(data_chirho.len(), 48);
+    let mut preview_chirho = String::with_capacity(preview_len_chirho);
+    for &byte_chirho in data_chirho.iter().take(preview_len_chirho) {
+        let ch_chirho = if (0x20..=0x7e).contains(&byte_chirho) {
+            byte_chirho as char
+        } else {
+            '.'
+        };
+        preview_chirho.push(ch_chirho);
+    }
+    preview_chirho
+}
+
 /// Check if a socket fd has pending data or connections.
 /// For listening sockets, checks if there's a pending TCP connection.
 /// For connected sockets, checks if there's received data.
@@ -4606,6 +4622,7 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
                     let mut sc_chirho = seg_chirho;
                     sc_chirho.checksum_chirho = ck_chirho;
                     let tb_chirho = sc_chirho.build_chirho();
+                    let preview_chirho = preview_payload_ascii_chirho(chunk_chirho);
                     let ih_chirho = Ipv4HeaderChirho {
                         version_chirho: 4, ihl_chirho: 5, tos_chirho: 0,
                         total_length_chirho: 20 + tb_chirho.len() as u16,
@@ -4617,7 +4634,7 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
                     p_chirho.extend_from_slice(&tb_chirho);
                     drop(t2_chirho);
                     crate::serial_println_chirho!(
-                        "[NET] SSH-RELAY(pipe): {} bytes {}:{} -> {}:{} state={:?} snd_una={} snd_nxt(before={}, after={}) rcv_nxt={} seg_seq={} seg_ack={} client_should_ack={}",
+                        "[NET] SSH-RELAY(pipe): {} bytes {}:{} -> {}:{} state={:?} snd_una={} snd_nxt(before={}, after={}) rcv_nxt={} seg_seq={} seg_ack={} client_should_ack={} tcp_cksum={:#06x} preview='{}'",
                         chunk_chirho.len(),
                         format_ip_chirho(sip_chirho),
                         2222,
@@ -4631,6 +4648,8 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
                         sc_chirho.seq_num_chirho,
                         sc_chirho.ack_num_chirho,
                         client_should_ack_chirho,
+                        ck_chirho,
+                        preview_chirho,
                     );
                     let _ = send_ip_packet_chirho(&p_chirho);
                 } else {
