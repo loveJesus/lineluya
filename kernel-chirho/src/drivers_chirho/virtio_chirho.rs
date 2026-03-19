@@ -1622,6 +1622,17 @@ pub fn ack_virtio_interrupt_chirho() {
 static VIRTIO_IO_BASES_CHIRHO: spin::Mutex<alloc::vec::Vec<u16>> =
     spin::Mutex::new(alloc::vec::Vec::new());
 
+fn register_virtio_io_base_chirho(io_base_chirho: u16) {
+    let mut bases_chirho = VIRTIO_IO_BASES_CHIRHO.lock();
+    if !bases_chirho.contains(&io_base_chirho) {
+        bases_chirho.push(io_base_chirho);
+        crate::serial_debug_chirho!(
+            "    VirtIO: registered shared IRQ ISR base {:#06x}",
+            io_base_chirho
+        );
+    }
+}
+
 /// Initialize VirtIO subsystem: scan PCI bus, log findings, and attempt to
 /// probe any VirtIO-blk devices found.  If a block device is successfully
 /// initialised, read sector 0 and log the first 16 bytes as a smoke test
@@ -1679,8 +1690,19 @@ pub fn init_virtio_chirho() {
                         bar0_chirho,
                         io_base_chirho
                     );
+                    // Even if the net driver is disabled, keep enough PCI/I/O
+                    // state alive that the shared IRQ handler can read ISR and
+                    // dismiss a level-triggered interrupt source from mere
+                    // device presence on the bus.
+                    enable_io_space_only_chirho(dev_chirho);
+                    register_virtio_io_base_chirho(io_base_chirho);
+                    if skip_virtio_net_probe_chirho {
+                        crate::serial_debug_chirho!(
+                            "    VirtIO-net probe skipped after IRQ-ack registration"
+                        );
+                        continue;
+                    }
                     enable_io_and_busmaster_chirho(dev_chirho);
-                    VIRTIO_IO_BASES_CHIRHO.lock().push(io_base_chirho);
                     crate::net_chirho::probe_virtio_net_io_chirho(io_base_chirho);
                 } else {
                     // MMIO transport — log but skip (crashes in UEFI)
@@ -1730,7 +1752,7 @@ fn probe_and_test_blk_chirho(pci_dev_chirho: &PciDeviceChirho) {
 
         // Enable I/O space access + bus mastering in PCI command register.
         enable_io_and_busmaster_chirho(pci_dev_chirho);
-        VIRTIO_IO_BASES_CHIRHO.lock().push(io_base_chirho);
+        register_virtio_io_base_chirho(io_base_chirho);
 
         match VirtioBlkDeviceChirho::probe_io_chirho(io_base_chirho) {
             Some(blk_dev_chirho) => {
@@ -1881,6 +1903,39 @@ pub fn enable_io_and_busmaster_chirho(dev_chirho: &PciDeviceChirho) {
 
     crate::serial_debug_chirho!(
         "    PCI: enabled I/O space + bus master for {:02x}:{:02x}.{}",
+        dev_chirho.bus_chirho,
+        dev_chirho.device_chirho,
+        dev_chirho.function_chirho
+    );
+}
+
+/// Enable just PCI I/O-space decoding without turning on bus mastering.
+///
+/// This is enough for shared-IRQ ISR register reads when a VirtIO device is
+/// present on the bus but we intentionally skip full driver probe.
+pub fn enable_io_space_only_chirho(dev_chirho: &PciDeviceChirho) {
+    unsafe {
+        let cmd_status_chirho = pci_config_read_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            0x04,
+        );
+        let cmd_chirho = (cmd_status_chirho & 0xFFFF) as u16;
+        let status_chirho = ((cmd_status_chirho >> 16) & 0xFFFF) as u16;
+        let new_cmd_chirho = cmd_chirho | PCI_CMD_IO_SPACE_CHIRHO;
+        let new_dword_chirho = (new_cmd_chirho as u32) | ((status_chirho as u32) << 16);
+        pci_config_write_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            0x04,
+            new_dword_chirho,
+        );
+    }
+
+    crate::serial_debug_chirho!(
+        "    PCI: enabled I/O space only for {:02x}:{:02x}.{}",
         dev_chirho.bus_chirho,
         dev_chirho.device_chirho,
         dev_chirho.function_chirho
