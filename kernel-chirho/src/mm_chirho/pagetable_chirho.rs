@@ -8,7 +8,7 @@
 //!   bootloader so we can translate physical addresses to virtual ones.
 //! - [`create_user_page_table_chirho`] — allocate a fresh PML4, copy kernel
 //!   mappings (upper half), return the root physical address.
-//! - [`clone_page_table_chirho`] — deep-copy a user page table, marking
+//! - [`clone_page_table_chirho`] — clone a user page table, marking
 //!   writable user pages as read-only + COW for copy-on-write.
 //! - [`switch_page_table_chirho`] — write a new PML4 physical address to CR3.
 //! - [`handle_cow_fault_chirho`] — COW page fault handler: allocate a new
@@ -331,10 +331,10 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
 }
 
 // ============================================================================
-// clone_page_table_chirho — deep-copy for fork with COW
+// clone_page_table_chirho — clone for fork with COW
 // ============================================================================
 
-/// Deep-copy a user-space page table for fork, setting up COW.
+/// Clone a user-space page table for fork, setting up COW.
 ///
 /// Walks the source PML4's user-space entries (0..255), recursively copies
 /// the page table tree, and for leaf (4 KiB) pages that are writable:
@@ -366,6 +366,12 @@ pub fn clone_page_table_chirho(source_pml4_phys_chirho: PhysAddr) -> Option<Phys
         )?;
 
         new_pml4_chirho[i_chirho].set_addr(cloned_frame_chirho, entry_chirho.flags());
+    }
+
+    if get_current_pml4_phys_chirho() == source_pml4_phys_chirho {
+        unsafe {
+            switch_page_table_chirho(source_pml4_phys_chirho);
+        }
     }
 
     crate::serial_debug_chirho!(
@@ -423,36 +429,21 @@ fn clone_table_level_chirho(
 
         if level_chirho == 1 {
             // Leaf level (PT entries) — these point to actual 4 KiB frames.
-            //
-            // Full copy: allocate a new frame and copy the page contents.
-            // This avoids the need for COW fault resolution in the page fault
-            // handler. COW is more efficient but requires page fault handling
-            // that we haven't implemented yet.
             let is_user_chirho = flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE);
+            let is_writable_chirho = flags_chirho.contains(PageTableFlags::WRITABLE);
+            let is_cow_chirho = flags_chirho.contains(PageTableFlags::BIT_9);
 
-            if is_user_chirho {
-                // Allocate a fresh frame and copy the page data.
-                let copy_frame_chirho = {
-                    let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
-                    alloc_lock_chirho.as_mut().and_then(|a_chirho| a_chirho.allocate_frame())
-                };
-                if let Some(frame_chirho) = copy_frame_chirho {
-                    let phys_offset_chirho = phys_mem_offset_chirho();
-                    let src_chirho = (phys_offset_chirho + entry_addr_chirho.as_u64()) as *const u8;
-                    let dst_chirho = (phys_offset_chirho + frame_chirho.start_address().as_u64()) as *mut u8;
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(src_chirho, dst_chirho, 4096);
-                    }
-                    new_table_chirho[i_chirho].set_addr(
-                        frame_chirho.start_address(),
-                        flags_chirho, // Keep original flags (including WRITABLE)
-                    );
-                } else {
-                    // OOM — share the page read-only as fallback.
-                    new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
-                }
+            if is_user_chirho && (is_writable_chirho || is_cow_chirho) {
+                // COW: share the same physical frame. Both boot PML4 and
+                // child PT point to the same page, marked read-only + COW.
+                // When either process writes, handle_cow_fault_chirho copies.
+                let mut cow_flags_chirho = flags_chirho;
+                cow_flags_chirho.remove(PageTableFlags::WRITABLE);
+                cow_flags_chirho.insert(PageTableFlags::BIT_9);
+                source_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
+                new_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
             } else {
-                // Kernel or non-user page — share directly (read-only is fine).
+                // Kernel or non-user page — share directly.
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
             }
         } else {
@@ -567,8 +558,9 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
     }
 
     // Update the PTE: point to new frame, set WRITABLE, clear COW bit.
-    let new_flags_chirho = (flags_chirho | PageTableFlags::WRITABLE)
-        & !PageTableFlags::from_bits_truncate(COW_BIT_CHIRHO);
+    let mut new_flags_chirho = flags_chirho;
+    new_flags_chirho.insert(PageTableFlags::WRITABLE);
+    new_flags_chirho.remove(PageTableFlags::BIT_9);
 
     unsafe {
         (*pte_ptr_chirho).set_addr(new_frame_phys_chirho, new_flags_chirho);
@@ -585,6 +577,64 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
     );
 
     true
+}
+
+/// Mark all writable user pages in a page table as COW (read-only + COW bit).
+///
+/// Called at fork time on the boot PML4 so that when the parent (which
+/// continues on boot PML4) writes to any shared page, the COW fault handler
+/// allocates a new frame and copies the data. The fork child gets its own
+/// PT via `clone_page_table_chirho` with separate page-table frames.
+///
+/// Returns the number of pages marked as COW.
+pub fn mark_user_pages_cow_chirho(pml4_phys_chirho: PhysAddr) -> u64 {
+    let pml4_chirho = unsafe { table_from_phys_chirho(pml4_phys_chirho) };
+    let mut marked_chirho: u64 = 0;
+
+    for pml4_idx_chirho in 0..KERNEL_PML4_START_CHIRHO {
+        if pml4_chirho[pml4_idx_chirho].is_unused() { continue; }
+        let pdpt_flags_chirho = pml4_chirho[pml4_idx_chirho].flags();
+        if !pdpt_flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+
+        let pdpt_chirho = unsafe { table_from_phys_chirho(pml4_chirho[pml4_idx_chirho].addr()) };
+        for pdpt_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+            if pdpt_chirho[pdpt_idx_chirho].is_unused() { continue; }
+            let pd_flags_chirho = pdpt_chirho[pdpt_idx_chirho].flags();
+            if !pd_flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+            if pd_flags_chirho.contains(PageTableFlags::HUGE_PAGE) { continue; }
+
+            let pd_chirho = unsafe { table_from_phys_chirho(pdpt_chirho[pdpt_idx_chirho].addr()) };
+            for pd_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+                if pd_chirho[pd_idx_chirho].is_unused() { continue; }
+                let pt_flags_chirho = pd_chirho[pd_idx_chirho].flags();
+                if !pt_flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+                if pt_flags_chirho.contains(PageTableFlags::HUGE_PAGE) { continue; }
+
+                let pt_chirho = unsafe { table_from_phys_chirho(pd_chirho[pd_idx_chirho].addr()) };
+                for pt_idx_chirho in 0..ENTRIES_PER_TABLE_CHIRHO {
+                    if pt_chirho[pt_idx_chirho].is_unused() { continue; }
+                    let page_flags_chirho = pt_chirho[pt_idx_chirho].flags();
+                    if !page_flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
+                    if !page_flags_chirho.contains(PageTableFlags::WRITABLE) { continue; }
+
+                    // Mark as COW: remove WRITABLE, add COW bit
+                    let cow_flags_chirho = (page_flags_chirho & !PageTableFlags::WRITABLE)
+                        | PageTableFlags::from_bits_truncate(COW_BIT_CHIRHO);
+                    let page_addr_chirho = pt_chirho[pt_idx_chirho].addr();
+                    pt_chirho[pt_idx_chirho].set_addr(page_addr_chirho, cow_flags_chirho);
+                    marked_chirho += 1;
+                }
+            }
+        }
+    }
+
+    // Flush TLB since we changed page permissions
+    unsafe { x86_64::registers::control::Cr3::write(
+        x86_64::registers::control::Cr3::read().0,
+        x86_64::registers::control::Cr3::read().1,
+    ); }
+
+    marked_chirho
 }
 
 /// Walk a 4-level page table to find the PTE (level 1 entry) for a given

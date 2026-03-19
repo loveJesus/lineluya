@@ -357,6 +357,16 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
     let is_write_chirho = error_code_chirho.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_present_chirho = error_code_chirho.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
 
+    // COW (Copy-on-Write) handling: write fault on present page with COW bit.
+    // This must be checked BEFORE lazy migration — both user and kernel mode.
+    if is_write_chirho && is_present_chirho {
+        if let Ok(fault_addr_chirho) = Cr2::read() {
+            if crate::pagetable_chirho::handle_cow_fault_chirho(fault_addr_chirho) {
+                return; // COW resolved — retry the write instruction
+            }
+        }
+    }
+
     // Handle kernel-mode faults on user-space addresses.
     // The kernel legitimately accesses user memory during ELF loading
     // (copy_nonoverlapping), stack setup, and data copying. Treat these

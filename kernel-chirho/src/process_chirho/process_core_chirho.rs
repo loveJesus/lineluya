@@ -244,10 +244,8 @@ fn debug_log_fork_frame_chirho(
 
 /// `fork()` / `vfork()` — create a child process.
 ///
-/// Because Lineluya does not yet have per-process page tables, this is
-/// effectively a `vfork()`: parent and child share the same address space.
-/// The child **must** call `execve()` before doing anything that modifies
-/// user memory.
+/// Fork clones the parent's address space using per-process page tables and
+/// copy-on-write sharing for writable user pages.
 ///
 /// The child's saved register context is a copy of the parent's syscall
 /// frame with `rax = 0` (so `fork()` returns 0 in the child).  When the
@@ -334,55 +332,20 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
                 crate::pagetable_chirho::clone_page_table_chirho(parent_pml4_chirho)
             }
             None => {
-                // Parent has no per-process PT (initial shell in boot PML4).
-                // Create a fresh PT for the child and copy the user stack
-                // pages so parent's post-fork stack writes don't corrupt
-                // the child's saved register state on the user stack.
-                let pt_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
-                if let Some(child_pml4_chirho) = pt_chirho {
-                    // Copy the user stack pages (8 MiB region at 0x7fffff7ff000)
-                    // from the boot PML4 to the child's PML4 using fresh frames.
-                    let stack_base_chirho: u64 = 0x7fffff7ff000;
-                    let stack_pages_chirho: u64 = 2048; // 8 MiB / 4 KiB
-                    for pg_chirho in 0..stack_pages_chirho {
-                        let vaddr_chirho = stack_base_chirho + pg_chirho * 4096;
-                        if let Some((phys_chirho, flags_chirho)) =
-                            crate::pagetable_chirho::lookup_in_boot_pt_chirho(vaddr_chirho)
-                        {
-                            // Allocate a new frame and copy the page contents
-                            let new_frame_chirho = {
-                                let mut alloc_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
-                                alloc_chirho.as_mut().and_then(|a_chirho| {
-                                    use x86_64::structures::paging::FrameAllocator;
-                                    a_chirho.allocate_frame()
-                                })
-                            };
-                            if let Some(frame_chirho) = new_frame_chirho {
-                                let src_virt_chirho = phys_chirho + crate::pagetable_chirho::phys_mem_offset_chirho();
-                                let dst_virt_chirho = frame_chirho.start_address().as_u64()
-                                    + crate::pagetable_chirho::phys_mem_offset_chirho();
-                                unsafe {
-                                    core::ptr::copy_nonoverlapping(
-                                        src_virt_chirho as *const u8,
-                                        dst_virt_chirho as *mut u8,
-                                        4096,
-                                    );
-                                }
-                                let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
-                                    child_pml4_chirho,
-                                    vaddr_chirho,
-                                    frame_chirho.start_address().as_u64(),
-                                    flags_chirho,
-                                );
-                            }
-                        }
-                    }
-                    crate::serial_debug_chirho!(
-                        "[PROCESS] fork: created child PT {:#x} with copied stack",
-                        child_pml4_chirho.as_u64(),
-                    );
-                }
-                pt_chirho
+                // Parent runs on boot PML4. Use COW to protect shared pages:
+                // 1. Mark writable user pages in boot PML4 as read-only + COW
+                // 2. Clone the boot PML4 for the child (clone_page_table_chirho
+                //    creates its own PDPT/PD/PT frames, sharing leaf physical
+                //    frames marked as COW)
+                // 3. When either parent or child writes, the page fault handler
+                //    calls handle_cow_fault_chirho to copy the page
+                let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+                let cow_count_chirho = crate::pagetable_chirho::mark_user_pages_cow_chirho(boot_pml4_chirho);
+                crate::serial_println_chirho!(
+                    "[FORK] Marked {} boot PML4 user pages as COW, cloning for child",
+                    cow_count_chirho,
+                );
+                crate::pagetable_chirho::clone_page_table_chirho(boot_pml4_chirho)
             }
         };
 
@@ -552,7 +515,11 @@ pub fn sys_clone_chirho(
                 Some(parent_pml4_chirho) => {
                     crate::pagetable_chirho::clone_page_table_chirho(parent_pml4_chirho)
                 }
-                None => None,
+                None => {
+                    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+                    let _ = crate::pagetable_chirho::mark_user_pages_cow_chirho(boot_pml4_chirho);
+                    crate::pagetable_chirho::clone_page_table_chirho(boot_pml4_chirho)
+                }
             }
         };
 
