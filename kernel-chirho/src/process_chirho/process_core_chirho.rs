@@ -198,6 +198,11 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
         // these registers, rip will be fork_child_return_chirho and rsp will
         // point to the SyscallFrameChirho we placed on the stack.
         let mut child_ctx_chirho = CpuContextChirho::zero_chirho();
+        // The very first child instructions in BusyBox after fork touch
+        // FS-relative TLS immediately. Carry the intended FS base in a
+        // scratch callee-saved register so the trampoline can explicitly
+        // re-program IA32_FS_BASE right before iretq.
+        child_ctx_chirho.rbx_chirho = parent_chirho.fs_base_chirho;
         child_ctx_chirho.rip_chirho = fork_child_return_chirho as *const () as u64;
         child_ctx_chirho.rsp_chirho = frame_dst_chirho;
         child_ctx_chirho.rflags_chirho = FORK_TRAMPOLINE_RFLAGS_CHIRHO;
@@ -401,6 +406,7 @@ pub fn sys_clone_chirho(
         }
 
         let mut child_ctx_chirho = CpuContextChirho::zero_chirho();
+        child_ctx_chirho.rbx_chirho = parent_chirho.fs_base_chirho;
         child_ctx_chirho.rip_chirho = fork_child_return_chirho as *const () as u64;
         child_ctx_chirho.rsp_chirho = frame_dst_chirho;
         child_ctx_chirho.rflags_chirho = FORK_TRAMPOLINE_RFLAGS_CHIRHO;
@@ -722,42 +728,19 @@ unsafe extern "C" fn fork_child_return_chirho() {
         // final user RIP/RSP/RFLAGS atomically.
         "cli",
 
-        // Timing experiment for the intermittent post-fork hang: burn a tiny
-        // delay window before touching the copied syscall frame so Claude can
-        // test whether the failure is sensitive to the first few cycles after
-        // the context switch lands here on KVM.
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
-        "rep nop",
+        // Explicitly re-program IA32_FS_BASE from the child context before
+        // userspace runs. BusyBox's child path after fork dereferences FS:0
+        // almost immediately, so this tests whether the scheduler's earlier
+        // FS restore is sometimes getting lost before the child hits userspace.
+        //
+        // On first entry to this trampoline, RBX carries the child's intended
+        // FS base from CpuContextChirho. We are free to clobber it here
+        // because the real user RBX is restored later from the syscall frame.
+        "mov ecx, 0xC0000100",
+        "mov eax, ebx",
+        "shr rbx, 32",
+        "mov edx, ebx",
+        "wrmsr",
 
         // RSP points to the SyscallFrameChirho on the child's kernel stack.
         // Layout (offsets from RSP):
