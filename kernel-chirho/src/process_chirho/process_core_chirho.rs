@@ -71,24 +71,54 @@ fn try_read_file_from_fd_chirho(fd_chirho: u64) -> Option<Vec<u8>> {
     crate::fs_chirho::read_file_data_at_offset_chirho(fd_chirho, 0, file_size_chirho)
 }
 
+fn find_socket_fds_in_current_task_chirho() -> Vec<u64> {
+    let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() else {
+        return Vec::new();
+    };
+
+    let task_guard_chirho = task_arc_chirho.lock();
+    let Some(fd_table_chirho) = task_guard_chirho.fd_table_chirho.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut socket_fds_chirho = Vec::new();
+    for (fd_index_chirho, slot_chirho) in fd_table_chirho.fds_chirho.iter().enumerate() {
+        let Some(file_arc_chirho) = slot_chirho.as_ref() else {
+            continue;
+        };
+        let file_guard_chirho = file_arc_chirho.lock();
+        let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+        if inode_guard_chirho.mode_chirho & 0o170000 == 0o140000 {
+            socket_fds_chirho.push(fd_index_chirho as u64);
+        }
+    }
+
+    socket_fds_chirho
+}
+
 fn resolve_exec_source_chirho(filename_chirho: &str) -> (String, Option<Vec<u8>>) {
     if let Some(fd_chirho) = parse_proc_fd_exec_path_chirho(filename_chirho) {
         // When resolving /proc/self/fd/N for fexecve (dropbear re-exec),
         // also set up stdin/stdout/stderr to the TCP socket. Dropbear
         // expects fexecve to fail so it can dup2 afterward — but since
         // our procfd resolution makes it succeed, the dup2 is skipped.
-        // Scan fds 3-15 to find the TCP accept socket and dup2 to 0/1/2.
-        for scan_fd_chirho in 3u64..16 {
-            if crate::net_chirho::is_socket_fd_chirho(scan_fd_chirho) {
-                crate::serial_println_chirho!(
-                    "[PROCESS] procfd exec: found TCP socket at fd={}, dup2 to 0/1/2",
-                    scan_fd_chirho
-                );
-                crate::fs_chirho::sys_dup2_chirho(scan_fd_chirho, 0);
-                crate::fs_chirho::sys_dup2_chirho(scan_fd_chirho, 1);
-                crate::fs_chirho::sys_dup2_chirho(scan_fd_chirho, 2);
-                break;
-            }
+        // Dropbear can reshuffle descriptors before re-exec, so scan the
+        // live fd table for socket-backed entries instead of assuming the
+        // accepted TCP socket still lives in a small hardcoded range.
+        let socket_fds_chirho = find_socket_fds_in_current_task_chirho();
+        if let Some(&socket_fd_chirho) = socket_fds_chirho.first() {
+            crate::serial_println_chirho!(
+                "[PROCESS] procfd exec: found socket fds {:?}, dup2 fd {} to 0/1/2",
+                socket_fds_chirho,
+                socket_fd_chirho
+            );
+            crate::fs_chirho::sys_dup2_chirho(socket_fd_chirho, 0);
+            crate::fs_chirho::sys_dup2_chirho(socket_fd_chirho, 1);
+            crate::fs_chirho::sys_dup2_chirho(socket_fd_chirho, 2);
+        } else {
+            crate::serial_println_chirho!(
+                "[PROCESS] procfd exec: no socket fds present in current task table"
+            );
         }
 
         if let Some(fd_path_chirho) = crate::fs_chirho::get_fd_path_chirho(fd_chirho) {
