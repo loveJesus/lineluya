@@ -285,14 +285,12 @@ fn arch_prepare_switch_chirho(old_pid_chirho: Option<u64>, next_pid_chirho: u64)
         }
     }
 
-    // Restore the task's TLS/thread-pointer state. FS is used by musl TLS.
-    // User GS is restored via SWAPGS, so while in kernel mode we program the
-    // user value into IA32_KERNEL_GS_BASE rather than clobbering the active
-    // kernel GS base.
-    unsafe {
-        Msr::new(IA32_FS_BASE_CHIRHO).write(new_fs_base_chirho);
-        Msr::new(IA32_KERNEL_GS_BASE_CHIRHO).write(new_gs_base_chirho);
-    }
+    // NOTE: FS/GS MSR writes moved to right before switch_context_chirho
+    // in schedule_chirho(). Writing user FS base here (before Rust code for
+    // TSS/CURRENT_TASK setup) caused Rust stack protector or TLS accesses
+    // to read from user memory, corrupting state ~40% of the time on KVM.
+    // The new FS base is only written immediately before the asm context
+    // switch (and also by fork_child_return for first-time tasks).
 }
 
 // ---------------------------------------------------------------------------
@@ -424,9 +422,12 @@ pub fn schedule_chirho() {
                 // switch so that the new task can acquire it if needed.
                 drop(scheduler_guard_chirho);
 
-                // Switch CR3 to the new task's page table BEFORE context switch.
-                // This is safe because kernel stacks are in the upper half
-                // (PML4[256+]) which is shared across ALL page tables.
+                // Save old task's FS/GS base and switch CR3.
+                // CRITICAL: Do NOT write the new task's FS base yet!
+                // The Rust code below (TSS setup, CURRENT_TASK update) might
+                // use FS-relative addressing (stack protector, TLS). Writing
+                // the child's user FS base here would cause kernel code to
+                // read from user memory, corrupting state ~40% of the time.
                 arch_prepare_switch_chirho(old_pid_chirho, next_chirho);
 
                 // Set kernel stack + current task for the new task.
@@ -492,6 +493,20 @@ pub fn schedule_chirho() {
                         "[SCHED] switch {:?}->{}: rip={:#x} rsp={:#x}",
                         old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
                     );
+                    // NOW write the new task's FS/GS base, right before
+                    // the asm context switch. No more Rust code runs after
+                    // this until we're in the new task's context.
+                    {
+                        use x86_64::registers::model_specific::Msr;
+                        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+                        if let Some(task_chirho) = list_chirho.iter()
+                            .find(|t| t.lock().pid_chirho == next_chirho)
+                        {
+                            let tg_chirho = task_chirho.lock();
+                            Msr::new(0xC000_0100).write(tg_chirho.fs_base_chirho);
+                            Msr::new(0xC000_0102).write(tg_chirho.gs_base_chirho);
+                        }
+                    }
                     switch_context_return_wrapper_chirho(
                         old_ctx_ptr_chirho,
                         new_ctx_ptr_chirho,
