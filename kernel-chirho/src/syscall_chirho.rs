@@ -3721,6 +3721,16 @@ fn sys_select_chirho(
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
+            // Yield during blocking select waits so a fork child doing
+            // CPU-bound userspace work (for example musl relocation after
+            // execve) can keep making progress between timer ticks.
+            // poll()/epoll_wait() already do this; select() was the odd one
+            // out and could monopolize CPU in kernel mode.
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
+            }
+
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
             );
