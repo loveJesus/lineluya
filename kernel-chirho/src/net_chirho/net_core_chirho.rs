@@ -2169,6 +2169,23 @@ pub fn has_tcp_data_for_port_chirho(port_chirho: u16) -> bool {
     false
 }
 
+/// Check if there's an established TCP connection on the given port (any state).
+pub fn has_established_tcp_chirho(port_chirho: u16) -> bool {
+    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    for slot_chirho in table_chirho.iter() {
+        if let Some(ref sock_chirho) = slot_chirho {
+            if sock_chirho.family_chirho == 2
+                && matches!(sock_chirho.tcb_chirho.state_chirho,
+                    TcpStateChirho::EstablishedChirho | TcpStateChirho::CloseWaitChirho)
+                && sock_chirho.local_addr_chirho.map(|a_chirho| a_chirho.port_chirho) == Some(port_chirho)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Check if a socket fd has pending data or connections.
 /// For listening sockets, checks if there's a pending TCP connection.
 /// For connected sockets, checks if there's received data.
