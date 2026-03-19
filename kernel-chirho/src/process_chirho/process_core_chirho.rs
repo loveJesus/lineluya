@@ -784,7 +784,7 @@ unsafe extern "C" fn fork_child_return_chirho() {
         "mov r14, [r15 + 0x70]",
         "mov r15, [r15 + 0x78]",            // last use of frame pointer
 
-        // Step 6: Switch GS base from kernel to user before IRETQ.
+        // Step 7: Switch GS base from kernel to user before IRETQ.
         // Even though our SYSCALL entry doesn't use swapgs, the CPU
         // requires proper GS state for exceptions in user mode.
         "swapgs",
