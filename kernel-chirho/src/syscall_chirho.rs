@@ -2235,24 +2235,14 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // switch doesn't handle being called from the syscall dispatch path.
     // Instead, the fork child gets CPU time from schedule calls inside
     // the HLT loops (added back below).
-    let skip_resched_chirho = matches!(
-        syscall_nr_chirho,
-        SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO | SYS_CLONE_CHIRHO | SYS_EXECVE_CHIRHO
-        | SYS_EXIT_CHIRHO | SYS_EXIT_GROUP_CHIRHO | SYS_WAIT4_CHIRHO
-        | SYS_SCHED_YIELD_CHIRHO
-        | SYS_SELECT_CHIRHO | SYS_POLL_CHIRHO | SYS_PPOLL_CHIRHO
-        | SYS_EPOLL_WAIT_CHIRHO | SYS_EPOLL_PWAIT_CHIRHO
-        | SYS_NANOSLEEP_CHIRHO | SYS_CLOCK_NANOSLEEP_CHIRHO
-    );
-    // Cooperative scheduling only. Preemptive reschedule at syscall
-    // boundaries is DISABLED because the context switch crashes (#UD)
-    // when called from various kernel paths. Tasks yield cooperatively
-    // via select/poll/read HLT loops which call schedule_chirho()
-    // directly when other tasks are runnable.
-    //
-    // Always reset time slice to prevent stale need_resched from
-    // accumulating across syscalls.
-    crate::scheduler_chirho::reset_time_slice_chirho();
+    // Yield ONLY on wait4 with WNOHANG returning 0 (child not yet exited).
+    // This gives fork children CPU time without disrupting the SSH handshake.
+    // The SSH handshake (select/read/write on socket) runs without preemption
+    // for maximum speed. Once dropbear forks PID 4 and calls wait4, it
+    // yields to let PID 4 run the command.
+    if syscall_nr_chirho == SYS_WAIT4_CHIRHO && result_chirho == 0 {
+        crate::scheduler_chirho::schedule_chirho();
+    }
 
     result_chirho
 }
