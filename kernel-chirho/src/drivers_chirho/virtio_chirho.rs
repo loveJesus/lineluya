@@ -20,7 +20,8 @@ use x86_64::instructions::port::Port;
 use crate::block_chirho::{BlockDeviceChirho, SECTOR_SIZE_CHIRHO};
 use crate::pci_chirho::{
     pci_assign_bar_chirho, pci_config_read_u32_chirho, pci_config_write_u32_chirho,
-    PciDeviceChirho, PCI_CMD_IO_SPACE_CHIRHO, PCI_CMD_BUS_MASTER_CHIRHO,
+    PciDeviceChirho, PCI_CMD_BUS_MASTER_CHIRHO, PCI_CMD_INTX_DISABLE_CHIRHO,
+    PCI_CMD_IO_SPACE_CHIRHO,
 };
 
 // ============================================================================
@@ -1639,6 +1640,7 @@ pub fn init_virtio_chirho() {
                         io_base_chirho
                     );
                     enable_io_and_busmaster_chirho(dev_chirho);
+                    disable_intx_chirho(dev_chirho);
                     VIRTIO_IO_BASES_CHIRHO.lock().push(io_base_chirho);
                     crate::net_chirho::probe_virtio_net_io_chirho(io_base_chirho);
                 } else {
@@ -1840,6 +1842,36 @@ pub fn enable_io_and_busmaster_chirho(dev_chirho: &PciDeviceChirho) {
 
     crate::serial_debug_chirho!(
         "    PCI: enabled I/O space + bus master for {:02x}:{:02x}.{}",
+        dev_chirho.bus_chirho,
+        dev_chirho.device_chirho,
+        dev_chirho.function_chirho
+    );
+}
+
+/// Disable legacy PCI INTx for a device handled purely via polling.
+pub fn disable_intx_chirho(dev_chirho: &PciDeviceChirho) {
+    unsafe {
+        let cmd_status_chirho = pci_config_read_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            0x04, // PCI Command/Status register
+        );
+        let cmd_chirho = (cmd_status_chirho & 0xFFFF) as u16;
+        let status_chirho = ((cmd_status_chirho >> 16) & 0xFFFF) as u16;
+        let new_cmd_chirho = cmd_chirho | PCI_CMD_INTX_DISABLE_CHIRHO;
+        let new_dword_chirho = (new_cmd_chirho as u32) | ((status_chirho as u32) << 16);
+        pci_config_write_u32_chirho(
+            dev_chirho.bus_chirho,
+            dev_chirho.device_chirho,
+            dev_chirho.function_chirho,
+            0x04,
+            new_dword_chirho,
+        );
+    }
+
+    crate::serial_debug_chirho!(
+        "    PCI: disabled INTx for {:02x}:{:02x}.{}",
         dev_chirho.bus_chirho,
         dev_chirho.device_chirho,
         dev_chirho.function_chirho
