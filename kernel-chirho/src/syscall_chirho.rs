@@ -1989,7 +1989,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
 
         // --- Phase 8+9: process/thread/scheduling ---
         SYS_CLONE3_CHIRHO => -ENOSYS_CHIRHO,
-        SYS_EXECVEAT_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_EXECVEAT_CHIRHO => sys_execveat_real_chirho(
+            arg0_chirho as i32,
+            arg1_chirho,
+            arg2_chirho,
+            arg3_chirho,
+            arg4_chirho as u32,
+        ),
         SYS_WAITID_CHIRHO => -ENOSYS_CHIRHO,
         SYS_PTRACE_CHIRHO => -EPERM_CHIRHO,
         SYS_SCHED_GETSCHEDULER_CHIRHO => 0,   // SCHED_NORMAL
@@ -4473,6 +4479,89 @@ fn sys_readlinkat_chirho(
 
     // Relative path with a real dirfd -- not yet supported
     -ENOENT_CHIRHO
+}
+
+/// `execveat(2)` implementation.
+///
+/// Supports the Linux cases Dropbear actually uses:
+/// - absolute paths
+/// - relative paths resolved against `dirfd_chirho`
+/// - `AT_EMPTY_PATH` executing the file referenced by `dirfd_chirho`
+fn sys_execveat_real_chirho(
+    dirfd_chirho: i32,
+    pathname_addr_chirho: u64,
+    argv_chirho: u64,
+    envp_chirho: u64,
+    flags_chirho: u32,
+) -> i64 {
+    const AT_EMPTY_PATH_CHIRHO: u32 = 0x1000;
+    const AT_FDCWD_EXECVEAT_CHIRHO: i32 = -100;
+
+    let raw_path_chirho = if pathname_addr_chirho == 0 {
+        if flags_chirho & AT_EMPTY_PATH_CHIRHO != 0 {
+            alloc::string::String::new()
+        } else {
+            return -EFAULT_CHIRHO;
+        }
+    } else {
+        match crate::uaccess_chirho::read_user_string_chirho(pathname_addr_chirho, 4096) {
+            Ok(path_chirho) => path_chirho,
+            Err(_) => return -EFAULT_CHIRHO,
+        }
+    };
+
+    let resolved_path_chirho = if raw_path_chirho.is_empty() {
+        if flags_chirho & AT_EMPTY_PATH_CHIRHO == 0 {
+            return -ENOENT_CHIRHO;
+        }
+        alloc::format!("/proc/self/fd/{}", dirfd_chirho)
+    } else if raw_path_chirho.starts_with('/') {
+        raw_path_chirho
+    } else if dirfd_chirho == AT_FDCWD_EXECVEAT_CHIRHO {
+        let mut cwd_path_chirho = crate::task_chirho::current_task_chirho()
+            .map(|task_arc_chirho| {
+                let task_guard_chirho = task_arc_chirho.lock();
+                if task_guard_chirho.cwd_chirho.is_empty() {
+                    alloc::string::String::from("/")
+                } else {
+                    task_guard_chirho.cwd_chirho.clone()
+                }
+            })
+            .unwrap_or_else(|| alloc::string::String::from("/"));
+        if !cwd_path_chirho.ends_with('/') {
+            cwd_path_chirho.push('/');
+        }
+        cwd_path_chirho.push_str(&raw_path_chirho);
+        cwd_path_chirho
+    } else {
+        match crate::fs_chirho::get_fd_path_chirho(dirfd_chirho as u64) {
+            Some(mut dir_path_chirho) => {
+                if !dir_path_chirho.ends_with('/') {
+                    dir_path_chirho.push('/');
+                }
+                dir_path_chirho.push_str(&raw_path_chirho);
+                dir_path_chirho
+            }
+            None => {
+                let mut fallback_path_chirho = alloc::string::String::from("/");
+                fallback_path_chirho.push_str(&raw_path_chirho);
+                fallback_path_chirho
+            }
+        }
+    };
+
+    crate::serial_debug_chirho!(
+        "[PROCESS] execveat: dirfd={} flags={:#x} resolved path=\"{}\"",
+        dirfd_chirho,
+        flags_chirho,
+        resolved_path_chirho,
+    );
+
+    crate::process_chirho::sys_execve_with_filename_chirho(
+        resolved_path_chirho,
+        argv_chirho,
+        envp_chirho,
+    )
 }
 
 /// `fcntl(2)` implementation.

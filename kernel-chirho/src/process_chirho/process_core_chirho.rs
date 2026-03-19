@@ -924,6 +924,19 @@ pub fn sys_execve_chirho(
         filename_str_chirho
     );
 
+    sys_execve_with_filename_chirho(filename_str_chirho, argv_chirho, envp_chirho)
+}
+
+/// `execve()` helper when the kernel already has a resolved filename string.
+///
+/// This is used by plain `execve`, procfd fallbacks, and `execveat`
+/// path resolution so the actual ELF-loading path stays shared.
+pub fn sys_execve_with_filename_chirho(
+    filename_str_chirho: String,
+    argv_chirho: u64,
+    envp_chirho: u64,
+) -> i64 {
+
     // -----------------------------------------------------------------------
     // Step 2: Read argv array from userspace
     // -----------------------------------------------------------------------
