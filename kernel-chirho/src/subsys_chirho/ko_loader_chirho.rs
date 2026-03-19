@@ -292,6 +292,9 @@ pub struct KoModuleChirho {
     pub module_mem_base_chirho: u64,
     /// Total size of the allocated module memory region.
     pub module_mem_size_chirho: usize,
+    /// Module-image arena slot index when the module lives in the static
+    /// kernel-range loader arena instead of a heap allocation.
+    pub module_mem_arena_slot_chirho: Option<usize>,
     /// A2-016: Reference count — incremented when other modules depend on us.
     pub refcount_chirho: u32,
     /// A2-016: Names of modules that this module depends on (imported symbols from).
@@ -380,6 +383,159 @@ pub enum KoErrorChirho {
     UnsupportedRelocationChirho,
     /// A relocation value overflows the target field width.
     RelocationOverflowChirho,
+}
+
+/// Per-slot state for the static kernel-range module image arena.
+#[derive(Clone, Copy)]
+struct ModuleImageArenaSlotStateChirho {
+    in_use_chirho: bool,
+    used_bytes_chirho: usize,
+}
+
+const MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO: usize = 256 * 1024;
+const MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO: usize = 8;
+
+#[repr(align(4096))]
+struct ModuleImageArenaStorageChirho {
+    bytes_chirho:
+        [[u8; MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO]; MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO],
+}
+
+static MODULE_IMAGE_ARENA_STATE_CHIRHO: Mutex<
+    [ModuleImageArenaSlotStateChirho; MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO],
+> = Mutex::new(
+    [ModuleImageArenaSlotStateChirho {
+        in_use_chirho: false,
+        used_bytes_chirho: 0,
+    }; MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO],
+);
+
+static mut MODULE_IMAGE_ARENA_STORAGE_CHIRHO: ModuleImageArenaStorageChirho =
+    ModuleImageArenaStorageChirho {
+        bytes_chirho: [[0u8; MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO];
+            MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO],
+    };
+
+unsafe fn module_image_arena_slot_ptr_chirho(slot_index_chirho: usize) -> *mut u8 {
+    let arena_base_ptr_chirho =
+        core::ptr::addr_of_mut!(MODULE_IMAGE_ARENA_STORAGE_CHIRHO.bytes_chirho) as *mut u8;
+    unsafe {
+        arena_base_ptr_chirho.add(slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO)
+    }
+}
+
+fn allocate_module_image_slot_chirho(
+    requested_bytes_chirho: usize,
+) -> Result<(usize, *mut u8), KoErrorChirho> {
+    if requested_bytes_chirho == 0
+        || requested_bytes_chirho > MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO
+    {
+        crate::serial_println_chirho!(
+            "[KO] Module image request {} exceeds slot size {}",
+            requested_bytes_chirho,
+            MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO
+        );
+        return Err(KoErrorChirho::OutOfMemoryChirho);
+    }
+
+    let mut arena_state_chirho = MODULE_IMAGE_ARENA_STATE_CHIRHO.lock();
+    let Some(slot_index_chirho) = arena_state_chirho
+        .iter()
+        .position(|slot_state_chirho| !slot_state_chirho.in_use_chirho)
+    else {
+        crate::serial_println_chirho!(
+            "[KO] Module arena exhausted: {} slots busy",
+            MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO
+        );
+        return Err(KoErrorChirho::OutOfMemoryChirho);
+    };
+
+    arena_state_chirho[slot_index_chirho].in_use_chirho = true;
+    arena_state_chirho[slot_index_chirho].used_bytes_chirho = requested_bytes_chirho;
+    drop(arena_state_chirho);
+
+    let slot_ptr_chirho = unsafe { module_image_arena_slot_ptr_chirho(slot_index_chirho) };
+    unsafe {
+        core::ptr::write_bytes(slot_ptr_chirho, 0, requested_bytes_chirho);
+    }
+
+    crate::serial_println_chirho!(
+        "[KO] Reserved module arena slot {} at {:#x} for {} bytes",
+        slot_index_chirho,
+        slot_ptr_chirho as usize,
+        requested_bytes_chirho
+    );
+
+    Ok((slot_index_chirho, slot_ptr_chirho))
+}
+
+fn release_module_image_slot_chirho(slot_index_chirho: usize) {
+    if slot_index_chirho >= MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO {
+        return;
+    }
+
+    let mut arena_state_chirho = MODULE_IMAGE_ARENA_STATE_CHIRHO.lock();
+    let used_bytes_chirho = arena_state_chirho[slot_index_chirho].used_bytes_chirho;
+    arena_state_chirho[slot_index_chirho].in_use_chirho = false;
+    arena_state_chirho[slot_index_chirho].used_bytes_chirho = 0;
+    drop(arena_state_chirho);
+
+    let slot_ptr_chirho = unsafe { module_image_arena_slot_ptr_chirho(slot_index_chirho) };
+    unsafe {
+        core::ptr::write_bytes(slot_ptr_chirho, 0, MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO);
+    }
+
+    crate::serial_println_chirho!(
+        "[KO] Released module arena slot {} at {:#x} ({} bytes used)",
+        slot_index_chirho,
+        slot_ptr_chirho as usize,
+        used_bytes_chirho
+    );
+}
+
+struct ModuleImageAllocationGuardChirho {
+    slot_index_chirho: usize,
+    base_ptr_chirho: *mut u8,
+    used_bytes_chirho: usize,
+    armed_chirho: bool,
+}
+
+impl ModuleImageAllocationGuardChirho {
+    fn allocate_chirho(total_bytes_chirho: usize) -> Result<Self, KoErrorChirho> {
+        let (slot_index_chirho, base_ptr_chirho) =
+            allocate_module_image_slot_chirho(total_bytes_chirho)?;
+        Ok(Self {
+            slot_index_chirho,
+            base_ptr_chirho,
+            used_bytes_chirho: total_bytes_chirho,
+            armed_chirho: true,
+        })
+    }
+
+    fn as_mut_slice_chirho(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.base_ptr_chirho, self.used_bytes_chirho) }
+    }
+
+    fn base_addr_chirho(&self) -> u64 {
+        self.base_ptr_chirho as u64
+    }
+
+    fn into_loaded_parts_chirho(mut self) -> (u64, usize, usize) {
+        self.armed_chirho = false;
+        (
+            self.base_ptr_chirho as u64,
+            self.used_bytes_chirho,
+            self.slot_index_chirho,
+        )
+    }
+}
+
+impl Drop for ModuleImageAllocationGuardChirho {
+    fn drop(&mut self) {
+        if self.armed_chirho {
+            release_module_image_slot_chirho(self.slot_index_chirho);
+        }
+    }
 }
 
 impl KoErrorChirho {
@@ -1532,6 +1688,7 @@ pub fn register_rust_module_chirho(module_chirho: &'static dyn RustModuleChirho)
         sections_chirho: Vec::new(),
         module_mem_base_chirho: module_chirho as *const dyn RustModuleChirho as *const () as u64,
         module_mem_size_chirho: 0,
+        module_mem_arena_slot_chirho: None,
         refcount_chirho: 0,
         depends_on_chirho: Vec::new(),
         params_chirho: Vec::new(),
@@ -3287,6 +3444,7 @@ pub fn parse_ko_elf_chirho(data_chirho: &[u8]) -> Result<KoModuleChirho, KoError
         sections_chirho: sections_info_chirho,
         module_mem_base_chirho: 0,
         module_mem_size_chirho: 0,
+        module_mem_arena_slot_chirho: None,
         refcount_chirho: 0,
         depends_on_chirho: Vec::new(),
         params_chirho: Vec::new(),
@@ -3452,23 +3610,21 @@ fn load_and_init_module_chirho(
             sections_chirho: sections_info_chirho,
             module_mem_base_chirho: 0,
             module_mem_size_chirho: 0,
+            module_mem_arena_slot_chirho: None,
             refcount_chirho: 0,
             depends_on_chirho: Vec::new(),
             params_chirho: Vec::new(),
         });
     }
 
-    // Allocate a contiguous block from the kernel heap.
-    let mut module_mem_chirho: Vec<u8> = Vec::new();
-    module_mem_chirho
-        .try_reserve(total_size_chirho)
-        .map_err(|_| KoErrorChirho::OutOfMemoryChirho)?;
-    module_mem_chirho.resize(total_size_chirho, 0u8);
-
-    let mem_base_chirho = module_mem_chirho.as_ptr() as u64;
+    // Allocate the module image from the static kernel-range arena so
+    // 32-bit signed relocations stay in range.
+    let mut module_mem_guard_chirho =
+        ModuleImageAllocationGuardChirho::allocate_chirho(total_size_chirho)?;
+    let mem_base_chirho = module_mem_guard_chirho.base_addr_chirho();
 
     crate::serial_println_chirho!(
-        "[KO] Allocated {} bytes for module at {:#x}",
+        "[KO] Allocated {} bytes for module image at {:#x}",
         total_size_chirho,
         mem_base_chirho
     );
@@ -3494,7 +3650,8 @@ fn load_and_init_module_chirho(
             if src_off_chirho + size_chirho > data_chirho.len() {
                 return Err(KoErrorChirho::SectionOutOfBoundsChirho);
             }
-            module_mem_chirho[dest_off_chirho..dest_off_chirho + size_chirho]
+            module_mem_guard_chirho.as_mut_slice_chirho()
+                [dest_off_chirho..dest_off_chirho + size_chirho]
                 .copy_from_slice(&data_chirho[src_off_chirho..src_off_chirho + size_chirho]);
         }
         // SHT_NOBITS (.bss) is already zeroed.
@@ -3504,7 +3661,7 @@ fn load_and_init_module_chirho(
     // 4. Apply relocations (A2-003).
     // -----------------------------------------------------------------------
     apply_relocations_chirho(
-        &mut module_mem_chirho,
+        module_mem_guard_chirho.as_mut_slice_chirho(),
         &section_addrs_chirho,
         &shdrs_chirho,
         data_chirho,
@@ -3606,19 +3763,15 @@ fn load_and_init_module_chirho(
         }
     }
 
-    // Leak the Vec so that the module memory stays alive.  We store the
-    // base + size so it can be reclaimed on unload.
-    let mem_ptr_chirho = module_mem_chirho.as_mut_ptr();
-    let mem_len_chirho = module_mem_chirho.len();
-    let mem_cap_chirho = module_mem_chirho.capacity();
-    mem::forget(module_mem_chirho);
+    let (mem_base_chirho, mem_size_chirho, arena_slot_chirho) =
+        module_mem_guard_chirho.into_loaded_parts_chirho();
 
     crate::serial_println_chirho!(
         "[KO] Module '{}' loaded: {} symbols, mem={:#x}+{:#x}",
         module_name_chirho,
         symbol_count_chirho,
-        mem_ptr_chirho as u64,
-        mem_len_chirho
+        mem_base_chirho,
+        mem_size_chirho
     );
 
     Ok(KoModuleChirho {
@@ -3628,8 +3781,9 @@ fn load_and_init_module_chirho(
         state_chirho: ModuleStateChirho::LoadedChirho,
         symbol_count_chirho,
         sections_chirho: sections_info_chirho,
-        module_mem_base_chirho: mem_ptr_chirho as u64,
-        module_mem_size_chirho: mem_cap_chirho,
+        module_mem_base_chirho: mem_base_chirho,
+        module_mem_size_chirho: mem_size_chirho,
+        module_mem_arena_slot_chirho: Some(arena_slot_chirho),
         refcount_chirho: 0,
         depends_on_chirho: Vec::new(),
         params_chirho: Vec::new(),
@@ -3811,15 +3965,20 @@ pub fn sys_delete_module_impl_chirho(name_ptr_chirho: u64, _flags_chirho: u64) -
     // Reclaim module memory.
     let mem_base_chirho = loaded_chirho[idx_chirho].module_mem_base_chirho;
     let mem_size_chirho = loaded_chirho[idx_chirho].module_mem_size_chirho;
+    let arena_slot_chirho = loaded_chirho[idx_chirho].module_mem_arena_slot_chirho;
     if mem_base_chirho != 0 && mem_size_chirho > 0 {
-        // SAFETY: We allocated this Vec in load_and_init_module_chirho and
-        // called mem::forget on it.  Reconstruct and drop to free.
-        unsafe {
-            let _ = Vec::from_raw_parts(
-                mem_base_chirho as *mut u8,
-                mem_size_chirho,
-                mem_size_chirho,
-            );
+        if let Some(arena_slot_index_chirho) = arena_slot_chirho {
+            release_module_image_slot_chirho(arena_slot_index_chirho);
+        } else {
+            // SAFETY: Legacy heap-backed module images were allocated as Vecs
+            // and leaked. Reconstruct and drop to free them.
+            unsafe {
+                let _ = Vec::from_raw_parts(
+                    mem_base_chirho as *mut u8,
+                    mem_size_chirho,
+                    mem_size_chirho,
+                );
+            }
         }
         crate::serial_println_chirho!(
             "[KO] Freed {} bytes of module memory at {:#x}",
@@ -3829,6 +3988,9 @@ pub fn sys_delete_module_impl_chirho(name_ptr_chirho: u64, _flags_chirho: u64) -
     }
 
     loaded_chirho[idx_chirho].state_chirho = ModuleStateChirho::UnloadedChirho;
+    loaded_chirho[idx_chirho].module_mem_base_chirho = 0;
+    loaded_chirho[idx_chirho].module_mem_size_chirho = 0;
+    loaded_chirho[idx_chirho].module_mem_arena_slot_chirho = None;
 
     crate::serial_println_chirho!(
         "[KO] Module '{}' unloaded",
