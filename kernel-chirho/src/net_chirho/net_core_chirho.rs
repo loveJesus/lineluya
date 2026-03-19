@@ -4556,9 +4556,17 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
 
             let mut t2_chirho = SOCKET_TABLE_CHIRHO.lock();
             if let Some(Some(ref mut ts_chirho)) = t2_chirho.get_mut(idx_chirho) {
+                let snd_una_before_chirho = ts_chirho.tcb_chirho.snd_una_chirho;
+                let snd_nxt_before_chirho = ts_chirho.tcb_chirho.snd_nxt_chirho;
+                let rcv_nxt_before_chirho = ts_chirho.tcb_chirho.rcv_nxt_chirho;
+                let state_before_chirho = ts_chirho.tcb_chirho.state_chirho;
                 if let Some(seg_chirho) = ts_chirho.tcb_chirho.make_data_segment_chirho(
                     2222, rport_chirho, chunk_chirho,
                 ) {
+                    let snd_nxt_after_chirho = ts_chirho.tcb_chirho.snd_nxt_chirho;
+                    let client_should_ack_chirho = seg_chirho
+                        .seq_num_chirho
+                        .wrapping_add(chunk_chirho.len() as u32);
                     let ck_chirho = seg_chirho.compute_checksum_chirho(sip_chirho, rip_chirho);
                     let mut sc_chirho = seg_chirho;
                     sc_chirho.checksum_chirho = ck_chirho;
@@ -4574,8 +4582,20 @@ pub fn relay_to_tcp_2222_chirho(data_chirho: &[u8]) {
                     p_chirho.extend_from_slice(&tb_chirho);
                     drop(t2_chirho);
                     crate::serial_println_chirho!(
-                        "[NET] SSH-RELAY(pipe): {} bytes -> TCP seq={} ack={}",
-                        chunk_chirho.len(), sc_chirho.seq_num_chirho, sc_chirho.ack_num_chirho,
+                        "[NET] SSH-RELAY(pipe): {} bytes {}:{} -> {}:{} state={:?} snd_una={} snd_nxt(before={}, after={}) rcv_nxt={} seg_seq={} seg_ack={} client_should_ack={}",
+                        chunk_chirho.len(),
+                        format_ip_chirho(sip_chirho),
+                        2222,
+                        format_ip_chirho(rip_chirho),
+                        rport_chirho,
+                        state_before_chirho,
+                        snd_una_before_chirho,
+                        snd_nxt_before_chirho,
+                        snd_nxt_after_chirho,
+                        rcv_nxt_before_chirho,
+                        sc_chirho.seq_num_chirho,
+                        sc_chirho.ack_num_chirho,
+                        client_should_ack_chirho,
                     );
                     let _ = send_ip_packet_chirho(&p_chirho);
                 } else {
