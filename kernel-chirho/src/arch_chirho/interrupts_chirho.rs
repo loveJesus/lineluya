@@ -9,7 +9,10 @@
 
 extern crate alloc;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+use x86_64::registers::rflags::RFlags;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::VirtAddr;
 use spin::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -253,6 +256,93 @@ static KEYBOARD_CHIRHO: spin::Lazy<Mutex<pc_keyboard::Keyboard<pc_keyboard::layo
             pc_keyboard::HandleControl::Ignore,
         ))
     });
+
+// ---------------------------------------------------------------------------
+// User-mode preemption trampoline
+// ---------------------------------------------------------------------------
+
+/// One page below the fixed user stack region.
+///
+/// The timer interrupt rewrites the user interrupt frame to land here,
+/// with the interrupted RIP pushed onto the user stack. The trampoline
+/// does `sched_yield` through the normal syscall path and then `ret`s
+/// back to the interrupted instruction stream.
+const USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO: u64 = 0x7FFF_FF7F_E000;
+
+#[repr(align(4096))]
+struct UserPreemptTrampolinePageChirho {
+    bytes_chirho: [u8; 4096],
+}
+
+const fn build_user_preempt_trampoline_page_chirho() -> UserPreemptTrampolinePageChirho {
+    let mut bytes_chirho = [0xCC; 4096];
+    // mov eax, 24  ; SYS_sched_yield_chirho
+    bytes_chirho[0] = 0xB8;
+    bytes_chirho[1] = 24;
+    bytes_chirho[2] = 0;
+    bytes_chirho[3] = 0;
+    bytes_chirho[4] = 0;
+    // syscall
+    bytes_chirho[5] = 0x0F;
+    bytes_chirho[6] = 0x05;
+    // ret
+    bytes_chirho[7] = 0xC3;
+    UserPreemptTrampolinePageChirho { bytes_chirho }
+}
+
+static USER_PREEMPT_TRAMPOLINE_PAGE_CHIRHO: UserPreemptTrampolinePageChirho =
+    build_user_preempt_trampoline_page_chirho();
+static USER_PREEMPT_TRAMPOLINE_READY_CHIRHO: AtomicBool = AtomicBool::new(false);
+
+pub fn init_user_preempt_trampoline_chirho() {
+    if USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire) {
+        return;
+    }
+
+    use x86_64::instructions::tlb;
+    use x86_64::structures::paging::PageTableFlags;
+
+    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+    if boot_pml4_chirho.as_u64() == 0 {
+        crate::serial_println_chirho!(
+            "[PREEMPT-TRAMP] boot PML4 unavailable; trampoline not mapped"
+        );
+        return;
+    }
+
+    let trampoline_kernel_vaddr_chirho =
+        &USER_PREEMPT_TRAMPOLINE_PAGE_CHIRHO as *const _ as u64;
+    let Some((trampoline_phys_chirho, _kernel_flags_chirho)) =
+        crate::pagetable_chirho::lookup_in_boot_pt_chirho(trampoline_kernel_vaddr_chirho)
+    else {
+        crate::serial_println_chirho!(
+            "[PREEMPT-TRAMP] failed to resolve trampoline kernel page phys addr"
+        );
+        return;
+    };
+
+    let user_flags_chirho = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if crate::pagetable_chirho::map_page_in_pt_chirho(
+        boot_pml4_chirho,
+        USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO,
+        trampoline_phys_chirho & !0xFFF,
+        user_flags_chirho,
+    ).is_err()
+    {
+        crate::serial_println_chirho!(
+            "[PREEMPT-TRAMP] failed to map user trampoline page at {:#x}",
+            USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO,
+        );
+        return;
+    }
+
+    tlb::flush(VirtAddr::new(USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO));
+    USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.store(true, Ordering::Release);
+    crate::serial_println_chirho!(
+        "[PREEMPT-TRAMP] mapped user trampoline at {:#x}",
+        USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO,
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Public initialisation functions
@@ -669,7 +759,7 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
 /// Drives the scheduler tick — decrements the current task's time slice and
 /// sets the reschedule flag when exhausted.
 extern "x86-interrupt" fn timer_interrupt_handler_chirho(
-    _stack_frame_chirho: InterruptStackFrame,
+    mut _stack_frame_chirho: InterruptStackFrame,
 ) {
     // Notify the scheduler of a timer tick.
     crate::scheduler_chirho::schedule_tick_chirho();
@@ -683,42 +773,48 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         write_lapic_eoi_chirho(phys_offset_chirho);
     }
 
-    // Preemptive scheduling: if need_resched is set and the interrupted
-    // code was in USER MODE, do a context switch now.
-    // The x86-interrupt prologue saved ALL registers, so it's safe to
-    // call schedule_chirho() here — the context switch saves/restores
-    // callee-saved registers, and the epilogue restores the rest.
-    //
-    // We only preempt user mode to avoid complexity with nested kernel
-    // locks and stack state. Kernel-mode preemption would require
-    // tracking lock depth.
+    // Deferred user-mode preemption:
+    // Rewrite the IRETQ frame so the interrupted task returns to a small
+    // user trampoline that performs `sched_yield` via the normal syscall
+    // path, then `ret`s back to the original user RIP that we pushed on
+    // the user stack below.
     let interrupted_cs_chirho = _stack_frame_chirho.code_segment.0;
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
-    if was_user_mode_chirho && crate::scheduler_chirho::need_resched_chirho() {
-        // Deferred preemption via interrupt frame modification:
-        // Instead of calling schedule_chirho() (which corrupts CpuContext),
-        // modify the interrupt frame so IRETQ returns to a SYSCALL gadget
-        // in the user's own code. The SYSCALL triggers sched_yield in the
-        // kernel via the normal syscall path, which properly saves/restores
-        // CpuContext.
-        //
-        // Find a SYSCALL instruction (0F 05) in the user's code. Every
-        // musl binary has many. We use the address the task was interrupted
-        // at minus some offset to find a nearby SYSCALL gadget.
-        // For simplicity, save the interrupted RIP in the task struct and
-        // redirect RIP to our sched_yield syscall handler. The user's
-        // registers (RCX, R11, RAX) are modified by SYSCALL so we save
-        // them in the interrupt frame.
-        //
-        // Actually, the simplest approach: just use the syscall entry stub
-        // address directly. Map a user-accessible trampoline page during
-        // init with: mov eax, 24; syscall; (then restored RIP)
-        //
-        // For now: leave need_resched set. The NEXT syscall from the task
-        // will trigger schedule on return. Tasks stuck in CPU loops without
-        // syscalls will not be preempted until proper interrupt-safe
-        // context switching is implemented.
+    if was_user_mode_chirho
+        && crate::scheduler_chirho::need_resched_chirho()
+        && USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire)
+    {
+        let current_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if current_pid_chirho >= 4 {
+            let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
+            let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
+
+            if user_rsp_chirho >= core::mem::size_of::<u64>() as u64 {
+                let trampoline_rsp_chirho =
+                    user_rsp_chirho - core::mem::size_of::<u64>() as u64;
+                let saved_rip_bytes_chirho = user_rip_chirho.to_le_bytes();
+
+                if crate::uaccess_chirho::copy_to_user_chirho(
+                    trampoline_rsp_chirho,
+                    &saved_rip_bytes_chirho,
+                    core::mem::size_of::<u64>(),
+                )
+                .is_ok()
+                {
+                    unsafe {
+                        let mut frame_mut_chirho = _stack_frame_chirho.as_mut();
+                        frame_mut_chirho.update(|frame_value_chirho| {
+                            frame_value_chirho.stack_pointer =
+                                VirtAddr::new(trampoline_rsp_chirho);
+                            frame_value_chirho.instruction_pointer =
+                                VirtAddr::new(USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO);
+                            frame_value_chirho.cpu_flags |= RFlags::INTERRUPT_FLAG;
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 

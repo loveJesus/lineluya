@@ -334,6 +334,8 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         }
     }
 
+    interrupts_chirho::init_user_preempt_trampoline_chirho();
+
     // Initialize kernel command line from bootloader (E1-014).
     cmdline_chirho::init_cmdline_from_bootinfo_chirho();
 
