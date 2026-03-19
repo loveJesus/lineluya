@@ -167,7 +167,7 @@ pub const CLONE_NEWNS_CHIRHO: u64 = 0x0002_0000;
 // ---------------------------------------------------------------------------
 
 /// Return immediately if no child has exited.
-const WNOHANG_CHIRHO: u32 = 1;
+pub const WNOHANG_CHIRHO: u32 = 1;
 /// Also report stopped (not just terminated) children.
 #[allow(dead_code)]
 const WUNTRACED_CHIRHO: u32 = 2;

@@ -2250,12 +2250,32 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // switch doesn't handle being called from the syscall dispatch path.
     // Instead, the fork child gets CPU time from schedule calls inside
     // the HLT loops (added back below).
-    // Yield ONLY on wait4 with WNOHANG returning 0 (child not yet exited).
-    // This gives fork children CPU time without disrupting the SSH handshake.
-    // The SSH handshake (select/read/write on socket) runs without preemption
-    // for maximum speed. Once dropbear forks PID 4 and calls wait4, it
-    // yields to let PID 4 run the command.
+    // When wait4(WNOHANG) returns 0 (child alive but not exited), yield
+    // in a loop so the child (PID 4) gets CPU via the trampoline preemption.
+    // Each iteration: yield → PID 4 runs → timer preempts via trampoline →
+    // sched_yield → scheduler picks next → eventually PID 3 resumes here →
+    // re-checks zombie → yields again.
+    // When wait4(WNOHANG) returns 0 (child alive), find the child PID
+    // and push it to the FRONT of the queue so schedule_chirho picks it.
     if syscall_nr_chirho == SYS_WAIT4_CHIRHO && result_chirho == 0 {
+        // Find the highest-PID child (most recent fork child = SSH exec)
+        let parent_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        let child_pid_chirho = {
+            let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+            list_chirho.iter()
+                .filter_map(|t| {
+                    let task_chirho = t.lock();
+                    if task_chirho.ppid_chirho == parent_pid_chirho
+                        && !task_chirho.is_exited_chirho() {
+                        Some(task_chirho.pid_chirho)
+                    } else { None }
+                })
+                .max()
+        };
+        if let Some(child_chirho) = child_pid_chirho {
+            crate::scheduler_chirho::promote_task_chirho(child_chirho);
+        }
         crate::scheduler_chirho::schedule_chirho();
     }
 

@@ -767,6 +767,21 @@ pub fn has_runnable_tasks_chirho() -> bool {
     false
 }
 
+/// Move a specific PID to the front of the run queue.
+/// Used by wait4 to ensure the child task gets scheduled next.
+pub fn promote_task_chirho(pid_chirho: u64) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut guard_chirho = SCHEDULER_CHIRHO.lock();
+        if let Some(ref mut sched_chirho) = *guard_chirho {
+            // Remove pid from wherever it is in the queue
+            if let Some(pos_chirho) = sched_chirho.tasks_chirho.iter().position(|&p| p == pid_chirho) {
+                sched_chirho.tasks_chirho.remove(pos_chirho);
+                sched_chirho.tasks_chirho.push_front(pid_chirho);
+            }
+        }
+    });
+}
+
 /// Return the total number of tasks (current + queued).
 pub fn task_count_chirho() -> usize {
     if let Some(guard_chirho) = SCHEDULER_CHIRHO.try_lock() {
