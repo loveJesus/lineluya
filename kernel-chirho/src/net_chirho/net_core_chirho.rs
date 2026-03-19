@@ -6045,6 +6045,14 @@ pub fn probe_virtio_net_chirho() {
 /// Legacy VirtIO queue alignment (4096 bytes = page size).
 const VIRTIO_NET_LEGACY_QUEUE_ALIGN_CHIRHO: usize = 4096;
 
+/// Bump allocator for VirtIO-net DMA memory — starts at 10MB physical.
+/// Separate from VirtIO-blk's allocator (8MB) and request buffer (9MB).
+static NET_VRING_PHYS_NEXT_CHIRHO: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0xA0_0000); // 10MB physical
+
+/// Fixed physical page for VirtIO-net TX DMA requests (reused).
+const NET_TX_DMA_PHYS_CHIRHO: u64 = 0xB0_0000; // 11MB physical — one page, reused
+
 /// VirtIO-net device driver backed by legacy PCI I/O port transport.
 ///
 /// Queue 0 = receiveq (device -> driver), Queue 1 = transmitq (driver -> device).
@@ -6071,8 +6079,6 @@ pub struct VirtioNetIoDeviceChirho {
     /// Each buffer holds VIRTIO_NET_HDR_SIZE + MAX_FRAME_SIZE bytes.
     /// Index matches descriptor index.
     rx_buf_phys_base_chirho: u64,
-    /// Dedicated per-device TX DMA buffer.
-    tx_dma_phys_base_chirho: u64,
     /// Number of RX buffers allocated.
     rx_buf_count_chirho: u16,
     /// Software receive queue: frames popped from the used ring.
@@ -6084,49 +6090,21 @@ pub struct VirtioNetIoDeviceChirho {
 unsafe impl Send for VirtioNetIoDeviceChirho {}
 
 impl VirtioNetIoDeviceChirho {
-    /// Allocate a DMA region from the global frame allocator.
-    ///
-    /// Legacy VirtIO requires physically contiguous queue memory. We allocate
-    /// page-by-page from the global frame allocator and verify contiguity so
-    /// the NIC cannot DMA into unrelated kernel memory.
-    ///
-    /// Returns `(physical_address, virtual_address)` on success.
-    fn alloc_dma_chirho(size_bytes_chirho: usize) -> Option<(u64, usize)> {
-        use x86_64::structures::paging::FrameAllocator;
-
-        let pages_chirho = (size_bytes_chirho + 4095) / 4096;
-        if pages_chirho == 0 {
-            return None;
-        }
-
-        let phys_chirho = {
-            let mut alloc_guard_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
-            let alloc_chirho = alloc_guard_chirho.as_mut()?;
-            let first_frame_chirho = alloc_chirho.allocate_frame()?;
-            let mut prev_phys_chirho = first_frame_chirho.start_address().as_u64();
-            let base_phys_chirho = prev_phys_chirho;
-            for _page_idx_chirho in 1..pages_chirho {
-                let frame_chirho = alloc_chirho.allocate_frame()?;
-                let frame_phys_chirho = frame_chirho.start_address().as_u64();
-                if frame_phys_chirho != prev_phys_chirho + 4096 {
-                    crate::serial_debug_chirho!(
-                        "[VNET-IO] DMA allocation lost contiguity: prev={:#x} next={:#x}",
-                        prev_phys_chirho,
-                        frame_phys_chirho,
-                    );
-                    return None;
-                }
-                prev_phys_chirho = frame_phys_chirho;
-            }
-            base_phys_chirho
-        };
-
+    /// Allocate a contiguous DMA region from the net bump allocator.
+    /// Returns (physical_address, virtual_address).
+    fn alloc_dma_chirho(size_bytes_chirho: usize) -> (u64, usize) {
+        let pages_chirho = ((size_bytes_chirho + 4095) / 4096) as u64;
+        let phys_chirho = NET_VRING_PHYS_NEXT_CHIRHO.fetch_add(
+            pages_chirho * 4096,
+            core::sync::atomic::Ordering::SeqCst,
+        );
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         let virt_chirho = (phys_chirho + phys_offset_chirho) as usize;
+        // Zero the region
         unsafe {
             core::ptr::write_bytes(virt_chirho as *mut u8, 0, size_bytes_chirho);
         }
-        Some((phys_chirho, virt_chirho))
+        (phys_chirho, virt_chirho)
     }
 
     /// Set up a single legacy virtqueue: allocate contiguous DMA, write PFN.
@@ -6164,7 +6142,7 @@ impl VirtioNetIoDeviceChirho {
         let total_bytes_chirho = used_ring_offset_chirho + used_ring_bytes_chirho;
 
         // Allocate contiguous physical DMA memory.
-        let (phys_base_chirho, virt_base_chirho) = Self::alloc_dma_chirho(total_bytes_chirho)?;
+        let (phys_base_chirho, virt_base_chirho) = Self::alloc_dma_chirho(total_bytes_chirho);
 
         crate::serial_debug_chirho!(
             "    [VNET-IO] Queue {} virt={:#x} phys={:#x} size={} total_bytes={}",
@@ -6282,21 +6260,12 @@ impl VirtioNetIoDeviceChirho {
             rx_size_chirho,
         );
         let total_rx_buf_bytes_chirho = (num_rx_bufs_chirho as usize) * buf_size_chirho;
-        let (rx_buf_phys_chirho, _rx_buf_virt_chirho) =
-            Self::alloc_dma_chirho(total_rx_buf_bytes_chirho)?;
-
-        let tx_dma_bytes_chirho = VIRTIO_NET_HDR_SIZE_CHIRHO + MAX_FRAME_SIZE_CHIRHO;
-        let (tx_dma_phys_base_chirho, _tx_dma_virt_chirho) =
-            Self::alloc_dma_chirho(tx_dma_bytes_chirho)?;
+        let (rx_buf_phys_chirho, rx_buf_virt_chirho) =
+            Self::alloc_dma_chirho(total_rx_buf_bytes_chirho);
 
         crate::serial_debug_chirho!(
             "    [VNET-IO] RX buffers: {} x {} bytes at phys {:#x}",
             num_rx_bufs_chirho, buf_size_chirho, rx_buf_phys_chirho
-        );
-        crate::serial_debug_chirho!(
-            "    [VNET-IO] TX DMA buffer: {} bytes at phys {:#x}",
-            tx_dma_bytes_chirho,
-            tx_dma_phys_base_chirho,
         );
 
         // Post each RX buffer as a single descriptor to the RX vring.
@@ -6365,7 +6334,6 @@ impl VirtioNetIoDeviceChirho {
             rx_vq_phys_base_chirho: rx_phys_base_chirho,
             tx_vq_phys_base_chirho: tx_phys_base_chirho,
             rx_buf_phys_base_chirho: rx_buf_phys_chirho,
-            tx_dma_phys_base_chirho,
             rx_buf_count_chirho: num_rx_bufs_chirho,
             sw_rx_queue_chirho: VecDeque::new(),
         })
@@ -6522,7 +6490,7 @@ impl VirtioNetIoDeviceChirho {
 
         // Build the TX DMA buffer: [virtio-net-header (10 bytes)][frame data]
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-        let tx_dma_virt_chirho = (self.tx_dma_phys_base_chirho + phys_offset_chirho) as *mut u8;
+        let tx_dma_virt_chirho = (NET_TX_DMA_PHYS_CHIRHO + phys_offset_chirho) as *mut u8;
 
         // Write virtio-net header (10 bytes, all zeros = no offload).
         unsafe {
@@ -6539,9 +6507,8 @@ impl VirtioNetIoDeviceChirho {
             );
         }
 
-        let hdr_phys_chirho = self.tx_dma_phys_base_chirho;
-        let data_phys_chirho =
-            self.tx_dma_phys_base_chirho + VIRTIO_NET_HDR_SIZE_CHIRHO as u64;
+        let hdr_phys_chirho = NET_TX_DMA_PHYS_CHIRHO;
+        let data_phys_chirho = NET_TX_DMA_PHYS_CHIRHO + VIRTIO_NET_HDR_SIZE_CHIRHO as u64;
 
         // Descriptor 0: virtio-net header (device-readable, chained).
         unsafe {
