@@ -1,0 +1,24 @@
+We want to actually build a correctly working linux kernel, not take shortcuts, we want to demo right code not just make it look like we have a working kernel but that what we are demoing actually works, it might not be finished but its not like 'north korea' showing a beautiful building on the outside with nothing in it, leverage rust, maybe use COW and things. Anyways:
+host computer (this) will have a tmux session DEMO_CHIRHO to help with the host side of things  
+- uname -a
+  - ls /
+  - cd proc
+  - ls
+  - cat something
+  - cd ..
+  - sqlite3 --version
+  - (make a db, input data, exit, ls, enter, select data)
+  - python3 print 42
+  - curl https://bible-api.com/john%203:16
+  - modprobe loopback  # The demo should use Alpine's loop.ko from its modules directory, not our built-in Rust implementation
+  - have an ext4 container file that in the filesystem has a file with Matthew 7:12 of doing unto others as you would unto yourself called matthew712_chirho.txt
+  - mount the loopback
+  - enter the loopback mount dir and cat the file then echo aleluya into another file in the loopback and read it
+  - ssh to host computer make a file and show it and erase it and exit
+  - start dropbear
+  - on host computer enter the dropbear server and make a file
+  - show that file on the qemu
+  - start XWindow with XTerm
+  - in the XTerm run mp3 player
+  - MP3 Player plays some Christian Hymn
+  - Echo Hallelujah

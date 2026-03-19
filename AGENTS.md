@@ -1,5 +1,7 @@
 # For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life.
  Hallelujah remember is is already March 2026 for when you try to include libraries and crates and things
+Claude is the boss in this not codex
+and this metropoliluya session is LINELUYA
 
 Please comment the full content of John 3:16 at the top of all our files.
 
@@ -115,16 +117,22 @@ You can modify the following section
 
 ## Project: Lineluya — Linux Kernel Rewrite in Rust
 
-### Current State (v3.3.0 — "Clearing the Land")
-- 65,000+ lines of Rust across 75+ kernel modules
+### Current State (v4.0 — "Thank You Jesus Christ")
+- 70,000+ lines of Rust across 85+ kernel modules
 - **5 real Alpine Linux programs run**: sqlite3, python3, dropbear, apk, BusyBox
-- **TCP networking**: DHCP + 3-way handshake + HTTP data transfer
-- Boots via UEFI in QEMU with pixel framebuffer console (1280x800)
-- VirtIO-blk + VirtIO-net I/O port drivers
-- ext4 mounted at / with symlink following
+- **TCP networking**: DHCP + 3-way handshake + SSH bidirectional data
+- Boots via UEFI/BIOS in QEMU with pixel framebuffer console (1280x720)
+- VirtIO-blk (read+write) + VirtIO-net I/O port drivers
+- ext4 mounted at / with symlink following + write support
 - .ko kernel module loading with 81 symbol exports
 - PIE ELF loading with GLOB_DAT/JUMP_SLOT symbol resolution
-- 75+ syscalls, graceful OOM handler
+- 80+ syscalls, typed error enums, zero-warning build
+- Per-process fd tables, real setsid/setpgid, signal delivery
+- PTY subsystem (master/slave, termios, ioctls)
+- Sound card PCI detection, /dev/dsp OSS stub
+- Loop device nodes (/dev/loop-control + /dev/loop0-7)
+- evdev keyboard driver (/dev/input/event0)
+- Framebuffer ioctls for X11 (VSCREENINFO, FSCREENINFO)
 
 ### Verified Working in QEMU (x86_64) — v3.5.0
 - **REAL FORK**: parent+child run concurrently with preemptive scheduling
@@ -184,4 +192,4 @@ qemu-system-x86_64 \
 - linked_list_allocator fragmentation under heavy alloc/dealloc
 
 ### Tags
-v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath (v1 PRD 100%), v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork
+v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ
