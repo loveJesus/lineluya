@@ -767,6 +767,18 @@ pub fn has_runnable_tasks_chirho() -> bool {
     false
 }
 
+/// Return the total number of tasks (current + queued).
+pub fn task_count_chirho() -> usize {
+    if let Some(guard_chirho) = SCHEDULER_CHIRHO.try_lock() {
+        if let Some(ref sched_chirho) = *guard_chirho {
+            let queued_chirho = sched_chirho.tasks_chirho.len();
+            let current_chirho = if sched_chirho.current_pid_chirho.is_some() { 1 } else { 0 };
+            return queued_chirho + current_chirho;
+        }
+    }
+    0
+}
+
 /// Set the current running PID.  Called during boot to register PID 0
 /// with the scheduler so it participates in scheduling (gets pushed to
 /// the run queue when yielding).

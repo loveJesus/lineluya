@@ -3714,10 +3714,10 @@ fn sys_select_chirho(
             crate::scheduler_chirho::yield_current_chirho();
         }
 
-        // Wait long enough for TCP data to arrive. 200 was too short —
-        // SSH client timed out before dropbear's select woke up.
-        let max_attempts_chirho = 50_000u32;
-        for _attempt_chirho in 0..max_attempts_chirho {
+        // Block: HLT loop waiting for data. NO yield here — yields in the
+        // select path corrupt the SSH TCP stream. PID 4 gets CPU via the
+        // user-mode preemption trampoline (sched_yield from timer IRQ).
+        for _attempt_chirho in 0..50_000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
@@ -3725,7 +3725,6 @@ fn sys_select_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
             );
             if count_chirho > 0 {
-                crate::serial_debug_chirho!("[SELECT] woke: {} fds ready", count_chirho);
                 return count_chirho;
             }
         }
