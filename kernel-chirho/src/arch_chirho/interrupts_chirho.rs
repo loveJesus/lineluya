@@ -773,6 +773,12 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         write_lapic_eoi_chirho(phys_offset_chirho);
     }
 
+    // Drive the polled network RX path from the periodic timer.  VirtIO-net
+    // IRQ 11 is currently masked/ack-only during the SSH work, so blocked
+    // tasks sleeping on SOCKET_DATA_WAITQUEUE_CHIRHO still need a periodic
+    // kernel entry point that drains device RX rings and wakes them.
+    crate::net_chirho::poll_network_chirho();
+
     // Deferred user-mode preemption:
     // Rewrite the IRETQ frame so the interrupted task returns to a small
     // user trampoline that performs `sched_yield` via the normal syscall
