@@ -29,6 +29,7 @@
 //! - [`UtsNameChirho`] -- Linux `struct utsname` equivalent
 
 use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::vec::Vec;
 
 // ============================================================================
 // Syscall frame (saved register state)
@@ -662,6 +663,11 @@ pub const ENOTDIR_CHIRHO: i64 = 20;
 pub const EISDIR_CHIRHO: i64 = 21;
 /// Invalid argument.
 pub const EINVAL_CHIRHO: i64 = 22;
+
+/// Maximum supplementary groups accepted by `setgroups(2)` for now.
+const MAX_SUPPLEMENTARY_GROUPS_CHIRHO: usize = 256;
+/// Sentinel used by Linux credential setters for "leave this ID unchanged".
+const ID_NO_CHANGE_CHIRHO: u32 = u32::MAX;
 /// File table overflow.
 pub const ENFILE_CHIRHO: i64 = 23;
 /// Too many open files.
@@ -1527,9 +1533,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             }
         },
         SYS_OPEN_CHIRHO => crate::fs_chirho::sys_open_chirho(
-            arg0_chirho,  // pathname
-            arg1_chirho as u32, // flags
-            arg2_chirho as u32, // mode
+            arg0_chirho,
+            arg1_chirho as u32,
+            arg2_chirho as u32,
         ),
         SYS_CLOSE_CHIRHO => {
             let pid_dbg_chirho = crate::task_chirho::current_task_chirho()
@@ -1811,9 +1817,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         ),
         SYS_CHMOD_CHIRHO | SYS_CHOWN_CHIRHO => -ENOENT_CHIRHO,
         SYS_GETUID_CHIRHO => sys_getuid_chirho(),
-        // Phase 4: Credentials -- setuid/setgid family (stubs, always root)
-        SYS_SETUID_CHIRHO => 0,
-        SYS_SETGID_CHIRHO => 0,
+        SYS_SETUID_CHIRHO => sys_setuid_chirho(arg0_chirho as u32),
+        SYS_SETGID_CHIRHO => sys_setgid_chirho(arg0_chirho as u32),
         SYS_GETEUID_CHIRHO => sys_geteuid_chirho(),
         SYS_GETGID_CHIRHO => sys_getgid_chirho(),
         SYS_GETEGID_CHIRHO => sys_getegid_chirho(),
@@ -1822,26 +1827,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_SETPGID_CHIRHO => sys_setpgid_chirho(arg0_chirho, arg1_chirho),
         SYS_GETPGRP_CHIRHO => sys_getpgrp_chirho(),
         SYS_SETSID_CHIRHO => sys_setsid_chirho(),
-        SYS_SETREUID_CHIRHO => 0,
-        SYS_SETREGID_CHIRHO => 0,
-        SYS_GETGROUPS_CHIRHO => 0,
-        SYS_SETGROUPS_CHIRHO => 0,
-        SYS_SETRESUID_CHIRHO => 0,
-        SYS_GETRESUID_CHIRHO => {
-            // Write 0 (root) to ruid, euid, suid pointers
-            if arg0_chirho != 0 { unsafe { *(arg0_chirho as *mut u32) = 0; } }
-            if arg1_chirho != 0 { unsafe { *(arg1_chirho as *mut u32) = 0; } }
-            if arg2_chirho != 0 { unsafe { *(arg2_chirho as *mut u32) = 0; } }
-            0
+        SYS_SETREUID_CHIRHO => sys_setreuid_chirho(arg0_chirho as u32, arg1_chirho as u32),
+        SYS_SETREGID_CHIRHO => sys_setregid_chirho(arg0_chirho as u32, arg1_chirho as u32),
+        SYS_GETGROUPS_CHIRHO => sys_getgroups_chirho(arg0_chirho as usize, arg1_chirho),
+        SYS_SETGROUPS_CHIRHO => sys_setgroups_chirho(arg0_chirho as usize, arg1_chirho),
+        SYS_SETRESUID_CHIRHO => {
+            sys_setresuid_chirho(arg0_chirho as u32, arg1_chirho as u32, arg2_chirho as u32)
         },
-        SYS_SETRESGID_CHIRHO => 0,
-        SYS_GETRESGID_CHIRHO => {
-            // Write 0 (root) to rgid, egid, sgid pointers
-            if arg0_chirho != 0 { unsafe { *(arg0_chirho as *mut u32) = 0; } }
-            if arg1_chirho != 0 { unsafe { *(arg1_chirho as *mut u32) = 0; } }
-            if arg2_chirho != 0 { unsafe { *(arg2_chirho as *mut u32) = 0; } }
-            0
+        SYS_GETRESUID_CHIRHO => sys_getresuid_chirho(arg0_chirho, arg1_chirho, arg2_chirho),
+        SYS_SETRESGID_CHIRHO => {
+            sys_setresgid_chirho(arg0_chirho as u32, arg1_chirho as u32, arg2_chirho as u32)
         },
+        SYS_GETRESGID_CHIRHO => sys_getresgid_chirho(arg0_chirho, arg1_chirho, arg2_chirho),
         SYS_GETPGID_CHIRHO => sys_getpgid_chirho(arg0_chirho),
         SYS_GETSID_CHIRHO => sys_getsid_chirho(arg0_chirho),
         // Phase 4: Additional signal syscalls
@@ -1873,12 +1870,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             0
         },
         SYS_EXIT_GROUP_CHIRHO => sys_exit_group_chirho(arg0_chirho as i32),
-        SYS_OPENAT_CHIRHO => crate::fs_chirho::sys_openat_chirho(
-            arg0_chirho as i64,  // dirfd
-            arg1_chirho,         // pathname
-            arg2_chirho as u32,  // flags
-            arg3_chirho as u32,  // mode
-        ),
+        SYS_OPENAT_CHIRHO => {
+            let r_chirho = crate::fs_chirho::sys_openat_chirho(
+                arg0_chirho as i64,
+                arg1_chirho,
+                arg2_chirho as u32,
+                arg3_chirho as u32,
+            );
+            r_chirho
+        },
         SYS_MKDIRAT_CHIRHO => sys_mkdirat_chirho(
             arg0_chirho as i32,
             arg1_chirho as *const u8,
@@ -4252,51 +4252,387 @@ fn sys_getsid_chirho(pid_arg_chirho: u64) -> i64 {
 
 /// `getuid(2)` -- return user ID (root = 0).
 fn sys_getuid_chirho() -> i64 {
-    0
+    current_credential_snapshot_chirho()
+        .map(|snapshot_chirho| snapshot_chirho.uid_chirho as i64)
+        .unwrap_or(0)
 }
 
 /// `geteuid(2)` -- return effective user ID (root = 0).
 fn sys_geteuid_chirho() -> i64 {
-    0
+    current_credential_snapshot_chirho()
+        .map(|snapshot_chirho| snapshot_chirho.euid_chirho as i64)
+        .unwrap_or(0)
 }
 
 /// `getgid(2)` -- return group ID (root = 0).
 fn sys_getgid_chirho() -> i64 {
-    0
+    current_credential_snapshot_chirho()
+        .map(|snapshot_chirho| snapshot_chirho.gid_chirho as i64)
+        .unwrap_or(0)
 }
 
 /// `getegid(2)` -- return effective group ID (root = 0).
 fn sys_getegid_chirho() -> i64 {
+    current_credential_snapshot_chirho()
+        .map(|snapshot_chirho| snapshot_chirho.egid_chirho as i64)
+        .unwrap_or(0)
+}
+
+#[derive(Clone)]
+struct CredentialSnapshotChirho {
+    tgid_chirho: u64,
+    uid_chirho: u32,
+    gid_chirho: u32,
+    euid_chirho: u32,
+    egid_chirho: u32,
+    saved_uid_chirho: u32,
+    saved_gid_chirho: u32,
+    supplementary_groups_chirho: Vec<u32>,
+}
+
+fn current_credential_snapshot_chirho() -> Option<CredentialSnapshotChirho> {
+    let task_arc_chirho = crate::task_chirho::current_task_chirho()?;
+    let task_chirho = task_arc_chirho.lock();
+    Some(CredentialSnapshotChirho {
+        tgid_chirho: task_chirho.tgid_chirho,
+        uid_chirho: task_chirho.uid_chirho,
+        gid_chirho: task_chirho.gid_chirho,
+        euid_chirho: task_chirho.euid_chirho,
+        egid_chirho: task_chirho.egid_chirho,
+        saved_uid_chirho: task_chirho.saved_uid_chirho,
+        saved_gid_chirho: task_chirho.saved_gid_chirho,
+        supplementary_groups_chirho: task_chirho.supplementary_groups_chirho.clone(),
+    })
+}
+
+fn write_u32_to_user_chirho(user_ptr_chirho: u64, value_chirho: u32) -> i64 {
+    if user_ptr_chirho == 0 {
+        return 0;
+    }
+    let value_bytes_chirho = value_chirho.to_ne_bytes();
+    match crate::uaccess_chirho::copy_to_user_chirho(user_ptr_chirho, &value_bytes_chirho, 4) {
+        Ok(()) => 0,
+        Err(_) => -EFAULT_CHIRHO,
+    }
+}
+
+fn apply_credentials_to_thread_group_chirho(
+    tgid_chirho: u64,
+    mut update_chirho: impl FnMut(&mut crate::task_chirho::TaskChirho),
+) {
+    let task_list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+    for task_arc_chirho in task_list_chirho.iter() {
+        let mut task_chirho = task_arc_chirho.lock();
+        if task_chirho.tgid_chirho == tgid_chirho {
+            update_chirho(&mut task_chirho);
+        }
+    }
+}
+
+fn can_assume_uid_chirho(snapshot_chirho: &CredentialSnapshotChirho, uid_chirho: u32) -> bool {
+    uid_chirho == snapshot_chirho.uid_chirho
+        || uid_chirho == snapshot_chirho.euid_chirho
+        || uid_chirho == snapshot_chirho.saved_uid_chirho
+}
+
+fn can_assume_gid_chirho(snapshot_chirho: &CredentialSnapshotChirho, gid_chirho: u32) -> bool {
+    gid_chirho == snapshot_chirho.gid_chirho
+        || gid_chirho == snapshot_chirho.egid_chirho
+        || gid_chirho == snapshot_chirho.saved_gid_chirho
+}
+
+fn requested_id_chirho(requested_id_chirho: u32) -> Option<u32> {
+    if requested_id_chirho == ID_NO_CHANGE_CHIRHO {
+        None
+    } else {
+        Some(requested_id_chirho)
+    }
+}
+
+fn sys_setuid_chirho(uid_chirho: u32) -> i64 {
+    let Some(snapshot_chirho) = current_credential_snapshot_chirho() else {
+        return -EPERM_CHIRHO;
+    };
+
+    if snapshot_chirho.euid_chirho == 0 {
+        apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+            task_chirho.uid_chirho = uid_chirho;
+            task_chirho.euid_chirho = uid_chirho;
+            task_chirho.saved_uid_chirho = uid_chirho;
+        });
+        return 0;
+    }
+
+    if !can_assume_uid_chirho(&snapshot_chirho, uid_chirho) {
+        return -EPERM_CHIRHO;
+    }
+
+    apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+        task_chirho.euid_chirho = uid_chirho;
+    });
+    0
+}
+
+fn sys_setgid_chirho(gid_chirho: u32) -> i64 {
+    let Some(snapshot_chirho) = current_credential_snapshot_chirho() else {
+        return -EPERM_CHIRHO;
+    };
+
+    if snapshot_chirho.euid_chirho == 0 {
+        apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+            task_chirho.gid_chirho = gid_chirho;
+            task_chirho.egid_chirho = gid_chirho;
+            task_chirho.saved_gid_chirho = gid_chirho;
+        });
+        return 0;
+    }
+
+    if !can_assume_gid_chirho(&snapshot_chirho, gid_chirho) {
+        return -EPERM_CHIRHO;
+    }
+
+    apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+        task_chirho.egid_chirho = gid_chirho;
+    });
+    0
+}
+
+fn sys_setreuid_chirho(ruid_chirho: u32, euid_chirho: u32) -> i64 {
+    let Some(snapshot_chirho) = current_credential_snapshot_chirho() else {
+        return -EPERM_CHIRHO;
+    };
+
+    let requested_ruid_chirho = requested_id_chirho(ruid_chirho);
+    let requested_euid_chirho = requested_id_chirho(euid_chirho);
+
+    if snapshot_chirho.euid_chirho != 0 {
+        if let Some(new_ruid_chirho) = requested_ruid_chirho {
+            if new_ruid_chirho != snapshot_chirho.uid_chirho
+                && new_ruid_chirho != snapshot_chirho.euid_chirho
+            {
+                return -EPERM_CHIRHO;
+            }
+        }
+        if let Some(new_euid_chirho) = requested_euid_chirho {
+            if !can_assume_uid_chirho(&snapshot_chirho, new_euid_chirho) {
+                return -EPERM_CHIRHO;
+            }
+        }
+    }
+
+    let next_ruid_chirho = requested_ruid_chirho.unwrap_or(snapshot_chirho.uid_chirho);
+    let next_euid_chirho = requested_euid_chirho.unwrap_or(snapshot_chirho.euid_chirho);
+    let update_saved_uid_chirho = requested_ruid_chirho.is_some() || requested_euid_chirho.is_some();
+
+    apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+        task_chirho.uid_chirho = next_ruid_chirho;
+        task_chirho.euid_chirho = next_euid_chirho;
+        if update_saved_uid_chirho {
+            task_chirho.saved_uid_chirho = next_euid_chirho;
+        }
+    });
+    0
+}
+
+fn sys_setregid_chirho(rgid_chirho: u32, egid_chirho: u32) -> i64 {
+    let Some(snapshot_chirho) = current_credential_snapshot_chirho() else {
+        return -EPERM_CHIRHO;
+    };
+
+    let requested_rgid_chirho = requested_id_chirho(rgid_chirho);
+    let requested_egid_chirho = requested_id_chirho(egid_chirho);
+
+    if snapshot_chirho.euid_chirho != 0 {
+        if let Some(new_rgid_chirho) = requested_rgid_chirho {
+            if new_rgid_chirho != snapshot_chirho.gid_chirho
+                && new_rgid_chirho != snapshot_chirho.egid_chirho
+            {
+                return -EPERM_CHIRHO;
+            }
+        }
+        if let Some(new_egid_chirho) = requested_egid_chirho {
+            if !can_assume_gid_chirho(&snapshot_chirho, new_egid_chirho) {
+                return -EPERM_CHIRHO;
+            }
+        }
+    }
+
+    let next_rgid_chirho = requested_rgid_chirho.unwrap_or(snapshot_chirho.gid_chirho);
+    let next_egid_chirho = requested_egid_chirho.unwrap_or(snapshot_chirho.egid_chirho);
+    let update_saved_gid_chirho = requested_rgid_chirho.is_some() || requested_egid_chirho.is_some();
+
+    apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+        task_chirho.gid_chirho = next_rgid_chirho;
+        task_chirho.egid_chirho = next_egid_chirho;
+        if update_saved_gid_chirho {
+            task_chirho.saved_gid_chirho = next_egid_chirho;
+        }
+    });
+    0
+}
+
+fn sys_setresuid_chirho(ruid_chirho: u32, euid_chirho: u32, suid_chirho: u32) -> i64 {
+    let Some(snapshot_chirho) = current_credential_snapshot_chirho() else {
+        return -EPERM_CHIRHO;
+    };
+
+    let requested_ruid_chirho = requested_id_chirho(ruid_chirho);
+    let requested_euid_chirho = requested_id_chirho(euid_chirho);
+    let requested_suid_chirho = requested_id_chirho(suid_chirho);
+
+    if snapshot_chirho.euid_chirho != 0 {
+        for requested_uid_chirho in [requested_ruid_chirho, requested_euid_chirho, requested_suid_chirho]
+            .into_iter()
+            .flatten()
+        {
+            if !can_assume_uid_chirho(&snapshot_chirho, requested_uid_chirho) {
+                return -EPERM_CHIRHO;
+            }
+        }
+    }
+
+    let next_ruid_chirho = requested_ruid_chirho.unwrap_or(snapshot_chirho.uid_chirho);
+    let next_euid_chirho = requested_euid_chirho.unwrap_or(snapshot_chirho.euid_chirho);
+    let next_suid_chirho = requested_suid_chirho.unwrap_or(snapshot_chirho.saved_uid_chirho);
+
+    apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+        task_chirho.uid_chirho = next_ruid_chirho;
+        task_chirho.euid_chirho = next_euid_chirho;
+        task_chirho.saved_uid_chirho = next_suid_chirho;
+    });
+    0
+}
+
+fn sys_setresgid_chirho(rgid_chirho: u32, egid_chirho: u32, sgid_chirho: u32) -> i64 {
+    let Some(snapshot_chirho) = current_credential_snapshot_chirho() else {
+        return -EPERM_CHIRHO;
+    };
+
+    let requested_rgid_chirho = requested_id_chirho(rgid_chirho);
+    let requested_egid_chirho = requested_id_chirho(egid_chirho);
+    let requested_sgid_chirho = requested_id_chirho(sgid_chirho);
+
+    if snapshot_chirho.euid_chirho != 0 {
+        for requested_gid_chirho in [requested_rgid_chirho, requested_egid_chirho, requested_sgid_chirho]
+            .into_iter()
+            .flatten()
+        {
+            if !can_assume_gid_chirho(&snapshot_chirho, requested_gid_chirho) {
+                return -EPERM_CHIRHO;
+            }
+        }
+    }
+
+    let next_rgid_chirho = requested_rgid_chirho.unwrap_or(snapshot_chirho.gid_chirho);
+    let next_egid_chirho = requested_egid_chirho.unwrap_or(snapshot_chirho.egid_chirho);
+    let next_sgid_chirho = requested_sgid_chirho.unwrap_or(snapshot_chirho.saved_gid_chirho);
+
+    apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+        task_chirho.gid_chirho = next_rgid_chirho;
+        task_chirho.egid_chirho = next_egid_chirho;
+        task_chirho.saved_gid_chirho = next_sgid_chirho;
+    });
+    0
+}
+
+/// `getgroups(2)` -- write supplementary groups to user memory.
+fn sys_getgroups_chirho(size_chirho: usize, list_ptr_chirho: u64) -> i64 {
+    let groups_chirho = current_credential_snapshot_chirho()
+        .map(|snapshot_chirho| snapshot_chirho.supplementary_groups_chirho)
+        .unwrap_or_default();
+
+    if size_chirho == 0 {
+        return groups_chirho.len() as i64;
+    }
+    if size_chirho < groups_chirho.len() {
+        return -EINVAL_CHIRHO;
+    }
+
+    for (index_chirho, gid_chirho) in groups_chirho.iter().enumerate() {
+        let user_ptr_chirho = list_ptr_chirho + (index_chirho * core::mem::size_of::<u32>()) as u64;
+        let result_chirho = write_u32_to_user_chirho(user_ptr_chirho, *gid_chirho);
+        if result_chirho != 0 {
+            return result_chirho;
+        }
+    }
+
+    groups_chirho.len() as i64
+}
+
+/// `setgroups(2)` -- replace supplementary groups for the current thread group.
+fn sys_setgroups_chirho(size_chirho: usize, list_ptr_chirho: u64) -> i64 {
+    let Some(snapshot_chirho) = current_credential_snapshot_chirho() else {
+        return -EPERM_CHIRHO;
+    };
+
+    if snapshot_chirho.euid_chirho != 0 {
+        return -EPERM_CHIRHO;
+    }
+    if size_chirho > MAX_SUPPLEMENTARY_GROUPS_CHIRHO {
+        return -EINVAL_CHIRHO;
+    }
+
+    let mut groups_chirho = Vec::with_capacity(size_chirho);
+    for index_chirho in 0..size_chirho {
+        let mut gid_bytes_chirho = [0u8; 4];
+        let user_ptr_chirho = list_ptr_chirho + (index_chirho * core::mem::size_of::<u32>()) as u64;
+        match crate::uaccess_chirho::copy_from_user_chirho(&mut gid_bytes_chirho, user_ptr_chirho, 4) {
+            Ok(()) => groups_chirho.push(u32::from_ne_bytes(gid_bytes_chirho)),
+            Err(_) => return -EFAULT_CHIRHO,
+        }
+    }
+
+    apply_credentials_to_thread_group_chirho(snapshot_chirho.tgid_chirho, |task_chirho| {
+        task_chirho.supplementary_groups_chirho = groups_chirho.clone();
+    });
     0
 }
 
 /// `getresuid(2)` -- write real, effective, saved UIDs to user buffers.
-///
-/// Stub: writes 0 (root) to all three pointers.
 fn sys_getresuid_chirho(ruid_ptr_chirho: u64, euid_ptr_chirho: u64, suid_ptr_chirho: u64) -> i64 {
-    let zero_bytes_chirho = 0u32.to_ne_bytes();
-    for ptr_chirho in [ruid_ptr_chirho, euid_ptr_chirho, suid_ptr_chirho] {
-        if ptr_chirho != 0 {
-            if crate::uaccess_chirho::copy_to_user_chirho(ptr_chirho, &zero_bytes_chirho, 4).is_err()
-            {
-                return -14; // EFAULT
-            }
+    let snapshot_chirho = current_credential_snapshot_chirho().unwrap_or(CredentialSnapshotChirho {
+        tgid_chirho: 0,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        euid_chirho: 0,
+        egid_chirho: 0,
+        saved_uid_chirho: 0,
+        saved_gid_chirho: 0,
+        supplementary_groups_chirho: Vec::new(),
+    });
+    for (ptr_chirho, value_chirho) in [
+        (ruid_ptr_chirho, snapshot_chirho.uid_chirho),
+        (euid_ptr_chirho, snapshot_chirho.euid_chirho),
+        (suid_ptr_chirho, snapshot_chirho.saved_uid_chirho),
+    ] {
+        let result_chirho = write_u32_to_user_chirho(ptr_chirho, value_chirho);
+        if result_chirho != 0 {
+            return result_chirho;
         }
     }
     0
 }
 
 /// `getresgid(2)` -- write real, effective, saved GIDs to user buffers.
-///
-/// Stub: writes 0 (root) to all three pointers.
 fn sys_getresgid_chirho(rgid_ptr_chirho: u64, egid_ptr_chirho: u64, sgid_ptr_chirho: u64) -> i64 {
-    let zero_bytes_chirho = 0u32.to_ne_bytes();
-    for ptr_chirho in [rgid_ptr_chirho, egid_ptr_chirho, sgid_ptr_chirho] {
-        if ptr_chirho != 0 {
-            if crate::uaccess_chirho::copy_to_user_chirho(ptr_chirho, &zero_bytes_chirho, 4).is_err()
-            {
-                return -14; // EFAULT
-            }
+    let snapshot_chirho = current_credential_snapshot_chirho().unwrap_or(CredentialSnapshotChirho {
+        tgid_chirho: 0,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        euid_chirho: 0,
+        egid_chirho: 0,
+        saved_uid_chirho: 0,
+        saved_gid_chirho: 0,
+        supplementary_groups_chirho: Vec::new(),
+    });
+    for (ptr_chirho, value_chirho) in [
+        (rgid_ptr_chirho, snapshot_chirho.gid_chirho),
+        (egid_ptr_chirho, snapshot_chirho.egid_chirho),
+        (sgid_ptr_chirho, snapshot_chirho.saved_gid_chirho),
+    ] {
+        let result_chirho = write_u32_to_user_chirho(ptr_chirho, value_chirho);
+        if result_chirho != 0 {
+            return result_chirho;
         }
     }
     0

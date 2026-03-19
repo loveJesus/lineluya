@@ -375,6 +375,9 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             gid_chirho: parent_chirho.gid_chirho,
             euid_chirho: parent_chirho.euid_chirho,
             egid_chirho: parent_chirho.egid_chirho,
+            saved_uid_chirho: parent_chirho.saved_uid_chirho,
+            saved_gid_chirho: parent_chirho.saved_gid_chirho,
+            supplementary_groups_chirho: parent_chirho.supplementary_groups_chirho.clone(),
             comm_chirho: parent_chirho.comm_chirho,
             fs_base_chirho: parent_chirho.fs_base_chirho,
             gs_base_chirho: parent_chirho.gs_base_chirho,
@@ -549,6 +552,9 @@ pub fn sys_clone_chirho(
             gid_chirho: parent_chirho.gid_chirho,
             euid_chirho: parent_chirho.euid_chirho,
             egid_chirho: parent_chirho.egid_chirho,
+            saved_uid_chirho: parent_chirho.saved_uid_chirho,
+            saved_gid_chirho: parent_chirho.saved_gid_chirho,
+            supplementary_groups_chirho: parent_chirho.supplementary_groups_chirho.clone(),
             comm_chirho: parent_chirho.comm_chirho,
             fs_base_chirho: parent_chirho.fs_base_chirho,
             gs_base_chirho: parent_chirho.gs_base_chirho,
@@ -991,23 +997,11 @@ pub fn sys_execve_with_filename_chirho(
         envp_vec_chirho.len()
     );
 
-    // -----------------------------------------------------------------------
-    // Step 3b: Clear old user mappings from boot PML4
-    // -----------------------------------------------------------------------
-    // After fork marks boot PML4 user pages as COW, the old pages must be
-    // unmapped before loading the new ELF to avoid PageAlreadyMapped errors.
-    // This also clears COW markings. Safe: fork child has its own PT copy.
-    // argv/envp strings were already copied to kernel heap above.
-    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
-    if boot_pml4_chirho.as_u64() != 0 {
-        let cleared_chirho = crate::pagetable_chirho::clear_user_pages_chirho(boot_pml4_chirho);
-        if cleared_chirho > 0 {
-            crate::serial_println_chirho!(
-                "[EXECVE] Cleared {} user pages from boot PML4 for new ELF",
-                cleared_chirho,
-            );
-        }
-    }
+    // NOTE: No COW page cleanup needed here. The fork marks boot PML4 pages
+    // as COW. The COW handler resolves them on write (allocating new frames).
+    // After exec, the old process's pages are abandoned — the new binary gets
+    // fresh page mappings via GLOBAL_MAPPER. Any COW pages that haven't been
+    // resolved will be resolved on first write (lazy COW).
 
     // -----------------------------------------------------------------------
     // Step 4: Obtain the ELF binary data

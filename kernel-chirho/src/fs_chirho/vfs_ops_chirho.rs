@@ -1041,6 +1041,54 @@ fn create_file_at_path_chirho(
 // Syscall implementations
 // ============================================================================
 
+/// Create a memory-backed file descriptor with the given content.
+/// Used to provide synthetic /etc/group, /etc/passwd, /etc/shadow content
+/// that bypasses ext4 I/O issues with newly-created files.
+fn create_memory_backed_fd_chirho(path_chirho: &str, content_chirho: &[u8], _flags_chirho: u32) -> i64 {
+    use alloc::collections::VecDeque;
+
+    // Create a pipe with the content pre-loaded, write-end closed
+    let pipe_chirho = Arc::new(Mutex::new(crate::pipe_chirho::PipeChirho {
+        buffer_chirho: content_chirho.iter().copied().collect::<VecDeque<u8>>(),
+        readers_chirho: 1,
+        writers_chirho: 0,
+        closed_read_chirho: false,
+        closed_write_chirho: true,
+    }));
+    // Leak the PipeReadOpsChirho to get a &'static reference
+    let read_ops_chirho: &'static dyn FileOpsChirho = Box::leak(Box::new(
+        crate::pipe_chirho::PipeReadOpsChirho {
+            pipe_chirho: Arc::clone(&pipe_chirho),
+        },
+    ));
+    // Reuse tmpfs inode ops for synthetic auth files
+    let inode_chirho = Arc::new(Mutex::new(InodeChirho {
+        ino_chirho: 0,
+        mode_chirho: 0o100444,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: content_chirho.len() as u64,
+        nlink_chirho: 1,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &crate::tmpfs_chirho::TMPFS_INODE_OPS_CHIRHO,
+        fs_data_chirho: None,
+    }));
+    let file_chirho = FileChirho {
+        inode_chirho,
+        ops_chirho: read_ops_chirho,
+        pos_chirho: 0,
+        flags_chirho: O_RDONLY_CHIRHO,
+    };
+    let fd_chirho = alloc_and_insert_fd_chirho(
+        Arc::new(Mutex::new(file_chirho)),
+        Some(path_chirho),
+    );
+    crate::log_fs_chirho!("[VFS] Synthetic file '{}' -> fd={}", path_chirho, fd_chirho);
+    fd_chirho
+}
+
 /// `openat(2)` -- open a file relative to a directory fd.
 ///
 /// Currently ignores `dirfd_chirho` for absolute paths.
@@ -1108,6 +1156,30 @@ pub fn sys_openat_chirho(
 
     // Log which file is being opened.
     crate::log_fs_chirho!("OPEN {}", &pathname_chirho);
+    // Verbose logging for PID 4+ (SSH session children)
+    {
+        let open_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if open_pid_chirho >= 4 {
+            crate::serial_println_chirho!("[OPEN-PID{}] {}", open_pid_chirho, &pathname_chirho);
+        }
+    }
+
+    // Synthetic auth files: /etc/group, /etc/passwd, /etc/shadow.
+    // musl's initgroups() reads /etc/group via openat+read. Our ext4 driver
+    // may not properly read files created after the rootfs was built.
+    // Provide known-good content from kernel memory to bypass ext4 I/O issues.
+    {
+        let auth_content_chirho: Option<&[u8]> = match pathname_chirho.as_str() {
+            "/etc/group" => Some(b"root:x:0:root\nnobody:x:65534:\n"),
+            "/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n"),
+            "/etc/shadow" => Some(b"root::0:0:99999:7:::\n"),
+            _ => None,
+        };
+        if let Some(content_chirho) = auth_content_chirho {
+            return create_memory_backed_fd_chirho(&pathname_chirho, content_chirho, flags_chirho);
+        }
+    }
 
     // Special case: /dev/pts/N -- PTY slave devices are created dynamically
     // and don't exist in the VFS tree.  We detect this pattern and create

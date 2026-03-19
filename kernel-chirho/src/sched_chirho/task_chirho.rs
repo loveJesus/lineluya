@@ -305,6 +305,12 @@ pub struct TaskChirho {
     pub euid_chirho: u32,
     /// Effective group ID.
     pub egid_chirho: u32,
+    /// Saved user ID used by setuid-family syscalls.
+    pub saved_uid_chirho: u32,
+    /// Saved group ID used by setgid-family syscalls.
+    pub saved_gid_chirho: u32,
+    /// Supplementary groups for the task/thread group.
+    pub supplementary_groups_chirho: Vec<u32>,
 
     // -- Name ---------------------------------------------------------------
 
@@ -402,6 +408,9 @@ impl TaskChirho {
             gid_chirho: 0,
             euid_chirho: 0,
             egid_chirho: 0,
+            saved_uid_chirho: 0,
+            saved_gid_chirho: 0,
+            supplementary_groups_chirho: Vec::new(),
             comm_chirho: make_comm_chirho(name_chirho),
             fs_base_chirho: 0,
             gs_base_chirho: 0,
@@ -470,6 +479,9 @@ impl TaskChirho {
             gid_chirho: 0,
             euid_chirho: 0,
             egid_chirho: 0,
+            saved_uid_chirho: 0,
+            saved_gid_chirho: 0,
+            supplementary_groups_chirho: Vec::new(),
             comm_chirho: make_comm_chirho(name_chirho),
             fs_base_chirho: 0,
             gs_base_chirho: 0,

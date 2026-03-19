@@ -2916,7 +2916,19 @@ pub fn sys_sendto_chirho(
         let table_check_chirho = SOCKET_TABLE_CHIRHO.lock();
         if let Some(Some(sock_check_chirho)) = table_check_chirho.get(socket_idx_chirho) {
             if sock_check_chirho.family_chirho == 1 {
-                // AF_UNIX: not supported, silently discard
+                // AF_UNIX: log syslog messages for debugging, then discard.
+                if buf_chirho != 0 && len_chirho > 0 {
+                    let preview_len_chirho = core::cmp::min(len_chirho as usize, 120);
+                    let mut preview_chirho = alloc::vec![0u8; preview_len_chirho];
+                    for i_chirho in 0..preview_len_chirho {
+                        preview_chirho[i_chirho] = unsafe {
+                            core::ptr::read_volatile((buf_chirho as *const u8).add(i_chirho))
+                        };
+                    }
+                    if let Ok(msg_chirho) = core::str::from_utf8(&preview_chirho) {
+                        crate::serial_println_chirho!("[SYSLOG] {}", msg_chirho);
+                    }
+                }
                 return len_chirho as i64;
             }
         }
