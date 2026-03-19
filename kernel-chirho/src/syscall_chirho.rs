@@ -2265,7 +2265,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Each iteration: yield → PID 4 runs → timer preempts via trampoline →
     // sched_yield → scheduler picks next → eventually PID 3 resumes here →
     // re-checks zombie → yields again.
-    // Yield on wait4(WNOHANG)=0 — promote the child to front of queue.
+    // When wait4(WNOHANG) returns 0 (child alive), yield to let child run.
+    // The blocking (non-WNOHANG) path uses waitqueues properly now.
     if syscall_nr_chirho == SYS_WAIT4_CHIRHO && result_chirho == 0 {
         crate::scheduler_chirho::schedule_chirho();
     }
@@ -3733,12 +3734,9 @@ fn sys_select_chirho(
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
-            // Yield every 200 HLTs (~2s) when 4+ tasks exist. This gives
-            // PID 4 CPU for interpreter work + shell startup. Yields at
-            // 2s intervals allow PID 3 to process SSH data between yields.
-            if attempt_chirho % 200 == 199 && crate::scheduler_chirho::task_count_chirho() >= 4 {
-                crate::scheduler_chirho::yield_current_chirho();
-            }
+            // No yield needed — wait4 uses waitqueue to properly block.
+            // PID 0's blocking wait4 removes it from run queue, giving
+            // PID 4 full CPU time without select/yield interference.
 
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,

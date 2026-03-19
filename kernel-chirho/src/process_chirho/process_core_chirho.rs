@@ -713,19 +713,18 @@ pub fn sys_wait4_chirho(
         return 0;
     }
 
-    // Block until a child exits. Yield repeatedly, checking for zombies
-    // on each wake. With static context slots and stale-PT fix, context
-    // switching back to the parent works correctly now.
-    for _attempt_chirho in 0..10000u32 {
-        crate::scheduler_chirho::yield_current_chirho();
+    // Block until a child exits using a proper waitqueue. The task is
+    // REMOVED from the run queue (giving PID 4 full CPU) and woken by
+    // wake_child_exit_waitqueue_chirho when any child calls exit_group.
+    crate::waitqueue_chirho::wait_event_chirho(
+        &CHILD_EXIT_WAITQUEUE_CHIRHO,
+        || find_zombie_chirho(parent_pid_chirho, pid_chirho).is_ok(),
+    );
 
-        // Re-check for zombie children after being scheduled back.
-        let caller_pid_chirho = {
-            match crate::task_chirho::current_task_chirho() {
-                Some(t_chirho) => t_chirho.lock().pid_chirho,
-                None => return -ECHILD_CHIRHO,
-            }
-        };
+    // After being woken, re-check and reap
+    {
+        // dummy block to match the old code structure
+        let caller_pid_chirho = parent_pid_chirho;
         let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
         for task_arc_chirho in list_chirho.iter() {
             let task_chirho = task_arc_chirho.lock();
