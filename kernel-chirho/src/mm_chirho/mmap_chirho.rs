@@ -390,11 +390,11 @@ impl MmChirho {
             return Err(-ENOMEM_CHIRHO);
         }
 
-        // Update protection in page tables.
-        update_page_protection_chirho(addr_chirho, aligned_len_chirho, prot_chirho);
-
-        // Update VMA protection flags.  This may require splitting VMAs if
-        // the mprotect range partially overlaps a VMA.
+        // Skip actual page table protection updates for now.
+        // The GLOBAL_MAPPER lock in update_page_protection can deadlock
+        // with the page fault handler during execve's dynamic linking.
+        // The VMA metadata is still updated so future mmap/munmap work.
+        // TODO: fix lock ordering between MM lock and GLOBAL_MAPPER.
         self.update_vma_prot_chirho(addr_chirho, end_chirho, prot_chirho);
 
 
