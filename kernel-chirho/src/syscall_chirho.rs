@@ -1660,6 +1660,16 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
         SYS_SELECT_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
         SYS_SCHED_YIELD_CHIRHO => {
+            // When PID 4+ yields (preemption trampoline), promote parent
+            // so parent's event loop runs next → processes SSH → wait4 →
+            // promotes child again → cycle continues.
+            let yp_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| { let g = t.lock(); (g.pid_chirho, g.ppid_chirho) });
+            if let Some((pid_chirho, ppid_chirho)) = yp_chirho {
+                if pid_chirho >= 4 && ppid_chirho > 0 {
+                    crate::scheduler_chirho::promote_task_chirho(ppid_chirho);
+                }
+            }
             crate::scheduler_chirho::yield_current_chirho();
             0
         }
@@ -2255,27 +2265,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Each iteration: yield → PID 4 runs → timer preempts via trampoline →
     // sched_yield → scheduler picks next → eventually PID 3 resumes here →
     // re-checks zombie → yields again.
-    // When wait4(WNOHANG) returns 0 (child alive), find the child PID
-    // and push it to the FRONT of the queue so schedule_chirho picks it.
+    // Yield on wait4(WNOHANG)=0 — promote the child to front of queue.
     if syscall_nr_chirho == SYS_WAIT4_CHIRHO && result_chirho == 0 {
-        // Find the highest-PID child (most recent fork child = SSH exec)
-        let parent_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        let child_pid_chirho = {
-            let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
-            list_chirho.iter()
-                .filter_map(|t| {
-                    let task_chirho = t.lock();
-                    if task_chirho.ppid_chirho == parent_pid_chirho
-                        && !task_chirho.is_exited_chirho() {
-                        Some(task_chirho.pid_chirho)
-                    } else { None }
-                })
-                .max()
-        };
-        if let Some(child_chirho) = child_pid_chirho {
-            crate::scheduler_chirho::promote_task_chirho(child_chirho);
-        }
         crate::scheduler_chirho::schedule_chirho();
     }
 
@@ -3734,12 +3725,20 @@ fn sys_select_chirho(
             crate::scheduler_chirho::yield_current_chirho();
         }
 
-        // Block: HLT loop waiting for data. NO yield here — yields in the
-        // select path corrupt the SSH TCP stream. PID 4 gets CPU via the
-        // user-mode preemption trampoline (sched_yield from timer IRQ).
-        for _attempt_chirho in 0..50_000u32 {
+        // HLT loop waiting for data. Yield every 100 iterations ONLY when
+        // there are 4+ tasks (PID 4 SSH exec child exists). During the SSH
+        // handshake (3 tasks), no yields — handshake runs uninterrupted.
+        // After handshake, yields let PID 4 finish interpreter + write pipe.
+        for attempt_chirho in 0..50_000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
+
+            // Yield every 200 HLTs (~2s) when 4+ tasks exist. This gives
+            // PID 4 CPU for interpreter work + shell startup. Yields at
+            // 2s intervals allow PID 3 to process SSH data between yields.
+            if attempt_chirho % 200 == 199 && crate::scheduler_chirho::task_count_chirho() >= 4 {
+                crate::scheduler_chirho::yield_current_chirho();
+            }
 
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,

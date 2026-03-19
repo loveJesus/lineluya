@@ -689,8 +689,27 @@ pub fn sys_wait4_chirho(
         _ => {} // no zombie yet — fall through
     }
 
-    // WNOHANG: return 0 immediately if no zombie found.
+    // WNOHANG: promote the child to front of the scheduler queue so it
+    // gets CPU via the preemption trampoline. Don't yield here — let the
+    // caller return to userspace and run its event loop first.
     if (options_chirho & WNOHANG_CHIRHO) != 0 {
+        // Find the highest-PID living child and promote it
+        let child_pid_chirho = {
+            let task_list_chirho = TASK_LIST_CHIRHO.lock();
+            task_list_chirho.iter()
+                .filter_map(|t_chirho| {
+                    let tc_chirho = t_chirho.lock();
+                    if tc_chirho.ppid_chirho == parent_pid_chirho
+                        && tc_chirho.state_chirho != TaskStateChirho::ZombieChirho
+                        && tc_chirho.state_chirho != TaskStateChirho::DeadChirho {
+                        Some(tc_chirho.pid_chirho)
+                    } else { None }
+                })
+                .max()
+        };
+        if let Some(cp_chirho) = child_pid_chirho {
+            crate::scheduler_chirho::promote_task_chirho(cp_chirho);
+        }
         return 0;
     }
 
