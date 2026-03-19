@@ -2358,8 +2358,24 @@ unsafe extern "C" fn dma_noop_stub_chirho() {}
 /// Generic stub that returns -ENOSYS (function not implemented).
 /// Returning -38 instead of 0 ensures callers that check for errors
 /// will fail gracefully instead of dereferencing a null pointer.
+/// Returns 0 (not -38/ENOSYS) so pointer-returning functions get NULL
+/// instead of 0xFFFFFFFFFFFFFFDA which looks like a valid kernel address
+/// and causes page faults when dereferenced.
 #[no_mangle]
-unsafe extern "C" fn noop_stub_chirho() -> i64 { -38 }
+unsafe extern "C" fn noop_stub_chirho() -> i64 {
+    // Log the first few calls to identify which functions need stubs
+    static NOOP_COUNT_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    let cnt_chirho = NOOP_COUNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if cnt_chirho < 10 {
+        // Read return address from stack to identify caller
+        let ret_addr_chirho: u64;
+        core::arch::asm!("mov {}, [rsp]", out(reg) ret_addr_chirho, options(nostack));
+        crate::serial_println_chirho!(
+            "[KO] noop_stub called #{} from {:#x}", cnt_chirho, ret_addr_chirho
+        );
+    }
+    0 // Return NULL/0 instead of -38
+}
 
 /// x86 retpoline/return thunk stub — just a RET instruction.
 /// Modules compiled with retpoline call __x86_return_thunk at every
