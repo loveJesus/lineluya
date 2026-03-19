@@ -20,8 +20,6 @@ use crate::syscall_chirho::{EBADF_CHIRHO, EPIPE_CHIRHO, ENOSYS_CHIRHO, EINVAL_CH
 
 /// Default pipe buffer capacity in bytes (matches Linux's default).
 const PIPE_BUF_SIZE_CHIRHO: usize = 4096;
-/// FIFO file type bitmask.
-const S_IFIFO_CHIRHO: u32 = 0o010000;
 
 // ---------------------------------------------------------------------------
 // PipeChirho — shared pipe state
@@ -135,48 +133,6 @@ fn make_pipe_inode_chirho() -> Arc<Mutex<InodeChirho>> {
         ops_chirho: &PIPE_INODE_OPS_CHIRHO,
         fs_data_chirho: None,
     }))
-}
-
-fn pipe_state_from_inode_chirho(
-    inode_chirho: &Arc<Mutex<InodeChirho>>,
-) -> Option<Arc<Mutex<PipeChirho>>> {
-    let inode_guard_chirho = inode_chirho.lock();
-    if inode_guard_chirho.mode_chirho & 0o170000 != S_IFIFO_CHIRHO {
-        return None;
-    }
-    inode_guard_chirho
-        .fs_data_chirho
-        .as_ref()
-        .and_then(|pipe_state_any_chirho| {
-            pipe_state_any_chirho
-                .downcast_ref::<Arc<Mutex<PipeChirho>>>()
-                .cloned()
-        })
-}
-
-/// If `fd_chirho` refers to a pipe, report whether it is readable right now.
-///
-/// Returns:
-/// - `Some(true)` when data is buffered or the write end is closed (EOF-ready)
-/// - `Some(false)` when it is a pipe read end with no data yet
-/// - `None` when the fd is not a pipe
-pub fn pipe_read_ready_for_fd_chirho(fd_chirho: u64) -> Option<bool> {
-    let file_arc_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho)?;
-    let (inode_arc_chirho, open_flags_chirho) = {
-        let file_guard_chirho = file_arc_chirho.lock();
-        (Arc::clone(&file_guard_chirho.inode_chirho), file_guard_chirho.flags_chirho)
-    };
-
-    if (open_flags_chirho & 0x3) == crate::vfs_chirho::O_WRONLY_CHIRHO {
-        return Some(false);
-    }
-
-    let pipe_state_arc_chirho = pipe_state_from_inode_chirho(&inode_arc_chirho)?;
-    let pipe_state_guard_chirho = pipe_state_arc_chirho.lock();
-    Some(
-        !pipe_state_guard_chirho.buffer_chirho.is_empty()
-            || pipe_state_guard_chirho.closed_write_chirho,
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +347,6 @@ unsafe impl Sync for PipeWriteOpsChirho {}
 pub fn create_pipe_chirho() -> (Arc<Mutex<FileChirho>>, Arc<Mutex<FileChirho>>) {
     let pipe_state_chirho = Arc::new(Mutex::new(PipeChirho::new_chirho()));
     let inode_chirho = make_pipe_inode_chirho();
-    inode_chirho.lock().fs_data_chirho = Some(Box::new(Arc::clone(&pipe_state_chirho)));
 
     // Leak the file ops so they have 'static lifetime as required by FileChirho.
     let read_ops_chirho: &'static dyn FileOpsChirho = alloc::boxed::Box::leak(alloc::boxed::Box::new(

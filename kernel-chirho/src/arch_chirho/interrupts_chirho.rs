@@ -695,26 +695,12 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     let interrupted_cs_chirho = _stack_frame_chirho.code_segment.0;
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
-    if was_user_mode_chirho && crate::scheduler_chirho::need_resched_chirho() {
-        // Preemptive scheduling: we cannot call schedule_chirho() directly here
-        // because the context switch would corrupt this interrupt handler's
-        // IRETQ frame (RSP switches to the target task's stack).
-        //
-        // Instead, we make the current task call yield via a SYNTHETIC syscall.
-        // Modify the interrupt frame's RIP to point to a SYSCALL instruction
-        // that will trigger schedule_chirho() on the syscall return path.
-        // The user's original RIP is saved in RCX (by convention for SYSCALL),
-        // so we also save RCX.
-        //
-        // Actually, the simplest approach: just leave need_resched set.
-        // The NEXT syscall from this task will trigger the schedule on return
-        // (the check in syscall_dispatch_wrapper_chirho).
-        //
-        // For tasks in tight userspace loops without syscalls, they will
-        // eventually get preempted when the timer fires and they make their
-        // next syscall (the dynamic linker makes syscalls regularly).
-        // This is cooperative-at-userspace, preemptive-at-syscall-boundary.
-    }
+    // Timer preemption DISABLED: calling schedule_chirho() from the timer
+    // interrupt handler corrupts PID 4's context (RSP=0, RIP in kernel space)
+    // because the interrupt frame and CpuContext are separate save mechanisms.
+    // Scheduling is cooperative: select/wait4 HLT loops yield via
+    // schedule_chirho() which properly saves/restores CpuContext.
+    // See Codex commit d645ba6 for the select yield fix.
 }
 
 /// Write LAPIC End-Of-Interrupt register via typed enum (A2-AUDIT-010).
