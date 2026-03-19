@@ -20,5 +20,5 @@ host computer (this) will have a tmux session DEMO_CHIRHO to help with the host 
   - show that file on the qemu
   - start XWindow with XTerm
   - in the XTerm run mp3 player
-  - MP3 Player plays some Christian Hymn
+  - MP3 Player plays some Christian Hymn , use workspace-chirho/joyful_joyful_chirho.mp3 for now
   - Echo Hallelujah

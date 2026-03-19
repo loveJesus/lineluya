@@ -117,14 +117,16 @@ You can modify the following section
 
 ## Project: Lineluya — Linux Kernel Rewrite in Rust
 
-### Current State (v4.0 — "Thank You Jesus Christ")
-- 70,000+ lines of Rust across 85+ kernel modules
-- **5 real Alpine Linux programs run**: sqlite3, python3, dropbear, apk, BusyBox
-- **TCP networking**: DHCP + 3-way handshake + SSH bidirectional data
+### Current State (v5.0 — "Thank You Jesus Christ")
+- 75,000+ lines of Rust across 85+ kernel modules
+- **7 real Alpine Linux programs run**: sqlite3, python3, dropbear, apk, BusyBox, losetup, mount
+- **Alpine loop.ko loads via insmod**: real .ko module from Alpine disk, not built-in
+- **Full ext4 loop mount**: insmod loop.ko → losetup → mount → read/write files
+- **TCP networking**: DHCP + 3-way handshake + SSH version/KEX exchange
 - Boots via UEFI/BIOS in QEMU with pixel framebuffer console (1280x720)
 - VirtIO-blk (read+write) + VirtIO-net I/O port drivers
 - ext4 mounted at / with symlink following + write support
-- .ko kernel module loading with 81 symbol exports
+- .ko kernel module loading with 193+ symbol exports, static arena allocation
 - PIE ELF loading with GLOB_DAT/JUMP_SLOT symbol resolution
 - 80+ syscalls, typed error enums, zero-warning build
 - Per-process fd tables, real setsid/setpgid, signal delivery
@@ -134,22 +136,25 @@ You can modify the following section
 - evdev keyboard driver (/dev/input/event0)
 - Framebuffer ioctls for X11 (VSCREENINFO, FSCREENINFO)
 
-### Verified Working in QEMU (x86_64) — v3.5.0
+### Verified Working in QEMU (x86_64) — v5.0
 - **REAL FORK**: parent+child run concurrently with preemptive scheduling
-- **Per-process page tables**: lazy migration via page fault handler
-- **sqlite3 3.51.2**: SELECT 316, 42+1 → 316|43 (real child process)
-- **Python 3.12.12**: python3 --version (real child process)
-- **Dropbear SSH v2025.88**: version + server listens on port 22
-- **apk-tools 2.14.6**: Alpine package manager (GPF recovery)
-- **wget**: TCP connects to 1.1.1.1, receives HTTP 301 response
-- **TCP stream reassembly**: recv returns 1024B accumulated data
+- **Per-process page tables**: lazy migration via page fault handler, COW full-copy
+- **Static context slots**: context switch via static array (no heap pointer corruption)
+- **sqlite3**: SELECT 316, 42+1 → 316|43 (dynamic musl ELF from Alpine disk)
+- **Python 3.12**: python3 -c 'print(42)' → 42 (dynamic musl ELF)
+- **Alpine loop.ko**: insmod loads 94KB module into static .bss arena, init_module succeeds
+- **ext4 loop mount**: losetup + mount -t ext4, read Matthew 7:12, write+readback aleluya
+- **Dropbear SSH**: listens port 2222, accepts TCP, KEX negotiation (curve25519+chacha20)
 - **DHCP**: IP=10.0.2.15, GW=10.0.2.2, DNS=10.0.2.3
+- **TCP**: MSS segmentation, in-order rcv_nxt, bidirectional data
 - **Fault recovery**: GPF/#UD/page fault auto-relaunch shell
-- **.ko modules**: ELF relocations, init_module called, 81 kernel symbols
-- BusyBox: ls (color!), cat, date, id, echo, uname (200+ applets)
+- **.ko modules**: ELF relocations (32S in kernel range), 193+ kernel symbols
+- **fd preservation across execve**: O_CLOEXEC support
+- **FS/GS base save/restore on task switch**: musl TLS works across fork
+- BusyBox: ls, cat, date, id, echo, uname, insmod, losetup, mount (200+ applets)
 
 ### Code Written — Needs More Work
-- ext4 write (VFS wired, needs QEMU testing)
+- SSH full handshake (KEX_ECDH_REPLY via pipe→TCP relay, TCP seq issues)
 - X11/Xorg with fbdev driver (fb0 mmap implemented, needs Xorg binary)
 - WASM kernel: compiles to 10KB, built-in demo shell (NOT real BusyBox)
 - CF Worker: R2/KV/D1/DO endpoints (code written, not deployed)
@@ -192,4 +197,4 @@ qemu-system-x86_64 \
 - linked_list_allocator fragmentation under heavy alloc/dealloc
 
 ### Tags
-v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ
+v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ, v5.0 Alpine loop.ko Loads
