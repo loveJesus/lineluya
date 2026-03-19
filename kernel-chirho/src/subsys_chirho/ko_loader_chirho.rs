@@ -653,7 +653,27 @@ pub const GFP_ATOMIC_CHIRHO: u32 = 0xA20;
 static KMALLOC_TRACKER_CHIRHO: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
 
 /// Fake `gendisk` allocation size for Linux block-device module stubs.
-const FAKE_GENDISK_BYTES_CHIRHO: usize = 4096;
+///
+/// The loop module writes a fair amount of state into the returned `gendisk`
+/// before `add_disk()`. Give it more than one page so offset mismatches do not
+/// immediately walk off the end of the fake object.
+const FAKE_GENDISK_BYTES_CHIRHO: usize = 16 * 1024;
+
+/// Fake `request_queue` allocation size for loop.ko block-layer stubs.
+const FAKE_REQUEST_QUEUE_BYTES_CHIRHO: usize = 4096;
+
+/// Number of `u64` slots at the front of the fake `gendisk` that mirror the
+/// fake request-queue pointer. Linux 6.x `struct gendisk` is not laid out near
+/// the start of the object, so a tiny handful of offsets is too optimistic.
+const FAKE_GENDISK_QUEUE_MIRROR_SLOTS_CHIRHO: usize = 64;
+
+/// Number of `u64` slots at the front of the fake request-queue that mirror
+/// `queuedata`. This helps simple `queue->queuedata` dereferences survive.
+const FAKE_REQUEST_QUEUE_QUEUEDATA_SLOTS_CHIRHO: usize = 16;
+
+/// Number of `u64` slots after the queuedata area that mirror the owning disk
+/// pointer. This gives module code a plausible `queue->disk` style backlink.
+const FAKE_REQUEST_QUEUE_DISK_MIRROR_SLOTS_CHIRHO: usize = 16;
 
 /// Maximum C string length we will read from module-provided pointers.
 const KO_C_STRING_MAX_BYTES_CHIRHO: usize = 128;
@@ -1181,34 +1201,122 @@ pub unsafe extern "C" fn misc_register_stub_chirho(
 pub unsafe extern "C" fn register_blkdev_stub_chirho(
     major_chirho: u32,
     name_ptr_chirho: *const u8,
+    probe_ptr_chirho: *const u8,
 ) -> i32 {
     let name_chirho = unsafe {
         read_kernel_c_string_chirho(name_ptr_chirho, KO_C_STRING_MAX_BYTES_CHIRHO)
     }
     .unwrap_or_else(|| String::from("<null>"));
 
+    let result_chirho = if major_chirho == 0 {
+        crate::loop_device_chirho::LOOP_MAJOR_CHIRHO as i32
+    } else {
+        0
+    };
+
     crate::serial_println_chirho!(
-        "[KO] __register_blkdev: requested_major={} name={} -> major={}",
+        "[KO] __register_blkdev: requested_major={} name={} probe={:#x} -> {}",
         major_chirho,
         name_chirho,
-        crate::loop_device_chirho::LOOP_MAJOR_CHIRHO
+        probe_ptr_chirho as usize,
+        result_chirho
     );
-    crate::loop_device_chirho::LOOP_MAJOR_CHIRHO as i32
+    result_chirho
+}
+
+unsafe fn allocate_fake_gendisk_chirho(
+    queuedata_ptr_chirho: u64,
+) -> *mut u8 {
+    let disk_ptr_chirho =
+        unsafe { kzalloc_stub_chirho(FAKE_GENDISK_BYTES_CHIRHO, GFP_KERNEL_CHIRHO) };
+    let queue_ptr_chirho =
+        unsafe { kzalloc_stub_chirho(FAKE_REQUEST_QUEUE_BYTES_CHIRHO, GFP_KERNEL_CHIRHO) };
+
+    if !disk_ptr_chirho.is_null() && !queue_ptr_chirho.is_null() {
+        let disk_u64_chirho = disk_ptr_chirho as *mut u64;
+        // Mirror the queue pointer across the early fake gendisk words so
+        // direct field reads like disk->queue survive even if our fake layout
+        // does not match Linux exactly.
+        for offset_chirho in 1..=FAKE_GENDISK_QUEUE_MIRROR_SLOTS_CHIRHO {
+            unsafe {
+                core::ptr::write(disk_u64_chirho.add(offset_chirho), queue_ptr_chirho as u64);
+            }
+        }
+
+        let queue_u64_chirho = queue_ptr_chirho as *mut u64;
+        for offset_chirho in 0..FAKE_REQUEST_QUEUE_QUEUEDATA_SLOTS_CHIRHO {
+            unsafe {
+                // Make the early queue words point back at the loop_device so
+                // queue->queuedata style dereferences see something non-NULL.
+                core::ptr::write(queue_u64_chirho.add(offset_chirho), queuedata_ptr_chirho);
+            }
+        }
+        for offset_chirho in FAKE_REQUEST_QUEUE_QUEUEDATA_SLOTS_CHIRHO
+            ..(FAKE_REQUEST_QUEUE_QUEUEDATA_SLOTS_CHIRHO + FAKE_REQUEST_QUEUE_DISK_MIRROR_SLOTS_CHIRHO)
+        {
+            unsafe {
+                core::ptr::write(queue_u64_chirho.add(offset_chirho), disk_ptr_chirho as u64);
+            }
+        }
+    }
+
+    crate::serial_println_chirho!(
+        "[KO] fake gendisk allocated: disk={:#x} queue={:#x} queuedata={:#x}",
+        disk_ptr_chirho as usize,
+        queue_ptr_chirho as usize,
+        queuedata_ptr_chirho,
+    );
+    disk_ptr_chirho
 }
 
 /// `__blk_mq_alloc_disk(set, lkclass, queuedata)` — allocate a fake `gendisk`.
+///
+/// The returned gendisk must have a non-NULL `queue` pointer or loop.ko
+/// will page fault when it tries to access `disk->queue->...`.
+/// We allocate a fake request_queue and wire it into the gendisk.
 pub unsafe extern "C" fn blk_mq_alloc_disk_stub_chirho(
     set_ptr_chirho: u64,
     lkclass_ptr_chirho: u64,
     queuedata_ptr_chirho: u64,
 ) -> *mut u8 {
-    let disk_ptr_chirho = unsafe { kzalloc_stub_chirho(FAKE_GENDISK_BYTES_CHIRHO, GFP_KERNEL_CHIRHO) };
+    let disk_ptr_chirho = unsafe { allocate_fake_gendisk_chirho(queuedata_ptr_chirho) };
+
     crate::serial_println_chirho!(
         "[KO] __blk_mq_alloc_disk: set={:#x} lkclass={:#x} queuedata={:#x} -> disk={:#x}",
         set_ptr_chirho,
         lkclass_ptr_chirho,
         queuedata_ptr_chirho,
-        disk_ptr_chirho as usize
+        disk_ptr_chirho as usize,
+    );
+    disk_ptr_chirho
+}
+
+/// `blk_mq_alloc_disk(set, lim, queuedata)` — newer helper used by loop.c.
+pub unsafe extern "C" fn blk_mq_alloc_disk_alias_stub_chirho(
+    set_ptr_chirho: u64,
+    limits_ptr_chirho: u64,
+    queuedata_ptr_chirho: u64,
+) -> *mut u8 {
+    let disk_ptr_chirho = unsafe { allocate_fake_gendisk_chirho(queuedata_ptr_chirho) };
+    crate::serial_println_chirho!(
+        "[KO] blk_mq_alloc_disk: set={:#x} limits={:#x} queuedata={:#x} -> disk={:#x}",
+        set_ptr_chirho,
+        limits_ptr_chirho,
+        queuedata_ptr_chirho,
+        disk_ptr_chirho as usize,
+    );
+    disk_ptr_chirho
+}
+
+/// `alloc_disk(minors)` — older block-disk allocator alias.
+pub unsafe extern "C" fn alloc_disk_stub_chirho(
+    minors_chirho: i32,
+) -> *mut u8 {
+    let disk_ptr_chirho = unsafe { allocate_fake_gendisk_chirho(0) };
+    crate::serial_println_chirho!(
+        "[KO] alloc_disk: minors={} -> disk={:#x}",
+        minors_chirho,
+        disk_ptr_chirho as usize,
     );
     disk_ptr_chirho
 }
@@ -1227,6 +1335,20 @@ pub unsafe extern "C" fn device_add_disk_stub_chirho(
         parent_ptr_chirho,
         disk_ptr_chirho as usize,
         groups_ptr_chirho,
+        disk_name_chirho
+    );
+    0
+}
+
+/// `add_disk(disk)` — simple alias used by loop.c.
+pub unsafe extern "C" fn add_disk_stub_chirho(
+    disk_ptr_chirho: *const u8,
+) -> i32 {
+    let disk_name_chirho = unsafe { sniff_gendisk_name_chirho(disk_ptr_chirho) }
+        .unwrap_or_else(|| String::from("<unknown>"));
+    crate::serial_println_chirho!(
+        "[KO] add_disk: disk={:#x} name={}",
+        disk_ptr_chirho as usize,
         disk_name_chirho
     );
     0
@@ -2012,6 +2134,11 @@ pub fn init_kernel_symbols_chirho() {
         String::from("__register_blkdev"),
         register_blkdev_stub_chirho as *const () as u64,
     );
+    // 3b. register_blkdev
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("register_blkdev"),
+        register_blkdev_stub_chirho as *const () as u64,
+    );
     // 4. unregister_blkdev
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("unregister_blkdev"),
@@ -2021,6 +2148,16 @@ pub fn init_kernel_symbols_chirho() {
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("__blk_mq_alloc_disk"),
         blk_mq_alloc_disk_stub_chirho as *const () as u64,
+    );
+    // 5b. blk_mq_alloc_disk
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("blk_mq_alloc_disk"),
+        blk_mq_alloc_disk_alias_stub_chirho as *const () as u64,
+    );
+    // 5c. alloc_disk
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("alloc_disk"),
+        alloc_disk_stub_chirho as *const () as u64,
     );
     // 6. blk_mq_alloc_tag_set
     KernelSymbolTableChirho::register_symbol_chirho(
@@ -2036,6 +2173,11 @@ pub fn init_kernel_symbols_chirho() {
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("device_add_disk"),
         device_add_disk_stub_chirho as *const () as u64,
+    );
+    // 8b. add_disk
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("add_disk"),
+        add_disk_stub_chirho as *const () as u64,
     );
     // 9. put_disk
     KernelSymbolTableChirho::register_symbol_chirho(
