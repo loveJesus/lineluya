@@ -1551,6 +1551,7 @@ fn deliver_udp_packet_chirho(
                     for byte_chirho in &udp_chirho.payload_chirho {
                         sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
                     }
+                    wake_socket_data_waitqueue_chirho();
                     crate::serial_debug_chirho!(
                         "[UDP] Delivered {} bytes to socket on port {}",
                         udp_chirho.payload_chirho.len(),
@@ -1737,6 +1738,15 @@ pub static SOCKET_TABLE_CHIRHO: Mutex<[Option<SocketChirho>; MAX_SOCKETS_CHIRHO]
 
 /// Atomic counter for ephemeral port assignment.
 static NEXT_EPHEMERAL_PORT_CHIRHO: AtomicU64 = AtomicU64::new(49152);
+
+/// Wait queue for tasks blocked on socket data or accept-queue readiness.
+pub static SOCKET_DATA_WAITQUEUE_CHIRHO: crate::waitqueue_chirho::WaitQueueChirho =
+    crate::waitqueue_chirho::WaitQueueChirho::new_chirho();
+
+#[inline]
+pub fn wake_socket_data_waitqueue_chirho() {
+    crate::waitqueue_chirho::wake_up_chirho(&SOCKET_DATA_WAITQUEUE_CHIRHO);
+}
 
 /// Allocate an ephemeral port number.
 fn alloc_ephemeral_port_chirho() -> u16 {
@@ -2675,6 +2685,7 @@ pub fn sys_connect_chirho(
             // Enqueue child socket in listener's accept queue
             if let Some(ref mut listener_chirho) = table_chirho[listener_idx_val_chirho] {
                 listener_chirho.accept_queue_chirho.push_back(child_idx_val_chirho as u64);
+                wake_socket_data_waitqueue_chirho();
             }
 
             // Complete the handshake: set connecting socket to ESTABLISHED
@@ -3142,6 +3153,7 @@ pub fn sys_sendto_chirho(
                     for byte_chirho in &data_chirho {
                         peer_chirho.recv_buf_chirho.push_back(*byte_chirho);
                     }
+                    wake_socket_data_waitqueue_chirho();
                     crate::log_net_chirho!(
                         "sendto: delivered {} bytes to peer socket_idx={}",
                         data_chirho.len(),
@@ -5108,6 +5120,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
             for byte_chirho in &segment_chirho.payload_chirho {
                 sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
             }
+            wake_socket_data_waitqueue_chirho();
             // Log first 8 bytes of payload for debugging SSH protocol
             let preview_chirho: alloc::string::String = segment_chirho.payload_chirho
                 .iter().take(8)
@@ -5140,6 +5153,7 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
             if let Some(listen_idx_val_chirho) = listen_idx_chirho {
                 if let Some(ref mut listener_chirho) = table_chirho[listen_idx_val_chirho] {
                     listener_chirho.accept_queue_chirho.push_back(sock_idx_chirho as u64);
+                    wake_socket_data_waitqueue_chirho();
                     crate::serial_debug_chirho!(
                         "[TCP] Queued socket {} for accept on listener {}",
                         sock_idx_chirho, listen_idx_val_chirho,

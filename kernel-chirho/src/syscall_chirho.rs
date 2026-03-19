@@ -3626,50 +3626,39 @@ fn sys_select_chirho(
         0
     };
 
-    // Check if any of the readfds have actual data available.
-    let mut has_ready_chirho = false;
-    if set_size_chirho > 0 {
-        {
-            // Check each fd in the set
-            for fd_chirho in 0..nfds_chirho as usize {
-                let byte_idx_chirho = fd_chirho / 8;
-                let bit_idx_chirho = fd_chirho % 8;
-                if byte_idx_chirho < set_size_chirho && fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho) != 0 {
-                    // Check if this fd is a socket with pending data
-                    if crate::net_chirho::socket_has_data_chirho(fd_chirho as u64) {
-                        has_ready_chirho = true;
-                        break;
-                    }
-                    // Regular files are always "ready" — except fd=0
-                    // (stdin) for daemon processes (PID >= 2), which should
-                    // only be ready when serial has actual data. Without this,
-                    // dropbear spins in its select loop on empty stdin.
-                    if !crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
-                        if fd_chirho == 0 {
-                            
-                            if is_interactive_shell_chirho() {
-                                has_ready_chirho = true;
-                                break;
-                            }
-                            // Daemon: check serial LSR AND TCP port 2222
-                            let lsr_chirho: u8 = unsafe {
-                                x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
-                            };
-                            if lsr_chirho & 1 != 0
-                                || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
-                            {
-                                has_ready_chirho = true;
-                                break;
-                            }
-                        } else if crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some() {
-                            has_ready_chirho = true;
-                            break;
-                        }
-                    }
-                }
+    let fd_is_read_ready_chirho = |fd_chirho: usize| -> bool {
+        if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
+            crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
+        } else if fd_chirho == 0 {
+            if is_interactive_shell_chirho() {
+                true
+            } else {
+                let lsr_chirho: u8 = unsafe {
+                    x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+                };
+                lsr_chirho & 1 != 0
+                    || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
+            }
+        } else {
+            crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some()
+        }
+    };
+
+    let count_ready_fds_chirho = |fds_buf_chirho: &[u8; 128], set_size_chirho: usize,
+                                   nfds_chirho: i32| -> i64 {
+        let mut count_chirho: i64 = 0;
+        for fd_chirho in 0..nfds_chirho as usize {
+            let byte_idx_chirho = fd_chirho / 8;
+            let bit_idx_chirho = fd_chirho % 8;
+            if byte_idx_chirho < set_size_chirho
+                && fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho) != 0
+                && fd_is_read_ready_chirho(fd_chirho)
+            {
+                count_chirho += 1;
             }
         }
-    }
+        count_chirho
+    };
 
     // Helper: scan fds_buf for ready sockets, build output fd_set, return count.
     let write_ready_fds_chirho = |fds_buf_chirho: &[u8; 128], set_size_chirho: usize,
@@ -3682,21 +3671,7 @@ fn sys_select_chirho(
             if byte_idx_chirho < set_size_chirho
                 && fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho) != 0
             {
-                let ready_chirho = if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
-                    crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
-                } else if fd_chirho == 0 {
-                    // stdin: daemon PIDs check serial LSR + TCP port 2222
-                    if is_interactive_shell_chirho() { true } else {
-                        let lsr_chirho: u8 = unsafe {
-                            x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
-                        };
-                        lsr_chirho & 1 != 0
-                            || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
-                    }
-                } else {
-                    crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some()
-                };
-                if ready_chirho {
+                if fd_is_read_ready_chirho(fd_chirho) {
                     out_fds_chirho[byte_idx_chirho] |= 1 << bit_idx_chirho;
                     count_chirho += 1;
                 }
@@ -3713,30 +3688,38 @@ fn sys_select_chirho(
         count_chirho
     };
 
-    if has_ready_chirho {
+    let ready_count_chirho = count_ready_fds_chirho(
+        &fds_buf_chirho,
+        set_size_chirho,
+        nfds_chirho,
+    );
+
+    if ready_count_chirho > 0 {
         write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho)
     } else {
-        // Block: yield to fork children, then HLT loop waiting for data.
-        // Remove self from scheduler so fork children run uninterrupted.
-        // This prevents the context switch #UD when switching back.
-        let my_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                // Yield once so fork children get CPU time
-            crate::scheduler_chirho::yield_current_chirho();
+        // Proper indefinite blocking: sleep on network/socket activity and
+        // leave the run queue until a relevant event arrives.
+        if timeout_ptr_chirho == 0 {
+            crate::waitqueue_chirho::wait_event_chirho(
+                &crate::net_chirho::SOCKET_DATA_WAITQUEUE_CHIRHO,
+                || {
+                    crate::net_chirho::poll_network_chirho();
+                    count_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho) > 0
+                },
+            );
+            return write_ready_fds_chirho(
+                &fds_buf_chirho,
+                set_size_chirho,
+                nfds_chirho,
+                readfds_ptr_chirho,
+            );
         }
 
-        // HLT loop waiting for data. Yield every 100 iterations ONLY when
-        // there are 4+ tasks (PID 4 SSH exec child exists). During the SSH
-        // handshake (3 tasks), no yields — handshake runs uninterrupted.
-        // After handshake, yields let PID 4 finish interpreter + write pipe.
-        for attempt_chirho in 0..50_000u32 {
+        // Finite-timeout select still uses the bounded legacy wait loop until
+        // timeout-aware wait queues exist.
+        for _attempt_chirho in 0..50_000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
-
-            // No yield needed — wait4 uses waitqueue to properly block.
-            // PID 0's blocking wait4 removes it from run queue, giving
-            // PID 4 full CPU time without select/yield interference.
 
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
