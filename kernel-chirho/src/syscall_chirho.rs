@@ -1459,8 +1459,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             }
         },
         SYS_WRITE_CHIRHO => {
-            if fd_uses_console_stdio_chirho(arg0_chirho) {
-                sys_write_chirho(arg0_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
+            // SSH redirect: daemon writing to fd=1/2 (console) when fd=0
+            // is a TCP socket → redirect to fd=0 so SSH data goes over TCP.
+            let write_fd_chirho = if (arg0_chirho == 1 || arg0_chirho == 2)
+                && !is_interactive_shell_chirho()
+                && crate::net_chirho::is_socket_fd_chirho(0)
+            {
+                0u64 // redirect stdout/stderr → TCP socket at fd=0
+            } else {
+                arg0_chirho
+            };
+            if fd_uses_console_stdio_chirho(write_fd_chirho) {
+                sys_write_chirho(write_fd_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
             } else {
                 if arg0_chirho == 1 || arg0_chirho == 2 {
                     crate::serial_debug_chirho!(
@@ -1564,11 +1574,22 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho as *const IoVecChirho,
             arg2_chirho as i32,
         ),
-        SYS_WRITEV_CHIRHO => sys_writev_chirho(
-            arg0_chirho,
-            arg1_chirho as *const IoVecChirho,
-            arg2_chirho as i32,
-        ),
+        SYS_WRITEV_CHIRHO => {
+            // SSH redirect: daemon writev to fd=1/2 → fd=0 (TCP socket)
+            let writev_fd_chirho = if (arg0_chirho == 1 || arg0_chirho == 2)
+                && !is_interactive_shell_chirho()
+                && crate::net_chirho::is_socket_fd_chirho(0)
+            {
+                0u64
+            } else {
+                arg0_chirho
+            };
+            sys_writev_chirho(
+                writev_fd_chirho,
+                arg1_chirho as *const IoVecChirho,
+                arg2_chirho as i32,
+            )
+        },
         SYS_ACCESS_CHIRHO => sys_faccessat_real_chirho(-100, arg0_chirho, arg1_chirho as u32, 0),
         SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
         SYS_SELECT_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
