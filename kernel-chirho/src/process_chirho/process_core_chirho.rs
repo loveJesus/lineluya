@@ -20,6 +20,7 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -37,6 +38,64 @@ use crate::task_chirho::{
     TaskStateChirho, TASK_LIST_CHIRHO,
 };
 use crate::uaccess_chirho::{read_user_string_chirho, read_user_u64_chirho};
+
+fn parse_proc_fd_exec_path_chirho(path_chirho: &str) -> Option<u64> {
+    let current_pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|task_arc_chirho| task_arc_chirho.lock().pid_chirho)
+        .unwrap_or(1);
+    let self_prefix_chirho = "/proc/self/fd/";
+    let pid_prefix_chirho = format!("/proc/{}/fd/", current_pid_chirho);
+
+    let fd_suffix_chirho = if let Some(suffix_chirho) = path_chirho.strip_prefix(self_prefix_chirho) {
+        suffix_chirho
+    } else if let Some(suffix_chirho) = path_chirho.strip_prefix(&pid_prefix_chirho) {
+        suffix_chirho
+    } else {
+        return None;
+    };
+
+    if fd_suffix_chirho.is_empty() || fd_suffix_chirho.contains('/') {
+        return None;
+    }
+
+    fd_suffix_chirho.parse::<u64>().ok()
+}
+
+fn try_read_file_from_fd_chirho(fd_chirho: u64) -> Option<Vec<u8>> {
+    let file_arc_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho)?;
+    let file_size_chirho = {
+        let file_guard_chirho = file_arc_chirho.lock();
+        let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+        inode_guard_chirho.size_chirho
+    };
+    crate::fs_chirho::read_file_data_at_offset_chirho(fd_chirho, 0, file_size_chirho)
+}
+
+fn resolve_exec_source_chirho(filename_chirho: &str) -> (String, Option<Vec<u8>>) {
+    if let Some(fd_chirho) = parse_proc_fd_exec_path_chirho(filename_chirho) {
+        if let Some(fd_path_chirho) = crate::fs_chirho::get_fd_path_chirho(fd_chirho) {
+            crate::serial_debug_chirho!(
+                "[PROCESS] execve: resolved {} -> {} via fd table",
+                filename_chirho,
+                fd_path_chirho,
+            );
+            let elf_data_chirho = try_read_file_chirho(&fd_path_chirho);
+            return (fd_path_chirho, elf_data_chirho);
+        }
+
+        let elf_data_chirho = try_read_file_from_fd_chirho(fd_chirho);
+        if elf_data_chirho.is_some() {
+            crate::serial_debug_chirho!(
+                "[PROCESS] execve: resolved {} via direct fd {} read",
+                filename_chirho,
+                fd_chirho,
+            );
+        }
+        return (String::from(filename_chirho), elf_data_chirho);
+    }
+
+    (String::from(filename_chirho), try_read_file_chirho(filename_chirho))
+}
 
 // ---------------------------------------------------------------------------
 // Clone flag constants (from Linux <linux/sched.h>)
@@ -907,10 +966,11 @@ pub fn sys_execve_chirho(
     // -----------------------------------------------------------------------
     // Step 4: Obtain the ELF binary data
     // -----------------------------------------------------------------------
-    // /proc/self/fd/N — NOT resolved (re-exec disabled).
-    // Dynamic linker under QEMU TCG takes 10+ minutes. Let dropbear
-    // run without re-exec. The in-kernel SSH relay forwards Unix→TCP.
-    let resolved_filename_chirho = filename_str_chirho.clone();
+    // Resolve procfd exec paths used by libc fallbacks when execveat is
+    // missing. This is enough for Dropbear's "/proc/self/fd/N" re-exec path
+    // without needing a full /proc/<pid>/fd implementation.
+    let (resolved_filename_chirho, elf_data_owned_chirho) =
+        resolve_exec_source_chirho(&filename_str_chirho);
 
     // Try to resolve the file via the VFS first. If that fails, fall back to
     // the embedded hello-chirho binary (useful for early testing before the
@@ -924,8 +984,6 @@ pub fn sys_execve_chirho(
         .rsplit('/')
         .next()
         .unwrap_or(&filename_str_chirho);
-
-    let elf_data_owned_chirho: Option<Vec<u8>> = try_read_file_chirho(&resolved_filename_chirho);
 
     let elf_data_chirho: &[u8] = match &elf_data_owned_chirho {
         Some(data_chirho) => {
