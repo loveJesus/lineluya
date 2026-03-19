@@ -43,6 +43,7 @@ use crate::elf_chirho::{
 };
 use crate::syscall_chirho::{
     EBUSY_CHIRHO, EFAULT_CHIRHO, EINVAL_CHIRHO, ENOENT_CHIRHO, ENOEXEC_CHIRHO, ENOMEM_CHIRHO,
+    ERANGE_CHIRHO,
 };
 use crate::uaccess_chirho;
 
@@ -809,6 +810,25 @@ pub unsafe extern "C" fn kzalloc_stub_chirho(
     ptr_chirho
 }
 
+/// Linux internal kmalloc entry point used by modern modules.
+#[allow(dead_code)]
+pub unsafe extern "C" fn kmalloc_noprof_stub_chirho(
+    size_chirho: usize,
+    flags_chirho: u32,
+) -> *mut u8 {
+    unsafe { kmalloc_stub_chirho(size_chirho, flags_chirho) }
+}
+
+/// Linux internal cache-based kmalloc entry point used by modern modules.
+#[allow(dead_code)]
+pub unsafe extern "C" fn kmalloc_cache_noprof_stub_chirho(
+    _cache_ptr_chirho: *mut u8,
+    flags_chirho: u32,
+    size_chirho: usize,
+) -> *mut u8 {
+    unsafe { kmalloc_stub_chirho(size_chirho, flags_chirho) }
+}
+
 /// `krealloc` C ABI shim — resize a previous kmalloc allocation.
 #[no_mangle]
 pub unsafe extern "C" fn krealloc_stub_chirho(
@@ -1148,6 +1168,20 @@ pub extern "C" fn create_workqueue_stub_chirho(_name_ptr_chirho: u64) -> u64 {
     NEXT_WQ_ID_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
 }
 
+/// `alloc_workqueue(name, flags, max_active, ...)` — variadic Linux helper.
+///
+/// We only care about returning a stable non-NULL handle so modules can keep
+/// their workqueue state alive. The format/flags/max_active arguments are
+/// ignored for now.
+#[allow(dead_code)]
+pub extern "C" fn alloc_workqueue_stub_chirho(
+    name_ptr_chirho: u64,
+    _flags_chirho: u32,
+    _max_active_chirho: i32,
+) -> u64 {
+    create_workqueue_stub_chirho(name_ptr_chirho)
+}
+
 /// `destroy_workqueue(wq)` — destroy a workqueue.
 #[allow(dead_code)]
 pub extern "C" fn destroy_workqueue_stub_chirho(_wq_handle_chirho: u64) {
@@ -1159,6 +1193,16 @@ pub extern "C" fn destroy_workqueue_stub_chirho(_wq_handle_chirho: u64) {
 pub extern "C" fn queue_work_stub_chirho(_wq_handle_chirho: u64, _work_ptr_chirho: u64) -> i32 {
     crate::serial_println_chirho!("[KO] queue_work stub called");
     1
+}
+
+/// `queue_work_on(cpu, wq, work)` — Linux helper variant that pins work to a CPU.
+#[allow(dead_code)]
+pub extern "C" fn queue_work_on_stub_chirho(
+    _cpu_chirho: i32,
+    wq_handle_chirho: u64,
+    work_ptr_chirho: u64,
+) -> i32 {
+    queue_work_stub_chirho(wq_handle_chirho, work_ptr_chirho)
 }
 
 /// `flush_workqueue(wq)` — wait for all pending work to complete.
@@ -1194,6 +1238,49 @@ pub unsafe extern "C" fn misc_register_stub_chirho(
         misc_ref_chirho.minor_chirho,
         name_chirho
     );
+    0
+}
+
+/// `kstrtoint(str, base, out)` — parse a kernel-space ASCII integer.
+pub unsafe extern "C" fn kstrtoint_stub_chirho(
+    string_ptr_chirho: *const u8,
+    base_chirho: u32,
+    out_ptr_chirho: *mut i32,
+) -> i32 {
+    if string_ptr_chirho.is_null() || out_ptr_chirho.is_null() {
+        return -(EINVAL_CHIRHO as i32);
+    }
+
+    let input_chirho = unsafe {
+        read_kernel_c_string_chirho(string_ptr_chirho, KO_C_STRING_MAX_BYTES_CHIRHO)
+    }
+    .unwrap_or_default();
+    let trimmed_chirho = input_chirho.trim();
+    let radix_chirho = if base_chirho == 0 { 10 } else { base_chirho };
+    let negative_chirho = trimmed_chirho.starts_with('-');
+    let digits_chirho = trimmed_chirho
+        .strip_prefix('-')
+        .or_else(|| trimmed_chirho.strip_prefix('+'))
+        .unwrap_or(trimmed_chirho);
+
+    let parsed_chirho = match i64::from_str_radix(digits_chirho, radix_chirho) {
+        Ok(value_chirho) => {
+            if negative_chirho {
+                -value_chirho
+            } else {
+                value_chirho
+            }
+        }
+        Err(_) => return -(EINVAL_CHIRHO as i32),
+    };
+
+    if parsed_chirho < i32::MIN as i64 || parsed_chirho > i32::MAX as i64 {
+        return -(ERANGE_CHIRHO as i32);
+    }
+
+    unsafe {
+        *out_ptr_chirho = parsed_chirho as i32;
+    }
     0
 }
 
@@ -1827,12 +1914,20 @@ pub fn init_kernel_symbols_chirho() {
         create_workqueue_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("alloc_workqueue"),
+        alloc_workqueue_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
         String::from("destroy_workqueue"),
         destroy_workqueue_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("queue_work"),
         queue_work_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("queue_work_on"),
+        queue_work_on_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("flush_workqueue"),
@@ -2038,6 +2133,14 @@ pub fn init_kernel_symbols_chirho() {
         memmove_stub_chirho as *const () as u64,
     );
     KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__kmalloc_noprof"),
+        kmalloc_noprof_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("__kmalloc_cache_noprof"),
+        kmalloc_cache_noprof_stub_chirho as *const () as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
         String::from("memcmp"),
         memcmp_stub_chirho as *const () as u64,
     );
@@ -2047,7 +2150,7 @@ pub fn init_kernel_symbols_chirho() {
     );
     KernelSymbolTableChirho::register_symbol_chirho(
         String::from("kstrtoint"),
-        noop_stub_chirho as *const () as u64,
+        kstrtoint_stub_chirho as *const () as u64,
     );
 
     // Block device / disk functions (needed by loop.ko) — remaining noop stubs
@@ -2084,7 +2187,7 @@ pub fn init_kernel_symbols_chirho() {
         "zero_fill_bio_iter", "bio_blkcg_css", "blkcg_root_css",
         "bd_prepare_to_claim", "bd_abort_claiming", "iov_iter_bvec",
         // Memory / slab
-        "__kmalloc_noprof", "__kmalloc_cache_noprof", "kmalloc_caches",
+        "kmalloc_caches",
         "int_active_memcg", "memory_cgrp_subsys",
         // IDR (remaining noop stubs)
         "idr_destroy", "idr_get_next",
@@ -2097,7 +2200,7 @@ pub fn init_kernel_symbols_chirho() {
         "__SCT__preempt_schedule", "__SCT__might_resched", "__SCT__cond_resched",
         "pcpu_hot", "const_pcpu_hot",
         "__percpu_down_read", "__rcu_read_lock", "__rcu_read_unlock",
-        "rcuwait_wake_up", "alloc_workqueue", "queue_work_on",
+        "rcuwait_wake_up",
         // Module / misc
         "__module_get", "capable", "latent_entropy",
         "kthread_associate_blkcg", "cgroup_get_e_css",
