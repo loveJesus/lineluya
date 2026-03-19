@@ -3474,6 +3474,12 @@ fn sys_poll_chirho(
                             revents_chirho |= POLLIN_CHIRHO;
                         }
                     }
+                } else if let Some(pipe_read_ready_chirho) =
+                    crate::pipe_chirho::pipe_read_ready_for_fd_chirho(fd_val_chirho)
+                {
+                    if pipe_read_ready_chirho {
+                        revents_chirho |= POLLIN_CHIRHO;
+                    }
                 } else {
                     revents_chirho |= POLLIN_CHIRHO;
                 }
@@ -3649,6 +3655,13 @@ fn sys_select_chirho(
                                 has_ready_chirho = true;
                                 break;
                             }
+                        } else if let Some(pipe_read_ready_chirho) =
+                            crate::pipe_chirho::pipe_read_ready_for_fd_chirho(fd_chirho as u64)
+                        {
+                            if pipe_read_ready_chirho {
+                                has_ready_chirho = true;
+                                break;
+                            }
                         } else if crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some() {
                             has_ready_chirho = true;
                             break;
@@ -3681,6 +3694,10 @@ fn sys_select_chirho(
                         lsr_chirho & 1 != 0
                             || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
                     }
+                } else if let Some(pipe_read_ready_chirho) =
+                    crate::pipe_chirho::pipe_read_ready_for_fd_chirho(fd_chirho as u64)
+                {
+                    pipe_read_ready_chirho
                 } else {
                     crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some()
                 };
