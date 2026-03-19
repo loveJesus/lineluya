@@ -1154,11 +1154,26 @@ pub fn sys_execve_with_filename_chirho(
                 user_rsp_chirho
             );
 
-            // Per-process PT switch for dynamic ELFs — skip for now.
-            // The CR3 switch GPFs for larger binaries (dropbear 310KB).
-            // Lazy migration works for static-like paths but the dynamic
-            // ELF loader maps many pages that aren't in the per-process PT.
-            // activate_per_process_pt_chirho();
+            // Dynamic ELFs still rely on the shared boot page tables.
+            // The dynamic loader performs many mmap/mprotect transitions, but
+            // GLOBAL_MAPPER_CHIRHO is not rebound on scheduler switches.
+            // Leaving the task on an inherited per-process PT means later
+            // mprotect() calls can update a different page table than the one
+            // userspace is actually executing on. Clear the task-local PT and
+            // switch back to the boot PML4 before entering the interpreter.
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                task_arc_chirho.lock().page_table_root_chirho = None;
+            }
+            let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+            if boot_pml4_chirho.as_u64() != 0 {
+                crate::serial_debug_chirho!(
+                    "[PROCESS] execve: dynamic ELF using boot PML4 {:#x}",
+                    boot_pml4_chirho.as_u64(),
+                );
+                unsafe {
+                    crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
+                }
+            }
 
             // Drop ELF data BEFORE jumping — frees heap memory that was
             // previously leaked via Vec::leak on every execve.
