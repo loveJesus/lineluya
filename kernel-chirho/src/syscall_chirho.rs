@@ -2899,9 +2899,11 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
             "[SYSCALL] exit_group: PID {} is daemon child — yielding to parent",
             caller_pid_chirho
         );
-        // Wake parent in case it's blocked on wait4
+        // Wake parent in case it's blocked on wait4.
+        // Do NOT wake SOCKET_DATA_WAITQUEUE — that would wake PID 2
+        // (listener daemon) from its select, causing it to resume
+        // unnecessarily and GPF on a misaligned code path.
         crate::process_chirho::wake_child_exit_waitqueue_chirho();
-        crate::net_chirho::wake_socket_data_waitqueue_chirho();
         // Keep yielding until the parent processes our exit.
         // Must retry schedule on each HLT wake because the first
         // yield may ABORT (PID 0 in queue) before reaching PID 3.

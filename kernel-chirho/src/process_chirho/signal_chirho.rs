@@ -756,6 +756,10 @@ pub fn deliver_sigchld_chirho(parent_pid_chirho: u64, child_pid_chirho: u64) {
 
     if let Some(parent_arc_chirho) = find_task_by_pid_chirho(parent_pid_chirho) {
         let mut parent_chirho = parent_arc_chirho.lock();
+        let should_unblock_parent_chirho = matches!(
+            parent_chirho.state_chirho,
+            TaskStateChirho::BlockedChirho | TaskStateChirho::SleepingChirho
+        );
 
         // Set the pending bit for SIGCHLD (signal 17).
         parent_chirho.pending_signals_chirho |= 1u64 << SIGCHLD_CHIRHO;
@@ -768,18 +772,23 @@ pub fn deliver_sigchld_chirho(parent_pid_chirho: u64, child_pid_chirho: u64) {
             pid_chirho: child_pid_chirho,
         });
 
-        // Wake the parent if it is blocked (e.g. in wait4).
-        if parent_chirho.state_chirho == TaskStateChirho::BlockedChirho
-            || parent_chirho.state_chirho == TaskStateChirho::SleepingChirho
-        {
-            parent_chirho.state_chirho = TaskStateChirho::ReadyChirho;
-        }
-
         crate::serial_debug_chirho!(
             "[SIGNAL] SIGCHLD delivered to PID {} (child PID {} exited)",
             parent_pid_chirho,
             child_pid_chirho
         );
+
+        drop(parent_chirho);
+
+        // A pending signal alone is not enough if the parent is sleeping in a
+        // wait queue: it must be re-inserted into the scheduler's run queue.
+        if should_unblock_parent_chirho {
+            crate::scheduler_chirho::unblock_task_chirho(parent_pid_chirho);
+        }
+
+        // The direct parent should run before unrelated ready tasks so it can
+        // process SIGCHLD / wait4 / self-pipe work immediately after child exit.
+        crate::scheduler_chirho::promote_task_chirho(parent_pid_chirho);
     }
 }
 
