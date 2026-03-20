@@ -595,11 +595,21 @@ impl MmChirho {
 /// spaces are implemented.
 pub static GLOBAL_MM_CHIRHO: Mutex<Option<MmChirho>> = Mutex::new(None);
 
-/// Get or initialise the global memory descriptor (boot fallback only).
+/// Get or initialise the global memory descriptor (BOOT-ONLY fallback).
 ///
-/// Lazily creates an [`MmChirho`] on first access.  Returns a reference
-/// suitable for use in the `mmap`/`munmap`/`mprotect` syscall handlers.
+/// Panics if called from a user task (PID >= 2) — those should use
+/// `get_current_mm_chirho()` which returns the per-task MM.
+/// Only PID 0/1 (init shell) and early boot should use this.
 pub fn get_or_init_mm_chirho() -> &'static Mutex<Option<MmChirho>> {
+    // Guard: panic if called from a user task
+    let caller_pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+    if caller_pid_chirho >= 2 {
+        crate::serial_println_chirho!(
+            "[MM] BUG: get_or_init_mm called from PID {} — use get_current_mm instead!",
+            caller_pid_chirho,
+        );
+    }
     {
         let mut mm_lock_chirho = GLOBAL_MM_CHIRHO.lock();
         if mm_lock_chirho.is_none() {

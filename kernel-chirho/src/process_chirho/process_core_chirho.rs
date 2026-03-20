@@ -1108,6 +1108,11 @@ pub fn sys_execve_with_filename_chirho(
         }
     };
 
+    // Step 4a: Exec MM reset DEFERRED — needs to be paired with page table
+    // clear to avoid "already mapped" false positives. Per-task MM ownership
+    // (Codex step 4 complete) gives process isolation at VMA level. Full
+    // exec MM reset is architectural debt for workstream 3 completion.
+
     // -----------------------------------------------------------------------
     // Step 4b: Per-process page tables — record for future use.
     // -----------------------------------------------------------------------
