@@ -798,6 +798,11 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
             let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
             let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
 
+            // Skip if already IN the trampoline page (avoid recursive push).
+            let in_trampoline_chirho = user_rip_chirho >= USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO
+                && user_rip_chirho < USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO + 8;
+            if !in_trampoline_chirho {
+
             if user_rsp_chirho >= core::mem::size_of::<u64>() as u64 {
                 let trampoline_rsp_chirho =
                     user_rsp_chirho - core::mem::size_of::<u64>() as u64;
@@ -820,8 +825,20 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
                             frame_value_chirho.cpu_flags |= RFlags::INTERRUPT_FLAG;
                         });
                     }
+                } else {
+                    // copy_to_user failed — user stack page not writable
+                    static TRAMP_FAIL_CHIRHO: core::sync::atomic::AtomicU64 =
+                        core::sync::atomic::AtomicU64::new(0);
+                    let cnt_chirho = TRAMP_FAIL_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if cnt_chirho < 5 {
+                        crate::serial_println_chirho!(
+                            "[TRAMP-FAIL] copy_to_user failed at rsp={:#x} rip={:#x} cnt={}",
+                            trampoline_rsp_chirho, user_rip_chirho, cnt_chirho,
+                        );
+                    }
                 }
             }
+            } // else: not already in trampoline
         }
     }
 }
