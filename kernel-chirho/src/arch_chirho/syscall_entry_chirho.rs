@@ -357,7 +357,20 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
             Msr::new(0xC000_0100).write(fs_chirho);
             Msr::new(0xC000_0102).write(gs_chirho);
         }
-        // One-shot verify for PID 2
+        // One-shot: verify PID 2's SyscallFrame RSP alignment at IRETQ
+        if pid_chirho == 2 {
+            let rsp_mod_chirho = frame_chirho.rsp_chirho % 16;
+            if rsp_mod_chirho == 0 && syscall_nr_chirho == 23 { // select with 0-aligned RSP
+                use core::sync::atomic::{AtomicBool, Ordering as AtOrd};
+                static LOGGED_RSP_CHIRHO: AtomicBool = AtomicBool::new(false);
+                if !LOGGED_RSP_CHIRHO.swap(true, AtOrd::Relaxed) {
+                    crate::serial_println_chirho!(
+                        "[PID2-RSP] select frame.rsp={:#x} (mod16={}) — expected 8 mod 16!",
+                        frame_chirho.rsp_chirho, rsp_mod_chirho,
+                    );
+                }
+            }
+        }
         if pid_chirho == 2 {
             use core::sync::atomic::{AtomicU64, Ordering};
             static FS_RET_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
