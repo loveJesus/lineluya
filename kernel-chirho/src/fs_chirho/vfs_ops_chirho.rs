@@ -1487,6 +1487,17 @@ pub fn alloc_and_insert_fd_chirho(
         None
     };
 
+    // Trace fd=9+ allocation for PID 3 (pipe relay debug)
+    if let Some(fd_chirho) = task_result_chirho {
+        let trace_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if trace_pid_chirho == 3 && fd_chirho >= 9 {
+            crate::serial_println_chirho!(
+                "[FD-ALLOC] pid=3 fd={} allocated in per-process table",
+                fd_chirho,
+            );
+        }
+    }
     if let Some(fd_chirho) = task_result_chirho {
         // Mirror into global table for backward compat (task lock already released).
         let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
@@ -1533,6 +1544,17 @@ pub fn alloc_and_insert_fd_chirho(
 ///
 /// A2-PROC-003: Per-process close.
 pub fn close_fd_chirho(fd_chirho: u64) -> i64 {
+    // Trace fd=9+ close for PID 3 (pipe relay debug)
+    {
+        let trace_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if trace_pid_chirho == 3 && fd_chirho >= 9 {
+            crate::serial_println_chirho!(
+                "[FD-CLOSE] pid=3 fd={} closing",
+                fd_chirho,
+            );
+        }
+    }
     let mut closed_in_task_chirho = false;
     // Close in current task's per-process table first.
     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
