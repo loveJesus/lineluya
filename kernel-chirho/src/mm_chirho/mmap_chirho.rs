@@ -621,8 +621,24 @@ fn map_anonymous_pages_chirho(
     len_chirho: u64,
     prot_chirho: u32,
 ) -> Result<(), i64> {
-    // GLOBAL_MAPPER follows CR3 via reinit in switch_page_table.
-    // Belt-and-suspenders reinit removed here — caused PID 4 to stall.
+    // Trace: log ALL mmap calls for PIDs 2-4 to find who creates 0x7f000a7c1000
+    {
+        let pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if (pid_chirho >= 2 && pid_chirho <= 4) && addr_chirho >= 0x7f0000000000 {
+            use core::sync::atomic::{AtomicU64, Ordering as MmapOrd};
+            static MMAP_HI_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let cnt_chirho = MMAP_HI_CHIRHO.fetch_add(1, MmapOrd::Relaxed);
+            if cnt_chirho < 40 {
+                let (cr3_f_chirho, _) = x86_64::registers::control::Cr3::read();
+                crate::serial_println_chirho!(
+                    "[MMAP-HI] #{} pid={} addr={:#x} len={:#x} cr3={:#x}",
+                    cnt_chirho, pid_chirho, addr_chirho, len_chirho,
+                    cr3_f_chirho.start_address().as_u64(),
+                );
+            }
+        }
+    }
     use crate::syscall_chirho::ENOMEM_CHIRHO;
     use x86_64::structures::paging::{
         FrameAllocator, Mapper, Page, Size4KiB,
