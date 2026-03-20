@@ -362,6 +362,11 @@ pub fn schedule_chirho() {
             if is_runnable_chirho {
                 scheduler_chirho.tasks_chirho.push_back(pid_chirho);
             }
+            if pid_chirho == 4 && !is_runnable_chirho {
+                crate::serial_println_chirho!(
+                    "[SCHED-P4] PID 4 NOT pushed (not runnable)",
+                );
+            }
         }
 
         // 3. Pop the next RUNNABLE task from the front, skipping dead/zombie.
@@ -374,6 +379,13 @@ pub fn schedule_chirho() {
                     break;
                 }
                 // Dead/zombie task — discard silently.
+                // Trace discarded PID 4 for debugging
+                if candidate_chirho == 4 {
+                    crate::serial_println_chirho!(
+                        "[SCHED-DROP] PID 4 discarded (not runnable) queue_len={}",
+                        queue_len_chirho,
+                    );
+                }
             }
         }
 

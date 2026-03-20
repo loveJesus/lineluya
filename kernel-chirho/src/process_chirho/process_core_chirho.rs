@@ -1111,14 +1111,21 @@ pub fn sys_execve_with_filename_chirho(
     // NOTE: For vfork semantics (current model), all processes share the
     // same address space anyway. Per-process page tables become useful once
     // real fork + preemptive scheduling are enabled.
-    let _new_pt_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
-    if let Some(pt_root_chirho) = _new_pt_chirho {
-        crate::serial_debug_chirho!(
-            "[PROCESS] execve: created per-process page table PML4={:#x} (stored, not switched)",
-            pt_root_chirho.as_u64(),
-        );
-        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-            task_arc_chirho.lock().page_table_root_chirho = Some(pt_root_chirho);
+    // Create a new per-process PT for all exec except embedded static BusyBox.
+    let is_embedded_static_exec_chirho = !is_procfd_exec_chirho
+        && crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho >= 4)
+            .unwrap_or(false);
+    if !is_embedded_static_exec_chirho {
+        let _new_pt_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
+        if let Some(pt_root_chirho) = _new_pt_chirho {
+            crate::serial_debug_chirho!(
+                "[PROCESS] execve: created per-process page table PML4={:#x}",
+                pt_root_chirho.as_u64(),
+            );
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                task_arc_chirho.lock().page_table_root_chirho = Some(pt_root_chirho);
+            }
         }
     }
 
@@ -1137,7 +1144,14 @@ pub fn sys_execve_with_filename_chirho(
     // -----------------------------------------------------------------------
     {
         let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
-        if boot_pml4_chirho.as_u64() != 0 {
+        // Switch to boot PML4 for ALL exec EXCEPT embedded static BusyBox
+        // (PID >= 4 non-procfd). Static BusyBox loads onto the fork-inherited
+        // per-process PT to avoid corrupting parent's musl library pages.
+        let is_embedded_static_chirho = !is_procfd_exec_chirho
+            && crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho >= 4)
+                .unwrap_or(false);
+        if !is_embedded_static_chirho && boot_pml4_chirho.as_u64() != 0 {
             unsafe {
                 crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
             }
@@ -1159,7 +1173,17 @@ pub fn sys_execve_with_filename_chirho(
                 "[PROCESS] execve: procfd — cleared {} stale user pages + re-mapped trampoline",
                 cleared_chirho,
             );
+        } else if is_embedded_static_chirho {
+            // Embedded static BusyBox: DON'T touch boot PML4.
+            // Load ELF directly onto the fork-inherited per-process PT.
+            // BusyBox at 0x400000 doesn't conflict with parent's dropbear
+            // at 0x555555550000 or musl at 0x7f0000100000.
+            crate::serial_debug_chirho!(
+                "[PROCESS] execve: embedded static — loading onto fork PT",
+            );
         } else {
+            // Normal non-procfd exec (PID 0/1 shell, PID 2 initial dropbear):
+            // restore COW to writable on boot PML4.
             let restored_chirho = crate::pagetable_chirho::restore_cow_to_writable_chirho(boot_pml4_chirho);
             crate::serial_debug_chirho!(
                 "[PROCESS] execve: normal — restored {} COW pages to writable",
@@ -1368,7 +1392,10 @@ pub fn sys_execve_with_filename_chirho(
     );
 
     // Mirror user-space mappings into per-process page table and switch CR3.
-    activate_per_process_pt_chirho();
+    // Skip for embedded static BusyBox — ELF was loaded directly onto fork PT.
+    if !is_embedded_static_exec_chirho {
+        activate_per_process_pt_chirho();
+    }
 
     // -----------------------------------------------------------------------
     // Step 7: Free ELF data and jump to userspace (never returns)
@@ -1570,9 +1597,18 @@ fn preserve_fd_table_across_exec_chirho_impl(preserve_sockets_chirho: bool) {
     // E.g., PID 4's exec copies its fd=0 (pipe) to global, overwriting
     // PID 3's fd=0 (socket), causing PID 3 to read from VFS instead of
     // recvfrom, preventing CloseWait EOF detection.
-    if let Some(global_mirror_value_chirho) = global_mirror_chirho {
-        let mut global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        *global_guard_chirho = Some(global_mirror_value_chirho);
+    // Only sync per-process → global for PID 0/1 (init shell).
+    // For daemon PIDs (>= 2), syncing overwrites the global table with the
+    // child's fd layout. Other processes that fall through to the global
+    // table then see stale pipe fds, causing wait_event to spin (pipe scan
+    // finds "ready" pipes that belong to a dead process).
+    let current_pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+    if current_pid_chirho <= 1 {
+        if let Some(global_mirror_value_chirho) = global_mirror_chirho {
+            let mut global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+            *global_guard_chirho = Some(global_mirror_value_chirho);
+        }
     }
 }
 

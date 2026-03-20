@@ -1826,20 +1826,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             }
             // Reset time slice so trampoline doesn't fire every tick
             crate::scheduler_chirho::reset_time_slice_chirho();
-            // Always yield on preemption — promote parent first so the
-            // pipe relay (PID 3 reading child output) gets CPU time.
-            // Promote the parent BEFORE yielding so it's unblocked from
-            // any waitqueue (e.g., SOCKET_DATA_WAITQUEUE in select).
-            {
-                let yp_chirho = crate::task_chirho::current_task_chirho()
-                    .map(|t| { let g = t.lock(); (g.pid_chirho, g.ppid_chirho) });
-                if let Some((pid_chirho, ppid_chirho)) = yp_chirho {
-                    if pid_chirho >= 4 && ppid_chirho > 0 {
-                        crate::scheduler_chirho::promote_task_chirho(ppid_chirho);
-                        crate::scheduler_chirho::unblock_task_chirho(ppid_chirho);
-                    }
-                }
-            }
+            // Yield on preemption — DON'T promote the parent (PID 3).
+            // Promoting PID 3 causes it to run immediately after yield,
+            // but PID 4's exec modified boot PML4 and PID 3's lazy-backed
+            // musl library pages are corrupted → page fault.
+            // Instead, let the scheduler pick the next task naturally.
+            // PID 3 will get CPU time after PID 4 fully exits.
             crate::scheduler_chirho::yield_current_chirho();
             0
         }
