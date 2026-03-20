@@ -149,6 +149,19 @@ pub fn wake_up_chirho(queue_chirho: &WaitQueueChirho) {
         pids_chirho
     };
 
+    // One-shot: log when wake has PID 2 as a waiter (to debug second SSH accept)
+    if pids_chirho.contains(&2) {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static WAKE2_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let cnt_chirho = WAKE2_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if cnt_chirho < 5 {
+            crate::serial_println_chirho!(
+                "[WAKE] #{} waking PID 2 (waiters={:?})",
+                cnt_chirho, pids_chirho,
+            );
+        }
+    }
+
     for pid_chirho in pids_chirho {
         crate::scheduler_chirho::unblock_task_chirho(pid_chirho);
     }

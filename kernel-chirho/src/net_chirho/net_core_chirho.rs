@@ -783,6 +783,11 @@ impl TcpControlBlockChirho {
 
                 // FIN received — peer wants to close
                 if has_fin_chirho {
+                    crate::serial_println_chirho!(
+                        "[TCP] FIN on port {} seq={} rcv_nxt={} — CloseWait",
+                        local_port_chirho, segment_chirho.seq_num_chirho,
+                        self.rcv_nxt_chirho,
+                    );
                     self.rcv_nxt_chirho = segment_chirho.seq_num_chirho
                         .wrapping_add(segment_chirho.payload_chirho.len() as u32)
                         .wrapping_add(1); // +1 for FIN
@@ -2230,6 +2235,15 @@ pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
         // in the accept queue.
         if sock_chirho.state_chirho == SocketStateChirho::ListeningChirho {
             return !sock_chirho.accept_queue_chirho.is_empty();
+        }
+        // CloseWait/Closed: peer sent FIN → socket is readable (EOF).
+        // Without this, select doesn't detect the disconnect and PID 3
+        // stays blocked forever, preventing PID 2 from accepting new connections.
+        if matches!(
+            sock_chirho.tcb_chirho.state_chirho,
+            TcpStateChirho::CloseWaitChirho | TcpStateChirho::ClosedChirho
+        ) {
+            return true;
         }
         false
     } else {
