@@ -338,20 +338,16 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         }
     }
 
-    // A2-PROC-005: Check for fatal pending signals on syscall return.
-    // If a fatal signal (SIGTERM, SIGHUP, SIGPIPE, SIGKILL, etc.) is
-    // pending and not blocked, terminate the task before returning to
-    // userspace.  This is the primary signal enforcement point.
-    //
-    // Skip check for exit/exit_group syscalls — the task is already
-    // terminating and we must not re-enter the exit path.
-    // Also skip for fork/clone/execve which have their own return paths.
+    // A2-PROC-005: Check for pending signals on syscall return.
     let is_exit_syscall_chirho = syscall_nr_chirho == 60 || syscall_nr_chirho == 231;
     let is_lifecycle_syscall_chirho = syscall_nr_chirho == 57   // fork
         || syscall_nr_chirho == 58   // vfork
         || syscall_nr_chirho == 56   // clone
         || syscall_nr_chirho == 59;  // execve
     if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho {
+        // Deliver user signal handlers (enables dropbear SIGCHLD self-pipe).
+        crate::signal_chirho::deliver_one_signal_on_return_chirho(frame_chirho);
+        // Check for fatal pending signals.
         crate::signal_chirho::check_fatal_signals_on_return_chirho();
     }
 

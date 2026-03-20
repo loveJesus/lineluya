@@ -1622,10 +1622,35 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg3_chirho,
         ),
         SYS_RT_SIGRETURN_CHIRHO => {
-            // Stub: signal frame restoration not yet implemented.
-            // Return 0 so BusyBox doesn't crash on signal handler return.
-            crate::serial_debug_chirho!("[SYSCALL] rt_sigreturn (stub, returning 0)");
-            0
+            // Restore saved state from the signal frame on the user stack.
+            // The sigframe was pushed by deliver_one_signal_on_return_chirho.
+            let sigframe_ptr_chirho = frame_chirho.rsp_chirho
+                as *const crate::signal_chirho::RtSigframeChirho;
+            let sigframe_chirho = unsafe {
+                core::ptr::read_volatile(sigframe_ptr_chirho)
+            };
+
+            // Restore registers from the saved frame.
+            frame_chirho.rcx_chirho = sigframe_chirho.saved_rcx_chirho;
+            frame_chirho.r11_chirho = sigframe_chirho.saved_r11_chirho;
+            frame_chirho.rsp_chirho = sigframe_chirho.saved_rsp_chirho;
+            frame_chirho.rdi_chirho = sigframe_chirho.saved_rdi_chirho;
+            frame_chirho.rsi_chirho = sigframe_chirho.saved_rsi_chirho;
+            frame_chirho.rdx_chirho = sigframe_chirho.saved_rdx_chirho;
+
+            // Restore old signal mask.
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                task_arc_chirho.lock().signal_state_chirho.blocked_chirho =
+                    sigframe_chirho.old_mask_chirho;
+            }
+
+            crate::serial_debug_chirho!(
+                "[SYSCALL] rt_sigreturn: restored rip={:#x} rsp={:#x}",
+                sigframe_chirho.saved_rcx_chirho, sigframe_chirho.saved_rsp_chirho,
+            );
+
+            // Return the saved RAX (the original syscall return value).
+            sigframe_chirho.saved_rax_chirho as i64
         },
         SYS_IOCTL_CHIRHO => sys_ioctl_real_chirho(
             arg0_chirho,

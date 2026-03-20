@@ -81,6 +81,7 @@ pub enum SignalActionChirho {
         handler_chirho: u64,
         flags_chirho: u64,
         mask_chirho: u64,
+        restorer_chirho: u64,
     },
 }
 
@@ -536,10 +537,11 @@ pub fn sys_rt_sigaction_chirho(
                 handler_chirho,
                 flags_chirho,
                 mask_chirho,
+                restorer_chirho,
             } => SigactionChirho {
                 sa_handler_chirho: *handler_chirho,
                 sa_flags_chirho: *flags_chirho,
-                sa_restorer_chirho: 0,
+                sa_restorer_chirho: *restorer_chirho,
                 sa_mask_chirho: *mask_chirho,
             },
         };
@@ -578,6 +580,7 @@ pub fn sys_rt_sigaction_chirho(
                 handler_chirho,
                 flags_chirho: new_sa_chirho.sa_flags_chirho,
                 mask_chirho: new_sa_chirho.sa_mask_chirho,
+                restorer_chirho: new_sa_chirho.sa_restorer_chirho,
             },
         };
         task_chirho.signal_state_chirho.actions_chirho[idx_chirho] = action_chirho;
@@ -863,10 +866,11 @@ pub fn check_fatal_signals_on_return_chirho() -> bool {
                     return false;
                 }
                 SignalActionChirho::HandlerChirho { .. } => {
-                    // We don't support user-space signal handlers yet.
-                    // For now, treat as default action for safety.
-                    // A full implementation would set up a signal frame
-                    // on the user stack and trampoline to the handler.
+                    // Signal has a user handler — leave it for
+                    // deliver_one_signal_on_return_chirho to process.
+                    // Do NOT fall through to default action (which would
+                    // dequeue and ignore SIGCHLD, breaking the self-pipe).
+                    return false;
                 }
                 SignalActionChirho::DefaultChirho => {
                     // Fall through to default action handling below.
@@ -950,6 +954,184 @@ pub fn check_fatal_signals_on_return_chirho() -> bool {
         crate::scheduler_chirho::yield_current_chirho();
 
         return true;
+    }
+
+    false
+}
+
+// ============================================================================
+// User signal handler delivery (GPT-directed minimal implementation)
+// ============================================================================
+
+/// Saved user-mode state pushed onto the user stack before signal handler entry.
+/// The handler's sa_restorer points to code that does `mov eax, 15; syscall`
+/// (rt_sigreturn), which reads this frame to restore original state.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RtSigframeChirho {
+    /// Address of sa_restorer (handler RETs here → rt_sigreturn)
+    pub restorer_chirho: u64,
+    /// Saved user RIP (to resume after sigreturn)
+    pub saved_rip_chirho: u64,
+    /// Saved user RSP
+    pub saved_rsp_chirho: u64,
+    /// Saved RAX (syscall return value)
+    pub saved_rax_chirho: u64,
+    /// Saved RCX (user RIP for SYSRET)
+    pub saved_rcx_chirho: u64,
+    /// Saved R11 (user RFLAGS)
+    pub saved_r11_chirho: u64,
+    /// Saved RDI
+    pub saved_rdi_chirho: u64,
+    /// Saved RSI
+    pub saved_rsi_chirho: u64,
+    /// Saved RDX
+    pub saved_rdx_chirho: u64,
+    /// Old signal mask (restored on sigreturn)
+    pub old_mask_chirho: u64,
+    /// Signal number (for reference)
+    pub signo_chirho: u64,
+}
+
+/// Deliver one pending signal to the current task by setting up a signal
+/// frame on the user stack and redirecting execution to the handler.
+///
+/// Called from syscall_dispatch_wrapper_chirho before returning to userspace.
+/// Returns true if a signal was delivered (frame was modified).
+pub fn deliver_one_signal_on_return_chirho(
+    frame_chirho: &mut crate::syscall_chirho::SyscallFrameChirho,
+) -> bool {
+    let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(t) => t,
+        None => return false,
+    };
+
+    let mut task_chirho = task_arc_chirho.lock();
+    let pending_chirho = task_chirho.pending_signals_chirho;
+    if pending_chirho == 0 {
+        return false;
+    }
+
+    let pid_chirho = task_chirho.pid_chirho;
+    let blocked_chirho = task_chirho.signal_state_chirho.blocked_chirho;
+    // One-shot debug: log when PID 3 has pending signals
+    if pid_chirho == 3 {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static SIG_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let cnt_chirho = SIG_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if cnt_chirho < 3 {
+            // Check which signals are pending and which have handlers
+            let sigchld_idx_chirho = (SIGCHLD_CHIRHO as usize).saturating_sub(1);
+            let action_str_chirho = match &task_chirho.signal_state_chirho.actions_chirho[sigchld_idx_chirho] {
+                SignalActionChirho::DefaultChirho => "default",
+                SignalActionChirho::IgnoreChirho => "ignore",
+                SignalActionChirho::HandlerChirho { .. } => "handler",
+            };
+            crate::serial_println_chirho!(
+                "[SIG-DBG] PID 3 #{}: pending={:#x} blocked={:#x} SIGCHLD action={}",
+                cnt_chirho, pending_chirho, blocked_chirho, action_str_chirho,
+            );
+        }
+    }
+
+    // Find the lowest deliverable signal with a user handler.
+    let blocked_chirho = task_chirho.signal_state_chirho.blocked_chirho;
+    let deliverable_chirho = pending_chirho & !blocked_chirho;
+    if deliverable_chirho == 0 {
+        return false;
+    }
+
+    for signo_chirho in 1..=MAX_SIGNAL_CHIRHO {
+        if deliverable_chirho & (1u64 << signo_chirho) == 0 {
+            continue;
+        }
+
+        let idx_chirho = (signo_chirho as usize).saturating_sub(1);
+        let action_chirho = task_chirho.signal_state_chirho.actions_chirho[idx_chirho].clone();
+
+        match action_chirho {
+            SignalActionChirho::HandlerChirho {
+                handler_chirho,
+                flags_chirho: _,
+                mask_chirho,
+                restorer_chirho,
+            } => {
+                // Dequeue the signal.
+                task_chirho.pending_signals_chirho &= !(1u64 << signo_chirho);
+                task_chirho
+                    .signal_state_chirho
+                    .pending_chirho
+                    .dequeue_chirho(signo_chirho);
+
+                // Save old blocked mask and block handler signals.
+                let old_mask_chirho = task_chirho.signal_state_chirho.blocked_chirho;
+                task_chirho.signal_state_chirho.blocked_chirho |=
+                    mask_chirho | (1u64 << signo_chirho);
+
+                // Build the signal frame on the user stack.
+                let user_rsp_chirho = frame_chirho.rsp_chirho;
+
+                // Ensure 16-byte alignment for the sigframe.
+                let frame_size_chirho =
+                    core::mem::size_of::<RtSigframeChirho>() as u64;
+                let new_rsp_chirho =
+                    (user_rsp_chirho - frame_size_chirho) & !0xF;
+
+                let sigframe_chirho = RtSigframeChirho {
+                    restorer_chirho,
+                    saved_rip_chirho: frame_chirho.rcx_chirho,
+                    saved_rsp_chirho: user_rsp_chirho,
+                    saved_rax_chirho: frame_chirho.rax_chirho,
+                    saved_rcx_chirho: frame_chirho.rcx_chirho,
+                    saved_r11_chirho: frame_chirho.r11_chirho,
+                    saved_rdi_chirho: frame_chirho.rdi_chirho,
+                    saved_rsi_chirho: frame_chirho.rsi_chirho,
+                    saved_rdx_chirho: frame_chirho.rdx_chirho,
+                    old_mask_chirho,
+                    signo_chirho: signo_chirho as u64,
+                };
+
+                // Write the sigframe to the user stack.
+                let dst_chirho = new_rsp_chirho as *mut RtSigframeChirho;
+                unsafe {
+                    core::ptr::write_volatile(dst_chirho, sigframe_chirho);
+                }
+
+                // Redirect execution to the signal handler.
+                // RDI = signo (first argument to handler)
+                // RCX = restorer address (SYSRET return target after handler RETs)
+                // RSP = sigframe on user stack
+                // The handler does: void handler(int signo) { ... }
+                // Then RETs to sa_restorer which does rt_sigreturn.
+                frame_chirho.rdi_chirho = signo_chirho as u64;
+                frame_chirho.rcx_chirho = handler_chirho;
+                frame_chirho.rsp_chirho = new_rsp_chirho;
+                // R11 should have user RFLAGS (IF set)
+                frame_chirho.r11_chirho = 0x200; // IF
+
+                crate::serial_println_chirho!(
+                    "[SIGNAL] Delivering sig {} to PID {} handler={:#x} restorer={:#x} new_rsp={:#x}",
+                    signo_chirho, task_chirho.pid_chirho,
+                    handler_chirho, restorer_chirho, new_rsp_chirho,
+                );
+
+                drop(task_chirho);
+                return true;
+            }
+            SignalActionChirho::IgnoreChirho => {
+                // Drop the signal.
+                task_chirho.pending_signals_chirho &= !(1u64 << signo_chirho);
+                task_chirho
+                    .signal_state_chirho
+                    .pending_chirho
+                    .dequeue_chirho(signo_chirho);
+                continue;
+            }
+            SignalActionChirho::DefaultChirho => {
+                // Let the existing fatal signal handler deal with defaults.
+                continue;
+            }
+        }
     }
 
     false
