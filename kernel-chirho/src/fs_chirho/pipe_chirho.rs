@@ -292,6 +292,11 @@ impl FileOpsChirho for PipeWriteOpsChirho {
             pipe_chirho.buffer_chirho.push_back(byte_chirho);
         }
 
+        // Wake tasks sleeping on select/poll — they may be waiting for
+        // pipe data (e.g., PID 3 dropbear reading PID 4 shell output).
+        drop(pipe_chirho);
+        crate::net_chirho::wake_socket_data_waitqueue_chirho();
+
         Ok(buf_chirho.len())
     }
 

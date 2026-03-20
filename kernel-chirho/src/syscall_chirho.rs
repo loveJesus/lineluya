@@ -3586,8 +3586,22 @@ fn sys_select_chirho(
                 lsr_chirho & 1 != 0
                     || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
             }
+        } else if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
+            let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
+            let is_fifo_chirho = (mode_chirho & 0o170000) == 0o10000;
+            if is_fifo_chirho {
+                // Pipe: only ready when buffer has data or write end closed
+                if let Some(ref fs_data_chirho) = file_arc_chirho.lock().inode_chirho.lock().fs_data_chirho {
+                    if let Some(pipe_chirho) = fs_data_chirho.downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>() {
+                        let pg_chirho = pipe_chirho.lock();
+                        !pg_chirho.buffer_chirho.is_empty() || pg_chirho.closed_write_chirho
+                    } else { true }
+                } else { true }
+            } else {
+                true // Regular files are always ready
+            }
         } else {
-            crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some()
+            false
         }
     };
 
