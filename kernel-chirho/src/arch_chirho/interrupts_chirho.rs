@@ -282,10 +282,10 @@ const fn build_user_preempt_trampoline_page_chirho() -> UserPreemptTrampolinePag
     bytes_chirho[2] = 0;
     bytes_chirho[3] = 0;
     bytes_chirho[4] = 0;
-    // syscall
+    // syscall — sched_yield handler restores original RIP via SYSRET
     bytes_chirho[5] = 0x0F;
     bytes_chirho[6] = 0x05;
-    // ret
+    // jmp -7 (loop back to mov eax) — safety net in case SYSRET lands here
     bytes_chirho[7] = 0xC3;
     UserPreemptTrampolinePageChirho { bytes_chirho }
 }
@@ -803,40 +803,23 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
                 && user_rip_chirho < USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO + 8;
             if !in_trampoline_chirho {
 
-            if user_rsp_chirho >= core::mem::size_of::<u64>() as u64 {
-                let trampoline_rsp_chirho =
-                    user_rsp_chirho - core::mem::size_of::<u64>() as u64;
-                let saved_rip_bytes_chirho = user_rip_chirho.to_le_bytes();
-
-                if crate::uaccess_chirho::copy_to_user_chirho(
-                    trampoline_rsp_chirho,
-                    &saved_rip_bytes_chirho,
-                    core::mem::size_of::<u64>(),
-                )
-                .is_ok()
-                {
-                    unsafe {
-                        let mut frame_mut_chirho = _stack_frame_chirho.as_mut();
-                        frame_mut_chirho.update(|frame_value_chirho| {
-                            frame_value_chirho.stack_pointer =
-                                VirtAddr::new(trampoline_rsp_chirho);
-                            frame_value_chirho.instruction_pointer =
-                                VirtAddr::new(USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO);
-                            frame_value_chirho.cpu_flags |= RFlags::INTERRUPT_FLAG;
-                        });
-                    }
-                } else {
-                    // copy_to_user failed — user stack page not writable
-                    static TRAMP_FAIL_CHIRHO: core::sync::atomic::AtomicU64 =
-                        core::sync::atomic::AtomicU64::new(0);
-                    let cnt_chirho = TRAMP_FAIL_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                    if cnt_chirho < 5 {
-                        crate::serial_println_chirho!(
-                            "[TRAMP-FAIL] copy_to_user failed at rsp={:#x} rip={:#x} cnt={}",
-                            trampoline_rsp_chirho, user_rip_chirho, cnt_chirho,
-                        );
-                    }
-                }
+            // Save the interrupted RIP in the task struct (kernel-side).
+            // The trampoline does SYSCALL → sched_yield. The sched_yield
+            // handler reads preempted_rip and sets the syscall frame's
+            // RCX (return address for SYSRET) to the original RIP.
+            // This avoids writing to the user stack (which may be COW
+            // and can't be resolved in interrupt context).
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                task_arc_chirho.lock().preempted_rip_chirho = user_rip_chirho;
+            }
+            unsafe {
+                let mut frame_mut_chirho = _stack_frame_chirho.as_mut();
+                frame_mut_chirho.update(|frame_value_chirho| {
+                    frame_value_chirho.instruction_pointer =
+                        VirtAddr::new(USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO);
+                    frame_value_chirho.cpu_flags |= RFlags::INTERRUPT_FLAG;
+                    // DON'T modify RSP — keep the original user stack
+                });
             }
             } // else: not already in trampoline
         }

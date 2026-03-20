@@ -263,6 +263,10 @@ pub struct TaskChirho {
     /// Saved user-space stack pointer, stored on entry to the kernel (via
     /// syscall or interrupt) and restored on return.
     pub user_rsp_chirho: u64,
+    /// Saved user RIP when preempted by the timer trampoline. The
+    /// trampoline redirects to a sched_yield SYSCALL; the original RIP
+    /// is restored by the sched_yield handler before SYSRET.
+    pub preempted_rip_chirho: u64,
 
     // -- Per-process page table ----------------------------------------------
 
@@ -399,6 +403,7 @@ impl TaskChirho {
             kernel_stack_chirho: stack_top_chirho,
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: 0,
+            preempted_rip_chirho: 0,
             page_table_root_chirho: None, // kernel tasks share the kernel page tables
             next_fd_chirho: 0,
             fd_table_chirho: None,
@@ -468,6 +473,7 @@ impl TaskChirho {
             kernel_stack_chirho: stack_top_chirho,
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: user_stack_chirho,
+            preempted_rip_chirho: 0,
             page_table_root_chirho: pt_root_chirho,
             next_fd_chirho: 3, // 0=stdin, 1=stdout, 2=stderr pre-allocated
             fd_table_chirho: Some(crate::vfs_chirho::FdTableChirho::new_chirho(256)),
