@@ -4015,12 +4015,29 @@ fn sys_select_chirho(
                 }
             }
         }
-        // Scan pipe fds beyond nfds: if any open pipe read end has data,
-        // add it to the result set. This works because fd_set is always
-        // 128 bytes (FD_SETSIZE=1024) on the userspace stack.
-        // Without this, dropbear's session handler (nfds=1) never sees
-        // child stdout data on pipe fds 7/9.
+        // Scan pipe fds beyond nfds
         let actual_nfds_chirho = nfds_chirho as usize;
+        // Diagnostic: log pipe scan for PID 3
+        {
+            let scan_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if scan_pid_chirho == 3 {
+                use core::sync::atomic::{AtomicU64, Ordering as ScanOrd};
+                static SCAN_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let sc_chirho = SCAN_CNT_CHIRHO.fetch_add(1, ScanOrd::Relaxed);
+                if sc_chirho < 5 {
+                    for check_fd_chirho in actual_nfds_chirho..16usize {
+                        let exists_chirho = crate::fs_chirho::lookup_fd_chirho(check_fd_chirho as u64).is_some();
+                        if exists_chirho {
+                            crate::serial_println_chirho!(
+                                "[PIPE-SCAN] pid=3 #{} fd={} exists nfds={}",
+                                sc_chirho, check_fd_chirho, nfds_chirho,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         for fd_chirho in actual_nfds_chirho..16 {
             if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
                 let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;

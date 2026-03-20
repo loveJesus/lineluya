@@ -1163,15 +1163,16 @@ pub fn sys_execve_with_filename_chirho(
         // Clearing all pages would destroy the parent session's library
         // pages, causing page faults during pipe relay.
         if is_procfd_exec_chirho {
-            let cleared_chirho = crate::pagetable_chirho::clear_user_pages_chirho(boot_pml4_chirho);
-            // Re-map the user preemption trampoline — it was cleared along
-            // with all other user pages. Reset the READY flag first so init
-            // doesn't skip the re-mapping.
-            crate::interrupts_chirho::reset_user_preempt_trampoline_ready_chirho();
-            crate::interrupts_chirho::init_user_preempt_trampoline_chirho();
+            // DON'T clear boot PML4 — preserve .so library pages from the
+            // parent (PID 2). With reinit_mapper following CR3, stale pages
+            // in boot PML4 won't corrupt other processes' PTs. The new
+            // binary's MAP_FIXED segments overwrite at the same addresses.
+            // Clearing would remove .so pages that PID 3 needs after exec
+            // (musl uses lazy binding and the pages must be present).
+            let restored_chirho = crate::pagetable_chirho::restore_cow_to_writable_chirho(boot_pml4_chirho);
             crate::serial_debug_chirho!(
-                "[PROCESS] execve: procfd — cleared {} stale user pages + re-mapped trampoline",
-                cleared_chirho,
+                "[PROCESS] execve: procfd — restored {} COW pages (preserving .so libs)",
+                restored_chirho,
             );
         } else if is_embedded_static_chirho {
             // Embedded static BusyBox: DON'T touch boot PML4.
