@@ -1624,7 +1624,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_RT_SIGRETURN_CHIRHO => {
             // Restore saved state from the signal frame on the user stack.
             // The sigframe was pushed by deliver_one_signal_on_return_chirho.
-            let sigframe_ptr_chirho = frame_chirho.rsp_chirho
+            // The handler's ret popped the restorer address from the stack,
+            // so user RSP = sigframe_start + 8. Read from RSP - 8.
+            let sigframe_ptr_chirho = (frame_chirho.rsp_chirho - 8)
                 as *const crate::signal_chirho::RtSigframeChirho;
             let sigframe_chirho = unsafe {
                 core::ptr::read_volatile(sigframe_ptr_chirho)

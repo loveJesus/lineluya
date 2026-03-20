@@ -327,7 +327,7 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
     // reverting would cause SYSRET to return to the trampoline offset past
     // the SYSCALL instruction, executing garbage bytes and crashing.
     if frame_chirho.rcx_chirho != saved_rcx_chirho {
-        if syscall_nr_chirho != 24 {
+        if syscall_nr_chirho != 24 && syscall_nr_chirho != 15 { // allow sched_yield + rt_sigreturn
             crate::serial_println_chirho!(
                 "[SYSRET-GUARD] RCX corrupted! was={:#x} now={:#x} sc={}",
                 saved_rcx_chirho, frame_chirho.rcx_chirho,
