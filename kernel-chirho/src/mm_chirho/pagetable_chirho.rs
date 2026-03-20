@@ -99,6 +99,14 @@ pub fn lookup_in_boot_pt_chirho(vaddr_chirho: u64) -> Option<(u64, PageTableFlag
     Some((pte_chirho.addr().as_u64(), pte_chirho.flags()))
 }
 
+/// Look up a virtual address in a SPECIFIC page table (by PML4 phys).
+pub fn lookup_in_pt_chirho(pml4_phys_chirho: PhysAddr, vaddr_chirho: u64) -> Option<(u64, PageTableFlags)> {
+    let pte_ptr_chirho = walk_page_table_chirho(pml4_phys_chirho, VirtAddr::new(vaddr_chirho))?;
+    let pte_chirho = unsafe { &*pte_ptr_chirho };
+    if pte_chirho.is_unused() { return None; }
+    Some((pte_chirho.addr().as_u64(), pte_chirho.flags()))
+}
+
 /// Convert a physical address to a virtual address using the stored offset.
 #[inline]
 fn phys_to_virt_chirho(phys_chirho: PhysAddr) -> VirtAddr {

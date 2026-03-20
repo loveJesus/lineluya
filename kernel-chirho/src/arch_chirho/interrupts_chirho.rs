@@ -647,9 +647,22 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
     // If it's a user-mode fault, recover by re-launching the shell.
     if is_user_chirho {
         if let Ok(fault_addr_chirho) = Cr2::read() {
+            let fault_va_chirho = fault_addr_chirho.as_u64();
+            let (cr3_frame_chirho, _) = x86_64::registers::control::Cr3::read();
+            let cr3_phys_chirho = cr3_frame_chirho.start_address();
+            // Check if page exists in current PT vs boot PML4
+            let in_current_chirho = crate::pagetable_chirho::lookup_in_pt_chirho(cr3_phys_chirho, fault_va_chirho).is_some();
+            let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+            let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(99);
+            crate::serial_println_chirho!(
+                "[PF-DIAG] pid={} fault={:#x} cr3={:#x} boot={:#x} in_mapper={} err={:#x}",
+                pid_chirho, fault_va_chirho, cr3_phys_chirho.as_u64(),
+                boot_pml4_chirho.as_u64(), in_current_chirho,
+                error_code_chirho.bits(),
+            );
             crate::serial_println_chirho!(
                 "[EXCEPTION] Unrecoverable user page fault at {:#x} — terminating process",
-                fault_addr_chirho.as_u64(),
+                fault_va_chirho,
             );
         }
         crate::process_chirho::kill_and_respawn_shell_chirho("unrecoverable page fault");

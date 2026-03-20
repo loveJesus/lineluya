@@ -621,6 +621,8 @@ fn map_anonymous_pages_chirho(
     len_chirho: u64,
     prot_chirho: u32,
 ) -> Result<(), i64> {
+    // GLOBAL_MAPPER follows CR3 via reinit in switch_page_table.
+    // Belt-and-suspenders reinit removed here — caused PID 4 to stall.
     use crate::syscall_chirho::ENOMEM_CHIRHO;
     use x86_64::structures::paging::{
         FrameAllocator, Mapper, Page, Size4KiB,
