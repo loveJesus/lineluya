@@ -913,6 +913,11 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         }
     }
 
+    // GPT-directed watchpoint: check for stack corruption before timer IRET
+    if was_user_mode_chirho {
+        crate::syscall_entry_chirho::check_stack_watch_chirho("timer-iret");
+    }
+
     // GPT-directed: restore user FS/GS base before returning from interrupt
     // to user mode. Without this, the timer IRET returns with whatever stale
     // FS base was live (e.g., PID 1's static BusyBox TLS 0x713198 instead

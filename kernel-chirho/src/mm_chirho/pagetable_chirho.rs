@@ -586,6 +586,13 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
     // Flush the TLB entry for this page.
     x86_64::instructions::tlb::flush(faulting_addr_chirho);
 
+    // GPT-directed watchpoint: check if COW resolution affected the watched page
+    let watched_page_chirho = 0x7ffffeffe000u64;
+    let fault_page_chirho = faulting_addr_chirho.as_u64() & !0xFFF;
+    if fault_page_chirho == watched_page_chirho {
+        crate::syscall_entry_chirho::check_stack_watch_chirho("cow-fault");
+    }
+
     crate::serial_debug_chirho!(
         "[PAGETABLE] COW resolved: addr={:#x}, old_frame={:#x}, new_frame={:#x}",
         faulting_addr_chirho.as_u64(),
