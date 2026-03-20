@@ -1505,6 +1505,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                                 core::ptr::read_volatile((arg1_chirho as *const u8).add(i_chirho))
                             };
                         }
+                        // Log hex for short writes (argv debug)
+                        if arg2_chirho <= 4 {
+                            crate::serial_println_chirho!(
+                                "[WRITE-DATA] pid={} fd={} len={} hex={:02x?}",
+                                wr_pid_chirho, arg0_chirho, arg2_chirho, &preview_chirho,
+                            );
+                        }
                         if let Ok(s_chirho) = core::str::from_utf8(&preview_chirho) {
                             crate::serial_println_chirho!(
                                 "[WRITE-DATA] pid={} fd={} len={}: '{}'",
