@@ -671,7 +671,8 @@ fn map_anonymous_pages_chirho(
             }
         };
 
-        // Map the page.
+        // Map the page via GLOBAL_MAPPER (which now follows the active CR3
+        // thanks to reinit_mapper_for_current_cr3 in switch_page_table).
         let result_chirho = {
             let mut mapper_lock_chirho = GLOBAL_MAPPER_CHIRHO.lock();
             match mapper_lock_chirho.as_mut() {
@@ -690,7 +691,7 @@ fn map_anonymous_pages_chirho(
 
         match result_chirho {
             Ok(flush_chirho) => flush_chirho.flush(),
-            Err(_e_chirho) => continue, // Shouldn't happen (we checked above)
+            Err(_e_chirho) => continue,
         }
 
         // Zero-fill the page.

@@ -486,6 +486,12 @@ pub unsafe fn switch_page_table_chirho(pml4_phys_chirho: PhysAddr) {
         frame_chirho,
         Cr3::read().1, // preserve existing CR3 flags
     );
+
+    // Codex-directed: rebind GLOBAL_MAPPER to the new CR3 so that
+    // mmap/brk/mprotect operate on the active page table, not the
+    // stale boot PML4. Without this, PID 4's runtime mmap corrupts
+    // boot PML4, breaking PID 3's lazy-mirrored musl library pages.
+    crate::mm_chirho::reinit_mapper_for_current_cr3_chirho();
 }
 
 // ============================================================================
