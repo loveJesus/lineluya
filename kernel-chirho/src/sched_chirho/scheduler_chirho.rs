@@ -378,10 +378,54 @@ pub fn schedule_chirho() {
 
     match next_pid_chirho {
         None => {
-            // No runnable tasks.  Clear the current PID and return.
-            scheduler_chirho.current_pid_chirho = None;
-            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-            return;
+            // No runnable tasks. Drop the scheduler lock and enter an
+            // idle loop: HLT until an interrupt (timer/VirtIO) fires,
+            // which may wake a blocked task via waitqueue. Re-acquire
+            // the lock and check again after each HLT.
+            drop(scheduler_guard_chirho);
+            loop {
+                x86_64::instructions::interrupts::enable_and_hlt();
+                // After HLT, timer handler ran poll_network + schedule_tick.
+                // Check if any task became runnable (added to queue by wake_up).
+                if let Some(mut guard_chirho) = SCHEDULER_CHIRHO.try_lock() {
+                    if let Some(sched_chirho) = guard_chirho.as_mut() {
+                        if let Some(pid_chirho) = sched_chirho.tasks_chirho.pop_front() {
+                            sched_chirho.current_pid_chirho = Some(pid_chirho);
+                            sched_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
+                            drop(guard_chirho);
+                            // Switch to the newly runnable task
+                            arch_prepare_switch_chirho(None, pid_chirho);
+                            // Set TSS and current task
+                            {
+                                let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+                                if let Some(task_arc_chirho) = list_chirho
+                                    .iter()
+                                    .find(|t_chirho| t_chirho.lock().pid_chirho == pid_chirho)
+                                {
+                                    let kstack_top_chirho = task_arc_chirho.lock().kernel_stack_chirho;
+                                    unsafe {
+                                        crate::gdt_chirho::set_tss_rsp0_chirho(kstack_top_chirho);
+                                    }
+                                }
+                                if let Some(task_arc_chirho) = list_chirho.iter()
+                                    .find(|t_chirho| t_chirho.lock().pid_chirho == pid_chirho)
+                                {
+                                    crate::task_chirho::set_current_task_chirho(
+                                        alloc::sync::Arc::clone(task_arc_chirho)
+                                    );
+                                }
+                            }
+                            // Context switch to the woken task
+                            let new_ctx_ptr_chirho = crate::task_chirho::context_ptr_chirho(pid_chirho);
+                            let boot_ctx_ptr_chirho = crate::task_chirho::boot_context_ptr_chirho();
+                            unsafe {
+                                switch_context_return_wrapper_chirho(boot_ctx_ptr_chirho, new_ctx_ptr_chirho);
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
         }
         Some(next_chirho) => {
                 // 4. If the next task is the same as the old one, no context
