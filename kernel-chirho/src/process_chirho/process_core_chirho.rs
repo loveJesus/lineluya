@@ -1315,11 +1315,10 @@ pub fn sys_execve_with_filename_chirho(
 /// ELF loader to use the global mapper (which maps into the current CR3)
 /// and then transfer all user mappings to an isolated address space.
 fn activate_per_process_pt_chirho() {
-    // Switch CR3 to the per-process page table. User-space pages are
-    // lazily migrated from the boot PT by the page fault handler.
-    // The mapper stays pointed at the boot PML4 (for mmap operations),
-    // while the page fault handler uses map_page_in_pt_chirho to populate
-    // the per-process PT on demand.
+    // Eagerly mirror ALL user mappings from the boot PML4 to the
+    // per-process page table, then switch CR3. This gives the process
+    // its own isolated address space — critical for preventing shared
+    // .data segment corruption between processes.
     let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
         Some(t_chirho) => t_chirho,
         None => return,
@@ -1327,15 +1326,18 @@ fn activate_per_process_pt_chirho() {
     let pt_root_chirho = task_arc_chirho.lock().page_table_root_chirho;
 
     if let Some(pml4_phys_chirho) = pt_root_chirho {
+        // Mirror ALL user-space pages from boot PML4 → per-process PT.
+        let count_chirho = crate::pagetable_chirho::mirror_user_mappings_chirho(
+            pml4_phys_chirho,
+        );
         crate::serial_debug_chirho!(
-            "[PROCESS] Switching CR3 to per-process PT {:#x} (lazy migration)",
+            "[PROCESS] Mirrored {} user pages to per-process PT {:#x}",
+            count_chirho,
             pml4_phys_chirho.as_u64(),
         );
         unsafe {
             crate::pagetable_chirho::switch_page_table_chirho(pml4_phys_chirho);
         }
-        // NOTE: mapper stays pointing at boot PML4. New mmap operations
-        // go to boot PML4, and page faults lazily migrate to current PT.
     }
 }
 
