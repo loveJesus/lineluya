@@ -777,7 +777,9 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     // IRQ 11 is currently masked/ack-only during the SSH work, so blocked
     // tasks sleeping on SOCKET_DATA_WAITQUEUE_CHIRHO still need a periodic
     // kernel entry point that drains device RX rings and wakes them.
-    crate::net_chirho::poll_network_chirho();
+    // Try to poll network — skip if NET_DEVICES lock is held (avoids
+    // deadlock when timer fires while a task is mid-poll_network).
+    crate::net_chirho::try_poll_network_chirho();
 
     // Deferred user-mode preemption:
     // Rewrite the IRETQ frame so the interrupted task returns to a small

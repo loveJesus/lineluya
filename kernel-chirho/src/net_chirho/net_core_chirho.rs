@@ -4852,6 +4852,33 @@ pub fn send_ip_packet_chirho(ip_packet_chirho: &[u8]) -> Result<(), i64> {
 ///
 /// This is the main network receive path. Call it periodically (e.g., from
 /// a timer tick or when waiting for network I/O).
+/// Non-blocking network poll — skips if the device lock is held.
+/// Safe to call from interrupt context (timer handler).
+pub fn try_poll_network_chirho() {
+    if let Some(devs_chirho) = NET_DEVICES_CHIRHO.try_lock() {
+        let count_chirho = devs_chirho.len();
+        drop(devs_chirho);
+        for iface_idx_chirho in 0..count_chirho {
+            loop {
+                let frame_chirho = {
+                    let mut devs_chirho = match NET_DEVICES_CHIRHO.try_lock() {
+                        Some(d) => d,
+                        None => break,
+                    };
+                    match devs_chirho.get_mut(iface_idx_chirho) {
+                        Some(dev_chirho) => dev_chirho.recv_packet_chirho(),
+                        None => None,
+                    }
+                };
+                match frame_chirho {
+                    Some(raw_chirho) => process_received_frame_chirho(&raw_chirho, iface_idx_chirho),
+                    None => break,
+                }
+            }
+        }
+    }
+}
+
 pub fn poll_network_chirho() {
     let device_count_chirho = {
         let devs_chirho = NET_DEVICES_CHIRHO.lock();
