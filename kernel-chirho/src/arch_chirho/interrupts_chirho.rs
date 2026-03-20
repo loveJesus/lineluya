@@ -744,10 +744,18 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
             let pt_root_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().page_table_root_chirho)
                 .unwrap_or(None);
+            let fs_base_chirho = unsafe {
+                x86_64::registers::model_specific::Msr::new(0xC000_0100).read()
+            };
+            let expected_fs_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().fs_base_chirho)
+                .unwrap_or(0);
             crate::serial_println_chirho!(
-                "[GPF-DIAG] pid={} CR3={:#x} task.pt_root={:?}",
+                "[GPF-DIAG] pid={} CR3={:#x} pt_root={:?} FS={:#x} task.fs={:#x} match={}",
                 pid_chirho, cr3_raw_chirho.start_address().as_u64(),
                 pt_root_chirho.map(|p| p.as_u64()),
+                fs_base_chirho, expected_fs_chirho,
+                fs_base_chirho == expected_fs_chirho,
             );
             // Dump bytes at the faulting RIP
             let bytes_chirho: [u8; 16] = unsafe {

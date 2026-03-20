@@ -311,6 +311,66 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         crate::scheduler_chirho::reset_time_slice_chirho();
     }
 
+    // GPT-directed: log PID 2's select return + user [rsp] return target
+    {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static PID2_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
+            let pid_chirho = task_chirho.lock().pid_chirho;
+            if pid_chirho == 2 && syscall_nr_chirho == 23 { // select
+                let cnt_chirho = PID2_LOG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                // Log every select return for PID 2
+                if cnt_chirho < 5 || cnt_chirho > 95 { // first 5 + near end
+                    let user_rsp_chirho = frame_chirho.rsp_chirho;
+                    // Read return address from user stack (the target of RET after syscall wrapper)
+                    let ret_target_chirho = if user_rsp_chirho > 0x7fff00000000
+                        && user_rsp_chirho < 0x800000000000
+                    {
+                        unsafe { core::ptr::read_volatile(user_rsp_chirho as *const u64) }
+                    } else {
+                        0
+                    };
+                    crate::serial_println_chirho!(
+                        "[PID2-SEL] #{} rcx={:#x} rsp={:#x} [rsp]={:#x} rax={}",
+                        cnt_chirho, frame_chirho.rcx_chirho,
+                        user_rsp_chirho, ret_target_chirho, result_chirho,
+                    );
+                }
+            }
+        }
+    }
+
+    // GPT-directed fix: restore user FS/GS base at the SYSCALL RETURN
+    // boundary, immediately before the assembly IRETQ path. This is the
+    // authoritative point for user TLS state. The scheduler's FS/GS write
+    // happens too early — the resumed task runs more kernel code (wait_event,
+    // select, signal checks) before IRETQ, and other tasks' FS bases can
+    // overwrite the MSR during that kernel-mode execution.
+    if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
+        let tg_chirho = task_chirho.lock();
+        let fs_chirho = tg_chirho.fs_base_chirho;
+        let gs_chirho = tg_chirho.gs_base_chirho;
+        let pid_chirho = tg_chirho.pid_chirho;
+        drop(tg_chirho);
+        unsafe {
+            use x86_64::registers::model_specific::Msr;
+            Msr::new(0xC000_0100).write(fs_chirho);
+            Msr::new(0xC000_0102).write(gs_chirho);
+        }
+        // One-shot verify for PID 2
+        if pid_chirho == 2 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static FS_RET_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let cnt_chirho = FS_RET_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if cnt_chirho < 3 || (cnt_chirho > 95 && cnt_chirho < 110) {
+                crate::serial_println_chirho!(
+                    "[FS-RETURN] PID 2 #{}: fs_written={:#x} nr={}",
+                    cnt_chirho, fs_chirho, syscall_nr_chirho,
+                );
+            }
+        }
+    }
+
     result_chirho
 }
 
