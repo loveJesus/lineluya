@@ -776,10 +776,12 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
         if gpf_rip_chirho == 0x7f0000163040 {
             // Key offsets: vfprintf ret=0x198, vsnprintf ret=0x2b8,
             // dropbear log ret=0x508 (= 0x2b8 + 0x248 + 8)
-            // GPT: dropbear entry ret addr at [C+0x508]. Dump wider range.
+            // GPT: expected return addr at [C+0x508] should be PIE+0x33d0
+            // or PIE+0x347a. Dump fine-grained around that slot.
             let offsets_chirho: [u64; 10] = [
                 0x198, 0x2b8,
-                0x4f0, 0x4f8, 0x500, 0x508, 0x510, 0x518, 0x520, 0x528,
+                0x4f8, 0x500, 0x508, 0x510, 0x518,
+                0x928, 0x930, 0x938,
             ];
             for off_chirho in offsets_chirho {
                 let addr_chirho = gpf_rsp_chirho + off_chirho;
