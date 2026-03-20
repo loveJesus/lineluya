@@ -532,7 +532,7 @@ pub fn load_elf_at_base_chirho(
         elf_info_chirho.entry_point_chirho.wrapping_add(load_bias_chirho)
     );
 
-    let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
+    let mm_lock_chirho = mm_chirho::get_current_mm_chirho();
     let mut brk_addr_chirho: u64 = 0;
 
     for seg_chirho in &elf_info_chirho.segments_chirho {
@@ -560,10 +560,7 @@ pub fn load_elf_at_base_chirho(
         let alloc_prot_chirho = PROT_READ_CHIRHO | PROT_WRITE_CHIRHO | PROT_EXEC_CHIRHO;
         {
             let mut mm_guard_chirho = mm_lock_chirho.lock();
-            let mm_ref_chirho = mm_guard_chirho
-                .as_mut()
-                .expect("MM not initialised for dynlink");
-            mm_ref_chirho
+            mm_guard_chirho
                 .mmap_chirho(
                     page_start_chirho,
                     map_len_chirho,

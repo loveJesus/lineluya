@@ -171,17 +171,18 @@ fn gen_net_udp_chirho() -> String {
 /// ```
 fn gen_maps_chirho() -> String {
     use crate::mm_chirho::{
-        get_or_init_mm_chirho, PROT_READ_CHIRHO, PROT_WRITE_CHIRHO, PROT_EXEC_CHIRHO,
+        get_current_mm_chirho, PROT_READ_CHIRHO, PROT_WRITE_CHIRHO, PROT_EXEC_CHIRHO,
         MAP_PRIVATE_CHIRHO, MAP_SHARED_CHIRHO,
     };
     use core::fmt::Write;
 
-    let mm_lock_chirho = get_or_init_mm_chirho();
-    let mm_guard_chirho = mm_lock_chirho.lock();
+    let mm_arc_chirho = get_current_mm_chirho();
+    let mm_guard_chirho = mm_arc_chirho.lock();
 
     let mut output_chirho = String::new();
 
-    if let Some(ref mm_chirho) = *mm_guard_chirho {
+    {
+        let mm_chirho = &*mm_guard_chirho;
         for vma_chirho in &mm_chirho.vmas_chirho {
             // Permission string: r/w/x/p (or s for shared).
             let r_chirho = if vma_chirho.prot_chirho & PROT_READ_CHIRHO != 0 { 'r' } else { '-' };

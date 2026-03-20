@@ -220,8 +220,8 @@ pub fn load_elf_into_memory_chirho(
         load_bias_chirho
     );
 
-    // Ensure the mm subsystem is initialised.
-    let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
+    // Use current task's per-process MM for page allocation.
+    let mm_lock_chirho = mm_chirho::get_current_mm_chirho();
 
     let mut brk_addr_chirho: u64 = 0;
 
@@ -240,7 +240,7 @@ pub fn load_elf_into_memory_chirho(
             seg_chirho.clone()
         };
 
-        load_segment_chirho(elf_data_chirho, &biased_seg_chirho, mm_lock_chirho)?;
+        load_segment_chirho(elf_data_chirho, &biased_seg_chirho, &mm_lock_chirho)?;
 
         // Track the highest address for brk.
         let seg_end_chirho = biased_seg_chirho.vaddr_chirho + biased_seg_chirho.memsz_chirho;
@@ -276,7 +276,7 @@ pub fn load_elf_into_memory_chirho(
 fn load_segment_chirho(
     elf_data_chirho: &[u8],
     seg_chirho: &ElfSegmentChirho,
-    mm_lock_chirho: &spin::Mutex<Option<MmChirho>>,
+    mm_lock_chirho: &alloc::sync::Arc<spin::Mutex<MmChirho>>,
 ) -> Result<(), ExecErrorChirho> {
     // Page-align the segment start downward and end upward.
     let page_start_chirho = align_down_chirho(seg_chirho.vaddr_chirho, PAGE_SIZE_CHIRHO);
@@ -303,10 +303,7 @@ fn load_segment_chirho(
     let alloc_prot_chirho = PROT_READ_CHIRHO | PROT_WRITE_CHIRHO | PROT_EXEC_CHIRHO;
     {
         let mut mm_chirho = mm_lock_chirho.lock();
-        let mm_ref_chirho = mm_chirho.as_mut().unwrap_or_else(|| {
-                crate::serial_println_chirho!("[EXEC] FATAL: MM not initialised");
-                panic!("MM not initialised in exec path");
-            });
+        let mm_ref_chirho = &mut *mm_chirho;
 
         mm_ref_chirho
             .mmap_chirho(
@@ -579,7 +576,7 @@ pub fn load_elf_with_interp_chirho(
 pub fn setup_user_stack_chirho(
     loaded_chirho: &LoadedElfChirho,
 ) -> u64 {
-    let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
+    let mm_lock_chirho = mm_chirho::get_current_mm_chirho();
 
     // The stack occupies [STACK_TOP - STACK_SIZE, STACK_TOP).
     let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
@@ -594,10 +591,7 @@ pub fn setup_user_stack_chirho(
     // Map the stack pages.
     {
         let mut mm_chirho = mm_lock_chirho.lock();
-        let mm_ref_chirho = mm_chirho.as_mut().unwrap_or_else(|| {
-                crate::serial_println_chirho!("[EXEC] FATAL: MM not initialised");
-                panic!("MM not initialised in exec path");
-            }); // map for stack
+        let mm_ref_chirho = &mut *mm_chirho; // map for stack
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
@@ -769,7 +763,7 @@ pub fn setup_user_stack_with_args_chirho(
     argv_chirho: &[alloc::string::String],
     envp_chirho: &[alloc::string::String],
 ) -> u64 {
-    let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
+    let mm_lock_chirho = mm_chirho::get_current_mm_chirho();
 
     let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
 
@@ -783,10 +777,7 @@ pub fn setup_user_stack_with_args_chirho(
     // Map the stack pages.
     {
         let mut mm_guard_chirho = mm_lock_chirho.lock();
-        let mm_ref_chirho = mm_guard_chirho.as_mut().unwrap_or_else(|| {
-                crate::serial_println_chirho!("[EXEC] FATAL: MM not initialised");
-                panic!("MM not initialised in exec path");
-            }); // map for stack
+        let mm_ref_chirho = &mut *mm_guard_chirho; // map for stack
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
@@ -948,7 +939,7 @@ pub fn setup_user_stack_dynlink_chirho(
     interp_base_chirho: u64,
     exe_entry_chirho: u64,
 ) -> u64 {
-    let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
+    let mm_lock_chirho = mm_chirho::get_current_mm_chirho();
 
     let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
 
@@ -961,10 +952,7 @@ pub fn setup_user_stack_dynlink_chirho(
     // Map the stack pages.
     {
         let mut mm_guard_chirho = mm_lock_chirho.lock();
-        let mm_ref_chirho = mm_guard_chirho.as_mut().unwrap_or_else(|| {
-                crate::serial_println_chirho!("[EXEC] FATAL: MM not initialised");
-                panic!("MM not initialised in exec path");
-            }); // map for stack
+        let mm_ref_chirho = &mut *mm_guard_chirho; // map for stack
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
@@ -1329,11 +1317,11 @@ pub fn exec_init_chirho() {
     {
         let brk_chirho = loaded_chirho.brk_addr_chirho;
         let heap_size_chirho: u64 = 4 * 1024 * 1024; // 4MB pre-mapped heap
-        let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
+        let mm_lock_chirho = crate::mm_chirho::get_current_mm_chirho();
         let mut guard_chirho = mm_lock_chirho.lock();
-        if let Some(mm_chirho) = guard_chirho.as_mut() {
+        {
             // Pre-map brk region (4MB after the last loaded segment)
-            if let Err(mmap_error_chirho) = mm_chirho.mmap_chirho(
+            if let Err(mmap_error_chirho) = guard_chirho.mmap_chirho(
                 brk_chirho,
                 heap_size_chirho,
                 crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
@@ -1352,7 +1340,7 @@ pub fn exec_init_chirho() {
             // Pre-map 1MB region covering musl's mmap area (grows down from 0x7F0000000000).
             let mmap_top_chirho: u64 = 0x7F00_0000_0000;
             let mmap_size_chirho: u64 = 1024 * 1024; // 1MB
-            if let Err(mmap_error_chirho) = mm_chirho.mmap_chirho(
+            if let Err(mmap_error_chirho) = guard_chirho.mmap_chirho(
                 mmap_top_chirho - mmap_size_chirho,
                 mmap_size_chirho,
                 crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
@@ -1372,7 +1360,7 @@ pub fn exec_init_chirho() {
             // BusyBox accesses this gap during init.
             let gap_start_chirho: u64 = 0x512000;
             let gap_end_chirho: u64 = 0x711000;
-            if let Err(mmap_error_chirho) = mm_chirho.mmap_chirho(
+            if let Err(mmap_error_chirho) = guard_chirho.mmap_chirho(
                 gap_start_chirho,
                 gap_end_chirho - gap_start_chirho,
                 crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,

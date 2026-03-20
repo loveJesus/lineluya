@@ -3132,22 +3132,20 @@ fn sys_brk_chirho(addr_chirho: u64) -> i64 {
         let new_page_chirho = (addr_chirho + 0xFFF) & !0xFFF;
         if new_page_chirho > old_page_chirho {
             let size_chirho = new_page_chirho - old_page_chirho;
-            let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
-            let mut guard_chirho = mm_lock_chirho.lock();
-            if let Some(mm_chirho) = guard_chirho.as_mut() {
-                let result_chirho = mm_chirho.mmap_chirho(
-                    old_page_chirho,
-                    size_chirho,
-                    crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
-                    crate::mm_chirho::MAP_PRIVATE_CHIRHO
-                        | crate::mm_chirho::MAP_ANONYMOUS_CHIRHO
-                        | crate::mm_chirho::MAP_FIXED_CHIRHO,
-                    -1i32,
-                    0,
-                );
-                if result_chirho.is_err() {
-                    return old_brk_chirho as i64; // return old brk on failure
-                }
+            let mm_arc_chirho = crate::mm_chirho::get_current_mm_chirho();
+            let mut guard_chirho = mm_arc_chirho.lock();
+            let result_chirho = guard_chirho.mmap_chirho(
+                old_page_chirho,
+                size_chirho,
+                crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
+                crate::mm_chirho::MAP_PRIVATE_CHIRHO
+                    | crate::mm_chirho::MAP_ANONYMOUS_CHIRHO
+                    | crate::mm_chirho::MAP_FIXED_CHIRHO,
+                -1i32,
+                0,
+            );
+            if result_chirho.is_err() {
+                return old_brk_chirho as i64;
             }
         }
     }
@@ -3296,21 +3294,18 @@ fn sys_mmap_chirho(
     fd_chirho: i32,
     offset_chirho: u64,
 ) -> i64 {
-    let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
-    let mut guard_chirho = mm_lock_chirho.lock();
-    match guard_chirho.as_mut() {
-        Some(mm_chirho) => match mm_chirho.mmap_chirho(
-            addr_chirho,
-            length_chirho,
-            prot_chirho,
-            flags_chirho,
-            fd_chirho,
-            offset_chirho,
-        ) {
-            Ok(mapped_addr_chirho) => mapped_addr_chirho as i64,
-            Err(errno_chirho) => errno_chirho,
-        },
-        None => -ENOMEM_CHIRHO,
+    let mm_arc_chirho = crate::mm_chirho::get_current_mm_chirho();
+    let mut guard_chirho = mm_arc_chirho.lock();
+    match guard_chirho.mmap_chirho(
+        addr_chirho,
+        length_chirho,
+        prot_chirho,
+        flags_chirho,
+        fd_chirho,
+        offset_chirho,
+    ) {
+        Ok(mapped_addr_chirho) => mapped_addr_chirho as i64,
+        Err(errno_chirho) => errno_chirho,
     }
 }
 
@@ -3322,14 +3317,11 @@ fn sys_mprotect_chirho(
     len_chirho: u64,
     prot_chirho: u32,
 ) -> i64 {
-    let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
-    let mut guard_chirho = mm_lock_chirho.lock();
-    match guard_chirho.as_mut() {
-        Some(mm_chirho) => match mm_chirho.mprotect_chirho(addr_chirho, len_chirho, prot_chirho) {
-            Ok(()) => 0,
-            Err(errno_chirho) => errno_chirho,
-        },
-        None => -ENOMEM_CHIRHO,
+    let mm_arc_chirho = crate::mm_chirho::get_current_mm_chirho();
+    let mut guard_chirho = mm_arc_chirho.lock();
+    match guard_chirho.mprotect_chirho(addr_chirho, len_chirho, prot_chirho) {
+        Ok(()) => 0,
+        Err(errno_chirho) => errno_chirho,
     }
 }
 
@@ -3340,14 +3332,11 @@ fn sys_munmap_chirho(
     addr_chirho: u64,
     len_chirho: u64,
 ) -> i64 {
-    let mm_lock_chirho = crate::mm_chirho::get_or_init_mm_chirho();
-    let mut guard_chirho = mm_lock_chirho.lock();
-    match guard_chirho.as_mut() {
-        Some(mm_chirho) => match mm_chirho.munmap_chirho(addr_chirho, len_chirho) {
-            Ok(()) => 0,
-            Err(errno_chirho) => errno_chirho,
-        },
-        None => -ENOMEM_CHIRHO,
+    let mm_arc_chirho = crate::mm_chirho::get_current_mm_chirho();
+    let mut guard_chirho = mm_arc_chirho.lock();
+    match guard_chirho.munmap_chirho(addr_chirho, len_chirho) {
+        Ok(()) => 0,
+        Err(errno_chirho) => errno_chirho,
     }
 }
 
