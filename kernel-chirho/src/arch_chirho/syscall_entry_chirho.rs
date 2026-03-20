@@ -246,6 +246,23 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         }
     }
 
+    // GPT-directed debug: verify KERNEL_STACK_TOP matches current task
+    {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static CHECKED_CHIRHO: AtomicBool = AtomicBool::new(false);
+        let current_kstack_top_chirho = kernel_stack_top_chirho();
+        if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
+            let expected_chirho = task_chirho.lock().kernel_stack_chirho;
+            if current_kstack_top_chirho != expected_chirho && !CHECKED_CHIRHO.swap(true, Ordering::Relaxed) {
+                let pid_chirho = task_chirho.lock().pid_chirho;
+                crate::serial_println_chirho!(
+                    "[KSTACK-MISMATCH] pid={} KERNEL_STACK_TOP={:#x} task.kernel_stack={:#x} nr={}",
+                    pid_chirho, current_kstack_top_chirho, expected_chirho, syscall_nr_chirho,
+                );
+            }
+        }
+    }
+
     let result_chirho = crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho);
 
     // Validate that RCX (user return address) wasn't corrupted by the dispatch.

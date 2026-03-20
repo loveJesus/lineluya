@@ -441,6 +441,11 @@ pub fn schedule_chirho() {
                                     unsafe {
                                         crate::gdt_chirho::set_tss_rsp0_chirho(kstack_top_chirho);
                                     }
+                                    // CRITICAL: also update KERNEL_STACK_TOP for SYSCALL entry.
+                                    // Without this, the woken task's SYSCALLs use the OLD
+                                    // task's kernel stack, corrupting it (e.g., PID 3's
+                                    // write result overwrites PID 2's saved context).
+                                    crate::syscall_entry_chirho::set_kernel_stack_top_chirho(kstack_top_chirho);
                                 }
                                 if let Some(task_arc_chirho) = list_chirho.iter()
                                     .find(|t_chirho| t_chirho.lock().pid_chirho == pid_chirho)
@@ -548,28 +553,23 @@ pub fn schedule_chirho() {
                     // the bootloader and QEMU mode (TCG vs KVM):
                     //   TCG:  0x1_0000_0000_0000 range (PML4[2])
                     //   KVM:  0x0000_8000_0000 range (lower address)
-                    // Accept any non-zero address above 0x1000 as "kernel code".
-                    let rip_ok_chirho = new_rip_chirho > 0x1000;
-                    let rsp_ok_chirho = new_rsp_chirho >= 0x4000_0000_0000
-                        || new_rsp_chirho >= 0xFFFF_8000_0000_0000;
-                    let stack_ok_chirho = if rsp_ok_chirho {
-                        let stack_top_ret_chirho = core::ptr::read_volatile(new_rsp_chirho as *const u64);
-                        // Allow zero (first-time dispatch) or any kernel address
-                        stack_top_ret_chirho == 0 || stack_top_ret_chirho > 0x1000
-                    } else {
-                        false
-                    };
+                    // Validate RIP is in kernel code range and RSP is in
+                    // kernel stack range. Do NOT check *RSP — after switch_context
+                    // saves, *RSP is the last pushed callee-saved register (R15),
+                    // which can be any value (e.g., 0x17 = write return value).
+                    let rip_ok_chirho = new_rip_chirho > 0x80_0000_0000
+                        || new_rip_chirho == 0; // zero for first-time dispatch
+                    let rsp_ok_chirho = new_rsp_chirho >= 0xFFFF_8000_0000_0000
+                        || (new_rsp_chirho >= 0x4000_0000_0000
+                            && new_rsp_chirho < 0x8000_0000_0000);
 
-                    if !rip_ok_chirho || !stack_ok_chirho {
+                    if !rip_ok_chirho || !rsp_ok_chirho {
                         crate::serial_println_chirho!(
-                            "[SCHED] ABORT switch {:?}->{}: rip={:#x} rsp={:#x} stack_ok={}",
+                            "[SCHED] ABORT switch {:?}->{}: rip={:#x} rsp={:#x}",
                             old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
-                            stack_ok_chirho
                         );
-                        // Re-enable interrupts (CLI at function entry)
-                        // before returning — otherwise HLT loops freeze.
                         unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-                        return; // Don't switch to corrupted context
+                        return;
                     }
                     crate::serial_debug_chirho!(
                         "[SCHED] switch {:?}->{}: rip={:#x} rsp={:#x}",
