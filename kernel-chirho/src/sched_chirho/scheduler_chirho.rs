@@ -66,6 +66,15 @@ static NEED_RESCHED_ATOMIC_CHIRHO: AtomicBool = AtomicBool::new(false);
 /// and as a coarse timestamp source.  Updated on every timer interrupt.
 static GLOBAL_TICK_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
+/// Limited scheduler tick trace for debugging PID 4 post-yield starvation.
+static TICK_TRACE_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Limited scheduler lock contention trace from the timer path.
+static TICK_LOCK_MISS_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Limited trace for times the timer observes no current task.
+static TICK_IDLE_TRACE_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
 // ---------------------------------------------------------------------------
 // External assembly routine for context switching
 // ---------------------------------------------------------------------------
@@ -582,7 +591,7 @@ pub fn schedule_chirho() {
 /// in case of unexpected re-entrancy.
 pub fn schedule_tick_chirho() {
     // Bump the global atomic tick counter (no lock needed).
-    GLOBAL_TICK_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+    let tick_count_chirho = GLOBAL_TICK_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed) + 1;
 
     // Try to acquire the scheduler lock.  If it is already held (e.g. the
     // timer fired while `schedule_chirho` was in progress), skip this tick
@@ -590,7 +599,18 @@ pub fn schedule_tick_chirho() {
     let maybe_guard_chirho = SCHEDULER_CHIRHO.try_lock();
     let mut scheduler_guard_chirho = match maybe_guard_chirho {
         Some(guard_chirho) => guard_chirho,
-        None => return, // Lock contention — skip this tick.
+        None => {
+            let miss_count_chirho =
+                TICK_LOCK_MISS_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if miss_count_chirho < 16 {
+                crate::serial_println_chirho!(
+                    "[TICK-SKIP] tick={} sched_lock_busy miss={}",
+                    tick_count_chirho,
+                    miss_count_chirho,
+                );
+            }
+            return; // Lock contention — skip this tick.
+        }
     };
 
     let scheduler_chirho = match scheduler_guard_chirho.as_mut() {
@@ -604,6 +624,8 @@ pub fn schedule_tick_chirho() {
 
     // Only meaningful if a task is currently running.
     if let Some(pid_chirho) = scheduler_chirho.current_pid_chirho {
+        let remaining_before_chirho = scheduler_chirho.remaining_ticks_chirho;
+        let need_resched_before_chirho = scheduler_chirho.need_resched_chirho;
         scheduler_chirho.remaining_ticks_chirho =
             scheduler_chirho.remaining_ticks_chirho.saturating_sub(1);
 
@@ -612,25 +634,31 @@ pub fn schedule_tick_chirho() {
             NEED_RESCHED_ATOMIC_CHIRHO.store(true, Ordering::Release);
         }
 
-        // Debug: log when PID 4 tick reaches 0
-        if pid_chirho >= 4 && scheduler_chirho.remaining_ticks_chirho == 0 {
-            static TICK_DBG_CHIRHO: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(0);
-            let cnt_chirho = TICK_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho < 3 {
+        if pid_chirho == 4 {
+            let trace_count_chirho =
+                TICK_TRACE_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if trace_count_chirho < 64 {
                 crate::serial_println_chirho!(
-                    "[TICK] PID {} time_slice=0 need_resched=true cnt={}",
-                    pid_chirho, cnt_chirho,
+                    "[TICK-TRACE] tick={} pid={} before={} after={} need_before={} need_after={} current={:?}",
+                    tick_count_chirho,
+                    pid_chirho,
+                    remaining_before_chirho,
+                    scheduler_chirho.remaining_ticks_chirho,
+                    need_resched_before_chirho,
+                    scheduler_chirho.need_resched_chirho,
+                    scheduler_chirho.current_pid_chirho,
                 );
             }
         }
     } else {
-        // Debug: log when NO current task (idle)
-        static IDLE_DBG_CHIRHO: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0);
-        let cnt_chirho = IDLE_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
-        if cnt_chirho < 3 {
-            crate::serial_println_chirho!("[TICK] no current_pid (idle) cnt={}", cnt_chirho);
+        let idle_count_chirho =
+            TICK_IDLE_TRACE_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if idle_count_chirho < 16 {
+            crate::serial_println_chirho!(
+                "[TICK-IDLE] tick={} no_current_pid cnt={}",
+                tick_count_chirho,
+                idle_count_chirho,
+            );
         }
     }
 }
