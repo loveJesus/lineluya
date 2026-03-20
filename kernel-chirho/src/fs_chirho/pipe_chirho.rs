@@ -292,14 +292,6 @@ impl FileOpsChirho for PipeWriteOpsChirho {
             pipe_chirho.buffer_chirho.push_back(byte_chirho);
         }
 
-        // SSH relay: also forward pipe writes to TCP port 2222 if an
-        // established connection exists. This handles the SSH banner
-        // which dropbear writes through the childpipe (ses.sock_out).
-        if !buf_chirho.is_empty() {
-            drop(pipe_chirho); // Release pipe lock before taking socket lock
-            crate::net_chirho::relay_to_tcp_2222_chirho(buf_chirho);
-        }
-
         Ok(buf_chirho.len())
     }
 

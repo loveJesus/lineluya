@@ -1490,33 +1490,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             }
         },
         SYS_WRITE_CHIRHO => {
-            // SSH redirect: daemon writing to fd=1/2 (console) when fd=0
-            // is a TCP socket → redirect to fd=0 so SSH data goes over TCP.
-            // SSH redirect: if this is a daemon (not shell) writing to
-            // stdout/stderr, and there's an established TCP connection on
-            // port 2222, send the data directly via TCP instead of serial.
-            // This handles dropbear which expects stdin/stdout to be the
-            // TCP socket but our kernel doesn't dup2 them automatically.
-            let write_fd_chirho = if (arg0_chirho == 1 || arg0_chirho == 2)
-                && !is_interactive_shell_chirho()
-                && (
-                    crate::net_chirho::has_tcp_data_for_port_chirho(2222)
-                    || crate::net_chirho::has_established_tcp_chirho(2222)
-                )
-            {
-                // Send directly via TCP, bypass fd table
-                let data_count_chirho = core::cmp::min(arg2_chirho as usize, 65536);
-                let mut data_chirho = alloc::vec![0u8; data_count_chirho];
-                for i_chirho in 0..data_count_chirho {
-                    data_chirho[i_chirho] = unsafe {
-                        core::ptr::read_volatile((arg1_chirho as *const u8).add(i_chirho))
-                    };
-                }
-                crate::net_chirho::relay_to_tcp_2222_chirho(&data_chirho);
-                return data_count_chirho as i64;
-            } else {
-                arg0_chirho
-            };
+            let write_fd_chirho = arg0_chirho;
             if fd_uses_console_stdio_chirho(write_fd_chirho) {
                 sys_write_chirho(write_fd_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
             } else {
@@ -1623,38 +1597,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho as i32,
         ),
         SYS_WRITEV_CHIRHO => {
-            // SSH redirect: daemon writev to stdout/stderr with active
-            // TCP connection on port 2222 → send directly via TCP
-            if (arg0_chirho == 1 || arg0_chirho == 2)
-                && !is_interactive_shell_chirho()
-                && crate::net_chirho::has_established_tcp_chirho(2222)
-            {
-                // Gather iovec data and send via TCP relay
-                let iovecs_chirho = arg1_chirho as *const IoVecChirho;
-                let iovcnt_chirho = arg2_chirho as usize;
-                let mut total_chirho: usize = 0;
-                for i_chirho in 0..core::cmp::min(iovcnt_chirho, 16) {
-                    let iov_chirho = unsafe { &*iovecs_chirho.add(i_chirho) };
-                    if iov_chirho.iov_len_chirho > 0 && !iov_chirho.iov_base_chirho.is_null() {
-                        let len_chirho = core::cmp::min(iov_chirho.iov_len_chirho, 4096);
-                        let mut buf_chirho = alloc::vec![0u8; len_chirho];
-                        for j_chirho in 0..len_chirho {
-                            buf_chirho[j_chirho] = unsafe {
-                                core::ptr::read_volatile(iov_chirho.iov_base_chirho.add(j_chirho))
-                            };
-                        }
-                        crate::net_chirho::relay_to_tcp_2222_chirho(&buf_chirho);
-                        total_chirho += len_chirho;
-                    }
-                }
-                total_chirho as i64
-            } else {
-                sys_writev_chirho(
-                    arg0_chirho,
-                    arg1_chirho as *const IoVecChirho,
-                    arg2_chirho as i32,
-                )
-            }
+            sys_writev_chirho(
+                arg0_chirho,
+                arg1_chirho as *const IoVecChirho,
+                arg2_chirho as i32,
+            )
         },
         SYS_ACCESS_CHIRHO => sys_faccessat_real_chirho(-100, arg0_chirho, arg1_chirho as u32, 0),
         SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
