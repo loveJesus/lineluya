@@ -4006,6 +4006,31 @@ fn sys_select_chirho(
         }
         // Scan pipe fds beyond nfds
         let actual_nfds_chirho = nfds_chirho as usize;
+        // Debug: check if lookup_fd works for fd=9 (pipe read end)
+        {
+            let scan_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if scan_pid_chirho == 3 {
+                use core::sync::atomic::{AtomicU64, Ordering as LuOrd};
+                static LU9_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let cnt_chirho = LU9_CHIRHO.fetch_add(1, LuOrd::Relaxed);
+                if cnt_chirho < 3 {
+                    let fd9_exists_chirho = crate::fs_chirho::lookup_fd_chirho(9).is_some();
+                    let fd11_exists_chirho = crate::fs_chirho::lookup_fd_chirho(11).is_some();
+                    // Also check the per-process table directly
+                    let fd9_in_task_chirho = crate::task_chirho::current_task_chirho()
+                        .and_then(|t| {
+                            let tg = t.lock();
+                            tg.fd_table_chirho.as_ref()
+                                .and_then(|fdt| fdt.get_chirho(9))
+                        }).is_some();
+                    crate::serial_println_chirho!(
+                        "[FD9-CHECK] #{} pid=3 lookup(9)={} lookup(11)={} task_table(9)={}",
+                        cnt_chirho, fd9_exists_chirho, fd11_exists_chirho, fd9_in_task_chirho,
+                    );
+                }
+            }
+        }
         // Diagnostic: log pipe scan for PID 3
         {
             let scan_pid_chirho = crate::task_chirho::current_task_chirho()
@@ -4149,12 +4174,25 @@ fn sys_select_chirho(
             }
 
             // Force-exit daemon session handlers when their TCP connection
-            // is in CloseWait (client disconnected). This unblocks PID 2
-            // to accept new SSH connections.
+            // is in CloseWait (client disconnected). But ONLY if no pipe
+            // has pending data — drain pipes first so output reaches the
+            // SSH client before we close the session.
             {
                 let sel_pid_chirho = crate::task_chirho::current_task_chirho()
                     .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                // Check if child process still has pending output — if
+                // wait4 hasn't reaped the child yet, skip CloseWait exit
+                // to give the pipe relay a chance to complete.
+                let child_still_running_chirho = sel_pid_chirho >= 3 && {
+                    // Check if any child PID exists that hasn't been reaped
+                    let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+                    list_chirho.iter().any(|t_chirho| {
+                        let tg_chirho = t_chirho.lock();
+                        tg_chirho.ppid_chirho == sel_pid_chirho && !tg_chirho.is_exited_chirho()
+                    })
+                };
                 if sel_pid_chirho >= 3
+                    && !child_still_running_chirho
                     && crate::net_chirho::has_closewait_tcp_chirho(2222)
                 {
                     crate::serial_println_chirho!(
