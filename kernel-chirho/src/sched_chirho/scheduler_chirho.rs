@@ -838,9 +838,26 @@ pub fn block_current_chirho() -> Option<u64> {
             None => return None,
         };
 
-        let pid_chirho = scheduler_chirho.current_pid_chirho.take();
+        // Read the current PID but do NOT clear current_pid yet.
+        // schedule_chirho() needs current_pid set to save the task's
+        // CpuContext to its slot. If we take() here, schedule sees
+        // old_pid=None and skips the context save — PID 2's slot
+        // retains the initial dispatch RIP, causing it to resume
+        // via fork child return (IRETQ without FS/GS restore).
+        let pid_chirho = scheduler_chirho.current_pid_chirho;
 
-        if pid_chirho.is_some() {
+        if let Some(pid_val_chirho) = pid_chirho {
+            // Mark the task as sleeping so schedule doesn't push it
+            // back to the run queue (it's blocked until unblocked).
+            let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+            if let Some(task_chirho) = list_chirho.iter()
+                .find(|t| t.lock().pid_chirho == pid_val_chirho)
+            {
+                task_chirho.lock().state_chirho =
+                    crate::task_chirho::TaskStateChirho::SleepingChirho;
+            }
+            drop(list_chirho);
+
             // Force a reschedule — the current task is no longer runnable.
             scheduler_chirho.need_resched_chirho = true;
             NEED_RESCHED_ATOMIC_CHIRHO.store(true, Ordering::Release);
@@ -864,6 +881,17 @@ pub fn block_current_chirho() -> Option<u64> {
 /// for scheduling again.  If the PID is already in the queue (or is the
 /// currently running task), the call is a no-op.
 pub fn unblock_task_chirho(pid_chirho: u64) {
+    // Set the task state back to Ready before adding to the run queue.
+    // block_current_chirho sets it to SleepingChirho.
+    {
+        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+        if let Some(task_chirho) = list_chirho.iter()
+            .find(|t| t.lock().pid_chirho == pid_chirho)
+        {
+            task_chirho.lock().state_chirho =
+                crate::task_chirho::TaskStateChirho::ReadyChirho;
+        }
+    }
     add_task_chirho(pid_chirho);
 }
 
