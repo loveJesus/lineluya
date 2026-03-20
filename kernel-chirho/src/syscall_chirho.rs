@@ -2256,14 +2256,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     if syscall_nr_chirho == SYS_WAIT4_CHIRHO && result_chirho == 0 {
         crate::scheduler_chirho::schedule_chirho();
     }
-    // After fork: yield to let the child process run before the parent
-    // monopolizes the CPU with rapid syscalls (select/read loops).
-    // Without this, PID 4 (exec'd child) never gets scheduled.
+    // After fork from PID 3+: yield to let the exec'd child run.
+    // PID 2's fork of PID 3 doesn't need this (PID 3 is the connection handler).
     if (syscall_nr_chirho == SYS_FORK_CHIRHO || syscall_nr_chirho == SYS_VFORK_CHIRHO
         || syscall_nr_chirho == SYS_CLONE_CHIRHO)
         && result_chirho > 0
     {
-        crate::scheduler_chirho::yield_current_chirho();
+        let caller_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho)
+            .unwrap_or(0);
+        if caller_pid_chirho >= 3 {
+            crate::scheduler_chirho::yield_current_chirho();
+        }
     }
 
     result_chirho
