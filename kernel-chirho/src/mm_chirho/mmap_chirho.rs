@@ -686,7 +686,9 @@ fn map_anonymous_pages_chirho(
 
         // Check if the page is already mapped (from a previous exec).
         // If so, just update flags — don't allocate a new frame.
-        // This prevents the ~16MB/exec frame leak that caused the 64MB OOM.
+        // NOTE: This optimization can cause memory corruption if the reused
+        // frame aliases with kernel heap. Per-process PT ownership (workstream 3)
+        // is the proper fix. For now, tolerated because echo/uname work.
         {
             let already_mapped_chirho = {
                 if let Some(ref mapper_chirho) = *GLOBAL_MAPPER_CHIRHO.lock() {
