@@ -387,11 +387,37 @@ pub fn schedule_chirho() {
 
     match next_pid_chirho {
         None => {
-            // No runnable tasks. Drop the scheduler lock and enter an
-            // idle loop: HLT until an interrupt (timer/VirtIO) fires,
-            // which may wake a blocked task via waitqueue. Re-acquire
-            // the lock and check again after each HLT.
-            drop(scheduler_guard_chirho);
+            // No runnable tasks. Save the current task's context before
+            // entering the idle HLT loop, so it can be properly resumed later.
+            // Without this, the idle loop's switch_context_return_wrapper
+            // saves to boot_ctx (not the old task's slot), losing the
+            // old task's callee-saved registers permanently.
+            if let Some(old_pid_chirho) = old_pid_chirho {
+                let old_ctx_chirho = crate::task_chirho::context_ptr_mut_chirho(old_pid_chirho);
+                let boot_ctx_chirho = crate::task_chirho::boot_context_ptr_chirho();
+                if !old_ctx_chirho.is_null() {
+                    drop(scheduler_guard_chirho);
+                    unsafe {
+                        switch_context_return_wrapper_chirho(old_ctx_chirho, boot_ctx_chirho);
+                    }
+                    // We're now in the boot context. Re-acquire the scheduler.
+                    // Fall through to the idle HLT loop below.
+                    let mut sg_chirho = SCHEDULER_CHIRHO.lock();
+                    let s_chirho = match sg_chirho.as_mut() {
+                        Some(s) => s,
+                        None => {
+                            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+                            return;
+                        }
+                    };
+                    s_chirho.current_pid_chirho = None;
+                    drop(sg_chirho);
+                } else {
+                    drop(scheduler_guard_chirho);
+                }
+            } else {
+                drop(scheduler_guard_chirho);
+            }
             loop {
                 x86_64::instructions::interrupts::enable_and_hlt();
                 // After HLT, timer handler ran poll_network + schedule_tick.
