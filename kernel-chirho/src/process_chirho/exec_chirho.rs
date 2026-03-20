@@ -55,13 +55,29 @@ const PAGE_SIZE_CHIRHO: u64 = 4096;
 /// typical mmap regions.
 const PIE_LOAD_BASE_CHIRHO: u64 = 0x5555_5555_0000;
 
-/// User stack top address. We place the stack just below the canonical user
-/// space ceiling, at a well-known address matching typical Linux layouts.
-/// The stack grows downward from this address.
-const USER_STACK_TOP_CHIRHO: u64 = 0x7FFF_FFFF_F000;
+/// Base user stack top address for PID 1. Each subsequent PID gets a stack
+/// region offset downward by PER_PID_STACK_STRIDE_CHIRHO to prevent stack
+/// collisions when all processes share the same page table (boot PML4).
+/// Use [`user_stack_top_for_pid_chirho`] to compute the per-PID top.
+const USER_STACK_TOP_BASE_CHIRHO: u64 = 0x7FFF_FFFF_F000;
 
 /// User stack size (8 MiB).
 const USER_STACK_SIZE_CHIRHO: u64 = 8 * 1024 * 1024;
+
+/// Stride between per-PID stack regions (16 MiB = 2x stack size for guard gap).
+const PER_PID_STACK_STRIDE_CHIRHO: u64 = 16 * 1024 * 1024;
+
+/// Compute the user stack top for a given PID. PID 1 gets the highest address;
+/// each subsequent PID's stack is shifted down by PER_PID_STACK_STRIDE_CHIRHO.
+/// This prevents stack collisions when processes share the boot PML4.
+pub fn user_stack_top_for_pid_chirho() -> u64 {
+    let pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho)
+        .unwrap_or(1);
+    // PID 1 → offset 0, PID 2 → offset 1 stride, PID 3 → offset 2 strides, etc.
+    let offset_chirho = (pid_chirho.saturating_sub(1) as u64) * PER_PID_STACK_STRIDE_CHIRHO;
+    USER_STACK_TOP_BASE_CHIRHO.saturating_sub(offset_chirho)
+}
 
 /// The embedded hello-world ELF binary, compiled for x86_64-unknown-none.
 /// `include_bytes!` embeds the file contents directly into the kernel image
@@ -566,12 +582,12 @@ pub fn setup_user_stack_chirho(
     let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
 
     // The stack occupies [STACK_TOP - STACK_SIZE, STACK_TOP).
-    let stack_bottom_chirho = USER_STACK_TOP_CHIRHO - USER_STACK_SIZE_CHIRHO;
+    let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
 
     serial_debug_chirho!(
         "[EXEC] Allocating user stack: {:#x}..{:#x} ({} MiB)",
         stack_bottom_chirho,
-        USER_STACK_TOP_CHIRHO,
+        user_stack_top_for_pid_chirho(),
         USER_STACK_SIZE_CHIRHO / (1024 * 1024)
     );
 
@@ -609,7 +625,7 @@ pub fn setup_user_stack_chirho(
     //
     // RSP points to argc at the bottom.
 
-    let mut sp_chirho = USER_STACK_TOP_CHIRHO;
+    let mut sp_chirho = user_stack_top_for_pid_chirho();
 
     // -- Write the program name string at the top of the stack --
     let prog_name_chirho = b"hello-chirho\0";
@@ -755,12 +771,12 @@ pub fn setup_user_stack_with_args_chirho(
 ) -> u64 {
     let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
 
-    let stack_bottom_chirho = USER_STACK_TOP_CHIRHO - USER_STACK_SIZE_CHIRHO;
+    let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
 
     serial_debug_chirho!(
         "[EXEC] Allocating user stack (execve): {:#x}..{:#x} ({} MiB)",
         stack_bottom_chirho,
-        USER_STACK_TOP_CHIRHO,
+        user_stack_top_for_pid_chirho(),
         USER_STACK_SIZE_CHIRHO / (1024 * 1024)
     );
 
@@ -783,7 +799,7 @@ pub fn setup_user_stack_with_args_chirho(
             .ok(); // ENOMEM if failed to map user stack
     }
 
-    let mut sp_chirho = USER_STACK_TOP_CHIRHO;
+    let mut sp_chirho = user_stack_top_for_pid_chirho();
 
     // Helper: push bytes onto the stack, return the address of the written data.
     let push_bytes_chirho = |sp_ref_chirho: &mut u64, data_chirho: &[u8]| -> u64 {
@@ -934,12 +950,12 @@ pub fn setup_user_stack_dynlink_chirho(
 ) -> u64 {
     let mm_lock_chirho = mm_chirho::get_or_init_mm_chirho();
 
-    let stack_bottom_chirho = USER_STACK_TOP_CHIRHO - USER_STACK_SIZE_CHIRHO;
+    let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
 
     serial_debug_chirho!(
         "[EXEC] Allocating user stack (dynlink): {:#x}..{:#x}",
         stack_bottom_chirho,
-        USER_STACK_TOP_CHIRHO,
+        user_stack_top_for_pid_chirho(),
     );
 
     // Map the stack pages.
@@ -961,7 +977,7 @@ pub fn setup_user_stack_dynlink_chirho(
             .ok(); // ENOMEM if failed to map user stack
     }
 
-    let mut sp_chirho = USER_STACK_TOP_CHIRHO;
+    let mut sp_chirho = user_stack_top_for_pid_chirho();
 
     // Helper: push bytes, return address.
     let push_bytes_chirho = |sp_ref_chirho: &mut u64, data_chirho: &[u8]| -> u64 {

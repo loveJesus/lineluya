@@ -1371,6 +1371,25 @@ pub fn kill_and_respawn_shell_chirho(reason_chirho: &str) -> ! {
         );
         crate::scheduler_chirho::remove_task_chirho(pid_chirho);
         crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
+
+        // For daemon children (PID >= 3 — dropbear, SSH exec'd processes),
+        // do NOT respawn a shell. Just mark as zombie and let the parent
+        // reap via wait4. Respawning would overwrite argv (losing -c flag).
+        if pid_chirho >= 3 {
+            crate::serial_println_chirho!(
+                "[PROCESS] PID {} is a daemon child — not respawning shell",
+                pid_chirho
+            );
+            // Mark as zombie with exit code 128 + signal
+            if let Some(task_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) {
+                task_arc_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
+                task_arc_chirho.lock().exit_code_chirho = 139; // SIGSEGV
+            }
+            // Yield to let the parent run
+            crate::scheduler_chirho::yield_current_chirho();
+            // Halt this task — it should never run again
+            loop { x86_64::instructions::hlt(); }
+        }
     }
     let argv_chirho = [alloc::string::String::from("sh")];
     let envp_chirho = [alloc::string::String::from("HOME=/root")];
