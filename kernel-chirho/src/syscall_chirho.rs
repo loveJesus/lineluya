@@ -3706,17 +3706,20 @@ fn sys_select_chirho(
     // Check if any socket has pending data by polling the network.
     crate::net_chirho::poll_network_chirho();
 
-    // One-shot debug for select from dropbear child
+    // GPT-directed trace: log PID 2's select readfds for listener fd readiness
     {
         static SELECT_DBG_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        if !is_interactive_shell_chirho() {
+        let caller_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho)
+            .unwrap_or(0);
+        // Log first 10 select calls from PID 2 (listener daemon)
+        if caller_pid_chirho == 2 {
             let cnt_chirho = SELECT_DBG_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if cnt_chirho < 3 {
+            if cnt_chirho < 10 {
                 crate::serial_println_chirho!(
-                    "[SELECT-DBG] nfds={} readfds_ptr={:#x} shell=false",
-                    nfds_chirho, readfds_ptr_chirho,
+                    "[SELECT-PID2] #{} nfds={} readfds_ptr={:#x} writefds_ptr={:#x}",
+                    cnt_chirho, nfds_chirho, readfds_ptr_chirho, writefds_ptr_chirho,
                 );
-                // Log which fds are set and their data status
                 if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
                     let sz_chirho = core::cmp::min(16, ((nfds_chirho as usize + 7) / 8));
                     let mut tmp_chirho = [0u8; 16];
@@ -3725,13 +3728,9 @@ fn sys_select_chirho(
                         if tmp_chirho[fd_chirho / 8] & (1 << (fd_chirho % 8)) != 0 {
                             let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
                             let has_data_chirho = crate::net_chirho::socket_has_data_chirho(fd_chirho as u64);
-                            let has_fd_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64).is_some();
-                            let inode_mode_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64)
-                                .map(|f| f.lock().inode_chirho.lock().mode_chirho)
-                                .unwrap_or(0);
                             crate::serial_println_chirho!(
-                                "[SELECT-DBG] fd={} sock={} data={} vfs={} mode={:#o}",
-                                fd_chirho, is_sock_chirho, has_data_chirho, has_fd_chirho, inode_mode_chirho
+                                "[SELECT-PID2]   fd={} sock={} data={}",
+                                fd_chirho, is_sock_chirho, has_data_chirho,
                             );
                         }
                     }

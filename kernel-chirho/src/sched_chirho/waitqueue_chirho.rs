@@ -107,19 +107,33 @@ where
     queue_chirho.add_waiter_chirho(pid_chirho);
 
     loop {
-        // Re-check before sleeping -- the condition may have become true
-        // between adding to the queue and reaching this point.
-        if condition_chirho() {
+        // GPT-directed fix: make the condition check + block ATOMIC
+        // with respect to interrupts. Without this, a wake can fire
+        // between the condition check (false) and block_current,
+        // causing a lost-wake race where PID 2 sleeps forever even
+        // though the accept_queue has data.
+        //
+        // Disable interrupts, check condition, and if still false,
+        // take current_pid (blocking it) before re-enabling interrupts.
+        let should_block_chirho = x86_64::instructions::interrupts::without_interrupts(|| {
+            if condition_chirho() {
+                false // Condition became true — don't block
+            } else {
+                true // Still false — need to block
+            }
+        });
+
+        if !should_block_chirho {
             queue_chirho.remove_waiter_chirho(pid_chirho);
             return;
         }
 
-        // Block via the scheduler.  This removes us from the run queue and
-        // context-switches to another task.  We will resume here when
+        // Block via the scheduler. This removes us from the run queue and
+        // context-switches to another task. We will resume here when
         // someone calls wake_up_chirho / wake_up_one_chirho.
         crate::scheduler_chirho::block_current_chirho();
 
-        // We have been woken up.  Loop back and re-evaluate the condition.
+        // We have been woken up. Loop back and re-evaluate the condition.
     }
 }
 
