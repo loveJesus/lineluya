@@ -828,6 +828,24 @@ pub fn deliver_sigpipe_to_current_chirho() {
     }
 }
 
+/// Return `true` if the current task has at least one pending signal that is
+/// not blocked by its current signal mask.
+///
+/// This is used by interruptible blocking syscalls (`select`, `poll`, etc.) so
+/// they can return `-EINTR` and let user-space signal delivery happen on the
+/// normal syscall return boundary.
+pub fn current_has_deliverable_signal_chirho() -> bool {
+    let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(task_arc_chirho) => task_arc_chirho,
+        None => return false,
+    };
+
+    let task_chirho = task_arc_chirho.lock();
+    let deliverable_mask_chirho = task_chirho.pending_signals_chirho
+        & !task_chirho.signal_state_chirho.blocked_chirho;
+    deliverable_mask_chirho != 0
+}
+
 /// Check for fatal pending signals on the current task and terminate it
 /// if necessary.
 ///

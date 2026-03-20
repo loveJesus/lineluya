@@ -3910,8 +3910,12 @@ fn sys_select_chirho(
                 || {
                     crate::net_chirho::poll_network_chirho();
                     count_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho) > 0
+                        || crate::signal_chirho::current_has_deliverable_signal_chirho()
                 },
             );
+            if crate::signal_chirho::current_has_deliverable_signal_chirho() {
+                return -EINTR_CHIRHO;
+            }
             maybe_yield_to_runnable_child_chirho();
             return write_ready_fds_chirho(
                 &fds_buf_chirho,
@@ -3926,6 +3930,10 @@ fn sys_select_chirho(
         for _attempt_chirho in 0..50_000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
+
+            if crate::signal_chirho::current_has_deliverable_signal_chirho() {
+                return -EINTR_CHIRHO;
+            }
 
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
