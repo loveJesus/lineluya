@@ -1628,10 +1628,20 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             // interrupted user RIP in the task struct. Set RCX in the
             // syscall frame so SYSRET returns to the original code.
             if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-                let saved_rip_chirho = task_arc_chirho.lock().preempted_rip_chirho;
+                let guard_chirho = task_arc_chirho.lock();
+                let saved_rip_chirho = guard_chirho.preempted_rip_chirho;
+                let pid_chirho = guard_chirho.pid_chirho;
+                drop(guard_chirho);
                 if saved_rip_chirho != 0 {
                     frame_chirho.rcx_chirho = saved_rip_chirho;
                     task_arc_chirho.lock().preempted_rip_chirho = 0;
+                    // Log where PID 4+ was executing when preempted
+                    if pid_chirho >= 4 {
+                        crate::serial_println_chirho!(
+                            "[YIELD-RIP] pid={} rip={:#x}",
+                            pid_chirho, saved_rip_chirho
+                        );
+                    }
                 }
             }
             // Reset time slice so trampoline doesn't fire every tick

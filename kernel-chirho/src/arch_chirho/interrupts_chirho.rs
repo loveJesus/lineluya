@@ -798,6 +798,32 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
             let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
             let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
 
+            // One-shot debug: log call context when PID 4+ is at a low boot address
+            // (below user binary region at 0x400000 — indicates corrupted jump target)
+            if current_pid_chirho >= 4 && user_rip_chirho < 0x400000 && user_rip_chirho > 0x1000 {
+                use core::sync::atomic::{AtomicBool, Ordering};
+                static LOGGED_CHIRHO: AtomicBool = AtomicBool::new(false);
+                if !LOGGED_CHIRHO.swap(true, Ordering::Relaxed) {
+                    crate::serial_println_chirho!(
+                        "[TRAP-34B] pid={} rip={:#x} rsp={:#x}",
+                        current_pid_chirho, user_rip_chirho, user_rsp_chirho,
+                    );
+                    // Read return addresses from user stack
+                    for i_chirho in 0..4u64 {
+                        let addr_chirho = user_rsp_chirho + i_chirho * 8;
+                        if addr_chirho > 0x7fff00000000 && addr_chirho < 0x800000000000 {
+                            let val_chirho = unsafe {
+                                core::ptr::read_volatile(addr_chirho as *const u64)
+                            };
+                            crate::serial_println_chirho!(
+                                "[TRAP-34B]   [rsp+{}]={:#x}",
+                                i_chirho * 8, val_chirho,
+                            );
+                        }
+                    }
+                }
+            }
+
             // Skip if already IN the trampoline page (avoid recursive push).
             let in_trampoline_chirho = user_rip_chirho >= USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO
                 && user_rip_chirho < USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO + 8;

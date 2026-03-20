@@ -1297,6 +1297,11 @@ unsafe fn resolve_rela_table_chirho(
         );
 
         if name_len_chirho == 0 {
+            // Null symbol — zero the GOT entry to prevent jumping to
+            // stale ELF values (un-biased addresses in identity-mapped memory).
+            let got_slot_addr_chirho =
+                rela_chirho.r_offset_chirho.wrapping_add(bin_load_bias_chirho);
+            core::ptr::write(got_slot_addr_chirho as *mut u64, 0);
             *unresolved_count_chirho += 1;
             continue;
         }
@@ -1350,17 +1355,22 @@ unsafe fn resolve_rela_table_chirho(
                 if binding_chirho == STB_WEAK_CHIRHO {
                     // Weak — OK to leave as 0.
                     core::ptr::write(got_slot_addr_chirho as *mut u64, 0);
-                } else if *unresolved_count_chirho < 10 {
-                    // Log a few unresolved strong symbols for debugging.
-                    let log_len_chirho = name_len_chirho.min(48);
-                    if let Ok(name_str_chirho) =
-                        core::str::from_utf8(&name_buf_chirho[..log_len_chirho])
-                    {
-                        // musl's dynamic linker resolves from DT_NEEDED .so files
-                        crate::serial_debug_chirho!(
-                            "[SYMRES]   deferred: {} (musl will resolve from .so)",
-                            name_str_chirho,
-                        );
+                } else {
+                    // Unresolved strong symbol — zero the GOT entry to prevent
+                    // jumping to stale ELF values (un-biased addresses that land
+                    // in identity-mapped boot memory like the GDT).
+                    // The musl dynamic linker will resolve these from DT_NEEDED.
+                    core::ptr::write(got_slot_addr_chirho as *mut u64, 0);
+                    if *unresolved_count_chirho < 10 {
+                        let log_len_chirho = name_len_chirho.min(48);
+                        if let Ok(name_str_chirho) =
+                            core::str::from_utf8(&name_buf_chirho[..log_len_chirho])
+                        {
+                            crate::serial_debug_chirho!(
+                                "[SYMRES]   deferred: {} (musl will resolve from .so)",
+                                name_str_chirho,
+                            );
+                        }
                     }
                 }
 

@@ -1099,6 +1099,25 @@ pub fn sys_execve_with_filename_chirho(
     // Check whether this ELF has a PT_INTERP segment (dynamically linked).
     let interp_path_chirho = dynlink_chirho::find_interp_in_phdrs_chirho(elf_data_chirho);
 
+    // DIAGNOSTIC: For PID >= 4 (SSH exec children), use the embedded
+    // static BusyBox to bypass dynamic linking issues. This lets us
+    // verify the SSH pipeline works before fixing dynlink.
+    let current_pid_for_exec_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho)
+        .unwrap_or(0);
+    let (elf_data_chirho, interp_path_chirho) = if interp_path_chirho.is_some()
+        && current_pid_for_exec_chirho >= 4
+        && crate::busybox_chirho::is_busybox_applet_chirho(basename_chirho)
+    {
+        crate::serial_println_chirho!(
+            "[PROCESS] execve: PID {} using embedded static BusyBox for '{}'",
+            current_pid_for_exec_chirho, basename_chirho,
+        );
+        (crate::exec_chirho::BUSYBOX_ELF_CHIRHO, None)
+    } else {
+        (elf_data_chirho, interp_path_chirho)
+    };
+
     if let Some(ref raw_interp_path_chirho) = interp_path_chirho {
         // ---------------------------------------------------------------
         // P4-004: Dynamically linked ELF — load interpreter from ext4
