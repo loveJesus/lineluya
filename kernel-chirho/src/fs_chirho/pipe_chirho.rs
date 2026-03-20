@@ -344,6 +344,10 @@ unsafe impl Sync for PipeWriteOpsChirho {}
 pub fn create_pipe_chirho() -> (Arc<Mutex<FileChirho>>, Arc<Mutex<FileChirho>>) {
     let pipe_state_chirho = Arc::new(Mutex::new(PipeChirho::new_chirho()));
     let inode_chirho = make_pipe_inode_chirho();
+    // Store pipe state in inode.fs_data so select/poll can check buffer
+    inode_chirho.lock().fs_data_chirho = Some(alloc::boxed::Box::new(
+        Arc::clone(&pipe_state_chirho),
+    ));
 
     // Leak the file ops so they have 'static lifetime as required by FileChirho.
     let read_ops_chirho: &'static dyn FileOpsChirho = alloc::boxed::Box::leak(alloc::boxed::Box::new(

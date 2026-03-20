@@ -2256,6 +2256,15 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     if syscall_nr_chirho == SYS_WAIT4_CHIRHO && result_chirho == 0 {
         crate::scheduler_chirho::schedule_chirho();
     }
+    // After fork: yield to let the child process run before the parent
+    // monopolizes the CPU with rapid syscalls (select/read loops).
+    // Without this, PID 4 (exec'd child) never gets scheduled.
+    if (syscall_nr_chirho == SYS_FORK_CHIRHO || syscall_nr_chirho == SYS_VFORK_CHIRHO
+        || syscall_nr_chirho == SYS_CLONE_CHIRHO)
+        && result_chirho > 0
+    {
+        crate::scheduler_chirho::yield_current_chirho();
+    }
 
     result_chirho
 }
@@ -3485,7 +3494,29 @@ fn sys_poll_chirho(
                         }
                     }
                 } else {
-                    revents_chirho |= POLLIN_CHIRHO;
+                    // Non-stdin fd: check if it's a pipe with data or closed write end.
+                    let mut pipe_ready_chirho = false;
+                    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_val_chirho) {
+                        let fg_chirho = file_arc_chirho.lock();
+                        let is_fifo_chirho = (fg_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
+                        if is_fifo_chirho {
+                            if let Some(ref fs_data_chirho) = fg_chirho.inode_chirho.lock().fs_data_chirho {
+                                if let Some(pipe_arc_chirho) = fs_data_chirho.downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>() {
+                                    let pg_chirho = pipe_arc_chirho.lock();
+                                    pipe_ready_chirho = !pg_chirho.buffer_chirho.is_empty() || pg_chirho.closed_write_chirho;
+                                }
+                            }
+                        } else {
+                            // Regular file: always ready
+                            pipe_ready_chirho = true;
+                        }
+                    } else {
+                        // FD not found — report ready to avoid blocking forever
+                        pipe_ready_chirho = true;
+                    }
+                    if pipe_ready_chirho {
+                        revents_chirho |= POLLIN_CHIRHO;
+                    }
                 }
             }
         }
@@ -3507,7 +3538,7 @@ fn sys_poll_chirho(
                 crate::scheduler_chirho::schedule_chirho();
                 crate::scheduler_chirho::reset_time_slice_chirho();
             }
-            // Re-check pollfds
+            // Re-check pollfds (sockets AND pipes)
             for pfd_chirho in pollfds_chirho.iter() {
                 if pfd_chirho.fd_chirho >= 0 {
                     let fd_val_chirho = pfd_chirho.fd_chirho as u64;
@@ -3516,6 +3547,22 @@ fn sys_poll_chirho(
                     {
                         ready_count_chirho = 1;
                         break;
+                    }
+                    // Also check pipe fds for data/EOF
+                    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_val_chirho) {
+                        let fg_chirho = file_arc_chirho.lock();
+                        let is_fifo_chirho = (fg_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
+                        if is_fifo_chirho {
+                            if let Some(ref fs_data_chirho) = fg_chirho.inode_chirho.lock().fs_data_chirho {
+                                if let Some(pipe_arc_chirho) = fs_data_chirho.downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>() {
+                                    let pg_chirho = pipe_arc_chirho.lock();
+                                    if !pg_chirho.buffer_chirho.is_empty() || pg_chirho.closed_write_chirho {
+                                        ready_count_chirho = 1;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3565,12 +3612,50 @@ fn sys_poll_chirho(
 fn sys_select_chirho(
     nfds_chirho: i32,
     readfds_ptr_chirho: u64,
-    _writefds_chirho: u64,
+    writefds_ptr_chirho: u64,
     _exceptfds_chirho: u64,
     timeout_ptr_chirho: u64,
 ) -> i64 {
     if nfds_chirho < 0 {
         return -EINVAL_CHIRHO;
+    }
+
+    // Handle writefds: connected TCP sockets are always writable.
+    // Dropbear needs this to flush SSH packets after encrypting.
+    let mut write_ready_total_chirho: i64 = 0;
+    if writefds_ptr_chirho != 0 && nfds_chirho > 0 {
+        let sz_chirho = core::cmp::min(16, ((nfds_chirho as usize + 7) / 8));
+        let mut wfds_chirho = [0u8; 16];
+        let _ = crate::uaccess_chirho::copy_from_user_chirho(
+            &mut wfds_chirho[..sz_chirho], writefds_ptr_chirho, sz_chirho,
+        );
+        let mut result_wfds_chirho = [0u8; 16];
+        let mut write_ready_count_chirho: i64 = 0;
+        for fd_chirho in 0..core::cmp::min(nfds_chirho as usize, 128) {
+            let byte_chirho = fd_chirho / 8;
+            let bit_chirho = fd_chirho % 8;
+            if byte_chirho < sz_chirho && (wfds_chirho[byte_chirho] & (1 << bit_chirho)) != 0 {
+                // Check if this fd is a connected socket (always writable for TCP)
+                let fd_val_chirho = fd_chirho as u64;
+                if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
+                    // Connected sockets are writable
+                    result_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
+                    write_ready_count_chirho += 1;
+                } else {
+                    // Pipes/files: writable unless pipe read end is closed
+                    result_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
+                    write_ready_count_chirho += 1;
+                }
+            }
+        }
+        let _ = crate::uaccess_chirho::copy_to_user_chirho(
+            writefds_ptr_chirho, &result_wfds_chirho[..sz_chirho], sz_chirho,
+        );
+        write_ready_total_chirho = write_ready_count_chirho;
+        // If writefds had ready fds, we can return early if no readfds are requested.
+        if readfds_ptr_chirho == 0 && write_ready_count_chirho > 0 {
+            return write_ready_count_chirho;
+        }
     }
 
     // Check if any socket has pending data by polling the network.
@@ -3706,8 +3791,9 @@ fn sys_select_chirho(
         nfds_chirho,
     );
 
-    if ready_count_chirho > 0 {
-        write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho)
+    if ready_count_chirho > 0 || write_ready_total_chirho > 0 {
+        let read_count_chirho = write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho);
+        read_count_chirho + write_ready_total_chirho
     } else {
         // Proper indefinite blocking: sleep on network/socket activity and
         // leave the run queue until a relevant event arrives.
