@@ -419,6 +419,19 @@ fn pipe_common_chirho(fds_ptr_chirho: u64, flags_chirho: u32) -> i64 {
         return write_fd_chirho;
     }
 
+    // Verify: is the fd ACTUALLY in the per-process table right now?
+    if read_fd_chirho >= 9 {
+        let verify_chirho = crate::task_chirho::current_task_chirho()
+            .and_then(|t| t.lock().fd_table_chirho.as_ref()
+                .and_then(|fdt| fdt.get_chirho(read_fd_chirho as usize)))
+            .is_some();
+        let pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        crate::serial_println_chirho!(
+            "[PIPE-VERIFY] pid={} fd={} in_task_table={} (just allocated)",
+            pid_chirho, read_fd_chirho, verify_chirho,
+        );
+    }
     // 3. Write the two fd numbers to user space as int[2] (i32[2]).
     let fds_array_chirho: [i32; 2] = [read_fd_chirho as i32, write_fd_chirho as i32];
     let src_bytes_chirho = unsafe {

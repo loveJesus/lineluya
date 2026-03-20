@@ -324,6 +324,14 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
         // (no more relying on GLOBAL swap during context switch).
         // Fall back to GLOBAL only if the parent has no per-process table.
         let child_fd_table_chirho = if let Some(ref parent_fdt_chirho) = parent_chirho.fd_table_chirho {
+            // Check if parent has fd=9 before cloning
+            let parent_has_9_chirho = parent_fdt_chirho.get_chirho(9).is_some();
+            if parent_has_9_chirho {
+                crate::serial_println_chirho!(
+                    "[FORK-FD] parent pid={} HAS fd=9 — cloning to child",
+                    parent_chirho.pid_chirho,
+                );
+            }
             Some(parent_fdt_chirho.clone_table_chirho())
         } else {
             let global_fd_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
