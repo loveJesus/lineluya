@@ -3899,6 +3899,36 @@ fn sys_select_chirho(
         nfds_chirho,
     );
 
+    // GPT-directed: trace PID 3's select to find which fd keeps it spinning
+    {
+        let sel_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if sel_pid_chirho == 3 && ready_count_chirho > 0 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static P3_SEL_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let cnt_chirho = P3_SEL_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if cnt_chirho < 5 || (cnt_chirho > 20 && cnt_chirho < 30) {
+                // Log which fds are ready
+                let mut ready_fds_chirho = alloc::vec::Vec::new();
+                for fd_chirho in 0..nfds_chirho as usize {
+                    let bi_chirho = fd_chirho / 8;
+                    let bt_chirho = fd_chirho % 8;
+                    if bi_chirho < set_size_chirho
+                        && fds_buf_chirho[bi_chirho] & (1 << bt_chirho) != 0
+                        && fd_is_read_ready_chirho(fd_chirho)
+                    {
+                        ready_fds_chirho.push(fd_chirho);
+                    }
+                }
+                crate::serial_println_chirho!(
+                    "[P3-SEL] #{} ready={} fds={:?} wfds={}",
+                    cnt_chirho, ready_count_chirho,
+                    ready_fds_chirho, write_ready_total_chirho,
+                );
+            }
+        }
+    }
+
     if ready_count_chirho > 0 || write_ready_total_chirho > 0 {
         maybe_yield_to_runnable_child_chirho();
         let read_count_chirho = write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho);
