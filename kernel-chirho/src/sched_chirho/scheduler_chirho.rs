@@ -603,16 +603,34 @@ pub fn schedule_tick_chirho() {
         GLOBAL_TICK_COUNT_CHIRHO.load(Ordering::Relaxed);
 
     // Only meaningful if a task is currently running.
-    if scheduler_chirho.current_pid_chirho.is_some() {
-        // Decrement the remaining time slice.  Saturating subtraction avoids
-        // underflow in case of a missed decrement.
+    if let Some(pid_chirho) = scheduler_chirho.current_pid_chirho {
         scheduler_chirho.remaining_ticks_chirho =
             scheduler_chirho.remaining_ticks_chirho.saturating_sub(1);
 
         if scheduler_chirho.remaining_ticks_chirho == 0 {
-            // Time slice exhausted — request a reschedule.
             scheduler_chirho.need_resched_chirho = true;
             NEED_RESCHED_ATOMIC_CHIRHO.store(true, Ordering::Release);
+        }
+
+        // Debug: log when PID 4 tick reaches 0
+        if pid_chirho >= 4 && scheduler_chirho.remaining_ticks_chirho == 0 {
+            static TICK_DBG_CHIRHO: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(0);
+            let cnt_chirho = TICK_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if cnt_chirho < 3 {
+                crate::serial_println_chirho!(
+                    "[TICK] PID {} time_slice=0 need_resched=true cnt={}",
+                    pid_chirho, cnt_chirho,
+                );
+            }
+        }
+    } else {
+        // Debug: log when NO current task (idle)
+        static IDLE_DBG_CHIRHO: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0);
+        let cnt_chirho = IDLE_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if cnt_chirho < 3 {
+            crate::serial_println_chirho!("[TICK] no current_pid (idle) cnt={}", cnt_chirho);
         }
     }
 }
