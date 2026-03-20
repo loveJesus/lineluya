@@ -792,6 +792,12 @@ impl TcpControlBlockChirho {
                         .wrapping_add(segment_chirho.payload_chirho.len() as u32)
                         .wrapping_add(1); // +1 for FIN
                     self.state_chirho = TcpStateChirho::CloseWaitChirho;
+                    // Wake tasks blocked on select — the socket is now
+                    // readable (EOF). Without this wake, PID 3 stays
+                    // blocked in select forever after the SSH client disconnects.
+                    // Note: we can't call wake_socket_data_waitqueue here because
+                    // we're inside the socket table lock. Set a flag and wake after.
+                    // For now, just return the ACK — the timer poll will wake.
                     return Some(self.make_ack_chirho(local_port_chirho, segment_chirho.src_port_chirho));
                 }
 
@@ -5180,6 +5186,13 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
                 local_port_chirho,
                 preview_chirho,
             );
+        }
+
+        // FIN received (CloseWait): wake tasks blocked on select so they
+        // detect EOF. This is needed because the FIN handler inside
+        // process_segment can't call wake (it's inside the TCB method).
+        if matches!(sock_chirho.tcb_chirho.state_chirho, TcpStateChirho::CloseWaitChirho) {
+            wake_socket_data_waitqueue_chirho();
         }
 
         // When TCP transitions to ESTABLISHED, update socket state
