@@ -3706,16 +3706,35 @@ fn sys_select_chirho(
     // Check if any socket has pending data by polling the network.
     crate::net_chirho::poll_network_chirho();
 
-    // GPT-directed trace: log PID 2's select readfds for listener fd readiness
+    // GPT-directed: check if select's copy_to_user corrupts PID 2's stack
     {
         static SELECT_DBG_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         let caller_pid_chirho = crate::task_chirho::current_task_chirho()
             .map(|t| t.lock().pid_chirho)
             .unwrap_or(0);
-        // Log first 10 select calls from PID 2 (listener daemon)
         if caller_pid_chirho == 2 {
             let cnt_chirho = SELECT_DBG_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if cnt_chirho < 10 {
+            // Log select args + stack proximity for PID 2
+            if cnt_chirho < 5 {
+                // Get user RSP from the SyscallFrame via current task
+                let user_rsp_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().user_rsp_chirho)
+                    .unwrap_or(0);
+                let rfds_on_stack_chirho = readfds_ptr_chirho != 0
+                    && readfds_ptr_chirho > user_rsp_chirho.saturating_sub(0x2000)
+                    && readfds_ptr_chirho < user_rsp_chirho.saturating_add(0x200);
+                let timeout_on_stack_chirho = timeout_ptr_chirho != 0
+                    && timeout_ptr_chirho > user_rsp_chirho.saturating_sub(0x2000)
+                    && timeout_ptr_chirho < user_rsp_chirho.saturating_add(0x200);
+                crate::serial_println_chirho!(
+                    "[SELECT-STACK] #{} nfds={} rfds={:#x} wfds={:#x} tmo={:#x} ursp={:#x} rfds_stk={} tmo_stk={}",
+                    cnt_chirho, nfds_chirho, readfds_ptr_chirho, writefds_ptr_chirho,
+                    timeout_ptr_chirho, user_rsp_chirho,
+                    rfds_on_stack_chirho, timeout_on_stack_chirho,
+                );
+                // set_size is computed later - log it after
+            }
+            if cnt_chirho < 5 {
                 crate::serial_println_chirho!(
                     "[SELECT-PID2] #{} nfds={} readfds_ptr={:#x} writefds_ptr={:#x}",
                     cnt_chirho, nfds_chirho, readfds_ptr_chirho, writefds_ptr_chirho,
@@ -3752,6 +3771,22 @@ fn sys_select_chirho(
     } else {
         0
     };
+
+    // Log set_size for PID 2 stack corruption check
+    {
+        let caller_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if caller_pid_chirho == 2 && set_size_chirho > 0 {
+            static SET_SIZE_LOG_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let cnt_chirho = SET_SIZE_LOG_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt_chirho < 3 {
+                crate::serial_println_chirho!(
+                    "[SELECT-SIZE] PID 2 #{}: set_size={} nfds={} readfds_ptr={:#x}",
+                    cnt_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
+                );
+            }
+        }
+    }
 
     let fd_is_read_ready_chirho = |fd_chirho: usize| -> bool {
         if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
