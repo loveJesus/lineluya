@@ -1607,9 +1607,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
         SYS_SELECT_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
         SYS_SCHED_YIELD_CHIRHO => {
-            // When PID 4+ yields (preemption trampoline), only yield if
-            // there are other runnable tasks. Otherwise, just continue
-            // running (avoids getting stuck in the scheduler idle loop).
+            // Debug: count sched_yield calls
+            static YIELD_COUNT_CHIRHO: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(0);
+            let yc_chirho = YIELD_COUNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if yc_chirho < 5 || yc_chirho % 100 == 0 {
+                crate::serial_println_chirho!("[YIELD] sched_yield #{}", yc_chirho);
+            }
+            // Reset need_resched so the trampoline doesn't keep firing
+            // when there are no runnable tasks. Otherwise PID 4 spends
+            // all its CPU time in sched_yield overhead.
+            crate::scheduler_chirho::reset_time_slice_chirho();
+            // Only yield if other tasks are runnable
             if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                 let yp_chirho = crate::task_chirho::current_task_chirho()
                     .map(|t| { let g = t.lock(); (g.pid_chirho, g.ppid_chirho) });
