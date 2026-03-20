@@ -362,7 +362,7 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
             use core::sync::atomic::{AtomicU64, Ordering};
             static FS_RET_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
             let cnt_chirho = FS_RET_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho < 3 || (cnt_chirho > 95 && cnt_chirho < 110) {
+            if cnt_chirho < 3 || cnt_chirho > 95 {
                 crate::serial_println_chirho!(
                     "[FS-RETURN] PID 2 #{}: fs_written={:#x} nr={}",
                     cnt_chirho, fs_chirho, syscall_nr_chirho,

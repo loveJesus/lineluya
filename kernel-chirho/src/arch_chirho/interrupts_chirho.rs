@@ -887,6 +887,25 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
             } // else: not already in trampoline
         }
     }
+
+    // GPT-directed: restore user FS/GS base before returning from interrupt
+    // to user mode. Without this, the timer IRET returns with whatever stale
+    // FS base was live (e.g., PID 1's static BusyBox TLS 0x713198 instead
+    // of PID 2's dropbear musl TLS 0x7f00001a4b28). This is the interrupt-
+    // return counterpart to the syscall-return FS restore.
+    if was_user_mode_chirho {
+        if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
+            let tg_chirho = task_chirho.lock();
+            let fs_chirho = tg_chirho.fs_base_chirho;
+            let gs_chirho = tg_chirho.gs_base_chirho;
+            drop(tg_chirho);
+            unsafe {
+                use x86_64::registers::model_specific::Msr;
+                Msr::new(0xC000_0100).write(fs_chirho);
+                Msr::new(0xC000_0102).write(gs_chirho);
+            }
+        }
+    }
 }
 
 /// Write LAPIC End-Of-Interrupt register via typed enum (A2-AUDIT-010).
