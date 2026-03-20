@@ -1826,17 +1826,21 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             }
             // Reset time slice so trampoline doesn't fire every tick
             crate::scheduler_chirho::reset_time_slice_chirho();
-            // Only yield if other tasks are runnable
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+            // Always yield on preemption — promote parent first so the
+            // pipe relay (PID 3 reading child output) gets CPU time.
+            // Promote the parent BEFORE yielding so it's unblocked from
+            // any waitqueue (e.g., SOCKET_DATA_WAITQUEUE in select).
+            {
                 let yp_chirho = crate::task_chirho::current_task_chirho()
                     .map(|t| { let g = t.lock(); (g.pid_chirho, g.ppid_chirho) });
                 if let Some((pid_chirho, ppid_chirho)) = yp_chirho {
                     if pid_chirho >= 4 && ppid_chirho > 0 {
                         crate::scheduler_chirho::promote_task_chirho(ppid_chirho);
+                        crate::scheduler_chirho::unblock_task_chirho(ppid_chirho);
                     }
                 }
-                crate::scheduler_chirho::yield_current_chirho();
             }
+            crate::scheduler_chirho::yield_current_chirho();
             0
         }
         SYS_MREMAP_CHIRHO => -ENOSYS_CHIRHO,

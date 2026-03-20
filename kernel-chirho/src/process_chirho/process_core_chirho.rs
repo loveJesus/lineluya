@@ -1386,6 +1386,8 @@ fn activate_per_process_pt_chirho() {
     let pt_root_chirho = task_arc_chirho.lock().page_table_root_chirho;
 
     if let Some(pml4_phys_chirho) = pt_root_chirho {
+        // Ensure preemption trampoline is in boot PML4 before mirroring.
+        crate::interrupts_chirho::init_user_preempt_trampoline_chirho();
         // Mirror ALL user-space pages from boot PML4 → per-process PT.
         let count_chirho = crate::pagetable_chirho::mirror_user_mappings_chirho(
             pml4_phys_chirho,

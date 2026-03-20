@@ -205,14 +205,21 @@ syscall_entry_chirho:
     //         which is 16-byte aligned if KERNEL_STACK_TOP_CHIRHO was aligned).
     andq    $-16, %rsp
 
-    // Save the frame pointer so we can restore it after the call.
-    pushq   %rdi
+    // Save the frame pointer in a callee-saved register so it survives
+    // context switches inside syscall_dispatch (e.g. sched_yield from
+    // the preemption trampoline). The old pushq/popq approach stored it
+    // on the kernel stack, which can be corrupted when the scheduler
+    // switches to another task and back. rbx is preserved by both the
+    // SysV ABI and our context switch save/restore.
+    pushq   %rbx
+    movq    %rdi, %rbx
 
     // Call the Rust syscall dispatcher.
     call    syscall_dispatch_wrapper_chirho
 
-    // Restore frame pointer from stack.
-    popq    %rdi
+    // Restore frame pointer from callee-saved register.
+    movq    %rbx, %rdi
+    popq    %rbx
 
     // Step 6: Move RSP back to the frame so we can pop registers.
     movq    %rdi, %rsp
@@ -344,7 +351,12 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         || syscall_nr_chirho == 58   // vfork
         || syscall_nr_chirho == 56   // clone
         || syscall_nr_chirho == 59;  // execve
-    if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho {
+    // Skip signal delivery for sched_yield (nr=24) from the preemption
+    // trampoline — the yield handler restores frame.rcx to the preempted
+    // RIP, and signal delivery would clobber it with a handler address,
+    // causing GPF at non-canonical addresses like 0x800000000000.
+    let is_preempt_yield_chirho = syscall_nr_chirho == 24;
+    if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho && !is_preempt_yield_chirho {
         // Deliver user signal handlers (enables dropbear SIGCHLD self-pipe).
         crate::signal_chirho::deliver_one_signal_on_return_chirho(frame_chirho);
         // Check for fatal pending signals.

@@ -872,7 +872,7 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         && USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire)
     {
         let current_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if current_pid_chirho >= 999 { // Disabled: trampoline re-entry bug corrupts state
+        if current_pid_chirho >= 4 {
             let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
             let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
 
@@ -907,12 +907,19 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
                 && user_rip_chirho < USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO + 8;
             if !in_trampoline_chirho {
 
+            // Guard: skip if already preempted (preempted_rip != 0).
+            // Re-preemption before sched_yield processes the first one
+            // corrupts the saved RIP (overwrites real RIP with trampoline
+            // or post-trampoline address), causing GPF at non-canonical
+            // addresses like 0x800000000000.
+            let already_preempted_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().preempted_rip_chirho != 0)
+                .unwrap_or(false);
+            if already_preempted_chirho {
+                // Skip — let the pending preemption complete first
+            } else {
+
             // Save the interrupted RIP in the task struct (kernel-side).
-            // The trampoline does SYSCALL → sched_yield. The sched_yield
-            // handler reads preempted_rip and sets the syscall frame's
-            // RCX (return address for SYSRET) to the original RIP.
-            // This avoids writing to the user stack (which may be COW
-            // and can't be resolved in interrupt context).
             if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
                 task_arc_chirho.lock().preempted_rip_chirho = user_rip_chirho;
             }
@@ -925,7 +932,8 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
                     // DON'T modify RSP — keep the original user stack
                 });
             }
-            } // else: not already in trampoline
+            } // close !already_preempted
+            } // close !in_trampoline
         }
     }
 
