@@ -772,6 +772,24 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
             );
         }
 
+        // Dump stack frames: vfprintf ret, vsnprintf ret, and caller
+        if gpf_rip_chirho == 0x7f0000163040 {
+            // vfprintf ret at rsp+0x198, vsnprintf ret at rsp+0x2b8
+            let offsets_chirho: [u64; 4] = [0x198, 0x2b0, 0x2b8, 0x2c0];
+            for off_chirho in offsets_chirho {
+                let addr_chirho = gpf_rsp_chirho + off_chirho;
+                if addr_chirho > 0x7fff00000000 && addr_chirho < 0x800000000000 {
+                    let val_chirho = unsafe {
+                        core::ptr::read_volatile(addr_chirho as *const u64)
+                    };
+                    crate::serial_println_chirho!(
+                        "[GPF-STACK] [rsp+{:#x}]={:#x}",
+                        off_chirho, val_chirho,
+                    );
+                }
+            }
+        }
+
         // Remove current task from scheduler.
         crate::process_chirho::kill_and_respawn_shell_chirho("user-mode GPF");
     }
