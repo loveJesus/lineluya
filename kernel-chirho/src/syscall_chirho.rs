@@ -1209,6 +1209,42 @@ fn is_interactive_shell_chirho() -> bool {
         .unwrap_or(true)
 }
 
+/// Yield to a runnable child of the current task, if one exists.
+///
+/// GPT-directed fix: called from select and recvfrom to let forked
+/// children (PID 4) run while the parent (PID 3) spins in kernel-mode
+/// syscall loops. No-op when no child exists (pre-fork handshake).
+pub fn maybe_yield_to_runnable_child_chirho() {
+    let current_pid_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(t) => t.lock().pid_chirho,
+        None => return,
+    };
+    if current_pid_chirho < 3 { return; }
+
+    let child_pid_chirho = {
+        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+        let mut found_chirho: Option<u64> = None;
+        for task_chirho in list_chirho.iter() {
+            let tg_chirho = task_chirho.lock();
+            if tg_chirho.ppid_chirho == current_pid_chirho
+                && matches!(
+                    tg_chirho.state_chirho,
+                    crate::task_chirho::TaskStateChirho::RunningChirho
+                    | crate::task_chirho::TaskStateChirho::ReadyChirho
+                )
+            {
+                found_chirho = Some(tg_chirho.pid_chirho);
+                break;
+            }
+        }
+        found_chirho
+    };
+    if let Some(child_chirho) = child_pid_chirho {
+        crate::scheduler_chirho::promote_task_chirho(child_chirho);
+        crate::scheduler_chirho::yield_current_chirho();
+    }
+}
+
 /// Global tick counter for clock_gettime monotonic approximation.
 static TICK_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
@@ -2840,9 +2876,14 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         );
         // Wake parent in case it's blocked on wait4
         crate::process_chirho::wake_child_exit_waitqueue_chirho();
-        crate::scheduler_chirho::yield_current_chirho();
-        // Halt this task — it should never run again
-        loop { x86_64::instructions::hlt(); }
+        crate::net_chirho::wake_socket_data_waitqueue_chirho();
+        // Keep yielding until the parent processes our exit.
+        // Must retry schedule on each HLT wake because the first
+        // yield may ABORT (PID 0 in queue) before reaching PID 3.
+        loop {
+            crate::scheduler_chirho::yield_current_chirho();
+            x86_64::instructions::hlt();
+        }
     }
 
     // Shell re-exec workaround for PID 1/2 (boot shell): kill the parent
@@ -3796,6 +3837,7 @@ fn sys_select_chirho(
     );
 
     if ready_count_chirho > 0 || write_ready_total_chirho > 0 {
+        maybe_yield_to_runnable_child_chirho();
         let read_count_chirho = write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho);
         read_count_chirho + write_ready_total_chirho
     } else {
@@ -3809,6 +3851,7 @@ fn sys_select_chirho(
                     count_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho) > 0
                 },
             );
+            maybe_yield_to_runnable_child_chirho();
             return write_ready_fds_chirho(
                 &fds_buf_chirho,
                 set_size_chirho,
@@ -3827,6 +3870,7 @@ fn sys_select_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
             );
             if count_chirho > 0 {
+                maybe_yield_to_runnable_child_chirho();
                 return count_chirho;
             }
         }

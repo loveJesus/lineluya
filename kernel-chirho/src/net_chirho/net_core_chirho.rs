@@ -3228,9 +3228,11 @@ pub fn sys_recvfrom_chirho(
                 drop(table_recheck_chirho);
                 // Data arrived — fall through to copy-out below
             } else {
+                crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
                 return -11; // EAGAIN — no data yet
             }
         } else {
+            crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
             return -11; // EAGAIN
         }
 
@@ -3291,6 +3293,7 @@ pub fn sys_recvfrom_chirho(
     }
 
     crate::log_net_chirho!("recvfrom -> {}", count_chirho);
+    crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
     count_chirho as i64
 }
 

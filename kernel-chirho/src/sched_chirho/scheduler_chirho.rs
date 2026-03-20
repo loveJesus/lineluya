@@ -540,6 +540,9 @@ pub fn schedule_chirho() {
                             old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
                             stack_ok_chirho
                         );
+                        // Re-enable interrupts (CLI at function entry)
+                        // before returning — otherwise HLT loops freeze.
+                        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
                         return; // Don't switch to corrupted context
                     }
                     crate::serial_debug_chirho!(
