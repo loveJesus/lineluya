@@ -844,6 +844,10 @@ pub fn init_tasking_chirho() {
         TaskChirho::new_kernel_chirho("idle", idle_task_entry_chirho);
     // The idle task is the one "running" right now.
     idle_task_chirho.state_chirho = TaskStateChirho::RunningChirho;
+    // Sync PID 0's context to its static slot BEFORE moving into Arc.
+    // Without this, CONTEXT_SLOTS[0] stays all zeros, causing ABORT
+    // when the scheduler tries to switch to PID 0 (rip=0 rsp=0).
+    sync_context_to_slot_chirho(idle_task_chirho.pid_chirho, &idle_task_chirho.context_chirho);
     let idle_arc_chirho = Arc::new(Mutex::new(idle_task_chirho));
 
     register_task_chirho(Arc::clone(&idle_arc_chirho));
@@ -852,6 +856,8 @@ pub fn init_tasking_chirho() {
     // -- PID 1: init --------------------------------------------------------
     let init_task_chirho =
         TaskChirho::new_kernel_chirho("init", init_task_entry_chirho);
+    // Sync PID 1's context to its static slot too.
+    sync_context_to_slot_chirho(init_task_chirho.pid_chirho, &init_task_chirho.context_chirho);
     let init_arc_chirho = Arc::new(Mutex::new(init_task_chirho));
 
     register_task_chirho(init_arc_chirho);
