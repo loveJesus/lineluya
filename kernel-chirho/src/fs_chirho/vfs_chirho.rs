@@ -361,13 +361,38 @@ impl FdTableChirho {
     pub fn close_chirho(&mut self, fd_chirho: usize) -> Result<(), i64> {
         match self.fds_chirho.get_mut(fd_chirho) {
             Some(slot_chirho @ Some(_)) => {
-                // NOTE: Do NOT set pipe closed_read/closed_write here.
-                // The pipe state (PipeChirho) is shared via Arc between all
-                // processes that inherited the pipe via fork. Setting EOF
-                // on close() would prematurely signal EOF to the parent
-                // when a forked child closes its inherited copy of the pipe
-                // fd during dropbear's dup2/close setup before exec.
-                *slot_chirho = None;
+                // Take the Arc out of the slot so we can check strong_count.
+                let file_arc_chirho = slot_chirho.take().unwrap();
+
+                // If this is a pipe end AND we hold the LAST reference to
+                // this FileChirho, set the corresponding closed flag.
+                // Arc::strong_count == 1 means no other task/fd references
+                // this open file description — it's safe to signal EOF/EPIPE.
+                // (GPT-directed fix: uses Arc refcount, not manual counters)
+                let ref_count_chirho = alloc::sync::Arc::strong_count(&file_arc_chirho);
+                if ref_count_chirho <= 1 {
+                    let file_guard_chirho = file_arc_chirho.lock();
+                    let is_fifo_chirho = (file_guard_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
+                    if is_fifo_chirho {
+                        let flags_chirho = file_guard_chirho.flags_chirho;
+                        if let Some(ref fs_data_chirho) = file_guard_chirho.inode_chirho.lock().fs_data_chirho {
+                            if let Some(pipe_arc_chirho) = fs_data_chirho
+                                .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
+                            {
+                                let mut pipe_chirho = pipe_arc_chirho.lock();
+                                if flags_chirho & O_WRONLY_CHIRHO != 0 || flags_chirho & O_RDWR_CHIRHO != 0 {
+                                    pipe_chirho.closed_write_chirho = true;
+                                }
+                                if flags_chirho == O_RDONLY_CHIRHO {
+                                    pipe_chirho.closed_read_chirho = true;
+                                }
+                            }
+                        }
+                    }
+                    drop(file_guard_chirho);
+                }
+                // Arc drops here (file_arc_chirho goes out of scope)
+                drop(file_arc_chirho);
                 if fd_chirho < self.paths_chirho.len() {
                     self.paths_chirho[fd_chirho] = None;
                 }
