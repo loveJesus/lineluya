@@ -695,17 +695,16 @@ pub fn setup_user_stack_chirho(
     // Total size of auxv on stack: 9 entries * 2 u64s * 8 bytes = 144 bytes.
     // Plus: envp NULL (8), argv NULL (8), argv[0] (8), argc (8) = 32 bytes.
     // Total below current sp: 144 + 32 = 176 bytes.
-    // We need the final sp (pointing to argc) to be 16-byte aligned.
+    // For x86_64 SysV process entry, the initial user RSP should be 8 mod 16.
 
     // Calculate total stack frame size.
     let auxv_size_chirho = auxv_entries_chirho.len() * 2 * 8; // 144
     let frame_size_chirho = 8 + 8 + 8 + 8 + auxv_size_chirho as u64; // argc + argv[0] + argv_null + envp_null + auxv
     // 8 + 8 + 8 + 8 + 144 = 176 bytes
 
-    // Align sp so that (sp - frame_size) is 16-byte aligned.
-    // frame_size = 176 = 11 * 16, already 16-byte aligned.
-    // But to be safe:
-    let target_sp_chirho = (sp_chirho - frame_size_chirho) & !0xF;
+    // Align the final user stack pointer to 8 mod 16 so _start/ld-musl sees
+    // the standard ABI entry alignment after the kernel jumps to userspace.
+    let target_sp_chirho = ((sp_chirho - frame_size_chirho - 8) & !0xF) + 8;
     sp_chirho = target_sp_chirho + frame_size_chirho;
 
     // Now push everything in reverse order (high to low address).
@@ -732,13 +731,17 @@ pub fn setup_user_stack_chirho(
     push_u64_chirho(&mut sp_chirho, 1);
 
     serial_debug_chirho!(
-        "[EXEC] User stack set up. RSP={:#x} (16-byte aligned: {})",
+        "[EXEC] User stack set up. RSP={:#x} (8 mod 16: {})",
         sp_chirho,
-        sp_chirho % 16 == 0
+        sp_chirho % 16 == 8
     );
 
     // Verify alignment.
-    debug_assert_eq!(sp_chirho % 16, 0, "User RSP must be 16-byte aligned");
+    debug_assert_eq!(
+        sp_chirho % 16,
+        8,
+        "User RSP must enter userspace 8 mod 16"
+    );
 
     sp_chirho
 }
@@ -889,8 +892,8 @@ pub fn setup_user_stack_with_args_chirho(
         + 8
         + auxv_size_chirho as u64;
 
-    // Align sp so that (sp - frame_size) is 16-byte aligned.
-    let target_sp_chirho = (sp_chirho - frame_size_chirho) & !0xF;
+    // Align the final user stack pointer to 8 mod 16 for SysV process entry.
+    let target_sp_chirho = ((sp_chirho - frame_size_chirho - 8) & !0xF) + 8;
     sp_chirho = target_sp_chirho + frame_size_chirho;
 
     // Push auxv entries in reverse order.
@@ -920,14 +923,18 @@ pub fn setup_user_stack_with_args_chirho(
     push_u64_chirho(&mut sp_chirho, argc_chirho);
 
     serial_debug_chirho!(
-        "[EXEC] User stack set up (execve). RSP={:#x}, argc={}, envc={} (16-byte aligned: {})",
+        "[EXEC] User stack set up (execve). RSP={:#x}, argc={}, envc={} (8 mod 16: {})",
         sp_chirho,
         argc_chirho,
         envp_chirho.len(),
-        sp_chirho % 16 == 0
+        sp_chirho % 16 == 8
     );
 
-    debug_assert_eq!(sp_chirho % 16, 0, "User RSP must be 16-byte aligned");
+    debug_assert_eq!(
+        sp_chirho % 16,
+        8,
+        "User RSP must enter userspace 8 mod 16"
+    );
 
     sp_chirho
 }
@@ -1063,7 +1070,7 @@ pub fn setup_user_stack_dynlink_chirho(
         + 8
         + auxv_size_chirho as u64;
 
-    let target_sp_chirho = (sp_chirho - frame_size_chirho) & !0xF;
+    let target_sp_chirho = ((sp_chirho - frame_size_chirho - 8) & !0xF) + 8;
     sp_chirho = target_sp_chirho + frame_size_chirho;
 
     // Push auxv entries in reverse order.
@@ -1100,7 +1107,11 @@ pub fn setup_user_stack_dynlink_chirho(
         exe_entry_chirho,
     );
 
-    debug_assert_eq!(sp_chirho % 16, 0, "User RSP must be 16-byte aligned");
+    debug_assert_eq!(
+        sp_chirho % 16,
+        8,
+        "User RSP must enter userspace 8 mod 16"
+    );
 
     sp_chirho
 }
