@@ -249,14 +249,20 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
     let result_chirho = crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho);
 
     // Validate that RCX (user return address) wasn't corrupted by the dispatch.
+    // sched_yield (nr=24) INTENTIONALLY modifies RCX to restore the preempted
+    // user RIP (saved by the timer trampoline). Do NOT revert that change —
+    // reverting would cause SYSRET to return to the trampoline offset past
+    // the SYSCALL instruction, executing garbage bytes and crashing.
     if frame_chirho.rcx_chirho != saved_rcx_chirho {
-        crate::serial_println_chirho!(
-            "[SYSRET-GUARD] RCX corrupted! was={:#x} now={:#x} sc={}",
-            saved_rcx_chirho, frame_chirho.rcx_chirho,
-            frame_chirho.rax_chirho,
-        );
-        // Restore the correct RCX to prevent SYSRET to garbage.
-        frame_chirho.rcx_chirho = saved_rcx_chirho;
+        if syscall_nr_chirho != 24 {
+            crate::serial_println_chirho!(
+                "[SYSRET-GUARD] RCX corrupted! was={:#x} now={:#x} sc={}",
+                saved_rcx_chirho, frame_chirho.rcx_chirho,
+                frame_chirho.rax_chirho,
+            );
+            // Restore the correct RCX to prevent SYSRET to garbage.
+            frame_chirho.rcx_chirho = saved_rcx_chirho;
+        }
     }
 
     // A2-PROC-005: Check for fatal pending signals on syscall return.

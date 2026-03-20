@@ -1129,6 +1129,25 @@ pub fn jump_to_userspace_chirho(entry_point_chirho: u64, user_rsp_chirho: u64) -
         );
     }
 
+    // Final argv integrity check right before IRETQ.
+    // Read argc and argv[0] from the user stack to verify they're intact.
+    {
+        let argc_addr_chirho = user_rsp_chirho;
+        let argc_val_chirho = unsafe { core::ptr::read_volatile(argc_addr_chirho as *const u64) };
+        if argc_val_chirho >= 1 && argc_val_chirho <= 10 {
+            let argv_ptr_addr_chirho = user_rsp_chirho + 8; // argv[0] pointer
+            let argv0_ptr_chirho = unsafe { core::ptr::read_volatile(argv_ptr_addr_chirho as *const u64) };
+            if argv0_ptr_chirho > 0x7fff00000000 && argv0_ptr_chirho < 0x800000000000 {
+                let byte0_chirho = unsafe { core::ptr::read_volatile(argv0_ptr_chirho as *const u8) };
+                let byte1_chirho = unsafe { core::ptr::read_volatile((argv0_ptr_chirho + 1) as *const u8) };
+                serial_println_chirho!(
+                    "[EXEC-FINAL] argc={} argv[0]@{:#x} first_bytes=[{:#04x},{:#04x}]",
+                    argc_val_chirho, argv0_ptr_chirho, byte0_chirho, byte1_chirho,
+                );
+            }
+        }
+    }
+
     serial_println_chirho!(
         "[EXEC] Jumping to userspace: entry={:#x}, rsp={:#x}",
         entry_point_chirho,
