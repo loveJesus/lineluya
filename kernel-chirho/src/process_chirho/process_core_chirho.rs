@@ -1139,8 +1139,9 @@ pub fn sys_execve_with_filename_chirho(
         if is_procfd_exec_chirho {
             let cleared_chirho = crate::pagetable_chirho::clear_user_pages_chirho(boot_pml4_chirho);
             // Re-map the user preemption trampoline — it was cleared along
-            // with all other user pages. Without it, preempted PIDs jump to
-            // an unmapped address and GPF.
+            // with all other user pages. Reset the READY flag first so init
+            // doesn't skip the re-mapping.
+            crate::interrupts_chirho::reset_user_preempt_trampoline_ready_chirho();
             crate::interrupts_chirho::init_user_preempt_trampoline_chirho();
             crate::serial_debug_chirho!(
                 "[PROCESS] execve: procfd — cleared {} stale user pages + re-mapped trampoline",

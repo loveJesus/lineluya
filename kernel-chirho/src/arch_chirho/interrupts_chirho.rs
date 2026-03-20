@@ -294,6 +294,12 @@ static USER_PREEMPT_TRAMPOLINE_PAGE_CHIRHO: UserPreemptTrampolinePageChirho =
     build_user_preempt_trampoline_page_chirho();
 static USER_PREEMPT_TRAMPOLINE_READY_CHIRHO: AtomicBool = AtomicBool::new(false);
 
+/// Reset the READY flag so init_user_preempt_trampoline_chirho re-maps
+/// the trampoline. Called after clear_user_pages removes the PTE.
+pub fn reset_user_preempt_trampoline_ready_chirho() {
+    USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.store(false, Ordering::Release);
+}
+
 pub fn init_user_preempt_trampoline_chirho() {
     if USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire) {
         return;
@@ -918,6 +924,24 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
             if already_preempted_chirho {
                 // Skip — let the pending preemption complete first
             } else {
+
+            // Diagnostic: verify trampoline bytes before redirecting
+            if current_pid_chirho == 4 {
+                use core::sync::atomic::{AtomicBool, Ordering as DiagOrd};
+                static DIAG_DONE_CHIRHO: AtomicBool = AtomicBool::new(false);
+                if !DIAG_DONE_CHIRHO.swap(true, DiagOrd::Relaxed) {
+                    // Read first 8 bytes at trampoline address
+                    // Expected: b8 18 00 00 00 0f 05 c3 (mov eax,24; syscall; ret)
+                    let tramp_ptr_chirho = USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO as *const u64;
+                    let tramp_bytes_chirho = unsafe { core::ptr::read_volatile(tramp_ptr_chirho) };
+                    crate::serial_println_chirho!(
+                        "[TRAMP-DIAG] pid=4 rip={:#x} trampoline@{:#x} bytes={:#018x} (expect 0xc3050f000018b8)",
+                        user_rip_chirho,
+                        USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO,
+                        tramp_bytes_chirho,
+                    );
+                }
+            }
 
             // Save the interrupted RIP in the task struct (kernel-side).
             if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
