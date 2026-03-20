@@ -1116,103 +1116,56 @@ pub fn sys_execve_with_filename_chirho(
         }
     };
 
-    // Step 4a: Exec MM reset DEFERRED — needs to be paired with page table
-    // clear to avoid "already mapped" false positives. Per-task MM ownership
-    // (Codex step 4 complete) gives process isolation at VMA level. Full
-    // exec MM reset is architectural debt for workstream 3 completion.
-
     // -----------------------------------------------------------------------
-    // Step 4b: Per-process page tables — record for future use.
-    // -----------------------------------------------------------------------
-    // We DON'T switch CR3 here because the mapper (OffsetPageTable) is bound
-    // to the current PML4. Switching CR3 before loading the ELF would map
-    // segments into the old page table while the CPU uses the new one.
-    // Instead, we store the new PML4 in the task descriptor. The scheduler
-    // will switch CR3 when it picks this task.
+    // Step 4: Authoritative exec address-space replacement (Codex-directed).
     //
-    // NOTE: For vfork semantics (current model), all processes share the
-    // same address space anyway. Per-process page tables become useful once
-    // real fork + preemptive scheduling are enabled.
-    // Create a new per-process PT for all exec except embedded static BusyBox.
+    // Create a fresh per-process PT, reset task.mm, switch CR3 to the fresh
+    // PT BEFORE loading the ELF. The mapper follows CR3 (reinit), so all
+    // segment mappings go directly into the clean PT. On a fresh PT, the
+    // "already mapped" optimization in map_anonymous_pages is false by
+    // construction — no frame aliasing with kernel heap.
+    // -----------------------------------------------------------------------
     let is_embedded_static_exec_chirho = !is_procfd_exec_chirho
         && crate::task_chirho::current_task_chirho()
             .map(|t| t.lock().pid_chirho >= 4)
             .unwrap_or(false);
+
     if !is_embedded_static_exec_chirho {
-        let _new_pt_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
-        if let Some(pt_root_chirho) = _new_pt_chirho {
+        // Create fresh per-process PT
+        if let Some(pt_root_chirho) = crate::pagetable_chirho::create_user_page_table_chirho() {
+            // Store in task + reset MM to fresh state
+            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                let mut tg_chirho = task_arc_chirho.lock();
+                tg_chirho.page_table_root_chirho = Some(pt_root_chirho);
+                tg_chirho.mm_chirho = Some(alloc::sync::Arc::new(spin::Mutex::new(
+                    crate::mm_chirho::MmChirho::new_chirho(),
+                )));
+            }
+            // Map preemption trampoline into the fresh PT
+            crate::interrupts_chirho::reset_user_preempt_trampoline_ready_chirho();
+            crate::interrupts_chirho::init_user_preempt_trampoline_chirho();
+            if let Some((tramp_phys_chirho, tramp_flags_chirho)) =
+                crate::pagetable_chirho::lookup_in_boot_pt_chirho(0x7FFF_FF7F_E000)
+            {
+                let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                    pt_root_chirho, 0x7FFF_FF7F_E000,
+                    tramp_phys_chirho, tramp_flags_chirho,
+                );
+            }
+            // Switch CR3 to fresh PT — mapper follows via reinit
+            unsafe {
+                crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
+            }
             crate::serial_debug_chirho!(
-                "[PROCESS] execve: created per-process page table PML4={:#x}",
+                "[PROCESS] execve: authoritative — fresh PT {:#x}, CR3 switched",
                 pt_root_chirho.as_u64(),
             );
-            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-                task_arc_chirho.lock().page_table_root_chirho = Some(pt_root_chirho);
-            }
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 4b: Switch to boot PML4 and clear stale user pages.
-    //
-    // After fork, this process runs on its per-process PT. The exec path
-    // loads ELF segments via mmap/GLOBAL_MAPPER onto the boot PML4.
-    // We must clear stale user pages from boot PML4 so the new binary
-    // doesn't inherit old mappings.
-    //
-    // IMPORTANT: We save and restore boot PML4 user entries because
-    // OTHER processes (e.g., parent PID 2) may have pages lazily backed
-    // by boot PML4 entries. Clearing them all causes those processes to
-    // page fault when they access their mmap'd pages.
-    // -----------------------------------------------------------------------
-    {
-        let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
-        // Switch to boot PML4 for ALL exec EXCEPT embedded static BusyBox
-        // (PID >= 4 non-procfd). Static BusyBox loads onto the fork-inherited
-        // per-process PT to avoid corrupting parent's musl library pages.
-        let is_embedded_static_chirho = !is_procfd_exec_chirho
-            && crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().pid_chirho >= 4)
-                .unwrap_or(false);
-        if !is_embedded_static_chirho && boot_pml4_chirho.as_u64() != 0 {
-            unsafe {
-                crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
-            }
-        }
-        // For procfd exec (dropbear re-exec): clear ALL stale user pages.
-        // Stale pages from previous sessions' shared libraries (libutmps)
-        // corrupt the new session's library loading ("Exec format error").
-        // For normal exec (BusyBox child): only restore COW to writable.
-        // Clearing all pages would destroy the parent session's library
-        // pages, causing page faults during pipe relay.
-        if is_procfd_exec_chirho {
-            // DON'T clear boot PML4 — preserve .so library pages from the
-            // parent (PID 2). With reinit_mapper following CR3, stale pages
-            // in boot PML4 won't corrupt other processes' PTs. The new
-            // binary's MAP_FIXED segments overwrite at the same addresses.
-            // Clearing would remove .so pages that PID 3 needs after exec
-            // (musl uses lazy binding and the pages must be present).
-            let restored_chirho = crate::pagetable_chirho::restore_cow_to_writable_chirho(boot_pml4_chirho);
-            crate::serial_debug_chirho!(
-                "[PROCESS] execve: procfd — restored {} COW pages (preserving .so libs)",
-                restored_chirho,
-            );
-        } else if is_embedded_static_chirho {
-            // Embedded static BusyBox: DON'T touch boot PML4.
-            // Load ELF directly onto the fork-inherited per-process PT.
-            // BusyBox at 0x400000 doesn't conflict with parent's dropbear
-            // at 0x555555550000 or musl at 0x7f0000100000.
-            crate::serial_debug_chirho!(
-                "[PROCESS] execve: embedded static — loading onto fork PT",
-            );
-        } else {
-            // Normal non-procfd exec (PID 0/1 shell, PID 2 initial dropbear):
-            // restore COW to writable on boot PML4.
-            let restored_chirho = crate::pagetable_chirho::restore_cow_to_writable_chirho(boot_pml4_chirho);
-            crate::serial_debug_chirho!(
-                "[PROCESS] execve: normal — restored {} COW pages to writable",
-                restored_chirho,
-            );
-        }
+    } else {
+        // Embedded static BusyBox: load onto fork-inherited PT
+        crate::serial_debug_chirho!(
+            "[PROCESS] execve: embedded static — loading onto fork PT",
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1325,8 +1278,8 @@ pub fn sys_execve_with_filename_chirho(
                 dyn_result_chirho.exe_chirho.brk_addr_chirho
             );
 
-            // Boot PML4 switch already done in step 4b — ELF segments
-            // are mapped there. Stack writes also go into boot PML4.
+            // CR3 already on fresh per-process PT from step 4.
+            // ELF segments + stack mapped directly into the clean PT.
 
             // Set up the user stack with AT_BASE for the dynamic linker.
             let user_rsp_chirho = exec_chirho::setup_user_stack_dynlink_chirho(
@@ -1356,9 +1309,8 @@ pub fn sys_execve_with_filename_chirho(
             drop(elf_data_owned_chirho);
 
             // Activate per-process page table for address space isolation.
-            // Without this, the dynamic binary's pages are in the shared
-            // boot PML4 and get overwritten by other processes' exec.
-            activate_per_process_pt_chirho();
+            // CR3 already switched to fresh PT in step 4 (authoritative exec).
+            // No need for activate_per_process_pt / mirror from boot PML4.
 
             // Jump to the interpreter's entry point.
             exec_chirho::jump_to_userspace_chirho(
@@ -1415,10 +1367,8 @@ pub fn sys_execve_with_filename_chirho(
     );
 
     // Mirror user-space mappings into per-process page table and switch CR3.
-    // Skip for embedded static BusyBox — ELF was loaded directly onto fork PT.
-    if !is_embedded_static_exec_chirho {
-        activate_per_process_pt_chirho();
-    }
+    // CR3 already switched to fresh PT in step 4 (authoritative exec).
+    // activate_per_process_pt (boot PML4 mirror) no longer needed.
 
     // -----------------------------------------------------------------------
     // Step 7: Free ELF data and jump to userspace (never returns)
