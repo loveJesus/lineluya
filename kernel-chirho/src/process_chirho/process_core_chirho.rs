@@ -1198,12 +1198,10 @@ pub fn sys_execve_with_filename_chirho(
 
             // Switch to boot PML4 BEFORE setting up user stack. Stack writes
             // must go into boot PML4 (via GLOBAL_MAPPER) so they're visible
-            // when we IRETQ to userspace. If we write the stack while on the
-            // per-process PT, COW resolves create frames only in the child PT,
-            // and they're lost after switching to boot PML4.
-            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-                task_arc_chirho.lock().page_table_root_chirho = None;
-            }
+            // when we IRETQ to userspace. We keep page_table_root_chirho set
+            // (NOT None) so activate_per_process_pt_chirho can mirror pages
+            // from boot PML4 into the per-process PT before jumping to userspace.
+            // (GPT-directed: removing the None assignment that prevented PT activation)
             let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
             if boot_pml4_chirho.as_u64() != 0 {
                 crate::serial_debug_chirho!(
@@ -1239,6 +1237,11 @@ pub fn sys_execve_with_filename_chirho(
             // previously leaked via Vec::leak on every execve.
             drop(interp_data_vec_chirho);
             drop(elf_data_owned_chirho);
+
+            // Activate per-process page table for address space isolation.
+            // Without this, the dynamic binary's pages are in the shared
+            // boot PML4 and get overwritten by other processes' exec.
+            activate_per_process_pt_chirho();
 
             // Jump to the interpreter's entry point.
             exec_chirho::jump_to_userspace_chirho(
