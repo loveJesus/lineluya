@@ -455,6 +455,21 @@ pub fn schedule_chirho() {
                                     );
                                 }
                             }
+                            // GPT-directed: restore FS/GS base MSRs before context switch.
+                            // Without this, musl TLS uses stale FS base → GPF on resume.
+                            {
+                                use x86_64::registers::model_specific::Msr;
+                                let list2_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+                                if let Some(task_chirho) = list2_chirho.iter()
+                                    .find(|t| t.lock().pid_chirho == pid_chirho)
+                                {
+                                    let tg_chirho = task_chirho.lock();
+                                    unsafe {
+                                        Msr::new(0xC000_0100).write(tg_chirho.fs_base_chirho);
+                                        Msr::new(0xC000_0102).write(tg_chirho.gs_base_chirho);
+                                    }
+                                }
+                            }
                             // Context switch to the woken task
                             let new_ctx_ptr_chirho = crate::task_chirho::context_ptr_chirho(pid_chirho);
                             let boot_ctx_ptr_chirho = crate::task_chirho::boot_context_ptr_chirho();

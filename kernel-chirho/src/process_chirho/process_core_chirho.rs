@@ -329,6 +329,15 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
         // space so the parent's post-fork stack writes don't corrupt it.
         let child_pt_root_chirho = match parent_chirho.page_table_root_chirho {
             Some(parent_pml4_chirho) => {
+                // Mark parent's writable user pages as COW before cloning.
+                // Without this, parent and child share physical frames
+                // WITHOUT COW protection — child writes corrupt parent's
+                // musl linker GOT/data, causing GPF in the parent.
+                let cow_count_chirho = crate::pagetable_chirho::mark_user_pages_cow_chirho(parent_pml4_chirho);
+                crate::serial_debug_chirho!(
+                    "[FORK] Marked {} per-process PT pages as COW for child",
+                    cow_count_chirho,
+                );
                 crate::pagetable_chirho::clone_page_table_chirho(parent_pml4_chirho)
             }
             None => {
