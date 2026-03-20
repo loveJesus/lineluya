@@ -4015,23 +4015,21 @@ fn sys_select_chirho(
                 static LU9_CHIRHO: AtomicU64 = AtomicU64::new(0);
                 let cnt_chirho = LU9_CHIRHO.fetch_add(1, LuOrd::Relaxed);
                 if cnt_chirho > 30 && cnt_chirho < 35 {
-                    let fd9_exists_chirho = crate::fs_chirho::lookup_fd_chirho(9).is_some();
-                    // Check table size and content at fd=9
-                    let (table_len_chirho, fd9_in_task_chirho, fd_count_chirho) = crate::task_chirho::current_task_chirho()
+                    let (fd9_in_task_chirho, fd_count_chirho, table_ptr_chirho) = crate::task_chirho::current_task_chirho()
                         .map(|t| {
                             let tg = t.lock();
                             if let Some(ref fdt) = tg.fd_table_chirho {
-                                let len_chirho = fdt.fds_chirho.len();
                                 let has9_chirho = fdt.get_chirho(9).is_some();
                                 let count_chirho = fdt.fds_chirho.iter().filter(|s| s.is_some()).count();
-                                (len_chirho, has9_chirho, count_chirho)
+                                let ptr_chirho = fdt.fds_chirho.as_ptr() as u64;
+                                (has9_chirho, count_chirho, ptr_chirho)
                             } else {
-                                (0, false, 0)
+                                (false, 0, 0)
                             }
-                        }).unwrap_or((0, false, 0));
+                        }).unwrap_or((false, 0, 0));
                     crate::serial_println_chirho!(
-                        "[FD9-CHECK] #{} pid=3 lookup(9)={} table_len={} fd9_in_task={} open_fds={}",
-                        cnt_chirho, fd9_exists_chirho, table_len_chirho, fd9_in_task_chirho, fd_count_chirho,
+                        "[FD9-CHECK] #{} pid=3 fd9={} open_fds={} table_ptr={:#x}",
+                        cnt_chirho, fd9_in_task_chirho, fd_count_chirho, table_ptr_chirho,
                     );
                 }
             }

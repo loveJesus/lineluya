@@ -448,6 +448,12 @@ impl FdTableChirho {
             if self.fds_chirho[fd_chirho].is_some()
                 && self.cloexec_chirho.get(fd_chirho).copied().unwrap_or(false)
             {
+                if fd_chirho == 9 {
+                    crate::serial_println_chirho!(
+                        "[CLOEXEC-CLOSE9] fd=9 closed by close_cloexec_fds table_ptr={:#x}",
+                        self.fds_chirho.as_ptr() as u64,
+                    );
+                }
                 self.fds_chirho[fd_chirho] = None;
                 if fd_chirho < self.paths_chirho.len() {
                     self.paths_chirho[fd_chirho] = None;

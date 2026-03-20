@@ -1544,16 +1544,19 @@ pub fn alloc_and_insert_fd_chirho(
 ///
 /// A2-PROC-003: Per-process close.
 pub fn close_fd_chirho(fd_chirho: u64) -> i64 {
-    // Trace fd=9+ close for PID 3 (pipe relay debug)
-    {
-        let trace_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if trace_pid_chirho == 3 && fd_chirho >= 9 {
-            crate::serial_println_chirho!(
-                "[FD-CLOSE] pid=3 fd={} closing",
-                fd_chirho,
-            );
-        }
+    // Trace ALL close(9) calls to find who removes PID 3's pipe fd
+    if fd_chirho == 9 {
+        let (trace_pid_chirho, table_ptr_chirho) = crate::task_chirho::current_task_chirho()
+            .map(|t| {
+                let tg = t.lock();
+                let ptr = tg.fd_table_chirho.as_ref()
+                    .map(|fdt| fdt.fds_chirho.as_ptr() as u64).unwrap_or(0);
+                (tg.pid_chirho, ptr)
+            }).unwrap_or((0, 0));
+        crate::serial_println_chirho!(
+            "[CLOSE9] pid={} closing fd=9 table_ptr={:#x}",
+            trace_pid_chirho, table_ptr_chirho,
+        );
     }
     let mut closed_in_task_chirho = false;
     // Close in current task's per-process table first.
