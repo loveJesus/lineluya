@@ -275,6 +275,11 @@ pub struct TaskChirho {
     /// User tasks get their own PML4 allocated at creation/exec time.
     pub page_table_root_chirho: Option<PhysAddr>,
 
+    /// Per-process memory descriptor (VMAs, brk, mmap state).
+    /// `None` for kernel tasks. User tasks get their own MM at creation;
+    /// fork deep-clones it for the child; exec replaces it with a fresh one.
+    pub mm_chirho: Option<alloc::sync::Arc<spin::Mutex<crate::mm_chirho::MmChirho>>>,
+
     // -- File descriptors ----------------------------------------------------
 
     /// The next file descriptor number to hand out.  A proper fd table will
@@ -405,6 +410,7 @@ impl TaskChirho {
             user_rsp_chirho: 0,
             preempted_rip_chirho: 0,
             page_table_root_chirho: None, // kernel tasks share the kernel page tables
+            mm_chirho: None, // kernel tasks share GLOBAL_MM
             next_fd_chirho: 0,
             fd_table_chirho: None,
             priority_chirho: DEFAULT_PRIORITY_CHIRHO,
@@ -475,6 +481,9 @@ impl TaskChirho {
             user_rsp_chirho: user_stack_chirho,
             preempted_rip_chirho: 0,
             page_table_root_chirho: pt_root_chirho,
+            mm_chirho: Some(alloc::sync::Arc::new(spin::Mutex::new(
+                crate::mm_chirho::MmChirho::new_chirho(),
+            ))),
             next_fd_chirho: 3, // 0=stdin, 1=stdout, 2=stderr pre-allocated
             fd_table_chirho: Some(crate::vfs_chirho::FdTableChirho::new_chirho(256)),
             priority_chirho: DEFAULT_PRIORITY_CHIRHO,

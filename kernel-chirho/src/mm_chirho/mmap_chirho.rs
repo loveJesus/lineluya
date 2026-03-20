@@ -129,6 +129,7 @@ impl VmaChirho {
 /// Analogous to Linux's `struct mm_struct`.  Tracks all virtual memory areas
 /// for a process, the program break (`brk`), and the next address to hand
 /// out for anonymous `mmap` allocations.
+#[derive(Clone)]
 pub struct MmChirho {
     /// List of VMAs, kept sorted by `start_chirho` for efficient lookup.
     pub vmas_chirho: Vec<VmaChirho>,
@@ -594,7 +595,7 @@ impl MmChirho {
 /// spaces are implemented.
 pub static GLOBAL_MM_CHIRHO: Mutex<Option<MmChirho>> = Mutex::new(None);
 
-/// Get or initialise the global memory descriptor.
+/// Get or initialise the global memory descriptor (boot fallback only).
 ///
 /// Lazily creates an [`MmChirho`] on first access.  Returns a reference
 /// suitable for use in the `mmap`/`munmap`/`mprotect` syscall handlers.
@@ -606,6 +607,25 @@ pub fn get_or_init_mm_chirho() -> &'static Mutex<Option<MmChirho>> {
         }
     }
     &GLOBAL_MM_CHIRHO
+}
+
+/// Get the current task's per-process MM, falling back to GLOBAL_MM
+/// for kernel tasks (PID 0/1) or early boot. This is the authoritative
+/// MM accessor — all mmap/munmap/mprotect/brk should use this.
+pub fn get_current_mm_chirho() -> alloc::sync::Arc<spin::Mutex<MmChirho>> {
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref mm_arc_chirho) = task_guard_chirho.mm_chirho {
+            return mm_arc_chirho.clone();
+        }
+    }
+    // Fallback: wrap global MM in an Arc for API compatibility.
+    // This is only for PID 0/1 or early boot.
+    static GLOBAL_MM_ARC_CHIRHO: spin::Once<alloc::sync::Arc<spin::Mutex<MmChirho>>> =
+        spin::Once::new();
+    GLOBAL_MM_ARC_CHIRHO.call_once(|| {
+        alloc::sync::Arc::new(spin::Mutex::new(MmChirho::new_chirho()))
+    }).clone()
 }
 
 // ============================================================================
