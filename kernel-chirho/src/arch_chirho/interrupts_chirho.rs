@@ -729,11 +729,40 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
         // User-mode GPF — terminate the process gracefully (like SIGSEGV)
         // and re-launch the shell. This prevents the kernel from halting
         // when a user program executes an invalid instruction.
+        let gpf_rip_chirho = stack_frame_chirho.instruction_pointer.as_u64();
+        let gpf_rsp_chirho = stack_frame_chirho.stack_pointer.as_u64();
         crate::serial_println_chirho!(
-            "[EXCEPTION] User-mode GPF at {:#x} (error_code={}) — terminating process",
-            stack_frame_chirho.instruction_pointer.as_u64(),
-            error_code_chirho,
+            "[EXCEPTION] User-mode GPF at {:#x} (error_code={}) rsp={:#x} — terminating process",
+            gpf_rip_chirho, error_code_chirho, gpf_rsp_chirho,
         );
+
+        // GPT-directed: dump page content at GPF address to determine
+        // if page is corrupted or if instruction faults on bad operand.
+        {
+            let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            let (cr3_raw_chirho, _) = x86_64::registers::control::Cr3::read();
+            let pt_root_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().page_table_root_chirho)
+                .unwrap_or(None);
+            crate::serial_println_chirho!(
+                "[GPF-DIAG] pid={} CR3={:#x} task.pt_root={:?}",
+                pid_chirho, cr3_raw_chirho.start_address().as_u64(),
+                pt_root_chirho.map(|p| p.as_u64()),
+            );
+            // Dump bytes at the faulting RIP
+            let bytes_chirho: [u8; 16] = unsafe {
+                let ptr_chirho = gpf_rip_chirho as *const [u8; 16];
+                core::ptr::read_volatile(ptr_chirho)
+            };
+            crate::serial_println_chirho!(
+                "[GPF-DIAG] bytes@{:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                gpf_rip_chirho,
+                bytes_chirho[0], bytes_chirho[1], bytes_chirho[2], bytes_chirho[3],
+                bytes_chirho[4], bytes_chirho[5], bytes_chirho[6], bytes_chirho[7],
+                bytes_chirho[8], bytes_chirho[9], bytes_chirho[10], bytes_chirho[11],
+                bytes_chirho[12], bytes_chirho[13], bytes_chirho[14], bytes_chirho[15],
+            );
+        }
 
         // Remove current task from scheduler.
         crate::process_chirho::kill_and_respawn_shell_chirho("user-mode GPF");
