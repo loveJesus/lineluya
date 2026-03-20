@@ -6414,6 +6414,20 @@ fn sys_sendfile_chirho(
             buf_chirho.as_mut_ptr() as u64,
             to_read_chirho,
         );
+        // One-shot trace for cat debugging
+        {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static SF_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let sc_chirho = SF_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if sc_chirho < 5 {
+                let pid_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                crate::serial_println_chirho!(
+                    "[SENDFILE] #{} pid={} in_fd={} out_fd={} read={} total={}",
+                    sc_chirho, pid_chirho, in_fd_chirho, out_fd_chirho, n_chirho, total_chirho,
+                );
+            }
+        }
         if n_chirho <= 0 {
             break;
         }
