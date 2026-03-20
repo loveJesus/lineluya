@@ -12,9 +12,7 @@ use alloc::sync::Arc;
 use spin::Mutex;
 
 use crate::vfs_chirho::{FileChirho, FileOpsChirho, InodeChirho, InodeOpsChirho};
-use crate::syscall_chirho::{
-    EAGAIN_CHIRHO, EBADF_CHIRHO, EFAULT_CHIRHO, EINVAL_CHIRHO, ENOSYS_CHIRHO, EPIPE_CHIRHO,
-};
+use crate::syscall_chirho::{EBADF_CHIRHO, EPIPE_CHIRHO, ENOSYS_CHIRHO, EINVAL_CHIRHO, EFAULT_CHIRHO};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -22,10 +20,6 @@ use crate::syscall_chirho::{
 
 /// Default pipe buffer capacity in bytes (matches Linux's default).
 const PIPE_BUF_SIZE_CHIRHO: usize = 4096;
-
-/// Wait queue for tasks blocked on pipe readability.
-pub static PIPE_DATA_WAITQUEUE_CHIRHO: crate::waitqueue_chirho::WaitQueueChirho =
-    crate::waitqueue_chirho::WaitQueueChirho::new_chirho();
 
 // ---------------------------------------------------------------------------
 // PipeChirho — shared pipe state
@@ -58,27 +52,6 @@ impl PipeChirho {
             closed_write_chirho: false,
         }
     }
-}
-
-/// Wake all tasks blocked on pipe readability.
-pub fn wake_pipe_data_waitqueue_chirho() {
-    crate::waitqueue_chirho::wake_up_chirho(&PIPE_DATA_WAITQUEUE_CHIRHO);
-}
-
-/// Return `Some(true|false)` when `file_arc_chirho` is a pipe read target,
-/// or `None` when it is not a pipe at all.
-pub fn pipe_read_ready_for_file_chirho(file_arc_chirho: &Arc<Mutex<FileChirho>>) -> Option<bool> {
-    let file_guard_chirho = file_arc_chirho.lock();
-    let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
-    let is_fifo_chirho = (inode_guard_chirho.mode_chirho & 0o170000) == 0o10000;
-    if !is_fifo_chirho {
-        return None;
-    }
-
-    let fs_data_chirho = inode_guard_chirho.fs_data_chirho.as_ref()?;
-    let pipe_arc_chirho = fs_data_chirho.downcast_ref::<Arc<Mutex<PipeChirho>>>()?;
-    let pipe_guard_chirho = pipe_arc_chirho.lock();
-    Some(!pipe_guard_chirho.buffer_chirho.is_empty() || pipe_guard_chirho.closed_write_chirho)
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +148,7 @@ pub struct PipeReadOpsChirho {
 impl FileOpsChirho for PipeReadOpsChirho {
     fn read_chirho(
         &self,
-        file_chirho: &mut FileChirho,
+        _file_chirho: &mut FileChirho,
         buf_chirho: &mut [u8],
     ) -> Result<usize, i64> {
         let mut pipe_chirho = self.pipe_chirho.lock();
@@ -185,22 +158,46 @@ impl FileOpsChirho for PipeReadOpsChirho {
                 // Write end closed and buffer empty => EOF.
                 return Ok(0);
             }
-
-            if (file_chirho.flags_chirho & crate::vfs_chirho::O_NONBLOCK_CHIRHO) != 0 {
-                return Err(-EAGAIN_CHIRHO);
-            }
-
+            // Pipe is empty — TCP→pipe relay DISABLED.
+            // Dropbear reads SSH data directly from the accepted socket fd
+            // (not from stdin/pipe). The relay was draining the socket's
+            // recv_buf, causing read(socket_fd) to return EAGAIN.
+            // Data stays in socket recv_buf for recvfrom to return.
             drop(pipe_chirho);
-            crate::waitqueue_chirho::wait_event_chirho(&PIPE_DATA_WAITQUEUE_CHIRHO, || {
-                let pipe_wait_guard_chirho = self.pipe_chirho.lock();
-                !pipe_wait_guard_chirho.buffer_chirho.is_empty()
-                    || pipe_wait_guard_chirho.closed_write_chirho
-            });
 
-            pipe_chirho = self.pipe_chirho.lock();
-            if pipe_chirho.buffer_chirho.is_empty() && pipe_chirho.closed_write_chirho {
-                return Ok(0);
+            for _retry_chirho in 0..1000u32 {
+                crate::net_chirho::poll_network_chirho();
+                core::hint::spin_loop();
+                let pipe_recheck_chirho = self.pipe_chirho.lock();
+                if !pipe_recheck_chirho.buffer_chirho.is_empty() {
+                    // Data arrived — fall through to the copy-out path.
+                    let to_read_chirho = buf_chirho.len().min(pipe_recheck_chirho.buffer_chirho.len());
+                    // Need mutable access to drain the buffer.
+                    drop(pipe_recheck_chirho);
+                    let mut pipe_drain_chirho = self.pipe_chirho.lock();
+                    let actual_chirho = buf_chirho.len().min(pipe_drain_chirho.buffer_chirho.len());
+                    for i_chirho in 0..actual_chirho {
+                        let byte_chirho = match pipe_drain_chirho.buffer_chirho.pop_front() {
+                            Some(byte_chirho) => byte_chirho,
+                            None => {
+                                crate::serial_println_chirho!(
+                                    "[PIPE] read underflow after relay wake"
+                                );
+                                return Ok(i_chirho);
+                            }
+                        };
+                        buf_chirho[i_chirho] = byte_chirho;
+                    }
+                    return Ok(actual_chirho);
+                }
+                if pipe_recheck_chirho.closed_write_chirho {
+                    return Ok(0); // Writer closed while we were waiting.
+                }
+                drop(pipe_recheck_chirho);
             }
+            // Timeout — no data arrived but write end is still open.
+            // Return EAGAIN so the caller can retry (not Ok(0) which means EOF).
+            return Err(-11); // EAGAIN
         }
 
         let to_read_chirho = buf_chirho.len().min(pipe_chirho.buffer_chirho.len());
@@ -298,7 +295,6 @@ impl FileOpsChirho for PipeWriteOpsChirho {
         // Wake tasks sleeping on select/poll — they may be waiting for
         // pipe data (e.g., PID 3 dropbear reading PID 4 shell output).
         drop(pipe_chirho);
-        wake_pipe_data_waitqueue_chirho();
         crate::net_chirho::wake_socket_data_waitqueue_chirho();
 
         Ok(buf_chirho.len())
@@ -348,7 +344,6 @@ unsafe impl Sync for PipeWriteOpsChirho {}
 pub fn create_pipe_chirho() -> (Arc<Mutex<FileChirho>>, Arc<Mutex<FileChirho>>) {
     let pipe_state_chirho = Arc::new(Mutex::new(PipeChirho::new_chirho()));
     let inode_chirho = make_pipe_inode_chirho();
-    inode_chirho.lock().fs_data_chirho = Some(Box::new(Arc::clone(&pipe_state_chirho)));
 
     // Leak the file ops so they have 'static lifetime as required by FileChirho.
     let read_ops_chirho: &'static dyn FileOpsChirho = alloc::boxed::Box::leak(alloc::boxed::Box::new(

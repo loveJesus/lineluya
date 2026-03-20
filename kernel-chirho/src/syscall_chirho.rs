@@ -3366,7 +3366,7 @@ fn sys_ioctl_real_chirho(
 fn sys_poll_chirho(
     fds_ptr_chirho: u64,
     nfds_chirho: u32,
-    timeout_chirho: i32,
+    _timeout_chirho: i32,
 ) -> i64 {
     if fds_ptr_chirho == 0 || nfds_chirho == 0 {
         return 0;
@@ -3390,6 +3390,7 @@ fn sys_poll_chirho(
         return -EFAULT_CHIRHO;
     }
 
+    let mut ready_count_chirho: i64 = 0;
     let pollfds_chirho = unsafe {
         core::slice::from_raw_parts_mut(
             buf_chirho.0.as_mut_ptr() as *mut PollfdChirho,
@@ -3400,126 +3401,97 @@ fn sys_poll_chirho(
     // Poll network for incoming packets before checking fds.
     crate::net_chirho::poll_network_chirho();
 
-    let pollfd_revents_chirho =
-        |fd_val_chirho: u64, events_chirho: i16| -> (i16, bool, bool) {
-            let mut revents_chirho: i16 = 0;
-            let mut needs_socket_wait_chirho = false;
-            let mut needs_pipe_wait_chirho = false;
+    for pfd_chirho in pollfds_chirho.iter_mut() {
+        if pfd_chirho.fd_chirho < 0 {
+            pfd_chirho.revents_chirho = 0;
+            continue;
+        }
 
-            if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
-                if events_chirho & POLLIN_CHIRHO != 0 {
-                    if crate::net_chirho::socket_has_data_chirho(fd_val_chirho) {
-                        revents_chirho |= POLLIN_CHIRHO;
+        let fd_val_chirho = pfd_chirho.fd_chirho as u64;
+        let mut revents_chirho: i16 = 0;
+
+        if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
+            // Socket fd: only report POLLIN if data/connection pending.
+            if pfd_chirho.events_chirho & POLLIN_CHIRHO != 0
+                && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
+            {
+                revents_chirho |= POLLIN_CHIRHO;
+            }
+            // POLLOUT: Don't report unconditionally — it causes dropbear
+            // to spin in its event loop (22K+ syscalls/sec) instead of
+            // processing received crypto data. Only set POLLOUT when the
+            // caller ONLY asked for POLLOUT (not POLLIN|POLLOUT together).
+            // When both are requested, let POLLIN drive the wake.
+            if pfd_chirho.events_chirho == POLLOUT_CHIRHO {
+                revents_chirho |= POLLOUT_CHIRHO;
+            }
+        } else {
+            // Regular file/pipe
+            if pfd_chirho.events_chirho & POLLOUT_CHIRHO != 0 {
+                revents_chirho |= POLLOUT_CHIRHO;
+            }
+            if pfd_chirho.events_chirho & POLLIN_CHIRHO != 0 {
+                if fd_val_chirho == 0 {
+                    // stdin: for non-shell PIDs (daemons like dropbear),
+                    // only report POLLIN if serial actually has data.
+                    // The shell (PID 0/re-exec'd) needs unconditional
+                    // POLLIN so its blocking read loop works.
+                    
+                    if is_interactive_shell_chirho() {
+                        revents_chirho |= POLLIN_CHIRHO; // shell: always
                     } else {
-                        needs_socket_wait_chirho = true;
-                    }
-                }
-                if events_chirho == POLLOUT_CHIRHO {
-                    revents_chirho |= POLLOUT_CHIRHO;
-                }
-                return (
-                    revents_chirho,
-                    needs_socket_wait_chirho,
-                    needs_pipe_wait_chirho,
-                );
-            }
-
-            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_val_chirho) {
-                if events_chirho & POLLOUT_CHIRHO != 0 {
-                    revents_chirho |= POLLOUT_CHIRHO;
-                }
-                if events_chirho & POLLIN_CHIRHO != 0 {
-                    if let Some(pipe_ready_chirho) =
-                        crate::pipe_chirho::pipe_read_ready_for_file_chirho(&file_arc_chirho)
-                    {
-                        if pipe_ready_chirho {
+                        // Daemon (dropbear): check serial AND TCP port 2222.
+                        // Dropbear reads SSH data from fd=0 (pipe). TCP data
+                        // on port 2222 is relayed to the pipe during read().
+                        // Report POLLIN if either serial or TCP has data.
+                        let lsr_chirho: u8 = unsafe {
+                            x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
+                        };
+                        if lsr_chirho & 1 != 0 {
                             revents_chirho |= POLLIN_CHIRHO;
-                        } else {
-                            needs_pipe_wait_chirho = true;
                         }
-                    } else if fd_val_chirho == 0 {
-                        if is_interactive_shell_chirho() {
+                        // Also check TCP port 2222 for SSH data
+                        if crate::net_chirho::has_tcp_data_for_port_chirho(2222) {
                             revents_chirho |= POLLIN_CHIRHO;
-                        } else {
-                            let lsr_chirho: u8 = unsafe {
-                                x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
-                            };
-                            if lsr_chirho & 1 != 0 {
-                                revents_chirho |= POLLIN_CHIRHO;
-                            }
-                            if crate::net_chirho::has_tcp_data_for_port_chirho(2222) {
-                                revents_chirho |= POLLIN_CHIRHO;
-                            }
                         }
-                    } else {
-                        revents_chirho |= POLLIN_CHIRHO;
                     }
+                } else {
+                    revents_chirho |= POLLIN_CHIRHO;
                 }
-            }
-
-            (
-                revents_chirho,
-                needs_socket_wait_chirho,
-                needs_pipe_wait_chirho,
-            )
-        };
-
-    let refresh_pollfds_chirho =
-        |pollfds_refresh_chirho: &mut [PollfdChirho]| -> (i64, bool, bool) {
-            let mut ready_count_chirho: i64 = 0;
-            let mut needs_socket_wait_chirho = false;
-            let mut needs_pipe_wait_chirho = false;
-
-            for pfd_chirho in pollfds_refresh_chirho.iter_mut() {
-                if pfd_chirho.fd_chirho < 0 {
-                    pfd_chirho.revents_chirho = 0;
-                    continue;
-                }
-
-                let (revents_chirho, socket_wait_chirho, pipe_wait_chirho) =
-                    pollfd_revents_chirho(pfd_chirho.fd_chirho as u64, pfd_chirho.events_chirho);
-                pfd_chirho.revents_chirho = revents_chirho;
-                needs_socket_wait_chirho |= socket_wait_chirho;
-                needs_pipe_wait_chirho |= pipe_wait_chirho;
-                if revents_chirho != 0 {
-                    ready_count_chirho += 1;
-                }
-            }
-
-            (
-                ready_count_chirho,
-                needs_socket_wait_chirho,
-                needs_pipe_wait_chirho,
-            )
-        };
-
-    let (mut ready_count_chirho, needs_socket_wait_chirho, needs_pipe_wait_chirho) =
-        refresh_pollfds_chirho(pollfds_chirho);
-
-    if ready_count_chirho == 0 && timeout_chirho != 0 {
-        if timeout_chirho < 0 {
-            if needs_pipe_wait_chirho && !needs_socket_wait_chirho {
-                crate::waitqueue_chirho::wait_event_chirho(
-                    &crate::pipe_chirho::PIPE_DATA_WAITQUEUE_CHIRHO,
-                    || {
-                        let (ready_now_chirho, _, _) = refresh_pollfds_chirho(pollfds_chirho);
-                        ready_now_chirho > 0
-                    },
-                );
-            } else if needs_socket_wait_chirho || needs_pipe_wait_chirho {
-                crate::waitqueue_chirho::wait_event_chirho(
-                    &crate::net_chirho::SOCKET_DATA_WAITQUEUE_CHIRHO,
-                    || {
-                        crate::net_chirho::poll_network_chirho();
-                        let (ready_now_chirho, _, _) = refresh_pollfds_chirho(pollfds_chirho);
-                        ready_now_chirho > 0
-                    },
-                );
             }
         }
 
-        let (ready_after_wait_chirho, _, _) = refresh_pollfds_chirho(pollfds_chirho);
-        ready_count_chirho = ready_after_wait_chirho;
+        pfd_chirho.revents_chirho = revents_chirho;
+        if revents_chirho != 0 {
+            ready_count_chirho += 1;
+        }
+    }
+
+    // If nothing is ready, block until something arrives.
+    if ready_count_chirho == 0 {
+        for _attempt_chirho in 0..1000u32 {
+            x86_64::instructions::interrupts::enable_and_hlt();
+            crate::net_chirho::poll_network_chirho();
+            // Yield to other runnable tasks (fork children).
+            // Yield to fork children during blocking wait.
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
+            }
+            // Re-check pollfds
+            for pfd_chirho in pollfds_chirho.iter() {
+                if pfd_chirho.fd_chirho >= 0 {
+                    let fd_val_chirho = pfd_chirho.fd_chirho as u64;
+                    if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho)
+                        && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
+                    {
+                        ready_count_chirho = 1;
+                        break;
+                    }
+                }
+            }
+            if ready_count_chirho > 0 { break; }
+        }
     }
 
     // Write pollfd array back to user space
@@ -3546,7 +3518,7 @@ fn sys_poll_chirho(
                 }
                 crate::serial_println_chirho!(
                     "[POLL-DBG] pid={} nfds={} timeout={} ready={} fds:{}",
-                    pid_chirho, nfds_chirho, timeout_chirho, ready_count_chirho, fds_str_chirho
+                    pid_chirho, nfds_chirho, _timeout_chirho, ready_count_chirho, fds_str_chirho
                 );
             }
         }
@@ -3626,24 +3598,6 @@ fn sys_select_chirho(
     let fd_is_read_ready_chirho = |fd_chirho: usize| -> bool {
         if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
             crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
-        } else if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
-            if let Some(pipe_ready_chirho) =
-                crate::pipe_chirho::pipe_read_ready_for_file_chirho(&file_arc_chirho)
-            {
-                pipe_ready_chirho
-            } else if fd_chirho == 0 {
-                if is_interactive_shell_chirho() {
-                    true
-                } else {
-                    let lsr_chirho: u8 = unsafe {
-                        x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
-                    };
-                    lsr_chirho & 1 != 0
-                        || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
-                }
-            } else {
-                true // Regular files are always ready
-            }
         } else if fd_chirho == 0 {
             if is_interactive_shell_chirho() {
                 true
@@ -3653,6 +3607,20 @@ fn sys_select_chirho(
                 };
                 lsr_chirho & 1 != 0
                     || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
+            }
+        } else if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
+            let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
+            let is_fifo_chirho = (mode_chirho & 0o170000) == 0o10000;
+            if is_fifo_chirho {
+                // Pipe: only ready when buffer has data or write end closed
+                if let Some(ref fs_data_chirho) = file_arc_chirho.lock().inode_chirho.lock().fs_data_chirho {
+                    if let Some(pipe_chirho) = fs_data_chirho.downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>() {
+                        let pg_chirho = pipe_chirho.lock();
+                        !pg_chirho.buffer_chirho.is_empty() || pg_chirho.closed_write_chirho
+                    } else { true }
+                } else { true }
+            } else {
+                true // Regular files are always ready
             }
         } else {
             false
