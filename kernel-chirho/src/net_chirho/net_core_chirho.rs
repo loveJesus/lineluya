@@ -3248,6 +3248,16 @@ pub fn sys_recvfrom_chirho(
                 drop(table_recheck_chirho);
                 // Data arrived — fall through to copy-out below
             } else {
+                // Re-check CloseWait AFTER poll — the FIN might have
+                // been processed during poll_network. Without this check,
+                // CloseWait sockets return EAGAIN instead of 0 (EOF),
+                // causing PID 3 to spin in select/read forever.
+                if matches!(
+                    sock_recheck_chirho.tcb_chirho.state_chirho,
+                    TcpStateChirho::CloseWaitChirho | TcpStateChirho::ClosedChirho
+                ) {
+                    return 0; // EOF — peer closed (detected after poll)
+                }
                 crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
                 return -11; // EAGAIN — no data yet
             }

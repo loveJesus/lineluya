@@ -1517,11 +1517,61 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     }
                 }
             } else if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
+                // Log PID 3's read fd after SIGCHLD processing
+                {
+                    let rd_pid_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if rd_pid_chirho == 3 {
+                        use core::sync::atomic::{AtomicU64, Ordering};
+                        static RD3_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                        let cnt_chirho = RD3_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                        if cnt_chirho > 25 && cnt_chirho < 35 {
+                            crate::serial_println_chirho!(
+                                "[P3-RD] #{} fd={} (socket)",
+                                cnt_chirho, arg0_chirho,
+                            );
+                        }
+                    }
+                }
                 // Socket fd → recvfrom
                 crate::net_chirho::sys_recvfrom_chirho(
                     arg0_chirho, arg1_chirho, arg2_chirho, 0, 0, 0,
                 )
             } else {
+                // Trace PID 3's non-socket reads (show which fd)
+                {
+                    let rd_pid_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if rd_pid_chirho == 3 {
+                        use core::sync::atomic::{AtomicU64, Ordering};
+                        static RD3V_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                        let cnt_chirho = RD3V_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                        if cnt_chirho > 25 && cnt_chirho < 35 {
+                            crate::serial_println_chirho!(
+                                "[P3-RD] #{} fd={} (vfs)",
+                                cnt_chirho, arg0_chirho,
+                            );
+                        }
+                    }
+                }
+                {
+                    let rd_pid_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if rd_pid_chirho == 3 && arg0_chirho == 6 {
+                        use core::sync::atomic::{AtomicU64, Ordering};
+                        static RD6_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                        let cnt_chirho = RD6_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                        if cnt_chirho < 3 {
+                            let mode_chirho = crate::fs_chirho::lookup_fd_chirho(6)
+                                .map(|f| f.lock().inode_chirho.lock().mode_chirho)
+                                .unwrap_or(0);
+                            crate::serial_println_chirho!(
+                                "[RD6-VFS] PID 3 reads fd=6 via VFS! mode={:#o} (expected 0o140xxx for socket)",
+                                mode_chirho,
+                            );
+                        }
+                    }
+                }
                 crate::fs_chirho::sys_read_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
             }
         },
