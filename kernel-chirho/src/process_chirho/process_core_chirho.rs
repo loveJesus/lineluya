@@ -96,8 +96,16 @@ fn find_socket_fds_in_current_task_chirho() -> Vec<u64> {
     socket_fds_chirho
 }
 
+/// Flag set by execveat handler when AT_EMPTY_PATH (fexecve pattern).
+/// Read by sys_execve_with_filename_chirho to preserve socket fds.
+pub static IS_PROCFD_EXEC_FLAG_CHIRHO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 fn resolve_exec_source_chirho(filename_chirho: &str) -> (String, Option<Vec<u8>>) {
     if let Some(fd_chirho) = parse_proc_fd_exec_path_chirho(filename_chirho) {
+        // Set the procfd flag BEFORE resolving — sys_execve_with_filename
+        // reads this to know it should preserve socket fds.
+        IS_PROCFD_EXEC_FLAG_CHIRHO.store(true, core::sync::atomic::Ordering::Relaxed);
         // When resolving /proc/self/fd/N for fexecve (dropbear re-exec),
         // also set up stdin/stdout/stderr to the TCP socket. Dropbear
         // expects fexecve to fail so it can dup2 afterward — but since
@@ -1000,7 +1008,11 @@ pub fn sys_execve_with_filename_chirho(
 ) -> i64 {
     // Track whether this is a procfd (fexecve) exec so we can preserve
     // socket fds across exec for dropbear's `-2 N` connection passing.
-    let is_procfd_exec_chirho = filename_str_chirho.contains("/proc/self/fd/");
+    // Check BOTH the current filename AND the resolve_exec_source result
+    // (the filename might already be resolved to the actual binary path
+    // by the execveat handler before we're called).
+    let is_procfd_exec_chirho = filename_str_chirho.contains("/proc/self/fd/")
+        || IS_PROCFD_EXEC_FLAG_CHIRHO.swap(false, core::sync::atomic::Ordering::Relaxed);
 
     // -----------------------------------------------------------------------
     // Step 2: Read argv array from userspace
@@ -1527,7 +1539,15 @@ fn preserve_fd_table_across_exec_chirho_impl(preserve_sockets_chirho: bool) {
         if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
             let fd0_before_chirho = fd_table_chirho.fds_chirho.get(0).map(|s| s.is_some()).unwrap_or(false);
             let fd0_cloexec_chirho = fd_table_chirho.cloexec_chirho.get(0).copied().unwrap_or(false);
-            fd_table_chirho.close_cloexec_fds_chirho();
+            // For procfd exec (dropbear fexecve): preserve ALL fds so the
+            // connection socket on fd=8 (from `-2 8`) survives exec.
+            // Without this, fd=8 is closed (O_CLOEXEC), dropbear falls
+            // back to fd=0, computes nfds=1, and never reads pipe fds.
+            if preserve_sockets_chirho {
+                fd_table_chirho.clear_all_cloexec_flags_chirho();
+            } else {
+                fd_table_chirho.close_cloexec_fds_chirho();
+            }
             let fd0_after_chirho = fd_table_chirho.fds_chirho.get(0).map(|s| s.is_some()).unwrap_or(false);
             if ppid_chirho != 0 {
                 crate::serial_println_chirho!(

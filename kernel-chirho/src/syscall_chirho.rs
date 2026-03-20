@@ -4038,6 +4038,18 @@ fn sys_select_chirho(
                     let bit_idx_chirho = fd_chirho % 8;
                     out_fds_chirho[byte_idx_chirho] |= 1 << bit_idx_chirho;
                     count_chirho += 1;
+                    // Codex-directed diagnostic: log FIFO beyond nfds becoming ready
+                    {
+                        use core::sync::atomic::{AtomicU64, Ordering as PipeOrd};
+                        static PIPE_HIT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                        let pc_chirho = PIPE_HIT_CHIRHO.fetch_add(1, PipeOrd::Relaxed);
+                        if pc_chirho < 10 {
+                            crate::serial_println_chirho!(
+                                "[PIPE-SELECT] #{} fd={} ready beyond nfds={}",
+                                pc_chirho, fd_chirho, nfds_chirho,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -5443,6 +5455,13 @@ fn sys_execveat_real_chirho(
         flags_chirho,
         resolved_path_chirho,
     );
+
+    // Set procfd flag for the exec handler — the resolved path no longer
+    // contains "/proc/self/fd/" so the handler can't detect it from the path.
+    if (flags_chirho & 0x1000) != 0 { // AT_EMPTY_PATH = fexecve pattern
+        crate::process_chirho::IS_PROCFD_EXEC_FLAG_CHIRHO
+            .store(true, core::sync::atomic::Ordering::Relaxed);
+    }
 
     crate::process_chirho::sys_execve_with_filename_chirho(
         resolved_path_chirho,
