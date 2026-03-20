@@ -117,34 +117,45 @@ You can modify the following section
 
 ## Project: Lineluya — Linux Kernel Rewrite in Rust
 
-### Current State (v5.0 — "Thank You Jesus Christ")
-- 75,000+ lines of Rust across 85+ kernel modules
-- **7 real Alpine Linux programs run**: sqlite3, python3, dropbear, apk, BusyBox, losetup, mount
+### Current State (v6.0 — "Hallelujah SSH Works")
+- 80,000+ lines of Rust across 90+ kernel modules
+- **SSH command execution works end-to-end**: `ssh root@localhost "echo SSH_SUCCESS_HALLELUJAH"` outputs on client
+- **8 real Alpine Linux programs run**: sqlite3, python3, dropbear, apk, BusyBox, losetup, mount, sh
+- **User signal handler delivery**: SIGCHLD handler invoked via sigframe on user stack + rt_sigreturn
+- **Per-process page tables with eager mirroring**: each process has isolated address space
+- **Per-PID user stacks**: 16 MiB apart, prevents stack collisions in shared boot PML4
 - **Alpine loop.ko loads via insmod**: real .ko module from Alpine disk, not built-in
 - **Full ext4 loop mount**: insmod loop.ko → losetup → mount → read/write files
-- **TCP networking**: DHCP + 3-way handshake + SSH version/KEX exchange
+- **TCP networking**: DHCP + 3-way handshake + full SSH KEX/auth/channel/exec
 - Boots via UEFI/BIOS in QEMU with pixel framebuffer console (1280x720)
 - VirtIO-blk (read+write) + VirtIO-net I/O port drivers
 - ext4 mounted at / with symlink following + write support
 - .ko kernel module loading with 193+ symbol exports, static arena allocation
 - PIE ELF loading with GLOB_DAT/JUMP_SLOT symbol resolution
-- 80+ syscalls, typed error enums, zero-warning build
-- Per-process fd tables, real setsid/setpgid, signal delivery
+- 90+ syscalls, typed error enums, zero-warning build
+- Per-process fd tables, real setsid/setpgid, signal delivery with sigframe
+- COW fork with Arc refcount pipe EOF semantics
+- Child-aware scheduler yielding (parent yields to exec'd children)
 - PTY subsystem (master/slave, termios, ioctls)
 - Sound card PCI detection, /dev/dsp OSS stub
 - Loop device nodes (/dev/loop-control + /dev/loop0-7)
 - evdev keyboard driver (/dev/input/event0)
 - Framebuffer ioctls for X11 (VSCREENINFO, FSCREENINFO)
 
-### Verified Working in QEMU (x86_64) — v5.0
+### Verified Working in QEMU (x86_64) — v6.0
+- **SSH EXEC END-TO-END**: `ssh root@localhost -p 2222 "echo SSH_SUCCESS_HALLELUJAH"` → client receives output
+- **Full SSH pipeline**: KEX(curve25519)→auth(blank password)→channel→fork→exec→pipe→relay→client
+- **User signal delivery**: SIGCHLD handler invoked, writes to dropbear self-pipe, rt_sigreturn restores state
 - **REAL FORK**: parent+child run concurrently with preemptive scheduling
-- **Per-process page tables**: lazy migration via page fault handler, COW full-copy
-- **Static context slots**: context switch via static array (no heap pointer corruption)
+- **Per-process page tables**: eager mirroring (8440+ pages), CR3 switch on context switch
+- **Per-PID user stacks**: each process at different virtual address (16 MiB offsets)
+- **COW fork**: Arc refcount pipe close semantics, proper COW marking for per-process PT fork
+- **Static context slots**: context switch via static array, idle loop context save, FS/GS MSR restore
 - **sqlite3**: SELECT 316, 42+1 → 316|43 (dynamic musl ELF from Alpine disk)
 - **Python 3.12**: python3 -c 'print(42)' → 42 (dynamic musl ELF)
 - **Alpine loop.ko**: insmod loads 94KB module into static .bss arena, init_module succeeds
 - **ext4 loop mount**: losetup + mount -t ext4, read Matthew 7:12, write+readback aleluya
-- **Dropbear SSH**: listens port 2222, accepts TCP, KEX negotiation (curve25519+chacha20)
+- **Dropbear SSH**: listens port 2222, accepts TCP, full KEX + auth + channel + exec
 - **DHCP**: IP=10.0.2.15, GW=10.0.2.2, DNS=10.0.2.3
 - **TCP**: MSS segmentation, in-order rcv_nxt, bidirectional data
 - **Fault recovery**: GPF/#UD/page fault auto-relaunch shell
