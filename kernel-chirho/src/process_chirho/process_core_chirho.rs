@@ -1468,32 +1468,39 @@ fn resolve_interp_path_chirho(
     resolved_chirho
 }
 
-/// Debug helper: verify argv[0] on the user stack after setup.
+/// Debug helper: verify the first few argv entries on the user stack after
+/// setup.
 ///
-/// Reads argc and argv[0] from the freshly constructed stack layout and
-/// prints them to serial for debugging.
+/// Reads argc and up to argv[0..3] from the freshly constructed stack layout
+/// and prints them to serial for debugging.
 fn debug_verify_stack_chirho(user_rsp_chirho: u64) {
     unsafe {
         let argc_val_chirho = core::ptr::read(user_rsp_chirho as *const u64);
-        let argv0_ptr_chirho = core::ptr::read((user_rsp_chirho + 8) as *const u64);
-        let mut argv0_buf_chirho = [0u8; 32];
-        for i_chirho in 0..31usize {
-            let b_chirho = core::ptr::read_volatile(
-                (argv0_ptr_chirho + i_chirho as u64) as *const u8,
-            );
-            if b_chirho == 0 {
-                break;
+        crate::serial_debug_chirho!("[PROCESS] execve: VERIFY stack argc={}", argc_val_chirho);
+
+        let argv_count_to_log_chirho = core::cmp::min(argc_val_chirho as usize, 4);
+        for arg_index_chirho in 0..argv_count_to_log_chirho {
+            let argv_ptr_addr_chirho =
+                user_rsp_chirho + 8 + (arg_index_chirho as u64 * 8);
+            let argv_ptr_chirho = core::ptr::read(argv_ptr_addr_chirho as *const u64);
+            let mut argv_buf_chirho = [0u8; 96];
+            for byte_index_chirho in 0..95usize {
+                let byte_chirho = core::ptr::read_volatile(
+                    (argv_ptr_chirho + byte_index_chirho as u64) as *const u8,
+                );
+                if byte_chirho == 0 {
+                    break;
+                }
+                argv_buf_chirho[byte_index_chirho] = byte_chirho;
             }
-            argv0_buf_chirho[i_chirho] = b_chirho;
+            let argv_str_chirho = core::str::from_utf8(&argv_buf_chirho).unwrap_or("???");
+            crate::serial_debug_chirho!(
+                "[PROCESS] execve: VERIFY argv[{}]@{:#x}=\"{}\"",
+                arg_index_chirho,
+                argv_ptr_chirho,
+                argv_str_chirho.trim_end_matches('\0')
+            );
         }
-        let argv0_str_chirho =
-            core::str::from_utf8(&argv0_buf_chirho).unwrap_or("???");
-        crate::serial_debug_chirho!(
-            "[PROCESS] execve: VERIFY stack: argc={}, argv[0]@{:#x}=\"{}\"",
-            argc_val_chirho,
-            argv0_ptr_chirho,
-            argv0_str_chirho.trim_end_matches('\0')
-        );
     }
 }
 
