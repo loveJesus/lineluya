@@ -2815,9 +2815,25 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
     }
 
-    // Shell re-exec workaround: kill the parent shell and re-exec a fresh
-    // shell in the exiting task's context. Context switch back to parent
-    // still has issues (3rd generation fork child hangs in userspace).
+    // For daemon children (PID >= 3 — dropbear SSH exec, etc.):
+    // Just yield to let the parent (dropbear) read pipe output and
+    // handle the child exit via wait4. Do NOT kill the parent or
+    // re-exec a shell — that destroys the SSH pipeline.
+    let caller_pid_chirho = threads_chirho.first().map(|&(p, _)| p).unwrap_or(0);
+    if caller_pid_chirho >= 3 {
+        crate::serial_println_chirho!(
+            "[SYSCALL] exit_group: PID {} is daemon child — yielding to parent",
+            caller_pid_chirho
+        );
+        // Wake parent in case it's blocked on wait4
+        crate::process_chirho::wake_child_exit_waitqueue_chirho();
+        crate::scheduler_chirho::yield_current_chirho();
+        // Halt this task — it should never run again
+        loop { x86_64::instructions::hlt(); }
+    }
+
+    // Shell re-exec workaround for PID 1/2 (boot shell): kill the parent
+    // shell and re-exec a fresh shell in the exiting task's context.
     let parent_pid_chirho = threads_chirho.first().map(|&(_, pp)| pp).unwrap_or(0);
     crate::scheduler_chirho::remove_task_chirho(parent_pid_chirho);
     if let Some(t_chirho) = crate::task_chirho::find_task_by_pid_chirho(parent_pid_chirho) {
@@ -2831,10 +2847,6 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         task_chirho.ppid_chirho = 0;
         task_chirho.state_chirho = crate::task_chirho::TaskStateChirho::RunningChirho;
         task_chirho.exit_code_chirho = 0;
-        // CRITICAL: Clear per-process page table so the re-exec'd shell
-        // uses the boot PML4. exec_init maps BusyBox into the boot PML4,
-        // not the per-process PT. If we keep the old PT, the next fork
-        // clones stale mappings instead of getting fresh ones from boot.
         task_chirho.page_table_root_chirho = None;
     }
     // Switch back to boot PML4 before exec_init
