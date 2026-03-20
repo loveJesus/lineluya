@@ -772,20 +772,28 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
             );
         }
 
-        // Dump stack frames: vfprintf ret, vsnprintf ret, and caller
+        // Dump full stack backtrace at GPF
         if gpf_rip_chirho == 0x7f0000163040 {
-            // vfprintf ret at rsp+0x198, vsnprintf ret at rsp+0x2b8
-            let offsets_chirho: [u64; 4] = [0x198, 0x2b0, 0x2b8, 0x2c0];
+            // Key offsets: vfprintf ret=0x198, vsnprintf ret=0x2b8,
+            // dropbear log ret=0x508 (= 0x2b8 + 0x248 + 8)
+            // Dump wider range to find actual dropbear caller return address
+            let offsets_chirho: [u64; 12] = [
+                0x198, 0x2b8,
+                0x4f8, 0x500, 0x508, 0x510, 0x518, 0x520,
+                0x528, 0x530, 0x538, 0x540,
+            ];
             for off_chirho in offsets_chirho {
                 let addr_chirho = gpf_rsp_chirho + off_chirho;
                 if addr_chirho > 0x7fff00000000 && addr_chirho < 0x800000000000 {
                     let val_chirho = unsafe {
                         core::ptr::read_volatile(addr_chirho as *const u64)
                     };
-                    crate::serial_println_chirho!(
-                        "[GPF-STACK] [rsp+{:#x}]={:#x}",
-                        off_chirho, val_chirho,
-                    );
+                    if val_chirho > 0x1000 {
+                        crate::serial_println_chirho!(
+                            "[GPF-STACK] [rsp+{:#x}]={:#x}",
+                            off_chirho, val_chirho,
+                        );
+                    }
                 }
             }
         }
