@@ -1138,8 +1138,12 @@ pub fn sys_execve_with_filename_chirho(
         // pages, causing page faults during pipe relay.
         if is_procfd_exec_chirho {
             let cleared_chirho = crate::pagetable_chirho::clear_user_pages_chirho(boot_pml4_chirho);
+            // Re-map the user preemption trampoline — it was cleared along
+            // with all other user pages. Without it, preempted PIDs jump to
+            // an unmapped address and GPF.
+            crate::interrupts_chirho::init_user_preempt_trampoline_chirho();
             crate::serial_debug_chirho!(
-                "[PROCESS] execve: procfd — cleared {} stale user pages from boot PML4",
+                "[PROCESS] execve: procfd — cleared {} stale user pages + re-mapped trampoline",
                 cleared_chirho,
             );
         } else {
@@ -1543,13 +1547,9 @@ fn preserve_fd_table_across_exec_chirho_impl(preserve_sockets_chirho: bool) {
     // E.g., PID 4's exec copies its fd=0 (pipe) to global, overwriting
     // PID 3's fd=0 (socket), causing PID 3 to read from VFS instead of
     // recvfrom, preventing CloseWait EOF detection.
-    let current_pid_chirho = crate::task_chirho::current_task_chirho()
-        .map(|t| t.lock().pid_chirho).unwrap_or(0);
-    if current_pid_chirho <= 1 {
-        if let Some(global_mirror_value_chirho) = global_mirror_chirho {
-            let mut global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-            *global_guard_chirho = Some(global_mirror_value_chirho);
-        }
+    if let Some(global_mirror_value_chirho) = global_mirror_chirho {
+        let mut global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+        *global_guard_chirho = Some(global_mirror_value_chirho);
     }
 }
 

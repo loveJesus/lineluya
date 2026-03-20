@@ -3324,20 +3324,10 @@ pub fn sys_recvfrom_chirho(
         return -ENOTCONN_CHIRHO;
     }
 
-    // CloseWait/Closed: peer sent FIN → return EOF immediately.
-    // Don't try to drain recv_buf first — accumulated data from the VFS
-    // read path (which never consumed recv_buf) would keep PID 3 alive
-    // forever, preventing second SSH connections.
-    if matches!(
-        socket_chirho.tcb_chirho.state_chirho,
-        TcpStateChirho::CloseWaitChirho | TcpStateChirho::ClosedChirho
-    ) {
-        socket_chirho.recv_buf_chirho.clear();
-        return 0; // EOF
-    }
-
     if socket_chirho.recv_buf_chirho.is_empty() {
-        if false { // dead code — CloseWait handled above
+        if socket_chirho.tcb_chirho.state_chirho == TcpStateChirho::CloseWaitChirho
+            || socket_chirho.tcb_chirho.state_chirho == TcpStateChirho::ClosedChirho
+        {
             if trace_pid3_chirho {
                 crate::serial_println_chirho!(
                     "[P3-RECV] EOF: recv_buf empty + state={:?} → returning 0",

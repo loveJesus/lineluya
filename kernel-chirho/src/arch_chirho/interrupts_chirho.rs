@@ -757,6 +757,22 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
                 fs_base_chirho, expected_fs_chirho,
                 fs_base_chirho == expected_fs_chirho,
             );
+            // Dump user stack to trace the call chain
+            if gpf_rsp_chirho > 0x7fff00000000 && gpf_rsp_chirho < 0x800000000000 {
+                crate::serial_println_chirho!("[GPF-STACK] RSP={:#x} stack dump:", gpf_rsp_chirho);
+                for i_chirho in 0..8u64 {
+                    let addr_chirho = gpf_rsp_chirho + i_chirho * 8;
+                    if addr_chirho < 0x800000000000 {
+                        let val_chirho = unsafe {
+                            core::ptr::read_volatile(addr_chirho as *const u64)
+                        };
+                        crate::serial_println_chirho!(
+                            "[GPF-STACK]   [rsp+{:#x}] = {:#018x}",
+                            i_chirho * 8, val_chirho,
+                        );
+                    }
+                }
+            }
             // Dump bytes at the faulting RIP
             let bytes_chirho: [u8; 16] = unsafe {
                 let ptr_chirho = gpf_rip_chirho as *const [u8; 16];
@@ -856,7 +872,7 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         && USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire)
     {
         let current_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if current_pid_chirho >= 4 {
+        if current_pid_chirho >= 999 { // Disabled: trampoline re-entry bug corrupts state
             let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
             let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
 
