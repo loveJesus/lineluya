@@ -364,11 +364,15 @@ pub fn schedule_chirho() {
             }
         }
 
-        // 3. Pop the next RUNNABLE task from the front, skipping dead/zombie.
+        // 3. Pop the next RUNNABLE task from the front, skipping dead/zombie/PID0.
         let queue_len_chirho = scheduler_chirho.tasks_chirho.len();
         let mut next_pid_chirho = None;
         for _ in 0..queue_len_chirho {
             if let Some(candidate_chirho) = scheduler_chirho.tasks_chirho.pop_front() {
+                // Skip PID 0 (kernel boot task — has no valid user context)
+                if candidate_chirho == 0 {
+                    continue;
+                }
                 if crate::task_chirho::is_task_runnable_chirho(candidate_chirho) {
                     next_pid_chirho = Some(candidate_chirho);
                     break;
@@ -540,7 +544,10 @@ pub fn schedule_chirho() {
                             old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
                             stack_ok_chirho
                         );
-                        return; // Don't switch to corrupted context
+                        // Stay on current task. The bad task was already
+                        // popped from the queue (discarded).
+                        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+                        return;
                     }
                     crate::serial_debug_chirho!(
                         "[SCHED] switch {:?}->{}: rip={:#x} rsp={:#x}",

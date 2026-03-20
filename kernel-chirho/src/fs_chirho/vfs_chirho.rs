@@ -361,28 +361,12 @@ impl FdTableChirho {
     pub fn close_chirho(&mut self, fd_chirho: usize) -> Result<(), i64> {
         match self.fds_chirho.get_mut(fd_chirho) {
             Some(slot_chirho @ Some(_)) => {
-                // Before dropping: update pipe closed state if this is a pipe fd.
-                if let Some(file_arc_chirho) = slot_chirho.as_ref() {
-                    let file_guard_chirho = file_arc_chirho.lock();
-                    let is_fifo_chirho = (file_guard_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
-                    if is_fifo_chirho {
-                        let flags_chirho = file_guard_chirho.flags_chirho;
-                        if let Some(ref fs_data_chirho) = file_guard_chirho.inode_chirho.lock().fs_data_chirho {
-                            if let Some(pipe_arc_chirho) = fs_data_chirho
-                                .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
-                            {
-                                let mut pipe_chirho = pipe_arc_chirho.lock();
-                                if flags_chirho & O_WRONLY_CHIRHO != 0 || flags_chirho & O_RDWR_CHIRHO != 0 {
-                                    pipe_chirho.closed_write_chirho = true;
-                                }
-                                if flags_chirho == O_RDONLY_CHIRHO {
-                                    pipe_chirho.closed_read_chirho = true;
-                                }
-                            }
-                        }
-                    }
-                    drop(file_guard_chirho);
-                }
+                // NOTE: Do NOT set pipe closed_read/closed_write here.
+                // The pipe state (PipeChirho) is shared via Arc between all
+                // processes that inherited the pipe via fork. Setting EOF
+                // on close() would prematurely signal EOF to the parent
+                // when a forked child closes its inherited copy of the pipe
+                // fd during dropbear's dup2/close setup before exec.
                 *slot_chirho = None;
                 if fd_chirho < self.paths_chirho.len() {
                     self.paths_chirho[fd_chirho] = None;
