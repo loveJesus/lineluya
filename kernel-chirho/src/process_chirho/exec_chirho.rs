@@ -1281,10 +1281,11 @@ pub fn exec_init_chirho() {
     // BusyBox uses argv[0] to determine which applet to run.
     // Pass "sh" so it launches the ash shell.
     let argv_chirho = if elf_data_chirho.len() > 100_000 {
-        // BusyBox — launch interactive shell.
-        // Dropbear SSH is started via /etc/profile or manually.
+        // BusyBox — launch interactive login shell so /etc/profile runs.
+        // /etc/profile auto-starts dropbear SSH on port 2222.
         alloc::vec![
             alloc::string::String::from("/bin/sh"),
+            alloc::string::String::from("-l"),
         ]
     } else {
         alloc::vec![
@@ -1303,7 +1304,12 @@ pub fn exec_init_chirho() {
         alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
         alloc::string::String::from("PYTHONIOENCODING=utf-8"),
         alloc::string::String::from("PYTHONCOERCECLOCALE=0"),
+        alloc::string::String::from("ENV=/etc/profile"),
     ];
+    crate::serial_println_chirho!(
+        "[EXEC] ARGV_COUNT={} ENVP_COUNT={} argv={:?}",
+        argv_chirho.len(), envp_chirho.len(), argv_chirho,
+    );
     let user_rsp_chirho = setup_user_stack_with_args_chirho(
         &loaded_chirho,
         &argv_chirho,

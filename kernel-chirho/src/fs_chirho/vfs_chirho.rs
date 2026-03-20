@@ -459,6 +459,15 @@ impl FdTableChirho {
         }
     }
 
+    /// Preserve a specific fd across exec by clearing its O_CLOEXEC flag.
+    /// Used for dropbear's re-exec where the connection fd (from `-2 N`)
+    /// must survive exec.
+    pub fn preserve_fd_chirho(&mut self, fd_chirho: usize) {
+        if fd_chirho < self.cloexec_chirho.len() {
+            self.cloexec_chirho[fd_chirho] = false;
+        }
+    }
+
     /// Return the lowest available descriptor slot.
     pub fn next_free_fd_chirho(&self) -> usize {
         self.fds_chirho

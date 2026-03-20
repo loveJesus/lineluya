@@ -605,21 +605,7 @@ pub fn schedule_chirho() {
                                 Msr::new(0xC000_0100).write(new_fs_chirho);
                                 Msr::new(0xC000_0102).write(tg_chirho.gs_base_chirho);
                             }
-                            // One-shot: verify FS was actually written for PID 2
-                            if next_chirho == 2 {
-                                let actual_fs_chirho = unsafe { Msr::new(0xC000_0100).read() };
-                                if actual_fs_chirho != new_fs_chirho {
-                                    crate::serial_println_chirho!(
-                                        "[FS-WRITE] PID 2: wrote {:#x} but read back {:#x}!",
-                                        new_fs_chirho, actual_fs_chirho,
-                                    );
-                                } else {
-                                    crate::serial_println_chirho!(
-                                        "[FS-WRITE] PID 2: FS={:#x} OK",
-                                        new_fs_chirho,
-                                    );
-                                }
-                            }
+                            // FS-WRITE trace removed (was flooding log on every PID 2 context switch)
                         }
                     }
                     switch_context_return_wrapper_chirho(

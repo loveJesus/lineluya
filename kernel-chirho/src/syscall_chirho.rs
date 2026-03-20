@@ -1476,6 +1476,31 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         crate::serial_debug_chirho!("[POST-ACCEPT] nr={}({})", syscall_nr_chirho, name_chirho);
     }
 
+    // Trace PID 3's read/select for pipe relay + session teardown debug
+    {
+        let trace_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if trace_pid_chirho == 3 && (syscall_nr_chirho == SYS_READ_CHIRHO || syscall_nr_chirho == 23) {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static P3FD_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let cnt_chirho = P3FD_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if cnt_chirho < 100 {
+                if syscall_nr_chirho == 23 {
+                    // select: log nfds + readfds_ptr + timeout
+                    crate::serial_println_chirho!(
+                        "[P3-IO] #{} select nfds={} rfds={:#x} wfds={:#x} tmo={:#x}",
+                        cnt_chirho, arg0_chirho, arg1_chirho, arg2_chirho, arg4_chirho,
+                    );
+                } else {
+                    crate::serial_println_chirho!(
+                        "[P3-IO] #{} read(fd={})",
+                        cnt_chirho, arg0_chirho,
+                    );
+                }
+            }
+        }
+    }
+
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => {
             if arg0_chirho == 0 {
@@ -1488,6 +1513,47 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 // but VFS read returns EOF since the serial console file
                 // has no data buffered.  Check if fd=0 has a real VFS
                 // entry with pipe/PTY ops before falling through.
+                // Check if fd=0 is a socket (dropbear dup2's the TCP
+                // connection to fd=0). Socket reads must go through
+                // recvfrom to detect CloseWait EOF, not VFS read.
+                let fd0_is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(0);
+                {
+                    let rp_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if rp_chirho == 3 {
+                        use core::sync::atomic::{AtomicU64, Ordering};
+                        static FD0S_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                        let cnt_chirho = FD0S_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                        if cnt_chirho < 5 || (cnt_chirho > 30 && cnt_chirho < 35) {
+                            let sock_idx_chirho = crate::net_chirho::socket_idx_from_fd_pub_chirho(0)
+                                .unwrap_or(9999);
+                            crate::serial_println_chirho!(
+                                "[P3-FD0] #{} is_socket={} sock_idx={}",
+                                cnt_chirho, fd0_is_sock_chirho, sock_idx_chirho,
+                            );
+                        }
+                    }
+                }
+                if fd0_is_sock_chirho {
+                    let recv_result_chirho = crate::net_chirho::sys_recvfrom_chirho(0, arg1_chirho, arg2_chirho, 0, 0, 0);
+                    // Trace PID 3's fd=0 socket read result for session teardown debug
+                    {
+                        let rp_chirho = crate::task_chirho::current_task_chirho()
+                            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                        if rp_chirho == 3 && recv_result_chirho <= 0 {
+                            use core::sync::atomic::{AtomicU64, Ordering};
+                            static RF0_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                            let cnt_chirho = RF0_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                            if cnt_chirho < 20 {
+                                crate::serial_println_chirho!(
+                                    "[P3-RD0] #{} read(fd=0) socket → {}",
+                                    cnt_chirho, recv_result_chirho,
+                                );
+                            }
+                        }
+                    }
+                    recv_result_chirho
+                } else {
                 let has_vfs_stdin_chirho = crate::task_chirho::current_task_chirho()
                     .and_then(|t| {
                         let task_chirho = t.lock();
@@ -1516,6 +1582,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                         }
                     }
                 }
+                } // close else (non-socket fd=0)
             } else if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
                 // Log PID 3's read fd after SIGCHLD processing
                 {
@@ -3868,6 +3935,11 @@ fn sys_select_chirho(
     }
 
     let fd_is_read_ready_chirho = |fd_chirho: usize| -> bool {
+        // Check socket FIRST, even for fd=0. PID 3 (dropbear session)
+        // has the TCP connection on fd=0 via dup2. Without this check,
+        // fd=0 falls into the serial port path and never detects CloseWait
+        // EOF, causing PID 3 to block in select forever after the SSH
+        // client disconnects.
         if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
             crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
         } else if fd_chirho == 0 {
@@ -3879,6 +3951,7 @@ fn sys_select_chirho(
                 };
                 lsr_chirho & 1 != 0
                     || crate::net_chirho::has_tcp_data_for_port_chirho(2222)
+                    || crate::net_chirho::has_closewait_tcp_chirho(2222)
             }
         } else if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
             let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
@@ -3912,14 +3985,28 @@ fn sys_select_chirho(
                 count_chirho += 1;
             }
         }
+        // Also check pipe fds beyond nfds (same as write_ready_fds)
+        let actual_nfds_chirho = nfds_chirho as usize;
+        for fd_chirho in actual_nfds_chirho..16 {
+            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
+                let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
+                let is_fifo_chirho = (mode_chirho & 0o170000) == 0o10000;
+                if is_fifo_chirho && fd_is_read_ready_chirho(fd_chirho) {
+                    count_chirho += 1;
+                }
+            }
+        }
         count_chirho
     };
 
     // Helper: scan fds_buf for ready sockets, build output fd_set, return count.
+    // Also scans pipe fds BEYOND nfds to work around dropbear's nfds=1 bug
+    // where it monitors only the connection fd but not the child's pipe fds.
     let write_ready_fds_chirho = |fds_buf_chirho: &[u8; 128], set_size_chirho: usize,
                                    nfds_chirho: i32, readfds_ptr_chirho: u64| -> i64 {
         let mut out_fds_chirho = [0u8; 128];
         let mut count_chirho: i64 = 0;
+        // Scan user-requested fds (0..nfds)
         for fd_chirho in 0..nfds_chirho as usize {
             let byte_idx_chirho = fd_chirho / 8;
             let bit_idx_chirho = fd_chirho % 8;
@@ -3932,10 +4019,33 @@ fn sys_select_chirho(
                 }
             }
         }
+        // Scan pipe fds beyond nfds: if any open pipe read end has data,
+        // add it to the result set. This works because fd_set is always
+        // 128 bytes (FD_SETSIZE=1024) on the userspace stack.
+        // Without this, dropbear's session handler (nfds=1) never sees
+        // child stdout data on pipe fds 7/9.
+        let actual_nfds_chirho = nfds_chirho as usize;
+        for fd_chirho in actual_nfds_chirho..16 {
+            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
+                let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
+                let is_fifo_chirho = (mode_chirho & 0o170000) == 0o10000;
+                if is_fifo_chirho && fd_is_read_ready_chirho(fd_chirho) {
+                    let byte_idx_chirho = fd_chirho / 8;
+                    let bit_idx_chirho = fd_chirho % 8;
+                    out_fds_chirho[byte_idx_chirho] |= 1 << bit_idx_chirho;
+                    count_chirho += 1;
+                }
+            }
+        }
+        let out_size_chirho = if count_chirho > 0 {
+            // Write enough bytes to cover all set bits (at least set_size, up to 2)
+            core::cmp::max(set_size_chirho, 2)
+        } else {
+            set_size_chirho
+        };
         if count_chirho > 0 && readfds_ptr_chirho != 0 {
-            // Write the modified fd_set back to userspace.
             if crate::uaccess_chirho::copy_to_user_chirho(
-                readfds_ptr_chirho, &out_fds_chirho[..set_size_chirho], set_size_chirho,
+                readfds_ptr_chirho, &out_fds_chirho[..out_size_chirho], out_size_chirho,
             ).is_err() {
                 return -EFAULT_CHIRHO;
             }
@@ -4007,14 +4117,44 @@ fn sys_select_chirho(
             );
         }
 
-        // Finite-timeout select still uses the bounded legacy wait loop until
-        // timeout-aware wait queues exist.
         for _attempt_chirho in 0..50_000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
             if crate::signal_chirho::current_has_deliverable_signal_chirho() {
                 return -EINTR_CHIRHO;
+            }
+
+            // Force-exit daemon session handlers when their TCP connection
+            // is in CloseWait (client disconnected). This unblocks PID 2
+            // to accept new SSH connections.
+            {
+                let sel_pid_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                if sel_pid_chirho >= 3
+                    && crate::net_chirho::has_closewait_tcp_chirho(2222)
+                {
+                    crate::serial_println_chirho!(
+                        "[SELECT] PID {} session over (CloseWait) → send FIN + zombie",
+                        sel_pid_chirho,
+                    );
+                    // Send TCP FIN to properly close the connection.
+                    // Without this, SLiRP keeps the old connection half-open
+                    // and refuses new SYNs on port 2222.
+                    crate::net_chirho::send_fin_for_closewait_chirho(2222);
+                    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                        let ppid_chirho = task_arc_chirho.lock().ppid_chirho;
+                        {
+                            let mut tg_chirho = task_arc_chirho.lock();
+                            tg_chirho.state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
+                            tg_chirho.exit_code_chirho = 0;
+                        }
+                        crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, sel_pid_chirho);
+                        crate::scheduler_chirho::remove_task_chirho(sel_pid_chirho);
+                        crate::scheduler_chirho::schedule_chirho();
+                    }
+                    return 0;
+                }
             }
 
             let count_chirho = write_ready_fds_chirho(

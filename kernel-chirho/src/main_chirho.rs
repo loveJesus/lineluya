@@ -433,12 +433,15 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     // Create /etc/profile on tmpfs to auto-start dropbear SSH server.
     // Uses the tmpfs write API directly since ext4 disk may not have this file.
     {
-        let profile_content_chirho = "# Lineluya shell profile\nexport PS1='lineluya# '\n";
+        // Write dropbear auto-start to /root/.profile (tmpfs).
+        // /etc/profile resolves to ext4 which we can't easily write;
+        // /root/.profile is on tmpfs and ash reads it for login shells.
+        let profile_content_chirho = "# Lineluya shell profile\nexport PS1='lineluya# '\n/usr/sbin/dropbear -R -F -E -p 2222\n";
         tmpfs_chirho::write_tmpfs_file_chirho(
-            "/etc/profile",
+            "/root/.profile",
             profile_content_chirho.as_bytes(),
         );
-        serial_println_chirho!("[INIT] Created /etc/profile");
+        serial_println_chirho!("[INIT] Created /root/.profile with dropbear auto-start");
     }
 
     // Load and execute the hello world binary

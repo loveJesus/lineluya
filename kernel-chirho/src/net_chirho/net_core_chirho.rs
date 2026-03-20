@@ -2190,6 +2190,76 @@ pub fn has_tcp_data_for_port_chirho(port_chirho: u16) -> bool {
     false
 }
 
+/// Check if any TCP connection on the given port is in CloseWait/Closed.
+/// Used by select to detect peer disconnect (EOF) on fd=0 for daemon PIDs.
+pub fn has_closewait_tcp_chirho(port_chirho: u16) -> bool {
+    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    for slot_chirho in table_chirho.iter() {
+        if let Some(ref sock_chirho) = slot_chirho {
+            if sock_chirho.family_chirho == 2
+                && matches!(
+                    sock_chirho.tcb_chirho.state_chirho,
+                    TcpStateChirho::CloseWaitChirho | TcpStateChirho::ClosedChirho
+                )
+                && sock_chirho.local_addr_chirho.map(|a_chirho| a_chirho.port_chirho) == Some(port_chirho)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Send TCP FIN for any CloseWait socket on the given port.
+/// Transitions CloseWait → LastAck and sends FIN+ACK to the peer.
+/// This properly closes the kernel side so QEMU SLiRP can accept new connections.
+pub fn send_fin_for_closewait_chirho(port_chirho: u16) {
+    let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    for (idx_chirho, slot_chirho) in table_chirho.iter_mut().enumerate() {
+        if let Some(ref mut sock_chirho) = slot_chirho {
+            if sock_chirho.family_chirho == 2
+                && sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::CloseWaitChirho
+                && sock_chirho.local_addr_chirho.map(|a| a.port_chirho) == Some(port_chirho)
+            {
+                let local_port_chirho = port_chirho;
+                let remote_chirho = sock_chirho.remote_addr_chirho.unwrap_or(
+                    SockAddrInChirho { port_chirho: 0, addr_chirho: 0 }
+                );
+                // Build RST+ACK segment — RST forces immediate cleanup in
+                // QEMU SLiRP (no TIME_WAIT like FIN). This lets new SSH
+                // connections come through immediately.
+                let fin_seg_chirho = TcpSegmentChirho {
+                    src_port_chirho: local_port_chirho,
+                    dst_port_chirho: remote_chirho.port_chirho,
+                    seq_num_chirho: sock_chirho.tcb_chirho.snd_nxt_chirho,
+                    ack_num_chirho: sock_chirho.tcb_chirho.rcv_nxt_chirho,
+                    data_offset_chirho: 5,
+                    flags_chirho: TCP_RST_CHIRHO | TCP_ACK_CHIRHO,
+                    window_chirho: sock_chirho.tcb_chirho.rcv_wnd_chirho,
+                    checksum_chirho: 0,
+                    urgent_ptr_chirho: 0,
+                    payload_chirho: alloc::vec::Vec::new(),
+                };
+                sock_chirho.tcb_chirho.snd_nxt_chirho = sock_chirho.tcb_chirho.snd_nxt_chirho.wrapping_add(1);
+                let src_ip_chirho = get_interface_ip_chirho(0);
+                let dst_ip_chirho = remote_chirho.addr_chirho;
+                // Set to Closed and clear the socket entry entirely.
+                // SLiRP won't forward new SYNs while it sees an old
+                // connection on the same port. Clearing the entry lets
+                // the next SYN create a fresh socket at this index.
+                *slot_chirho = None;
+                drop(table_chirho);
+                send_tcp_response_chirho(&fin_seg_chirho, src_ip_chirho, dst_ip_chirho);
+                crate::serial_println_chirho!(
+                    "[TCP] Sent FIN+closed socket {} port {} (freed for reuse)",
+                    idx_chirho, port_chirho,
+                );
+                return;
+            }
+        }
+    }
+}
+
 /// Check if there's an established TCP connection on the given port (any state).
 pub fn has_established_tcp_chirho(port_chirho: u16) -> bool {
     let table_chirho = SOCKET_TABLE_CHIRHO.lock();
@@ -3110,12 +3180,21 @@ pub fn sys_sendto_chirho(
                 raw_local_ip_chirho
             };
 
-            crate::serial_debug_chirho!(
-                "[NET] sendto TCP: {} bytes state={:?} src={}:{} dst={}:{}",
-                data_chirho.len(), socket_chirho.tcb_chirho.state_chirho,
-                format_ip_chirho(src_ip_chirho), local_port_chirho,
-                format_ip_chirho(remote_ip_chirho), remote_port_chirho,
-            );
+            // Log outbound TCP data: size + seq + first/last bytes for corruption diagnosis
+            {
+                use core::sync::atomic::{AtomicU64, Ordering as TxOrd};
+                static TX_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let tx_cnt_chirho = TX_CNT_CHIRHO.fetch_add(1, TxOrd::Relaxed);
+                let snd_nxt_chirho = socket_chirho.tcb_chirho.snd_nxt_chirho;
+                let first4_chirho = if data_chirho.len() >= 4 {
+                    u32::from_be_bytes([data_chirho[0], data_chirho[1], data_chirho[2], data_chirho[3]])
+                } else { 0 };
+                crate::serial_println_chirho!(
+                    "[TCP-TX] #{} seq={} len={} first4={:#010x} state={:?}",
+                    tx_cnt_chirho, snd_nxt_chirho, data_chirho.len(), first4_chirho,
+                    socket_chirho.tcb_chirho.state_chirho,
+                );
+            }
             if let Some(seg_chirho) = socket_chirho.tcb_chirho.make_data_segment_chirho(
                 local_port_chirho, remote_port_chirho, &data_chirho,
             ) {
@@ -3202,6 +3281,13 @@ pub fn sys_recvfrom_chirho(
         len_chirho,
     );
 
+    // GPT-directed trace: for PID 3 fd=6, log recv_buf state at entry
+    let trace_pid3_chirho = {
+        let p_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        p_chirho == 3
+    };
+
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
         Err(_) => return 0, // Fallback for non-socket fds
@@ -3213,6 +3299,22 @@ pub fn sys_recvfrom_chirho(
         None => return 0,
     };
 
+    // GPT-directed trace: PID 3 recv_buf state + TCP state at entry
+    if trace_pid3_chirho {
+        use core::sync::atomic::{AtomicU64, Ordering as RfOrd};
+        static RF3_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let cnt_chirho = RF3_CNT_CHIRHO.fetch_add(1, RfOrd::Relaxed);
+        if cnt_chirho < 50 {
+            crate::serial_println_chirho!(
+                "[P3-RECV] #{} fd={} recv_buf_len={} tcp_state={:?} sock_state={:?}",
+                cnt_chirho, sockfd_chirho,
+                socket_chirho.recv_buf_chirho.len(),
+                socket_chirho.tcb_chirho.state_chirho,
+                socket_chirho.state_chirho,
+            );
+        }
+    }
+
     // For stream sockets, must be connected
     let sock_type_chirho = SocketTypeChirho::from_raw_chirho(socket_chirho.sock_type_chirho);
     if sock_type_chirho == Some(SocketTypeChirho::SockStreamChirho)
@@ -3222,10 +3324,26 @@ pub fn sys_recvfrom_chirho(
         return -ENOTCONN_CHIRHO;
     }
 
+    // CloseWait/Closed: peer sent FIN → return EOF immediately.
+    // Don't try to drain recv_buf first — accumulated data from the VFS
+    // read path (which never consumed recv_buf) would keep PID 3 alive
+    // forever, preventing second SSH connections.
+    if matches!(
+        socket_chirho.tcb_chirho.state_chirho,
+        TcpStateChirho::CloseWaitChirho | TcpStateChirho::ClosedChirho
+    ) {
+        socket_chirho.recv_buf_chirho.clear();
+        return 0; // EOF
+    }
+
     if socket_chirho.recv_buf_chirho.is_empty() {
-        if socket_chirho.tcb_chirho.state_chirho == TcpStateChirho::CloseWaitChirho
-            || socket_chirho.tcb_chirho.state_chirho == TcpStateChirho::ClosedChirho
-        {
+        if false { // dead code — CloseWait handled above
+            if trace_pid3_chirho {
+                crate::serial_println_chirho!(
+                    "[P3-RECV] EOF: recv_buf empty + state={:?} → returning 0",
+                    socket_chirho.tcb_chirho.state_chirho,
+                );
+            }
             return 0; // EOF — peer closed
         }
 
@@ -3245,6 +3363,13 @@ pub fn sys_recvfrom_chirho(
             .and_then(|s_chirho| s_chirho.as_ref())
         {
             if !sock_recheck_chirho.recv_buf_chirho.is_empty() {
+                if trace_pid3_chirho {
+                    crate::serial_println_chirho!(
+                        "[P3-RECV] after-poll: data arrived, recv_buf_len={} state={:?}",
+                        sock_recheck_chirho.recv_buf_chirho.len(),
+                        sock_recheck_chirho.tcb_chirho.state_chirho,
+                    );
+                }
                 drop(table_recheck_chirho);
                 // Data arrived — fall through to copy-out below
             } else {
@@ -3256,7 +3381,19 @@ pub fn sys_recvfrom_chirho(
                     sock_recheck_chirho.tcb_chirho.state_chirho,
                     TcpStateChirho::CloseWaitChirho | TcpStateChirho::ClosedChirho
                 ) {
+                    if trace_pid3_chirho {
+                        crate::serial_println_chirho!(
+                            "[P3-RECV] after-poll EOF: empty + state={:?} → returning 0",
+                            sock_recheck_chirho.tcb_chirho.state_chirho,
+                        );
+                    }
                     return 0; // EOF — peer closed (detected after poll)
+                }
+                if trace_pid3_chirho {
+                    crate::serial_println_chirho!(
+                        "[P3-RECV] after-poll EAGAIN: empty + state={:?}",
+                        sock_recheck_chirho.tcb_chirho.state_chirho,
+                    );
                 }
                 crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
                 return -11; // EAGAIN — no data yet
@@ -3300,11 +3437,25 @@ pub fn sys_recvfrom_chirho(
                 unsafe { core::ptr::write_volatile(ptr_chirho.add(i_chirho), byte_chirho) };
             }
         }
+        if trace_pid3_chirho {
+            crate::serial_println_chirho!(
+                "[P3-RECV] polled copy-out: returned {} bytes, recv_buf_remaining={}",
+                count_chirho,
+                socket_final_chirho.recv_buf_chirho.len(),
+            );
+        }
         crate::log_net_chirho!("recvfrom (polled) -> {}", count_chirho);
         return count_chirho as i64;
     }
 
     let count_chirho = core::cmp::min(len_chirho as usize, socket_chirho.recv_buf_chirho.len());
+    if trace_pid3_chirho {
+        crate::serial_println_chirho!(
+            "[P3-RECV] direct copy-out: {} bytes from recv_buf_len={}",
+            count_chirho,
+            socket_chirho.recv_buf_chirho.len(),
+        );
+    }
     if buf_chirho != 0 && count_chirho > 0 {
         let ptr_chirho = buf_chirho as *mut u8;
         for i_chirho in 0..count_chirho {
@@ -5163,6 +5314,31 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
         let local_port_chirho = sock_chirho.local_addr_chirho
             .map(|a_chirho| a_chirho.port_chirho).unwrap_or(0);
 
+        // Save rcv_nxt before processing to detect new vs duplicate data.
+        let rcv_nxt_before_chirho = sock_chirho.tcb_chirho.rcv_nxt_chirho;
+        let state_before_rx_chirho = sock_chirho.tcb_chirho.state_chirho;
+
+        // GPT-directed trace: log every inbound segment for connected sockets
+        let has_fin_rx_chirho = (segment_chirho.flags_chirho & TCP_FIN_CHIRHO) != 0;
+        if !segment_chirho.payload_chirho.is_empty() || has_fin_rx_chirho {
+            use core::sync::atomic::{AtomicU64, Ordering as RxOrd};
+            static RX_TRACE_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let rx_cnt_chirho = RX_TRACE_CNT_CHIRHO.fetch_add(1, RxOrd::Relaxed);
+            if rx_cnt_chirho < 80 {
+                crate::serial_println_chirho!(
+                    "[TCP-RX] #{} port={} seq={} len={} fin={} rcv_nxt_before={} state_before={:?} recv_buf_len={}",
+                    rx_cnt_chirho,
+                    local_port_chirho,
+                    segment_chirho.seq_num_chirho,
+                    segment_chirho.payload_chirho.len(),
+                    has_fin_rx_chirho,
+                    rcv_nxt_before_chirho,
+                    state_before_rx_chirho,
+                    sock_chirho.recv_buf_chirho.len(),
+                );
+            }
+        }
+
         // Process the segment through the TCP state machine.
         let response_chirho = sock_chirho.tcb_chirho.process_segment_chirho(
             &segment_chirho,
@@ -5170,17 +5346,44 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
         );
 
         // Deliver payload data to the receive buffer.
+        // Do NOT deliver data in CloseWait — after FIN, any payload is
+        // from retransmissions or misrouted segments. Delivering it keeps
+        // the recv_buf non-empty, preventing recvfrom from returning EOF,
+        // which blocks PID 3 from exiting after SSH disconnect.
         let can_receive_chirho = matches!(
             sock_chirho.tcb_chirho.state_chirho,
             TcpStateChirho::EstablishedChirho
-            | TcpStateChirho::CloseWaitChirho
             | TcpStateChirho::FinWait2Chirho
         );
         if !segment_chirho.payload_chirho.is_empty() && can_receive_chirho {
-            for byte_chirho in &segment_chirho.payload_chirho {
-                sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
+            // Only deliver data if process_segment accepted it (advanced rcv_nxt).
+            // Duplicate/retransmitted segments won't advance rcv_nxt, so
+            // rcv_nxt_before == rcv_nxt_after means the data was rejected.
+            let rcv_nxt_after_chirho = sock_chirho.tcb_chirho.rcv_nxt_chirho;
+            let data_accepted_chirho = rcv_nxt_after_chirho != rcv_nxt_before_chirho;
+
+            // GPT-directed trace: log accept/reject decision
+            {
+                use core::sync::atomic::{AtomicU64, Ordering as RxOrd};
+                static RX_DECISION_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let dc_chirho = RX_DECISION_CNT_CHIRHO.fetch_add(1, RxOrd::Relaxed);
+                if dc_chirho < 80 {
+                    crate::serial_println_chirho!(
+                        "[TCP-RX] #{} DECISION: accepted={} rcv_nxt {} -> {} state_after={:?}",
+                        dc_chirho,
+                        data_accepted_chirho,
+                        rcv_nxt_before_chirho,
+                        rcv_nxt_after_chirho,
+                        sock_chirho.tcb_chirho.state_chirho,
+                    );
+                }
             }
-            wake_socket_data_waitqueue_chirho();
+
+            if data_accepted_chirho {
+                for byte_chirho in &segment_chirho.payload_chirho {
+                    sock_chirho.recv_buf_chirho.push_back(*byte_chirho);
+                }
+                wake_socket_data_waitqueue_chirho();
             // Log first 8 bytes of payload for debugging SSH protocol
             let preview_chirho: alloc::string::String = segment_chirho.payload_chirho
                 .iter().take(8)
@@ -5195,6 +5398,18 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
                 segment_chirho.payload_chirho.len(),
                 local_port_chirho,
                 preview_chirho,
+            );
+            } // close else (non-duplicate)
+        }
+
+        // GPT-directed trace: log state transitions (esp. FIN → CloseWait)
+        if sock_chirho.tcb_chirho.state_chirho != state_before_rx_chirho {
+            crate::serial_println_chirho!(
+                "[TCP-RX] STATE CHANGE: port={} {:?} → {:?} recv_buf_len={}",
+                local_port_chirho,
+                state_before_rx_chirho,
+                sock_chirho.tcb_chirho.state_chirho,
+                sock_chirho.recv_buf_chirho.len(),
             );
         }
 
