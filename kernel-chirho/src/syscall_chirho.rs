@@ -3807,6 +3807,23 @@ fn sys_select_chirho(
         return -EINVAL_CHIRHO;
     }
 
+    // Diagnostic: log PID 3's select nfds to understand pipe relay issue
+    {
+        let sel_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if sel_pid_chirho == 3 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static SEL3_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let cnt_chirho = SEL3_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if cnt_chirho < 5 || (cnt_chirho > 20 && cnt_chirho < 25) {
+                crate::serial_println_chirho!(
+                    "[SELECT-P3] #{} nfds={} readfds_ptr={:#x}",
+                    cnt_chirho, nfds_chirho, readfds_ptr_chirho,
+                );
+            }
+        }
+    }
+
     // Handle writefds: connected TCP sockets are always writable.
     // Dropbear needs this to flush SSH packets after encrypting.
     let mut write_ready_total_chirho: i64 = 0;
