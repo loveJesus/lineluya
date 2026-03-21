@@ -4089,7 +4089,12 @@ fn sys_select_chirho(
                 }
             }
         }
-        // (PID-specific pipe scan diagnostic removed — was debug scaffolding)
+        // NOTE: pipe fds beyond nfds are NOT auto-included in readfds.
+        // Writing bits beyond nfds would overflow the user's readfds buffer
+        // (which is only (nfds+7)/8 bytes), causing stack/heap corruption
+        // (the "ssh-ed25" crash from earlier). The pipe relay must happen
+        // through dropbear's channel readfd monitoring (ses.maxfd), not
+        // through kernel-side select extension.
         // DELETED: pipe scan beyond nfds.
         // Was a workload-specific workaround that injected spurious "ready"
         // fds into select's result set. Violated PRD rule: "No new workload-
