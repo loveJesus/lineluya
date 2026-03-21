@@ -72,27 +72,31 @@ What is already real:
 - real fork/exec/COW/signals/VFS/TCP/PTY paths are under Alpine workload pressure
 - second SSH blockage was traced to SLiRP, not the kernel
 
+Current kernel truth (updated 2026-03-21):
+
+- SSH echo WORKS end-to-end: `ssh root@localhost -p 2222 “echo HALLELUJAH_CHIRHO”` prints on client
+- authoritative exec with fresh per-process PT is the only exec model (no boot PML4 sharing)
+- pipe reader/writer refcount properly tracks fork clones
+- per-process fd tables are authoritative for PID >= 2 (no global table mirroring)
+- boot PML4 lazy migration disabled for PID >= 2
+- CR0.WP verified (kernel COW enforced)
+- SLiRP second-connection issue still blocks consecutive SSH commands (not a kernel bug)
+
 Current kernel blocker:
 
-- embedded static BusyBox applets like `uname`, `id`, and `date` crash
-- shell builtins like `echo` work
-- the exec cleanup path still uses a fragile hybrid `restore_cow` versus `clear_user_pages` approach
-
-Interpretation:
-
-- the next bug is not “make SSH look better”
-- it is “make the embedded static binary exec path authoritative”
+- PID 4 (dynamic BusyBox) takes many ticks to initialize via musl dynamic linker
+- consecutive SSH connections fail (SLiRP hostfwd limitation, not kernel)
+- PID 2 still gets GPFs on second connection cycle
 
 ## Immediate Iteration
 
 ### Goal
 
-Fix embedded BusyBox applet execution and replace the fragile hybrid exec cleanup path with one authoritative model.
+Get more demo1 items working: `uname -a`, `ls /`, `cat /proc/meminfo`, etc. Fix PID 2's cleanup after first SSH session so a second connection can succeed.
 
 ### Definition Of Done
 
-- embedded static BusyBox applets such as `uname`, `id`, and `date` execute successfully
-- exec cleanup no longer depends on a hybrid `restore_cow` versus `clear_user_pages` path
+- multiple SSH commands work without QEMU restart
 - no new demo glue is added
 
 ## Work Loop
