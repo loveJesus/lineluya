@@ -3815,7 +3815,7 @@ fn sys_select_chirho(
             use core::sync::atomic::{AtomicU64, Ordering};
             static SEL3_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
             let cnt_chirho = SEL3_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho < 5 || (cnt_chirho > 20 && cnt_chirho < 30) || (cnt_chirho > 40 && cnt_chirho < 50) {
+            if cnt_chirho < 5 || (cnt_chirho > 20 && cnt_chirho < 30) || (cnt_chirho > 40 && cnt_chirho < 65) {
                 crate::serial_println_chirho!(
                     "[SELECT-P3] #{} nfds={} readfds_ptr={:#x}",
                     cnt_chirho, nfds_chirho, readfds_ptr_chirho,
