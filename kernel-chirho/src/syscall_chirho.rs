@@ -2983,9 +2983,25 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         caller_tgid_chirho
     );
 
-    // Terminate each thread: set ZombieChirho + exit code, remove from
-    // scheduler, deliver SIGCHLD to parent.
+    // Terminate each thread: close fds, set ZombieChirho + exit code,
+    // remove from scheduler, deliver SIGCHLD to parent.
     for &(pid_chirho, ppid_chirho) in &threads_chirho {
+        // Close all file descriptors before zombying. This properly
+        // decrements pipe reader/writer counts and sets closed_write,
+        // ensuring the parent can detect EOF on the pipe read end.
+        // Without this, PID 4's pipe write-end Arc stays alive (in
+        // the zombie's fd table), closed_write stays false, and the
+        // pipe data is never relayed to the SSH client.
+        if let Some(t_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) {
+            let mut t_chirho = t_arc_chirho.lock();
+            if let Some(ref mut fd_table_chirho) = t_chirho.fd_table_chirho {
+                for fd_idx_chirho in 0..fd_table_chirho.fds_chirho.len() {
+                    if fd_table_chirho.fds_chirho[fd_idx_chirho].is_some() {
+                        let _ = fd_table_chirho.close_chirho(fd_idx_chirho);
+                    }
+                }
+            }
+        }
         // Mark zombie with exit code.
         if let Some(t_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) {
             let mut t_chirho = t_arc_chirho.lock();
@@ -4045,14 +4061,14 @@ fn sys_select_chirho(
                 if fd_is_read_ready_chirho(fd_chirho) {
                     out_fds_chirho[byte_idx_chirho] |= 1 << bit_idx_chirho;
                     count_chirho += 1;
-                    // Diagnostic: log which fd select reports ready for PID 2
+                    // Diagnostic: log which fd select reports ready
                     {
                         let sel_pid_chirho = crate::task_chirho::current_task_chirho()
                             .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                        if sel_pid_chirho == 2 {
+                        if sel_pid_chirho == 2 || (sel_pid_chirho == 3 && fd_chirho >= 5) {
                             crate::serial_println_chirho!(
-                                "[SELECT-READY] pid=2 fd={} is ready (nfds={})",
-                                fd_chirho, nfds_chirho,
+                                "[SELECT-READY] pid={} fd={} is ready (nfds={})",
+                                sel_pid_chirho, fd_chirho, nfds_chirho,
                             );
                         }
                     }
