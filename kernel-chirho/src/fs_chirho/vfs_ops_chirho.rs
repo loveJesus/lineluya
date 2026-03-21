@@ -731,6 +731,15 @@ fn resolve_path_depth_chirho(
                 Ok(child_inode_chirho) => {
                     // Symlink following: if the inode is a symlink, read
                     // the target and recursively resolve it.
+                    // Trace: log when a symlink IS or ISN'T detected
+                    if component_chirho.contains("readline") || component_chirho.contains("ncurses") {
+                        crate::serial_println_chirho!(
+                            "[VFS-SYMLINK-CHECK] component='{}' mode={:#o} is_symlink={}",
+                            component_chirho,
+                            child_inode_chirho.mode_chirho,
+                            is_symlink_chirho(child_inode_chirho.mode_chirho),
+                        );
+                    }
                     if is_symlink_chirho(child_inode_chirho.mode_chirho) {
                         // S_IFLNK
                         if let Ok(target_chirho) = child_inode_chirho.ops_chirho.readlink_chirho(&child_inode_chirho) {
