@@ -1499,18 +1499,25 @@ pub fn alloc_and_insert_fd_chirho(
         }
     }
     if let Some(fd_chirho) = task_result_chirho {
-        // Mirror into global table for backward compat (task lock already released).
-        let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        if let Some(ref mut global_table_chirho) = *global_guard_chirho {
-            if fd_chirho < global_table_chirho.fds_chirho.len() {
-                global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
-            }
-            if fd_chirho < global_table_chirho.cloexec_chirho.len() {
-                global_table_chirho.cloexec_chirho[fd_chirho] = initial_cloexec_chirho;
-            }
-            if let Some(p_chirho) = path_chirho {
-                if fd_chirho < global_table_chirho.paths_chirho.len() {
-                    global_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
+        // Mirror into global table ONLY for PID 0/1 (init/shell).
+        // For PID >= 2, the per-process table is the sole owner of the Arc.
+        // Mirroring to global creates a second Arc ref that can be dropped
+        // by other processes' close_fd_chirho, causing premature file teardown.
+        let insert_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if insert_pid_chirho <= 1 {
+            let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+            if let Some(ref mut global_table_chirho) = *global_guard_chirho {
+                if fd_chirho < global_table_chirho.fds_chirho.len() {
+                    global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+                }
+                if fd_chirho < global_table_chirho.cloexec_chirho.len() {
+                    global_table_chirho.cloexec_chirho[fd_chirho] = initial_cloexec_chirho;
+                }
+                if let Some(p_chirho) = path_chirho {
+                    if fd_chirho < global_table_chirho.paths_chirho.len() {
+                        global_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
+                    }
                 }
             }
         }
@@ -1562,14 +1569,29 @@ pub fn close_fd_chirho(fd_chirho: u64) -> i64 {
     // Close in current task's per-process table first.
     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
         let mut task_guard_chirho = task_arc_chirho.lock();
+        let pid_close_chirho = task_guard_chirho.pid_chirho;
         if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            let had_fd_chirho = fd_table_chirho.get_chirho(fd_chirho as usize).is_some();
             if fd_table_chirho.close_chirho(fd_chirho as usize).is_ok() {
                 closed_in_task_chirho = true;
             }
+            // Diagnostic: trace PID 2 close(7) to debug heap corruption
+            if pid_close_chirho == 2 && fd_chirho >= 5 {
+                crate::serial_println_chirho!(
+                    "[CLOSE-DIAG] pid=2 close({}) had_fd={} closed_ok={}",
+                    fd_chirho, had_fd_chirho, closed_in_task_chirho,
+                );
+            }
         }
     }
-    // Also close in global table for compatibility.
-    {
+    // Close in global table only for PID 0/1 (init/shell that use global table).
+    // For PID >= 2, the per-process table is authoritative — closing in the
+    // global table drops Arc refs that may belong to other processes, causing
+    // early pipe/socket teardown and use-after-free in userspace (e.g., musl
+    // free() assert in dropbear after fork+exec cycle).
+    let close_pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+    if close_pid_chirho <= 1 {
         let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
         if let Some(ref mut fd_table_chirho) = *fd_table_guard_chirho {
             if let Err(close_error_chirho) = fd_table_chirho.close_chirho(fd_chirho as usize) {

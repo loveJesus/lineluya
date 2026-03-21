@@ -684,6 +684,17 @@ fn map_anonymous_pages_chirho(
         let page_chirho: Page<Size4KiB> =
             Page::containing_address(VirtAddr::new(page_addr_chirho));
 
+        // Diagnostic: catch unexpected mapping of PID 0's BusyBox range
+        if page_addr_chirho >= 0x400000 && page_addr_chirho < 0x800000 {
+            let map_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if map_pid_chirho >= 2 {
+                crate::serial_println_chirho!(
+                    "[MMAP-BUSYBOX-BUG] pid={} mapping page {:#x} in PID 0 BusyBox range!",
+                    map_pid_chirho, page_addr_chirho,
+                );
+            }
+        }
         // Check if the page is already mapped (from a previous exec).
         // If so, just update flags — don't allocate a new frame.
         // NOTE: This optimization can cause memory corruption if the reused

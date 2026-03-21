@@ -242,6 +242,30 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     }
     serial_println_chirho!("[OK] SSE/SSE2 enabled");
 
+    // Verify and enforce CR0.WP — required for COW page faults from kernel mode.
+    // Without WP, supervisor writes to read-only (COW) pages silently bypass
+    // the page fault handler, corrupting shared frames after fork.
+    {
+        let cr0_val_chirho: u64;
+        unsafe { core::arch::asm!("mov {}, cr0", out(reg) cr0_val_chirho, options(nomem, nostack)); }
+        let wp_set_chirho = (cr0_val_chirho & (1 << 16)) != 0;
+        if wp_set_chirho {
+            serial_println_chirho!("[OK] CR0.WP is set — COW enforced for kernel writes");
+        } else {
+            serial_println_chirho!("[WARN] CR0.WP is CLEAR — setting it now for COW correctness");
+            unsafe {
+                core::arch::asm!(
+                    "mov rax, cr0",
+                    "or eax, 0x10000", // set WP (bit 16)
+                    "mov cr0, rax",
+                    out("rax") _,
+                    options(nomem, nostack)
+                );
+            }
+            serial_println_chirho!("[OK] CR0.WP is now set");
+        }
+    }
+
     // Initialize the Global Descriptor Table
     gdt_chirho::init_chirho();
     serial_println_chirho!("[OK] GDT initialized");

@@ -1125,21 +1125,32 @@ pub fn sys_execve_with_filename_chirho(
     // "already mapped" optimization in map_anonymous_pages is false by
     // construction — no frame aliasing with kernel heap.
     // -----------------------------------------------------------------------
-    let is_embedded_static_exec_chirho = !is_procfd_exec_chirho
-        && crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho >= 4)
-            .unwrap_or(false);
-
-    if !is_embedded_static_exec_chirho {
+    // ALL exec paths get authoritative address-space replacement.
+    // The old "embedded static on fork PT" skip was needed when boot PML4
+    // was shared; with per-process fresh PTs, every exec is clean.
+    let is_embedded_static_exec_chirho = false; // disabled — all execs are authoritative
+    {
         // Create fresh per-process PT
         if let Some(pt_root_chirho) = crate::pagetable_chirho::create_user_page_table_chirho() {
-            // Store in task + reset MM to fresh state
+            // Store in task + reset MM to fresh state + clear FS/GS bases.
+            // FS/GS MUST be cleared: after fork, the child inherits the parent's
+            // FS base (musl TLS pointer). If exec doesn't clear it, the new
+            // program's musl startup reads stale TLS from the old FS address,
+            // which now points into BSS — causing spurious a_crash (HLT/GPF).
             if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
                 let mut tg_chirho = task_arc_chirho.lock();
                 tg_chirho.page_table_root_chirho = Some(pt_root_chirho);
                 tg_chirho.mm_chirho = Some(alloc::sync::Arc::new(spin::Mutex::new(
                     crate::mm_chirho::MmChirho::new_chirho(),
                 )));
+                tg_chirho.fs_base_chirho = 0;
+                tg_chirho.gs_base_chirho = 0;
+                // Reset brk so set_brk_chirho (called after ELF loading)
+                // properly initializes it to the new binary's BSS end.
+                // Without this, the old binary's brk (e.g., PID 0's 0x714000)
+                // persists, causing brk() to map pages in the wrong range.
+                tg_chirho.brk_chirho = 0;
+                tg_chirho.brk_start_chirho = 0;
             }
             // Map preemption trampoline into the fresh PT
             crate::interrupts_chirho::reset_user_preempt_trampoline_ready_chirho();
@@ -1161,11 +1172,6 @@ pub fn sys_execve_with_filename_chirho(
                 pt_root_chirho.as_u64(),
             );
         }
-    } else {
-        // Embedded static BusyBox: load onto fork-inherited PT
-        crate::serial_debug_chirho!(
-            "[PROCESS] execve: embedded static — loading onto fork PT",
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -1181,24 +1187,12 @@ pub fn sys_execve_with_filename_chirho(
     // Check whether this ELF has a PT_INTERP segment (dynamically linked).
     let interp_path_chirho = dynlink_chirho::find_interp_in_phdrs_chirho(elf_data_chirho);
 
-    // DIAGNOSTIC: For PID >= 4 (SSH exec children), use the embedded
-    // static BusyBox to bypass dynamic linking issues. This lets us
-    // verify the SSH pipeline works before fixing dynlink.
-    let current_pid_for_exec_chirho = crate::task_chirho::current_task_chirho()
-        .map(|t| t.lock().pid_chirho)
-        .unwrap_or(0);
-    let (elf_data_chirho, interp_path_chirho) = if interp_path_chirho.is_some()
-        && current_pid_for_exec_chirho >= 4
-        && crate::busybox_chirho::is_busybox_applet_chirho(basename_chirho)
-    {
-        crate::serial_println_chirho!(
-            "[PROCESS] execve: PID {} using embedded static BusyBox for '{}'",
-            current_pid_for_exec_chirho, basename_chirho,
-        );
-        (crate::exec_chirho::BUSYBOX_ELF_CHIRHO, None)
-    } else {
-        (elf_data_chirho, interp_path_chirho)
-    };
+    // All exec paths now use the real VFS binary with dynamic linking.
+    // The embedded static BusyBox fallback was causing frame aliasing
+    // crashes (musl malloc assert) because the static binary loads at
+    // 0x400000-0x714000 — same addresses as PID 0's init shell — and
+    // the frame allocator hands out frames that alias with kernel heap.
+    // Dynamic binaries load at 0x555555... (PIE) and avoid the collision.
 
     if let Some(ref raw_interp_path_chirho) = interp_path_chirho {
         // ---------------------------------------------------------------
@@ -1293,6 +1287,11 @@ pub fn sys_execve_with_filename_chirho(
             debug_verify_stack_chirho(user_rsp_chirho);
 
             crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());
+            // Set the per-process brk from the main EXE's BSS end.
+            crate::syscall_chirho::set_brk_chirho(
+                dyn_result_chirho.exe_chirho.brk_addr_chirho,
+            );
+
             crate::serial_println_chirho!("[EXEC-TRACE] about to preserve_fd (procfd={})", is_procfd_exec_chirho);
             preserve_fd_table_across_exec_chirho_impl(is_procfd_exec_chirho);
             crate::serial_println_chirho!("[EXEC-TRACE] preserve_fd done");
@@ -1355,6 +1354,9 @@ pub fn sys_execve_with_filename_chirho(
 
     // Debug: verify argv[0] on the user stack
     debug_verify_stack_chirho(user_rsp_chirho);
+
+    // Set the per-process brk from the ELF's BSS end.
+    crate::syscall_chirho::set_brk_chirho(loaded_chirho.brk_addr_chirho);
 
     // Update /proc/self/exe path for the new executable.
     crate::syscall_chirho::set_current_exe_path_chirho(filename_str_chirho.as_bytes());

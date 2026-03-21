@@ -607,8 +607,11 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
         crate::syscall_entry_chirho::check_stack_watch_chirho("cow-fault");
     }
 
-    crate::serial_debug_chirho!(
-        "[PAGETABLE] COW resolved: addr={:#x}, old_frame={:#x}, new_frame={:#x}",
+    let cow_pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+    crate::serial_println_chirho!(
+        "[PAGETABLE] COW resolved: pid={} addr={:#x}, old_frame={:#x}, new_frame={:#x}",
+        cow_pid_chirho,
         faulting_addr_chirho.as_u64(),
         old_frame_phys_chirho.as_u64(),
         new_frame_phys_chirho.as_u64()

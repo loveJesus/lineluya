@@ -480,37 +480,45 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::USER_ACCESSIBLE;
 
-                // Try lazy migration from boot PT first.
-                if let Some((phys_chirho, _boot_flags_chirho)) =
-                    crate::pagetable_chirho::lookup_in_boot_pt_chirho(page_vaddr_chirho)
-                {
-                    // If it was a write-protection fault, also update boot PT flags.
-                    if is_present_chirho {
-                        let page_chirho: Page<Size4KiB> = Page::containing_address(fault_addr_chirho);
-                        if let Some(ref mut mapper_chirho) = *crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.lock() {
-                            match unsafe { mapper_chirho.update_flags(page_chirho, rw_flags_chirho) } {
-                                Ok(flush_chirho) => flush_chirho.flush(),
-                                Err(map_error_chirho) => {
-                                    crate::serial_println_chirho!(
-                                        "[PF] update_flags failed for {:#x}: {:?}",
-                                        page_vaddr_chirho,
-                                        map_error_chirho
-                                    );
+                // Lazy migration from boot PT: only for PID 0/1 (which share boot PML4).
+                // For PID >= 2 with authoritative per-process PTs, lazy migration
+                // from boot PML4 is WRONG — it re-injects PID 0's BusyBox/heap
+                // pages into the clean fresh PT, causing cross-process memory
+                // aliasing and heap corruption (musl free() assert).
+                let lazy_pid_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                let allow_lazy_chirho = lazy_pid_chirho <= 1;
+                if allow_lazy_chirho {
+                    if let Some((phys_chirho, _boot_flags_chirho)) =
+                        crate::pagetable_chirho::lookup_in_boot_pt_chirho(page_vaddr_chirho)
+                    {
+                        if is_present_chirho {
+                            let page_chirho: Page<Size4KiB> = Page::containing_address(fault_addr_chirho);
+                            if let Some(ref mut mapper_chirho) = *crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.lock() {
+                                match unsafe { mapper_chirho.update_flags(page_chirho, rw_flags_chirho) } {
+                                    Ok(flush_chirho) => flush_chirho.flush(),
+                                    Err(map_error_chirho) => {
+                                        crate::serial_println_chirho!(
+                                            "[PF] update_flags failed for {:#x}: {:?}",
+                                            page_vaddr_chirho,
+                                            map_error_chirho
+                                        );
+                                    }
                                 }
                             }
                         }
+                        if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
+                            current_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
+                        ) {
+                            crate::serial_println_chirho!(
+                                "[PF] lazy migrate failed for {:#x}: {:?}",
+                                page_vaddr_chirho,
+                                map_error_chirho
+                            );
+                        }
+                        x86_64::instructions::tlb::flush(fault_addr_chirho);
+                        return;
                     }
-                    if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
-                        current_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
-                    ) {
-                        crate::serial_println_chirho!(
-                            "[PF] lazy migrate failed for {:#x}: {:?}",
-                            page_vaddr_chirho,
-                            map_error_chirho
-                        );
-                    }
-                    x86_64::instructions::tlb::flush(fault_addr_chirho);
-                    return;
                 }
 
                 // Not in boot PT — allocate a new frame.
@@ -563,19 +571,25 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
 
             let page_vaddr_chirho = fault_addr_chirho.as_u64() & !0xFFF;
 
-            // --- Lazy page migration from boot PT ---
+            // --- Lazy page migration from boot PT (PID 0/1 only) ---
+            // For PID >= 2 with authoritative per-process PTs, do NOT
+            // import boot PML4 mappings — they belong to PID 0's init shell.
             let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
-            if let Some((phys_chirho, boot_flags_chirho)) =
-                crate::pagetable_chirho::lookup_in_boot_pt_chirho(page_vaddr_chirho)
-            {
-                if crate::pagetable_chirho::map_page_in_pt_chirho(
-                    current_pml4_chirho,
-                    page_vaddr_chirho,
-                    phys_chirho,
-                    boot_flags_chirho,
-                ).is_ok() {
-                    x86_64::instructions::tlb::flush(fault_addr_chirho);
-                    return; // Retry — page now mapped from boot PT
+            let user_fault_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if user_fault_pid_chirho <= 1 {
+                if let Some((phys_chirho, boot_flags_chirho)) =
+                    crate::pagetable_chirho::lookup_in_boot_pt_chirho(page_vaddr_chirho)
+                {
+                    if crate::pagetable_chirho::map_page_in_pt_chirho(
+                        current_pml4_chirho,
+                        page_vaddr_chirho,
+                        phys_chirho,
+                        boot_flags_chirho,
+                    ).is_ok() {
+                        x86_64::instructions::tlb::flush(fault_addr_chirho);
+                        return; // Retry — page now mapped from boot PT
+                    }
                 }
             }
 
@@ -734,12 +748,42 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
     }
 }
 
+// Saved caller-saved registers from GPF — set by inline asm at handler entry.
+static GPF_SAVED_RAX_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static GPF_SAVED_RCX_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static GPF_SAVED_RDI_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static GPF_SAVED_RSI_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// General Protection Fault handler. Logs the error code and stack frame,
 /// then halts.
 extern "x86-interrupt" fn general_protection_fault_handler_chirho(
     stack_frame_chirho: InterruptStackFrame,
     error_code_chirho: u64,
 ) {
+    // Save caller-saved registers before the compiler clobbers them.
+    // NOTE: With extern "x86-interrupt", the compiler may have already
+    // modified some of these. This is best-effort.
+    {
+        let rax_val_chirho: u64;
+        let rcx_val_chirho: u64;
+        let rdi_val_chirho: u64;
+        let rsi_val_chirho: u64;
+        unsafe {
+            core::arch::asm!(
+                "",
+                out("rax") rax_val_chirho,
+                out("rcx") rcx_val_chirho,
+                out("rdi") rdi_val_chirho,
+                out("rsi") rsi_val_chirho,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        GPF_SAVED_RAX_CHIRHO.store(rax_val_chirho, core::sync::atomic::Ordering::Relaxed);
+        GPF_SAVED_RCX_CHIRHO.store(rcx_val_chirho, core::sync::atomic::Ordering::Relaxed);
+        GPF_SAVED_RDI_CHIRHO.store(rdi_val_chirho, core::sync::atomic::Ordering::Relaxed);
+        GPF_SAVED_RSI_CHIRHO.store(rsi_val_chirho, core::sync::atomic::Ordering::Relaxed);
+    }
+
     // Check if this GPF occurred in user mode (CS RPL == 3).
     let cs_chirho = stack_frame_chirho.code_segment.0;
     let is_user_chirho = (cs_chirho & 0x3) == 3;
@@ -754,6 +798,49 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
             "[EXCEPTION] User-mode GPF at {:#x} (error_code={}) rsp={:#x} — terminating process",
             gpf_rip_chirho, error_code_chirho, gpf_rsp_chirho,
         );
+
+        // Dump saved GPRs (best-effort — compiler may have clobbered some).
+        {
+            let saved_rax_chirho = GPF_SAVED_RAX_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            let saved_rcx_chirho = GPF_SAVED_RCX_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            let saved_rdi_chirho = GPF_SAVED_RDI_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            let saved_rsi_chirho = GPF_SAVED_RSI_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            crate::serial_println_chirho!(
+                "[GPF-GPRS] rax={:#x} rcx={:#x} rdi={:#x} rsi={:#x} (may be compiler-clobbered)",
+                saved_rax_chirho, saved_rcx_chirho, saved_rdi_chirho, saved_rsi_chirho,
+            );
+        }
+
+        // Dump user-space register state at GPF via saved context.
+        // The interrupt saves RSP/RIP in the frame; for GPRs we read from
+        // the user stack and nearby memory to reconstruct the call context.
+        // For the musl free() GPF at cmp [rax+0x10],rcx:
+        //   rdi = chunk being freed (passed to free)
+        //   rax = prev_chunk ptr (read from [rdi-0x10])
+        // We can infer these from the stack frame.
+        if gpf_rip_chirho >= 0x7f0000100000 && gpf_rip_chirho < 0x7f0000200000 {
+            // Read the 16 bytes below the user RSP to see saved registers
+            let user_rsp_chirho = gpf_rsp_chirho;
+            crate::serial_println_chirho!(
+                "[GPF-REGS] pid={} rip={:#x} user_rsp={:#x}",
+                crate::scheduler_chirho::current_pid_chirho().unwrap_or(0),
+                gpf_rip_chirho, user_rsp_chirho,
+            );
+            // Dump 128 bytes above and below rsp for register forensics
+            for off_chirho in (0..128).step_by(8) {
+                let addr_chirho = user_rsp_chirho.wrapping_sub(64).wrapping_add(off_chirho);
+                if addr_chirho > 0x7fff00000000 && addr_chirho < 0x800000000000 {
+                    let val_chirho = unsafe {
+                        core::ptr::read_volatile(addr_chirho as *const u64)
+                    };
+                    let marker_chirho = if addr_chirho == user_rsp_chirho { " <-- RSP" } else { "" };
+                    crate::serial_println_chirho!(
+                        "[GPF-REGS]   [{:#x}] = {:#018x}{}",
+                        addr_chirho, val_chirho, marker_chirho,
+                    );
+                }
+            }
+        }
 
         // GPT-directed: dump page content at GPF address to determine
         // if page is corrupted or if instruction faults on bad operand.
@@ -829,6 +916,38 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
                         off_chirho, val_chirho,
                     );
                 }
+            }
+        }
+
+        // TEMPORARY: For musl's HLT assertions (a_crash), skip the HLT
+        // instruction instead of killing the process. This allows us to
+        // diagnose whether the heap corruption is fatal or recoverable.
+        // musl uses HLT (0xf4) as a crash assertion — in ring 3, HLT causes GPF.
+        {
+            let first_byte_chirho = unsafe { core::ptr::read_volatile(gpf_rip_chirho as *const u8) };
+            if first_byte_chirho == 0xf4 {
+                // HLT instruction — skip it (1 byte) and continue execution.
+                // This is a TEMPORARY diagnostic workaround, not a fix.
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static HLT_SKIP_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let skip_n_chirho = HLT_SKIP_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if skip_n_chirho < 5 {
+                    crate::serial_println_chirho!(
+                        "[GPF-HLT-SKIP] pid={} skipping HLT at {:#x} (skip #{})",
+                        crate::scheduler_chirho::current_pid_chirho().unwrap_or(0),
+                        gpf_rip_chirho,
+                        skip_n_chirho,
+                    );
+                    unsafe {
+                        let frame_ptr_chirho = &stack_frame_chirho as *const InterruptStackFrame
+                            as *mut InterruptStackFrame;
+                        (*frame_ptr_chirho).as_mut().update(|f_chirho| {
+                            f_chirho.instruction_pointer = x86_64::VirtAddr::new(gpf_rip_chirho + 1);
+                        });
+                    }
+                    return;
+                }
+                // After 5 skips, fall through to kill — heap is truly corrupt
             }
         }
 

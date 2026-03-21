@@ -1167,6 +1167,21 @@ pub fn jump_to_userspace_chirho(entry_point_chirho: u64, user_rsp_chirho: u64) -
     // can preempt userspace and syscalls can return correctly.
     let rflags_chirho: u64 = 0x200; // IF only
 
+    // Clear FS and GS base MSRs before entering userspace.
+    // After fork+exec, the child inherits the parent's FS base (musl TLS).
+    // If not cleared, the new program's musl reads stale TLS data from
+    // whatever address the parent's FS pointed to, causing a_crash (HLT/GPF).
+    // The new program will set its own FS via arch_prctl(ARCH_SET_FS, ...).
+    {
+        use x86_64::registers::model_specific::Msr;
+        const IA32_FS_BASE_CHIRHO: u32 = 0xC000_0100;
+        const IA32_KERNEL_GS_BASE_CHIRHO: u32 = 0xC000_0102;
+        unsafe {
+            Msr::new(IA32_FS_BASE_CHIRHO).write(0);
+            Msr::new(IA32_KERNEL_GS_BASE_CHIRHO).write(0);
+        }
+    }
+
     // SAFETY: This inline assembly builds an IRETQ frame and transitions
     // to user mode. The user-space pages must be mapped with USER_ACCESSIBLE
     // flags, and the GDT must have valid user CS/SS descriptors.

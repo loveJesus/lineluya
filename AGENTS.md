@@ -201,8 +201,8 @@ qemu-system-x86_64 \
 ```
 
 ### Known Issues
+- **PID 2 (dropbear) musl heap corruption after fork+exec child**: musl free() asserts (cmp [rax+0x10],rcx → GPF). Happens when PID 2 resumes from select() after PID 3 forks PID 4. Root cause unknown — boot PML4 contamination, brk pollution, and lazy migration all fixed but crash persists. Heap prev_chunk pointer is corrupt (non-canonical address in rax).
 - Shell re-exec after wait4 reap (parent SYSRET RCX corruption workaround)
-- Dropbear SSH OOMs (64MB) in event loop (allocator fragmentation)
 - wget HTTP header parsing fails (TCP segment ordering)
 - Python3 stdlib loading slow under QEMU TCG (ARM64→x86_64 emulation)
 - linked_list_allocator fragmentation under heavy alloc/dealloc

@@ -3122,6 +3122,17 @@ fn sys_brk_chirho(addr_chirho: u64) -> i64 {
             (CURRENT_BRK_CHIRHO.load(Ordering::SeqCst), false)
         };
 
+    // Diagnostic: trace brk for PID 2-4 to catch global/per-process confusion
+    {
+        let brk_trace_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if brk_trace_pid_chirho >= 2 && brk_trace_pid_chirho <= 4 {
+            crate::serial_println_chirho!(
+                "[BRK-DIAG] pid={} brk(addr={:#x}) old_brk={:#x} is_pp={}",
+                brk_trace_pid_chirho, addr_chirho, old_brk_chirho, is_per_process_chirho,
+            );
+        }
+    }
     if addr_chirho == 0 {
         return old_brk_chirho as i64;
     }
