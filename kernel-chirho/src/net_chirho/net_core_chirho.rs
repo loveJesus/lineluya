@@ -2315,10 +2315,37 @@ pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
         // CloseWait/Closed: peer sent FIN → socket is readable (EOF).
         // Without this, select doesn't detect the disconnect and PID 3
         // stays blocked forever, preventing PID 2 from accepting new connections.
+        //
+        // EXCEPTION: if the calling process has open pipe fds with unread
+        // data, defer reporting CloseWait. This lets channelio drain the
+        // pipe (child exec output) before discovering the disconnect.
         if matches!(
             sock_chirho.tcb_chirho.state_chirho,
             TcpStateChirho::CloseWaitChirho | TcpStateChirho::ClosedChirho
         ) {
+            // Check if any pipe fd (5..16) has data
+            let mut has_pipe_data_chirho = false;
+            for pfd_chirho in 5u64..16 {
+                if let Some(pf_chirho) = crate::fs_chirho::lookup_fd_chirho(pfd_chirho) {
+                    let pg_chirho = pf_chirho.lock();
+                    let pmode_chirho = pg_chirho.inode_chirho.lock().mode_chirho;
+                    if (pmode_chirho & 0o170000) == 0o10000 {
+                        if let Some(ref pdata_chirho) = pg_chirho.inode_chirho.lock().fs_data_chirho {
+                            if let Some(ppipe_chirho) = pdata_chirho
+                                .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
+                            {
+                                if !ppipe_chirho.lock().buffer_chirho.is_empty() {
+                                    has_pipe_data_chirho = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if has_pipe_data_chirho {
+                return false; // Defer CloseWait — let pipe drain first
+            }
             return true;
         }
         false
