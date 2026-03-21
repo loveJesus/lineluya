@@ -3328,13 +3328,42 @@ pub fn sys_recvfrom_chirho(
         if socket_chirho.tcb_chirho.state_chirho == TcpStateChirho::CloseWaitChirho
             || socket_chirho.tcb_chirho.state_chirho == TcpStateChirho::ClosedChirho
         {
+            // Before returning EOF, check if there's pipe data to drain.
+            // Dropbear processes EOF BEFORE channelio drains the pipe.
+            // Returning EAGAIN instead of 0 lets dropbear continue to
+            // channelio, which reads fd 9 (child pipe) and sends channel
+            // data. Once the pipe is empty, the NEXT recvfrom returns 0.
+            let has_pipe_data_chirho = (5u64..16).any(|pfd_chirho| {
+                if let Some(pf_chirho) = crate::fs_chirho::lookup_fd_chirho(pfd_chirho) {
+                    let pg_chirho = pf_chirho.lock();
+                    let pm_chirho = pg_chirho.inode_chirho.lock().mode_chirho;
+                    if (pm_chirho & 0o170000) == 0o10000 {
+                        if let Some(ref pd_chirho) = pg_chirho.inode_chirho.lock().fs_data_chirho {
+                            if let Some(pp_chirho) = pd_chirho
+                                .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
+                            {
+                                return !pp_chirho.lock().buffer_chirho.is_empty();
+                            }
+                        }
+                    }
+                }
+                false
+            });
+            if has_pipe_data_chirho {
+                drop(table_chirho);
+                crate::serial_println_chirho!(
+                    "[RECV-DEFER-EOF] Deferring EOF — pipe has data to drain",
+                );
+                crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
+                return -11; // EAGAIN — let channelio drain pipe first
+            }
             if trace_pid3_chirho {
                 crate::serial_println_chirho!(
                     "[P3-RECV] EOF: recv_buf empty + state={:?} → returning 0",
                     socket_chirho.tcb_chirho.state_chirho,
                 );
             }
-            return 0; // EOF — peer closed
+            return 0; // EOF — peer closed, pipe empty
         }
 
         // Quick poll: check for new packets once, then return EAGAIN.
@@ -3367,22 +3396,43 @@ pub fn sys_recvfrom_chirho(
                 // been processed during poll_network. Without this check,
                 // CloseWait sockets return EAGAIN instead of 0 (EOF),
                 // causing PID 3 to spin in select/read forever.
-                if matches!(
+                let is_closewait2_chirho = matches!(
                     sock_recheck_chirho.tcb_chirho.state_chirho,
                     TcpStateChirho::CloseWaitChirho | TcpStateChirho::ClosedChirho
-                ) {
+                );
+                drop(table_recheck_chirho);
+                if is_closewait2_chirho {
+                    // Same pipe-data deferral as the first EOF check
+                    let has_pipe2_chirho = (5u64..16).any(|pfd_chirho| {
+                        if let Some(pf_chirho) = crate::fs_chirho::lookup_fd_chirho(pfd_chirho) {
+                            let pg_chirho = pf_chirho.lock();
+                            let pm_chirho = pg_chirho.inode_chirho.lock().mode_chirho;
+                            if (pm_chirho & 0o170000) == 0o10000 {
+                                if let Some(ref pd_chirho) = pg_chirho.inode_chirho.lock().fs_data_chirho {
+                                    if let Some(pp_chirho) = pd_chirho
+                                        .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
+                                    {
+                                        return !pp_chirho.lock().buffer_chirho.is_empty();
+                                    }
+                                }
+                            }
+                        }
+                        false
+                    });
+                    if has_pipe2_chirho {
+                        crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
+                        return -11; // EAGAIN — defer EOF for pipe drain
+                    }
                     if trace_pid3_chirho {
                         crate::serial_println_chirho!(
-                            "[P3-RECV] after-poll EOF: empty + state={:?} → returning 0",
-                            sock_recheck_chirho.tcb_chirho.state_chirho,
+                            "[P3-RECV] after-poll EOF: pipe empty → returning 0",
                         );
                     }
-                    return 0; // EOF — peer closed (detected after poll)
+                    return 0; // EOF — peer closed, pipe empty
                 }
                 if trace_pid3_chirho {
                     crate::serial_println_chirho!(
-                        "[P3-RECV] after-poll EAGAIN: empty + state={:?}",
-                        sock_recheck_chirho.tcb_chirho.state_chirho,
+                        "[P3-RECV] after-poll EAGAIN: empty + not CloseWait",
                     );
                 }
                 crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();

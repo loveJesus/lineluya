@@ -4123,7 +4123,44 @@ fn sys_select_chirho(
         } else {
             set_size_chirho
         };
+        // Pipe-priority: if BOTH a socket fd AND a pipe fd with data are
+        // ready, suppress the socket fd for this iteration. This forces
+        // dropbear's channelio to read the pipe (child exec output) BEFORE
+        // process_packet processes SSH_MSG_CHANNEL_CLOSE from the client.
+        // Without this, dropbear closes the channel before reading the pipe.
+        {
+            let has_pipe_ready_chirho = (1..16).any(|bi| {
+                let byte_chirho = bi / 8;
+                let bit_chirho = bi % 8;
+                byte_chirho < 16 && (out_fds_chirho[byte_chirho] & (1 << bit_chirho)) != 0
+                    && bi > 4 // fd > 4 = not a standard fd
+                    && crate::fs_chirho::lookup_fd_chirho(bi as u64)
+                        .map(|f| (f.lock().inode_chirho.lock().mode_chirho & 0o170000) == 0o10000)
+                        .unwrap_or(false)
+            });
+            if has_pipe_ready_chirho && count_chirho > 1 {
+                // Clear socket fds (0-4) from readfds to prioritize pipe
+                let socket_bits_chirho = out_fds_chirho[0] & 0x1F; // bits 0-4
+                if socket_bits_chirho != 0 {
+                    out_fds_chirho[0] &= !0x1F; // clear bits 0-4
+                    count_chirho -= socket_bits_chirho.count_ones() as i64;
+                    if count_chirho < 1 { count_chirho = 1; }
+                }
+            }
+        }
         if count_chirho > 0 && readfds_ptr_chirho != 0 {
+            // Diagnostic: dump readfds bytes for PID 3 when fd 9 is set
+            {
+                let dump_pid_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                if dump_pid_chirho == 3 && nfds_chirho >= 10 {
+                    crate::serial_println_chirho!(
+                        "[READFDS-DUMP] pid=3 nfds={} out_size={} bytes=[{:#04x},{:#04x}] count={}",
+                        nfds_chirho, out_size_chirho,
+                        out_fds_chirho[0], out_fds_chirho[1], count_chirho,
+                    );
+                }
+            }
             if crate::uaccess_chirho::copy_to_user_chirho(
                 readfds_ptr_chirho, &out_fds_chirho[..out_size_chirho], out_size_chirho,
             ).is_err() {
