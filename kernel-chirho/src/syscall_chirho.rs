@@ -6489,14 +6489,24 @@ fn sys_sendfile_chirho(
         if n_chirho <= 0 {
             break;
         }
-        let written_chirho = if out_fd_chirho == 1 || out_fd_chirho == 2 {
-            sys_write_chirho(out_fd_chirho, buf_chirho.as_ptr(), n_chirho as usize)
-        } else {
-            crate::fs_chirho::sys_write_real_chirho(
-                out_fd_chirho,
-                buf_chirho.as_ptr() as u64,
-                n_chirho as usize,
-            )
+        // Write to out_fd via the VFS write path (handles pipes, sockets,
+        // serial console). sendfile's buffer is on the kernel heap, so we
+        // write it directly to the pipe using the file ops (not copy_from_user).
+        let written_chirho = {
+            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(out_fd_chirho) {
+                let mut file_guard_chirho = file_arc_chirho.lock();
+                match file_guard_chirho.ops_chirho.write_chirho(
+                    &mut file_guard_chirho,
+                    &buf_chirho[..n_chirho as usize],
+                ) {
+                    Ok(n_written_chirho) => n_written_chirho as i64,
+                    Err(errno_chirho) => errno_chirho,
+                }
+            } else if fd_uses_console_stdio_chirho(out_fd_chirho) {
+                sys_write_chirho(out_fd_chirho, buf_chirho.as_ptr(), n_chirho as usize)
+            } else {
+                -EBADF_CHIRHO
+            }
         };
         if written_chirho < 0 {
             break;
