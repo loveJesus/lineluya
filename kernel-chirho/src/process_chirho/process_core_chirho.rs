@@ -1065,6 +1065,33 @@ pub fn sys_execve_with_filename_chirho(
         }
     };
 
+    // Ensure LD_LIBRARY_PATH is in the environment. Without this,
+    // dynamically-linked binaries exec'd via SSH (which don't inherit
+    // the login shell's /etc/profile exports) can't find shared libraries
+    // at /usr/lib. This is equivalent to the kernel's default search path
+    // (/lib:/usr/local/lib:/usr/lib) that musl uses when no path config
+    // is available.
+    let mut envp_vec_chirho = envp_vec_chirho;
+    {
+        let has_ld_lib_chirho = envp_vec_chirho.iter().any(|e| e.starts_with("LD_LIBRARY_PATH="));
+        if !has_ld_lib_chirho {
+            envp_vec_chirho.push(alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/local/lib:/usr/lib"));
+        }
+        // Trace: confirm LD_LIBRARY_PATH for PID 4+ execs
+        let ld_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if ld_pid_chirho >= 4 {
+            let ld_val_chirho = envp_vec_chirho.iter()
+                .find(|e| e.starts_with("LD_LIBRARY_PATH="))
+                .cloned()
+                .unwrap_or_default();
+            crate::serial_println_chirho!(
+                "[EXEC-ENV] pid={} LD_LIBRARY_PATH='{}'",
+                ld_pid_chirho, ld_val_chirho,
+            );
+        }
+    }
+
     crate::serial_debug_chirho!(
         "[PROCESS] execve: envp ({} entries)",
         envp_vec_chirho.len()
