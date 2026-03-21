@@ -3815,7 +3815,7 @@ fn sys_select_chirho(
             use core::sync::atomic::{AtomicU64, Ordering};
             static SEL3_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
             let cnt_chirho = SEL3_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho < 5 || (cnt_chirho > 20 && cnt_chirho < 25) {
+            if cnt_chirho < 5 || (cnt_chirho > 20 && cnt_chirho < 30) || (cnt_chirho > 40 && cnt_chirho < 50) {
                 crate::serial_println_chirho!(
                     "[SELECT-P3] #{} nfds={} readfds_ptr={:#x}",
                     cnt_chirho, nfds_chirho, readfds_ptr_chirho,
@@ -4215,6 +4215,53 @@ fn sys_select_chirho(
                     && !child_still_running_chirho
                     && crate::net_chirho::has_closewait_tcp_chirho(2222)
                 {
+                    // Before force-exiting, drain any remaining child pipe data
+                    // and send it as SSH channel data. Without this, slow commands
+                    // (sqlite3, python3) whose output is in the pipe buffer when
+                    // the SSH client FIN arrives never get their output relayed.
+                    // The SIGCHLD handler drain works for fast commands because
+                    // they exit before the client FIN. For slow commands, the
+                    // client FIN arrives first and this force-exit fires.
+                    //
+                    // Drain: read all pipe fds (fd 7-15 range) and write to
+                    // the SSH socket (fd 0) via sendto. This is a kernel-side
+                    // relay for the pipe → SSH channel data.
+                    // Check if any pipe fd has unread data. If so, DON'T
+                    // force-exit yet — let dropbear's event loop read the pipe
+                    // and send the SSH channel data. Only force-exit when ALL
+                    // pipes are empty or closed.
+                    let mut pipe_has_data_chirho = false;
+                    for check_fd_chirho in 5u64..16 {
+                        if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(check_fd_chirho) {
+                            let file_guard_chirho = file_arc_chirho.lock();
+                            let mode_chirho = file_guard_chirho.inode_chirho.lock().mode_chirho;
+                            if (mode_chirho & 0o170000) == 0o10000 {
+                                // It's a pipe — check if buffer has data
+                                if let Some(ref fs_data_chirho) = file_guard_chirho.inode_chirho.lock().fs_data_chirho {
+                                    if let Some(pipe_arc_chirho) = fs_data_chirho
+                                        .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
+                                    {
+                                        let pg_chirho = pipe_arc_chirho.lock();
+                                        if !pg_chirho.buffer_chirho.is_empty() {
+                                            pipe_has_data_chirho = true;
+                                            crate::serial_println_chirho!(
+                                                "[SELECT-PIPE-WAIT] PID {} fd={} has {} bytes — deferring force-exit",
+                                                sel_pid_chirho, check_fd_chirho, pg_chirho.buffer_chirho.len(),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if pipe_has_data_chirho {
+                        // Don't force-exit yet — let the event loop drain the pipe.
+                        // Return 0 (no fds ready, timeout expired) to let dropbear
+                        // continue its loop. The next iteration will check again.
+                        maybe_yield_to_runnable_child_chirho();
+                        return 0;
+                    }
+
                     crate::serial_println_chirho!(
                         "[SELECT] PID {} session over (CloseWait) → send FIN + zombie",
                         sel_pid_chirho,
@@ -5543,6 +5590,17 @@ fn sys_fcntl_chirho(
     cmd_chirho: u64,
     arg_chirho: u64,
 ) -> i64 {
+    // Trace PID 3 fcntl calls to understand channel fd setup
+    {
+        let fcntl_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if fcntl_pid_chirho == 3 && fd_chirho >= 5 {
+            crate::serial_println_chirho!(
+                "[FCNTL-P3] fd={} cmd={} arg={:#x}",
+                fd_chirho, cmd_chirho, arg_chirho,
+            );
+        }
+    }
     match cmd_chirho {
         F_DUPFD_CHIRHO => {
             // TODO(exec-fd-compat-001): honor the minimum-fd arg precisely.
