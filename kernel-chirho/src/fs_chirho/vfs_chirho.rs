@@ -364,13 +364,12 @@ impl FdTableChirho {
                 // Take the Arc out of the slot so we can check strong_count.
                 let file_arc_chirho = slot_chirho.take().unwrap();
 
-                // If this is a pipe end AND we hold the LAST reference to
-                // this FileChirho, set the corresponding closed flag.
-                // Arc::strong_count == 1 means no other task/fd references
-                // this open file description — it's safe to signal EOF/EPIPE.
-                // (GPT-directed fix: uses Arc refcount, not manual counters)
-                let ref_count_chirho = alloc::sync::Arc::strong_count(&file_arc_chirho);
-                if ref_count_chirho <= 1 {
+                // Pipe close: decrement the reader/writer counter. Only set
+                // closed_write/closed_read when the counter reaches 0.
+                // The old Arc::strong_count check was unreliable because
+                // multiple per-process fd tables clone the Arc independently,
+                // and the global table isolation changed the refcount behavior.
+                {
                     let file_guard_chirho = file_arc_chirho.lock();
                     let is_fifo_chirho = (file_guard_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
                     if is_fifo_chirho {
@@ -381,10 +380,20 @@ impl FdTableChirho {
                             {
                                 let mut pipe_chirho = pipe_arc_chirho.lock();
                                 if flags_chirho & O_WRONLY_CHIRHO != 0 || flags_chirho & O_RDWR_CHIRHO != 0 {
-                                    pipe_chirho.closed_write_chirho = true;
+                                    if pipe_chirho.writers_chirho > 0 {
+                                        pipe_chirho.writers_chirho -= 1;
+                                    }
+                                    if pipe_chirho.writers_chirho == 0 {
+                                        pipe_chirho.closed_write_chirho = true;
+                                    }
                                 }
                                 if flags_chirho == O_RDONLY_CHIRHO {
-                                    pipe_chirho.closed_read_chirho = true;
+                                    if pipe_chirho.readers_chirho > 0 {
+                                        pipe_chirho.readers_chirho -= 1;
+                                    }
+                                    if pipe_chirho.readers_chirho == 0 {
+                                        pipe_chirho.closed_read_chirho = true;
+                                    }
                                 }
                             }
                         }
@@ -488,8 +497,38 @@ impl FdTableChirho {
     /// clone (matching POSIX fork semantics where parent and child share the
     /// underlying open file descriptions but have independent fd tables).
     pub fn clone_table_chirho(&self) -> Self {
+        // Clone the fd vector (Arc refs are shared — POSIX fork semantics).
+        let cloned_fds_chirho = self.fds_chirho.clone();
+
+        // Increment pipe reader/writer counters for each cloned pipe fd.
+        // Without this, close_chirho's decrement reaches 0 too early,
+        // setting closed_write/closed_read while the other process still
+        // has the pipe open — causing spurious EOF on select().
+        for slot_chirho in &cloned_fds_chirho {
+            if let Some(ref file_arc_chirho) = slot_chirho {
+                let file_guard_chirho = file_arc_chirho.lock();
+                let is_fifo_chirho = (file_guard_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
+                if is_fifo_chirho {
+                    let flags_chirho = file_guard_chirho.flags_chirho;
+                    if let Some(ref fs_data_chirho) = file_guard_chirho.inode_chirho.lock().fs_data_chirho {
+                        if let Some(pipe_arc_chirho) = fs_data_chirho
+                            .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
+                        {
+                            let mut pipe_chirho = pipe_arc_chirho.lock();
+                            if flags_chirho & O_WRONLY_CHIRHO != 0 || flags_chirho & O_RDWR_CHIRHO != 0 {
+                                pipe_chirho.writers_chirho += 1;
+                            }
+                            if flags_chirho == O_RDONLY_CHIRHO {
+                                pipe_chirho.readers_chirho += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Self {
-            fds_chirho: self.fds_chirho.clone(),
+            fds_chirho: cloned_fds_chirho,
             paths_chirho: self.paths_chirho.clone(),
             cloexec_chirho: self.cloexec_chirho.clone(),
         }

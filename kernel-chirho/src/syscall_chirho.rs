@@ -3957,7 +3957,23 @@ fn sys_select_chirho(
                 if let Some(ref fs_data_chirho) = file_arc_chirho.lock().inode_chirho.lock().fs_data_chirho {
                     if let Some(pipe_chirho) = fs_data_chirho.downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>() {
                         let pg_chirho = pipe_chirho.lock();
-                        !pg_chirho.buffer_chirho.is_empty() || pg_chirho.closed_write_chirho
+                        let buf_ready_chirho = !pg_chirho.buffer_chirho.is_empty();
+                        let wr_closed_chirho = pg_chirho.closed_write_chirho;
+                        let ready_chirho = buf_ready_chirho || wr_closed_chirho;
+                        // Diagnostic: log why pipe fd 7 is ready for PID 2
+                        if ready_chirho && fd_chirho == 7 {
+                            let pipe_pid_chirho = crate::task_chirho::current_task_chirho()
+                                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                            if pipe_pid_chirho == 2 {
+                                crate::serial_println_chirho!(
+                                    "[PIPE-READY-WHY] pid=2 fd=7 buf_len={} closed_write={} writers={}",
+                                    pg_chirho.buffer_chirho.len(),
+                                    wr_closed_chirho,
+                                    pg_chirho.writers_chirho,
+                                );
+                            }
+                        }
+                        ready_chirho
                     } else { true }
                 } else { true }
             } else {
@@ -4012,6 +4028,17 @@ fn sys_select_chirho(
                 if fd_is_read_ready_chirho(fd_chirho) {
                     out_fds_chirho[byte_idx_chirho] |= 1 << bit_idx_chirho;
                     count_chirho += 1;
+                    // Diagnostic: log which fd select reports ready for PID 2
+                    {
+                        let sel_pid_chirho = crate::task_chirho::current_task_chirho()
+                            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                        if sel_pid_chirho == 2 {
+                            crate::serial_println_chirho!(
+                                "[SELECT-READY] pid=2 fd={} is ready (nfds={})",
+                                fd_chirho, nfds_chirho,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -4045,51 +4072,13 @@ fn sys_select_chirho(
                 }
             }
         }
-        // Diagnostic: log pipe scan for PID 3
-        {
-            let scan_pid_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if scan_pid_chirho == 3 {
-                use core::sync::atomic::{AtomicU64, Ordering as ScanOrd};
-                static SCAN_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                let sc_chirho = SCAN_CNT_CHIRHO.fetch_add(1, ScanOrd::Relaxed);
-                if sc_chirho < 5 {
-                    for check_fd_chirho in actual_nfds_chirho..16usize {
-                        let exists_chirho = crate::fs_chirho::lookup_fd_chirho(check_fd_chirho as u64).is_some();
-                        if exists_chirho {
-                            crate::serial_println_chirho!(
-                                "[PIPE-SCAN] pid=3 #{} fd={} exists nfds={}",
-                                sc_chirho, check_fd_chirho, nfds_chirho,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        for fd_chirho in actual_nfds_chirho..16 {
-            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
-                let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
-                let is_fifo_chirho = (mode_chirho & 0o170000) == 0o10000;
-                if is_fifo_chirho && fd_is_read_ready_chirho(fd_chirho) {
-                    let byte_idx_chirho = fd_chirho / 8;
-                    let bit_idx_chirho = fd_chirho % 8;
-                    out_fds_chirho[byte_idx_chirho] |= 1 << bit_idx_chirho;
-                    count_chirho += 1;
-                    // Codex-directed diagnostic: log FIFO beyond nfds becoming ready
-                    {
-                        use core::sync::atomic::{AtomicU64, Ordering as PipeOrd};
-                        static PIPE_HIT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                        let pc_chirho = PIPE_HIT_CHIRHO.fetch_add(1, PipeOrd::Relaxed);
-                        if pc_chirho < 10 {
-                            crate::serial_println_chirho!(
-                                "[PIPE-SELECT] #{} fd={} ready beyond nfds={}",
-                                pc_chirho, fd_chirho, nfds_chirho,
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        // (PID-specific pipe scan diagnostic removed — was debug scaffolding)
+        // DELETED: pipe scan beyond nfds.
+        // Was a workload-specific workaround that injected spurious "ready"
+        // fds into select's result set. Violated PRD rule: "No new workload-
+        // specific behavior in generic syscall." Caused dropbear parent to
+        // receive unexpected ready fds after fork, sending it down a cleanup
+        // path that double-freed a buffer (rax="ssh-ed25" in heap metadata).
         let out_size_chirho = if count_chirho > 0 {
             // Write enough bytes to cover all set bits (at least set_size, up to 2)
             core::cmp::max(set_size_chirho, 2)
