@@ -967,8 +967,37 @@ impl Ext4MountChirho {
         }
 
         if !inode_chirho.uses_extents_chirho() {
-            // Non-extent (legacy block map) — not supported yet.
-            return None;
+            // Non-extent (legacy block map): i_block[0..11] are direct block
+            // pointers, i_block[12] is single-indirect, etc.
+            // For small files (< 48KB), direct blocks suffice.
+            let blk0_chirho = { inode_chirho.i_block_chirho[0] };
+            let bsz_chirho = self.block_size_chirho;
+            crate::serial_println_chirho!(
+                "[EXT4-LEGACY] Reading legacy block map file: size={} i_block[0]={} block_size={}",
+                file_size_chirho, blk0_chirho, bsz_chirho,
+            );
+            let mut data_chirho = Vec::with_capacity(file_size_chirho);
+            let block_size_chirho = self.block_size_chirho as usize;
+            for i_chirho in 0..12usize {
+                if data_chirho.len() >= file_size_chirho {
+                    break;
+                }
+                let block_nr_chirho = inode_chirho.i_block_chirho[i_chirho];
+                if block_nr_chirho == 0 {
+                    // Sparse file hole — zero-fill
+                    let fill_chirho = core::cmp::min(block_size_chirho, file_size_chirho - data_chirho.len());
+                    data_chirho.extend(core::iter::repeat(0u8).take(fill_chirho));
+                    continue;
+                }
+                let offset_chirho = block_nr_chirho as u64 * block_size_chirho as u64;
+                let to_read_chirho = core::cmp::min(block_size_chirho, file_size_chirho - data_chirho.len());
+                let mut block_buf_chirho = alloc::vec![0u8; block_size_chirho];
+                if let Some(_n_chirho) = self.read_block_into_chirho(block_nr_chirho as u64, &mut block_buf_chirho) {
+                    data_chirho.extend_from_slice(&block_buf_chirho[..to_read_chirho]);
+                }
+            }
+            data_chirho.truncate(file_size_chirho);
+            return Some(data_chirho);
         }
 
         let header_chirho = inode_chirho.extent_header_chirho();

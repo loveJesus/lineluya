@@ -123,6 +123,12 @@ pub fn init_fs_chirho() {
             {
                 crate::serial_debug_chirho!("[VFS] init mkdir /sbin failed: {}", mkdir_error_chirho);
             }
+            // Create /etc for profile overrides and synthetic auth files.
+            if let Err(mkdir_error_chirho) =
+                root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "etc", 0o755)
+            {
+                crate::serial_debug_chirho!("[VFS] init mkdir /etc failed: {}", mkdir_error_chirho);
+            }
             // Create /root for ~/.profile (dropbear auto-start).
             if let Err(mkdir_error_chirho) =
                 root_inode_chirho.ops_chirho.mkdir_chirho(&root_inode_chirho, "root", 0o700)

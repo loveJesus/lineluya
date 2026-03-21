@@ -454,18 +454,23 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         serial_println_chirho!("[TEST] sys_getpid returned: {}", result_chirho);
     }
 
-    // Create /etc/profile on tmpfs to auto-start dropbear SSH server.
-    // Uses the tmpfs write API directly since ext4 disk may not have this file.
+    // Create /etc/profile and /root/.profile on tmpfs.
+    // /etc/profile is overridden because Alpine's default profile runs
+    // `id -u` and `hostname` in a code path that our embedded BusyBox's ash
+    // triggers (no $BB_ASH_VERSION set). These fork+exec's are too slow
+    // during boot and stall the shell before dropbear starts.
     {
-        // Write dropbear auto-start to /root/.profile (tmpfs).
-        // /etc/profile resolves to ext4 which we can't easily write;
-        // /root/.profile is on tmpfs and ash reads it for login shells.
-        let profile_content_chirho = "# Lineluya shell profile\nexport PS1='lineluya# '\n/usr/sbin/dropbear -R -F -E -p 2222\n";
+        let etc_profile_chirho = "# Lineluya /etc/profile\nexport PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\nexport PS1='lineluya# '\nexport CHARSET=UTF-8\nexport LANG=C.UTF-8\nexport LC_COLLATE=C\nexport LD_LIBRARY_PATH=/lib:/usr/lib\nexport PYTHONDONTWRITEBYTECODE=1\nexport PYTHONHOME=/usr\nexport PYTHONPATH=/usr/lib/python3.12\nexport PYTHONIOENCODING=utf-8\n";
+        tmpfs_chirho::write_tmpfs_file_chirho(
+            "/etc/profile",
+            etc_profile_chirho.as_bytes(),
+        );
+        let profile_content_chirho = "# Lineluya shell profile\n/usr/sbin/dropbear -R -F -E -p 2222\n";
         tmpfs_chirho::write_tmpfs_file_chirho(
             "/root/.profile",
             profile_content_chirho.as_bytes(),
         );
-        serial_println_chirho!("[INIT] Created /root/.profile with dropbear auto-start");
+        serial_println_chirho!("[INIT] Created /etc/profile + /root/.profile with dropbear auto-start");
     }
 
     // Load and execute the hello world binary
