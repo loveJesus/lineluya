@@ -931,7 +931,7 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
                 use core::sync::atomic::{AtomicU64, Ordering};
                 static HLT_SKIP_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
                 let skip_n_chirho = HLT_SKIP_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                if skip_n_chirho < 5 {
+                if skip_n_chirho < 100 {
                     crate::serial_println_chirho!(
                         "[GPF-HLT-SKIP] pid={} skipping HLT at {:#x} (skip #{})",
                         crate::scheduler_chirho::current_pid_chirho().unwrap_or(0),
