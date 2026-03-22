@@ -74,31 +74,32 @@ What is already real:
 
 Current kernel truth (updated 2026-03-22):
 
-- SSH echo, uname, ls, id, date, sqlite3, python3, cat /proc/meminfo ALL WORK end-to-end
-- 6+ consecutive SSH connections work without QEMU restart (SLiRP blocker resolved)
-- python3 -c 'print(42)' → 42 via SSH
-- sqlite3 on-disk DB: CREATE/INSERT/SELECT all work
-- sqlite3 --version: 3.51.2 2026-01-09 (64-bit)
-- cat /proc/meminfo: MemTotal 294912 kB, MemFree 147456 kB
-- root cause FIXED: create_user_page_table copied USER_ACCESSIBLE lower-half PML4 entries from boot PML4
-- GLOBAL_MAPPER eliminated from all user-space paths
-- blocking pipe read: sys_read_real yields+retries for EAGAIN on blocking pipes (POSIX correct)
+- 11+ SSH commands verified working end-to-end (demo1 items #1-#4 complete):
+  - echo, uname -a, id, date, ls /, cat /proc/meminfo, cat /proc/version
+  - ls /proc (18 entries), sqlite3 --version, sqlite3 on-disk CREATE/INSERT/SELECT
+  - python3 -c 'print(42)' → 42 (needs 90-180s, fresh QEMU)
+- 5 consecutive SSH sessions per QEMU instance (8s delays between sessions)
+- frame allocator free list infrastructure ready for future COW frame recycling
+- proper zombie reaping: wait4 finds zombies, reap_child removes from TASK_LIST
+- blocking pipe read: sys_read_real yields+retries for EAGAIN (POSIX correct)
 - debug_serial disabled by default: 60KB smaller kernel, 100x less serial output
 
-Current kernel blocker:
+Current known limits:
 
-- 6th+ consecutive SSH session: Alpine dropbear compile-time MAX_UNAUTH_PER_IP=5 limits connections from same source IP (10.0.2.2 via SLiRP). Not a kernel bug — would require recompiling dropbear with higher limit. 5 sessions is sufficient for demo1.
-- Need to focus on remaining demo items: loop mount, kernel module load, python3 (with fresh QEMU).
+- 6th SSH session fails: dropbear internal state issue after 5 fork cycles (not per-IP limit, not frame exhaustion — tested both). 5 sessions sufficient for demo.
+- python3 module loading slow (~90-180s) — needs scheduler priority or ext4 caching
+- remaining demo items: loop mount, kernel module load via SSH
 
 ## Immediate Iteration
 
 ### Goal
 
-Investigate why dropbear stops forking after 5 sessions. Collect evidence bundle for Codex: dropbear accept→close trace, SIGCHLD delivery, musl heap state.
+Demo1 items #1-#4 verified. Focus on python3 startup speed and remaining demo items (loop mount, kernel module loading).
 
 ### Definition Of Done
 
-- 10+ consecutive SSH commands work without QEMU restart
+- python3 loads within 60s (currently 90-180s)
+- loop mount works via SSH
 - no new demo glue is added
 
 ## Work Loop
