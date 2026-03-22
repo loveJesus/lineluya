@@ -745,49 +745,10 @@ fn map_anonymous_pages_chirho(
                 );
             }
             if already_mapped_chirho {
-                // Check COW status and frame refcount to decide action.
-                let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
-                let (is_cow_chirho, frame_phys_val_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                    cr3_uf_chirho.start_address(),
-                    VirtAddr::new(page_addr_chirho),
-                ).map(|pte_ptr_chirho| unsafe {
-                    let cow_chirho = !(*pte_ptr_chirho).flags().contains(
-                        x86_64::structures::paging::PageTableFlags::WRITABLE
-                    );
-                    let phys_chirho = (*pte_ptr_chirho).addr().as_u64();
-                    (cow_chirho, phys_chirho)
-                }).unwrap_or((false, 0));
-
-                // Log COW+ref info for channels page
-                if page_addr_chirho >= 0x7efffffe4000 && page_addr_chirho < 0x7efffffe5000 {
-                    let ref_dbg_chirho = crate::pagetable_chirho::frame_ref_count_chirho(frame_phys_val_chirho);
-                    crate::serial_println_chirho!(
-                        "[COW-REF] pid={} page={:#x} cow={} ref={} phys={:#x}",
-                        mmap_pid_chirho, page_addr_chirho, is_cow_chirho,
-                        ref_dbg_chirho, frame_phys_val_chirho,
-                    );
-                }
-                if is_cow_chirho {
-                    // COW page: unmap stale mapping and allocate fresh.
-                    // The old frame is returned to the free list.
-                    // For COW pages OR PID>=3 pages in the mmap heap arena:
-                    // always unmap + reallocate fresh frame. The mmap arena
-                    // range is limited (~32MB max) to prevent OOM.
-                    // Unmap stale mapping, fall through to fresh alloc
-                    if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                        cr3_uf_chirho.start_address(),
-                        VirtAddr::new(page_addr_chirho),
-                    ) {
-                        unsafe { (*pte_ptr_chirho).set_unused(); }
-                        x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
-                    }
-                    crate::pagetable_chirho::frame_ref_dec_chirho(frame_phys_val_chirho);
-                    // Return old frame to free list (prevents OOM).
-                    if frame_phys_val_chirho != 0 {
-                        crate::mm_chirho::free_frame_chirho(frame_phys_val_chirho);
-                    }
-                } else {
-                    // Writable (owned): safe to reuse, just update flags
+                // Reuse the existing frame — just update flags via CR3 walk.
+                // This is safe for reused mappings (same address, same frame).
+                {
+                    let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
                     if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
                         cr3_uf_chirho.start_address(),
                         VirtAddr::new(page_addr_chirho),
@@ -809,13 +770,7 @@ fn map_anonymous_pages_chirho(
             let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
             match alloc_lock_chirho.as_mut() {
                 Some(alloc_chirho) => match alloc_chirho.allocate_frame() {
-                    Some(f_chirho) => {
-                        // Initialize refcount to 1 (single owner).
-                        crate::pagetable_chirho::frame_ref_inc_chirho(
-                            f_chirho.start_address().as_u64()
-                        );
-                        f_chirho
-                    },
+                    Some(f_chirho) => f_chirho,
                     None => return Err(-ENOMEM_CHIRHO),
                 },
                 None => return Err(-ENOMEM_CHIRHO),
@@ -979,9 +934,6 @@ use x86_64::structures::paging::{OffsetPageTable, PhysFrame, Size4KiB, FrameAllo
 pub struct GlobalFrameAllocatorChirho {
     next_frame_index_chirho: usize,
     memory_regions_chirho: &'static bootloader_api::info::MemoryRegions,
-    /// Free list: frames returned by deallocate_frame.
-    /// Checked first by allocate_frame before bumping the index.
-    free_list_chirho: alloc::vec::Vec<PhysFrame<Size4KiB>>,
 }
 
 impl GlobalFrameAllocatorChirho {
@@ -994,18 +946,12 @@ impl GlobalFrameAllocatorChirho {
         Self {
             next_frame_index_chirho: start_index_chirho,
             memory_regions_chirho,
-            free_list_chirho: alloc::vec::Vec::new(),
         }
     }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocatorChirho {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        // Check free list first (recycled frames).
-        if let Some(recycled_chirho) = self.free_list_chirho.pop() {
-            return Some(recycled_chirho);
-        }
-        // Bump allocator fallback.
         use bootloader_api::info::MemoryRegionKind;
         use x86_64::PhysAddr;
 
@@ -1023,24 +969,6 @@ unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocatorChirho {
 
         self.next_frame_index_chirho += 1;
         frame_chirho
-    }
-}
-
-impl GlobalFrameAllocatorChirho {
-    /// Return a frame to the free list for reuse.
-    pub fn deallocate_frame_chirho(&mut self, frame_chirho: PhysFrame<Size4KiB>) {
-        self.free_list_chirho.push(frame_chirho);
-    }
-}
-
-/// Helper: return a frame to the global allocator's free list.
-pub fn free_frame_chirho(phys_addr_chirho: u64) {
-    use x86_64::PhysAddr;
-    let frame_chirho = PhysFrame::<Size4KiB>::containing_address(
-        PhysAddr::new(phys_addr_chirho)
-    );
-    if let Some(alloc_chirho) = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock().as_mut() {
-        alloc_chirho.deallocate_frame_chirho(frame_chirho);
     }
 }
 

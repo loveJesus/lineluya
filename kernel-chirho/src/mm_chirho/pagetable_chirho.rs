@@ -45,17 +45,6 @@ const KERNEL_PML4_START_CHIRHO: usize = 256;
 pub const COW_BIT_CHIRHO: u64 = 1 << 9;
 
 // ============================================================================
-// Frame reference counting for COW
-// ============================================================================
-
-/// Frame refcounting stubs. The 128KB static array caused OOM by
-/// consuming kernel BSS space that the bump allocator needs.
-/// TODO: implement with heap-allocated storage after kernel heap init.
-pub fn frame_ref_inc_chirho(_phys_addr_chirho: u64) {}
-pub fn frame_ref_dec_chirho(_phys_addr_chirho: u64) {}
-pub fn frame_ref_count_chirho(_phys_addr_chirho: u64) -> u8 { 0 }
-
-// ============================================================================
 // Physical memory offset storage
 // ============================================================================
 
@@ -461,17 +450,6 @@ fn clone_table_level_chirho(
                 cow_flags_chirho.insert(PageTableFlags::BIT_9);
                 source_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
-                // Track sharing: both parent and child now share this frame.
-                // Increment refcount (from 0→2 for first fork, or N→N+1 for re-fork).
-                let current_ref_chirho = frame_ref_count_chirho(entry_addr_chirho.as_u64());
-                if current_ref_chirho == 0 {
-                    // First time sharing: set to 2 (parent + child)
-                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
-                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
-                } else {
-                    // Already shared: just add one more reference
-                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
-                }
             } else {
                 // Kernel or non-user page — share directly.
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
@@ -605,23 +583,8 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
         return false; // Not a COW page — genuine fault.
     }
 
-    // The page is COW. Check refcount to decide whether to copy or just
-    // make writable. If refcount <= 1, the frame is effectively private
-    // (the other side exec'd or exited) — just clear COW and make writable.
+    // The page is COW. Allocate a new frame, copy data, remap writable.
     let old_frame_phys_chirho = pte_chirho.addr();
-    let ref_count_chirho = frame_ref_count_chirho(old_frame_phys_chirho.as_u64());
-    if ref_count_chirho <= 1 {
-        // Frame is private (or untracked) — just make writable, no copy needed.
-        let mut new_flags_chirho = flags_chirho;
-        new_flags_chirho.insert(PageTableFlags::WRITABLE);
-        new_flags_chirho.remove(PageTableFlags::BIT_9);
-        unsafe {
-            (*pte_ptr_chirho).set_addr(old_frame_phys_chirho, new_flags_chirho);
-        }
-        x86_64::instructions::tlb::flush(faulting_addr_chirho);
-        return true;
-    }
-    // Refcount >= 2: frame is genuinely shared. Must copy.
 
     let new_frame_chirho = {
         // Use try_lock to avoid deadlock if the allocator is already locked
@@ -666,13 +629,6 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
             new_virt_chirho.as_mut_ptr::<u8>(),
             PAGE_SIZE_CHIRHO as usize,
         );
-    }
-
-    // Decrement refcount on old frame (one fewer reference after copy).
-    frame_ref_dec_chirho(old_frame_phys_chirho.as_u64());
-    // If refcount dropped to 0, return the old frame to the free list.
-    if frame_ref_count_chirho(old_frame_phys_chirho.as_u64()) == 0 {
-        crate::mm_chirho::free_frame_chirho(old_frame_phys_chirho.as_u64());
     }
 
     // Update the PTE: point to new frame, set WRITABLE, clear COW bit.
