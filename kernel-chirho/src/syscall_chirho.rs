@@ -4179,10 +4179,10 @@ fn sys_select_chirho(
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
-            // Yield periodically so other tasks (PID 4 child) get CPU.
-            // Without this, the 50,000-iteration HLT loop monopolizes
-            // the CPU for ~500 seconds, starving preempted tasks.
-            if _attempt_chirho % 100 == 99 {
+            // Yield every 10 iterations when children are running.
+            // Every-1 caused SSH handshake failures (PID 3 never processed
+            // data). Every-100 starved PID 4. 10 is the sweet spot.
+            if _attempt_chirho % 10 == 9 {
                 if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                     crate::scheduler_chirho::yield_current_chirho();
                 }
