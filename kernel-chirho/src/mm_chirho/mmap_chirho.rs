@@ -666,20 +666,7 @@ fn map_anonymous_pages_chirho(
         let page_chirho: Page<Size4KiB> =
             Page::containing_address(VirtAddr::new(page_addr_chirho));
 
-        // Check if the page is already mapped (from a previous exec).
-        // If so, just update flags — don't allocate a new frame.
-        //
-        // CRITICAL: This optimization MUST be disabled for forked processes
-        // (PID >= 2). After fork, the child's page table has deep-copied
-        // entries pointing to COW-shared physical frames. If exec reuses
-        // these frames (via already_mapped), the new ELF data overwrites
-        // the shared frame. The parent then reads the child's ELF .text
-        // instead of its own .data, causing deterministic GPFs (e.g.,
-        // rbx loads instruction bytes 0x10ff00012c62058b from what should
-        // be a channel struct pointer).
-        //
-        // Only PID 0/1 (boot process before any fork) can safely reuse
-        // pre-existing mappings from the bootloader.
+        // Check if the page is already mapped. If so, update flags and reuse.
         {
             let mmap_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
@@ -697,44 +684,23 @@ fn map_anonymous_pages_chirho(
             };
 
             if already_mapped_chirho {
-                if mmap_pid_chirho < 3 {
-                    // PID 0-2: reuse existing frame (update flags only).
-                    // Safe — boot PT, no stale mapper intermediates.
-                    let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
-                    if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                        cr3_uf_chirho.start_address(),
-                        VirtAddr::new(page_addr_chirho),
-                    ) {
-                        unsafe {
-                            (*pte_ptr_chirho).set_addr(
-                                (*pte_ptr_chirho).addr(), flags_chirho,
-                            );
-                        }
-                        x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                // Page exists in current PT. Update flags and reuse.
+                // Safe for all PIDs: create_user_page_table_chirho no longer
+                // copies user-accessible boot PML4 entries (the fix that
+                // resolved the cross-process PTE corruption / sqlite3 GPF).
+                let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
+                if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                    cr3_uf_chirho.start_address(),
+                    VirtAddr::new(page_addr_chirho),
+                ) {
+                    unsafe {
+                        (*pte_ptr_chirho).set_addr(
+                            (*pte_ptr_chirho).addr(), flags_chirho,
+                        );
                     }
-                    continue;
+                    x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
                 }
-                // PID >= 3: for pages in the channels PT range, fall through
-                // to fresh allocation (overwrites stale phantom PTE).
-                // For all other pages, reuse (safe — same process's frame).
-                if page_addr_chirho >= 0x7EFFFFFE0000 && page_addr_chirho < 0x7EFFFFF00000 {
-                    // Channels PT range: fall through to fresh allocation
-                } else {
-                    // Safe to reuse — update flags and continue
-                    let (cr3_p3_chirho, _) = x86_64::registers::control::Cr3::read();
-                    if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                        cr3_p3_chirho.start_address(),
-                        VirtAddr::new(page_addr_chirho),
-                    ) {
-                        unsafe {
-                            (*pte_ptr_chirho).set_addr(
-                                (*pte_ptr_chirho).addr(), flags_chirho,
-                            );
-                        }
-                        x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
-                    }
-                    continue;
-                }
+                continue;
             }
         }
 
