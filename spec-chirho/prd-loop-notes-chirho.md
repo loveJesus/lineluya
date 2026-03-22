@@ -87,13 +87,13 @@ Current kernel truth (updated 2026-03-22):
 
 Current kernel blocker:
 
-- 6th+ consecutive SSH session fails: dropbear accepts but doesn't fork due to COW page exhaustion in bump frame allocator (never frees frames). Architecture fix needed: frame freeing or frame reuse.
+- 6th+ consecutive SSH session fails: dropbear accepts but immediately closes without forking. NOT frame exhaustion (free list added, frames available). Root cause: dropbear's internal fork decision fails after 5 sessions. Likely SIGCHLD handling, musl heap state, or COW-corrupted dropbear data. Architecture-shaped — needs Codex analysis.
 
 ## Immediate Iteration
 
 ### Goal
 
-Fix frame allocator to reclaim COW pages, enabling unlimited consecutive SSH sessions. Verify remaining demo1 items (loop mount, kernel module load).
+Investigate why dropbear stops forking after 5 sessions. Collect evidence bundle for Codex: dropbear accept→close trace, SIGCHLD delivery, musl heap state.
 
 ### Definition Of Done
 
