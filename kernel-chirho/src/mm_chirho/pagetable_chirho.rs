@@ -310,23 +310,25 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
         }
     }
 
-    // Copy ALL non-zero lower-half entries from the boot PML4.
-    // The bootloader places critical mappings in the lower half:
-    //   PML4[0]: possible identity mapping for boot structures
-    //   PML4[2]: kernel binary (virtual_address_offset = 0x10000000000)
-    //   PML4[5]: physical memory window (phys_mem_offset = 0x28000000000)
-    // Without ALL of these, the kernel code, page tables, and physical
-    // memory are inaccessible after CR3 switch, causing triple faults.
+    // Copy ONLY kernel-critical lower-half entries from the boot PML4.
+    // Skip user-accessible entries (PID 0's BusyBox, heap, mmap arena) —
+    // these cause cross-process PTE corruption if shared between PTs.
     //
-    // User-space program mappings (ELF code, heap, stack) are NOT in
-    // the boot PML4's lower half — they're added per-process by execve
-    // and the page fault handler's lazy migration.
+    // Kernel-critical lower-half entries include:
+    //   - Kernel code (virtual_address_offset, typically PML4[16])
+    //   - Physical memory window (already copied above at PML4[4])
+    //   - Bootloader identity maps (PML4[0] without USER_ACCESSIBLE)
     for i_chirho in 0..KERNEL_PML4_START_CHIRHO {
         if !source_pml4_chirho[i_chirho].is_unused() {
-            new_pml4_chirho[i_chirho].set_addr(
-                source_pml4_chirho[i_chirho].addr(),
-                source_pml4_chirho[i_chirho].flags(),
-            );
+            // Only copy entries that are NOT user-accessible.
+            // User-accessible entries are PID 0's program mappings.
+            let flags_chirho = source_pml4_chirho[i_chirho].flags();
+            if !flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) {
+                new_pml4_chirho[i_chirho].set_addr(
+                    source_pml4_chirho[i_chirho].addr(),
+                    flags_chirho,
+                );
+            }
         }
     }
 
