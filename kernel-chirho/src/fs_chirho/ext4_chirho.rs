@@ -780,10 +780,12 @@ impl PageCacheChirho {
 
 /// Global page cache instance (protected by a spinlock).
 /// Bounded to 64 entries (~256KB with 4K blocks) to prevent OOM during
-/// heavy I/O (dropbear .so loading) while keeping enough entries for
-/// ext4 write operations (inode table + bitmap + data blocks).
+/// Block cache for ext4 reads. 512 entries × 4KB = 2MB of cached blocks.
+/// Python3 loads ~26 modules, each requiring multiple directory traversals
+/// and inode reads. The old 64-entry cache caused constant evictions of
+/// frequently-read directory blocks, making python3 take 130s+ to load.
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
-    spin::Mutex::new(PageCacheChirho::new_chirho(64));
+    spin::Mutex::new(PageCacheChirho::new_chirho(512));
 
 // ===========================================================================
 // A4-009: ext4 read-only VFS integration
@@ -869,14 +871,6 @@ impl Ext4MountChirho {
                 return Some(data_chirho.to_vec());
             }
         }
-        // Log cache miss for device 99 (loop mounts)
-        if self.device_id_chirho >= 1 {
-            crate::serial_println_chirho!(
-                "[EXT4] read_block_cached dev={} blk={} (cache miss)",
-                self.device_id_chirho, block_nr_chirho
-            );
-        }
-
         // Cache miss — read the full 4K block in one VirtIO request.
         // VirtIO-blk supports multi-sector reads (sector count determined
         // by the data buffer size in the descriptor).
@@ -893,13 +887,7 @@ impl Ext4MountChirho {
             start_sector_chirho,
             &mut buf_chirho,
         );
-        if let Err(e_chirho) = read_result_chirho {
-            if self.device_id_chirho >= 1 {
-                crate::serial_println_chirho!(
-                    "[EXT4] read_block FAILED dev={} sector={} err={}",
-                    self.device_id_chirho, start_sector_chirho, e_chirho
-                );
-            }
+        if let Err(_e_chirho) = read_result_chirho {
             return None;
         }
 
