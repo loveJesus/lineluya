@@ -808,9 +808,9 @@ fn reap_child_chirho(
         }
     }
 
-    // Mark the child as Dead (fully reaped).
+    // Mark the child as Dead (fully reaped) and remove from TASK_LIST.
     {
-        let task_list_chirho = TASK_LIST_CHIRHO.lock();
+        let mut task_list_chirho = TASK_LIST_CHIRHO.lock();
         for task_arc_chirho in task_list_chirho.iter() {
             let mut task_chirho = task_arc_chirho.lock();
             if task_chirho.pid_chirho == reaped_pid_chirho {
@@ -818,13 +818,15 @@ fn reap_child_chirho(
                 break;
             }
         }
+        // Remove dead task from list so PID/context slots can be reused.
+        task_list_chirho.retain(|t| t.lock().pid_chirho != reaped_pid_chirho);
     }
 
     // Remove the dead child from the scheduler (should already be
     // gone, but be safe).
     crate::scheduler_chirho::remove_task_chirho(reaped_pid_chirho);
 
-    crate::serial_debug_chirho!(
+    crate::serial_println_chirho!(
         "[PROCESS] wait4: reaped child PID={}, exit_code={}",
         reaped_pid_chirho,
         exit_code_chirho

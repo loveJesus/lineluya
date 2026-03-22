@@ -3027,24 +3027,16 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
     let caller_pid_chirho = threads_chirho.first().map(|&(p, _)| p).unwrap_or(0);
     if caller_pid_chirho >= 3 {
         crate::serial_println_chirho!(
-            "[SYSCALL] exit_group: PID {} is daemon child — auto-reaping",
+            "[SYSCALL] exit_group: PID {} is daemon child — zombie, waiting for parent reap",
             caller_pid_chirho
         );
-        // Wake parent in case it's blocked on wait4.
+        // Wake parent in case it's blocked on wait4 or select.
         crate::process_chirho::wake_child_exit_waitqueue_chirho();
-        // Auto-reap all zombies from this thread group so PID/context
-        // slots are freed for new SSH sessions.
-        {
-            let zombie_pids_chirho: alloc::vec::Vec<u64> = threads_chirho
-                .iter().map(|&(p, _)| p).collect();
-            let mut task_list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
-            task_list_chirho.retain(|t| {
-                let pid_chirho = t.lock().pid_chirho;
-                !zombie_pids_chirho.contains(&pid_chirho)
-            });
-        }
-        // Yield to parent — schedule() will pick the next runnable task
-        // since this PID is no longer in the run queue or task list.
+        // Do NOT remove from TASK_LIST — the zombie must stay so the
+        // parent can call waitpid(-1, WNOHANG) to reap it and decrement
+        // its internal connection counter. Without this, dropbear's
+        // SIGCHLD handler gets -ECHILD, never decrements maxconns,
+        // and stops forking after 5 sessions.
         crate::scheduler_chirho::schedule_chirho();
         loop {
             x86_64::instructions::hlt();
@@ -4289,11 +4281,10 @@ fn sys_select_chirho(
                         // Auto-reap: remove zombie from task list so PID slots
                         // are freed for new SSH sessions. Without this, zombies
                         // accumulate (PID 2 may not call wait4 promptly) and
-                        // the kernel runs out of context slots after ~30 connections.
-                        {
-                            let mut task_list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
-                            task_list_chirho.retain(|t| t.lock().pid_chirho != sel_pid_chirho);
-                        }
+                        // Do NOT remove from TASK_LIST — parent needs
+                        // waitpid to find the zombie and reap it (decrement
+                        // dropbear's connection counter). reap_child removes
+                        // from TASK_LIST when wait4 is called.
                         crate::scheduler_chirho::schedule_chirho();
                     }
                     return 0;
