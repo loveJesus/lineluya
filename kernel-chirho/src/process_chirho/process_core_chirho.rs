@@ -1171,8 +1171,6 @@ pub fn sys_execve_with_filename_chirho(
                 "[PROCESS] execve: authoritative — fresh PT {:#x}, CR3 switched",
                 pt_root_chirho.as_u64(),
             );
-            // Record the exec watermark for phantom PTE detection.
-            crate::mm_chirho::set_exec_watermark_chirho();
         }
     }
 

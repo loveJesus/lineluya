@@ -758,47 +758,24 @@ fn map_anonymous_pages_chirho(
                     }
                     continue;
                 }
-                // PID >= 3: check frame refcount to decide action.
-                let (cr3_p3_chirho, _) = x86_64::registers::control::Cr3::read();
-                let existing_phys_chirho = crate::pagetable_chirho::walk_page_table_chirho(
-                    cr3_p3_chirho.start_address(),
-                    VirtAddr::new(page_addr_chirho),
-                ).map(|p| unsafe { (*p).addr().as_u64() }).unwrap_or(0);
-                let ref_cnt_chirho = crate::pagetable_chirho::frame_ref_count_chirho(existing_phys_chirho);
-                if page_addr_chirho >= 0x7efffffe4000 && page_addr_chirho < 0x7efffffe5000 {
-                    crate::serial_println_chirho!(
-                        "[REF-CHECK] pid={} page={:#x} phys={:#x} ref={}",
-                        mmap_pid_chirho, page_addr_chirho, existing_phys_chirho, ref_cnt_chirho,
-                    );
-                }
-                // Check if the frame is a pre-exec phantom (from stale
-                // GLOBAL_MAPPER). Use BOTH refcount AND watermark:
-                // - ref >= 2: definitely shared (fork COW) → unmap
-                // - pre-exec frame (below watermark): phantom PTE → unmap
-                // - ref=1 AND post-exec: genuinely ours → reuse
-                // Only check pre-exec phantoms in the mmap heap arena
-                // (0x7efffffe0000+). ELF segment pages are correctly
-                // mapped by map_page_in_pt_chirho during exec.
-                // Check the 2MB-aligned range containing the channels page.
-                // 0x7EFFFFFE0000 is in the 2MB block 0x7EFFFFC00000-0x7EFFFFDFFFFF.
-                // Only phantom-check pages in this specific 2MB range.
-                let in_mmap_arena_chirho = page_addr_chirho >= 0x7EFFFFFE0000
-                    && page_addr_chirho <= 0x7EFFFFFFEFFF;
-                let is_phantom_chirho = ref_cnt_chirho >= 2
-                    || (in_mmap_arena_chirho
-                        && crate::mm_chirho::is_pre_exec_frame_chirho(existing_phys_chirho));
-                if is_phantom_chirho {
-                    // Shared or phantom frame: unmap, fall through to fresh.
-                    if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                        cr3_p3_chirho.start_address(),
-                        VirtAddr::new(page_addr_chirho),
-                    ) {
-                        unsafe { (*pte_ptr_chirho).set_unused(); }
-                        x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                {
+                    use core::sync::atomic::{AtomicU64, Ordering as FtOrd};
+                    static FT_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let c_chirho = FT_CNT_CHIRHO.fetch_add(1, FtOrd::Relaxed);
+                    if c_chirho < 5 || c_chirho % 100 == 0 {
+                        crate::serial_println_chirho!(
+                            "[FALLTHRU] #{} pid={} page={:#x}", c_chirho, mmap_pid_chirho, page_addr_chirho,
+                        );
                     }
-                    // Fall through to fresh frame allocation
+                }
+                // PID >= 3: for pages in the channels PT range, fall through
+                // to fresh allocation (overwrites stale phantom PTE).
+                // For all other pages, reuse (safe — same process's frame).
+                if page_addr_chirho >= 0x7EFFFFFE0000 && page_addr_chirho < 0x7EFFFFF00000 {
+                    // Fall through — map_page_in_pt_chirho overwrites stale PTE
                 } else {
-                    // Post-exec, ref ≤ 1: genuinely ours, safe to reuse.
+                    // Safe to reuse — update flags and continue
+                    let (cr3_p3_chirho, _) = x86_64::registers::control::Cr3::read();
                     if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
                         cr3_p3_chirho.start_address(),
                         VirtAddr::new(page_addr_chirho),
@@ -820,13 +797,7 @@ fn map_anonymous_pages_chirho(
             let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
             match alloc_lock_chirho.as_mut() {
                 Some(alloc_chirho) => match alloc_chirho.allocate_frame() {
-                    Some(f_chirho) => {
-                        // Init refcount to 1 (single owner).
-                        crate::pagetable_chirho::frame_ref_inc_chirho(
-                            f_chirho.start_address().as_u64()
-                        );
-                        f_chirho
-                    },
+                    Some(f_chirho) => f_chirho,
                     None => return Err(-ENOMEM_CHIRHO),
                 },
                 None => return Err(-ENOMEM_CHIRHO),
@@ -990,44 +961,6 @@ use x86_64::structures::paging::{OffsetPageTable, PhysFrame, Size4KiB, FrameAllo
 pub struct GlobalFrameAllocatorChirho {
     next_frame_index_chirho: usize,
     memory_regions_chirho: &'static bootloader_api::info::MemoryRegions,
-}
-
-/// Per-process exec watermark: physical address above which all frames
-/// belong to the current exec. Frames below this were allocated before
-/// exec (inherited from parent via stale GLOBAL_MAPPER). Used to detect
-/// phantom PTEs in the already_mapped check.
-static EXEC_FRAME_WATERMARK_CHIRHO: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-
-/// Set the exec watermark to the current allocator position.
-/// Called from sys_execve after creating the fresh PT.
-pub fn set_exec_watermark_chirho() {
-    if let Some(alloc_chirho) = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock().as_ref() {
-        // Get the NEXT frame that would be allocated.
-        // All frames >= this address are from this exec.
-        use bootloader_api::info::MemoryRegionKind;
-        let watermark_chirho = alloc_chirho.memory_regions_chirho
-            .iter()
-            .filter(|r| r.kind == MemoryRegionKind::Usable)
-            .flat_map(|r| {
-                let start = (r.start + PAGE_SIZE_CHIRHO - 1) & !(PAGE_SIZE_CHIRHO - 1);
-                (start..r.end).step_by(PAGE_SIZE_CHIRHO as usize)
-            })
-            .nth(alloc_chirho.next_frame_index_chirho)
-            .unwrap_or(0);
-        EXEC_FRAME_WATERMARK_CHIRHO.store(
-            watermark_chirho,
-            core::sync::atomic::Ordering::Relaxed,
-        );
-    }
-}
-
-/// Check if a physical frame was allocated BEFORE the current exec.
-pub fn is_pre_exec_frame_chirho(phys_addr_chirho: u64) -> bool {
-    let watermark_chirho = EXEC_FRAME_WATERMARK_CHIRHO.load(
-        core::sync::atomic::Ordering::Relaxed,
-    );
-    watermark_chirho > 0 && phys_addr_chirho < watermark_chirho
 }
 
 impl GlobalFrameAllocatorChirho {
