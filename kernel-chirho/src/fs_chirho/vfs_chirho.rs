@@ -457,19 +457,13 @@ impl FdTableChirho {
             if self.fds_chirho[fd_chirho].is_some()
                 && self.cloexec_chirho.get(fd_chirho).copied().unwrap_or(false)
             {
-                if fd_chirho == 9 {
-                    crate::serial_println_chirho!(
-                        "[CLOEXEC-CLOSE9] fd=9 closed by close_cloexec_fds table_ptr={:#x}",
-                        self.fds_chirho.as_ptr() as u64,
-                    );
-                }
-                self.fds_chirho[fd_chirho] = None;
-                if fd_chirho < self.paths_chirho.len() {
-                    self.paths_chirho[fd_chirho] = None;
-                }
-                if fd_chirho < self.cloexec_chirho.len() {
-                    self.cloexec_chirho[fd_chirho] = false;
-                }
+                // Use close_chirho() instead of just dropping the Arc.
+                // close_chirho() properly decrements pipe writer/reader
+                // counts and sets closed_write/closed_read when they
+                // reach 0. Without this, inherited childpipe fds keep
+                // writers_chirho > 0 after exec, preventing the parent's
+                // select from detecting pipe EOF.
+                let _ = self.close_chirho(fd_chirho);
             }
         }
     }
@@ -480,6 +474,30 @@ impl FdTableChirho {
     pub fn clear_all_cloexec_flags_chirho(&mut self) {
         for fd_chirho in 0..self.cloexec_chirho.len() {
             self.cloexec_chirho[fd_chirho] = false;
+        }
+    }
+
+    /// Close all pipe fds > 2 that aren't stdin/stdout/stderr.
+    /// Called during exec to release inherited parent pipe fds (e.g.,
+    /// dropbear's childpipe) that don't have O_CLOEXEC set.
+    pub fn close_non_stdio_pipes_chirho(&mut self) {
+        // First pass: identify which fds are pipes
+        let mut pipe_fds_chirho = alloc::vec::Vec::new();
+        for fd_chirho in 3..self.fds_chirho.len() {
+            if let Some(ref file_arc_chirho) = self.fds_chirho[fd_chirho] {
+                let is_pipe_chirho = {
+                    let fg_chirho = file_arc_chirho.lock();
+                    let inode_guard_chirho = fg_chirho.inode_chirho.lock();
+                    (inode_guard_chirho.mode_chirho & 0o170000) == 0o010000
+                };
+                if is_pipe_chirho {
+                    pipe_fds_chirho.push(fd_chirho);
+                }
+            }
+        }
+        // Second pass: close them (modifies self)
+        for fd_chirho in pipe_fds_chirho {
+            let _ = self.close_chirho(fd_chirho);
         }
     }
 
@@ -529,6 +547,17 @@ impl FdTableChirho {
 
         Self {
             fds_chirho: cloned_fds_chirho,
+            paths_chirho: self.paths_chirho.clone(),
+            cloexec_chirho: self.cloexec_chirho.clone(),
+        }
+    }
+
+    /// Clone the fd table WITHOUT incrementing pipe reader/writer counters.
+    /// Used during exec where the cloned table replaces the existing one
+    /// (same process, not a new process) — no new pipe references are created.
+    pub fn clone_table_no_pipe_inc_chirho(&self) -> Self {
+        Self {
+            fds_chirho: self.fds_chirho.clone(),
             paths_chirho: self.paths_chirho.clone(),
             cloexec_chirho: self.cloexec_chirho.clone(),
         }
