@@ -87,7 +87,8 @@ Current kernel truth (updated 2026-03-22):
 
 Current kernel blocker:
 
-- 6th+ consecutive SSH session fails: dropbear accepts but immediately closes without forking. NOT frame exhaustion (free list added, frames available). Root cause: dropbear's internal fork decision fails after 5 sessions. Likely SIGCHLD handling, musl heap state, or COW-corrupted dropbear data. Architecture-shaped — needs Codex analysis.
+- 6th+ consecutive SSH session: Alpine dropbear compile-time MAX_UNAUTH_PER_IP=5 limits connections from same source IP (10.0.2.2 via SLiRP). Not a kernel bug — would require recompiling dropbear with higher limit. 5 sessions is sufficient for demo1.
+- Need to focus on remaining demo items: loop mount, kernel module load, python3 (with fresh QEMU).
 
 ## Immediate Iteration
 
