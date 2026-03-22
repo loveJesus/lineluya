@@ -87,18 +87,17 @@ Current kernel truth (updated 2026-03-22):
 
 Current kernel blocker:
 
-- ls /proc returns empty (needs procfs directory listing)
-- need to verify remaining demo1 items (loop mount, kernel module load via SSH)
+- 6th+ consecutive SSH session fails: dropbear accepts but doesn't fork due to COW page exhaustion in bump frame allocator (never frees frames). Architecture fix needed: frame freeing or frame reuse.
 
 ## Immediate Iteration
 
 ### Goal
 
-Get remaining demo1 items working: loop mount, kernel module load via SSH. Improve /proc directory listing.
+Fix frame allocator to reclaim COW pages, enabling unlimited consecutive SSH sessions. Verify remaining demo1 items (loop mount, kernel module load).
 
 ### Definition Of Done
 
-- all demo-script-chirho.md items through #4 work via SSH without restart
+- 10+ consecutive SSH commands work without QEMU restart
 - no new demo glue is added
 
 ## Work Loop
