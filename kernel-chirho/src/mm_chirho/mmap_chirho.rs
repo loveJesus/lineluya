@@ -712,17 +712,13 @@ fn map_anonymous_pages_chirho(
         {
             let mmap_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            // Check already_mapped by walking the CURRENT CR3's page table
-            // directly (not via GLOBAL_MAPPER which can be stale even with
-            // reinit). This is the reliable way to check if a page exists
-            // in the active address space.
+            // For ALL PIDs: check if page is already mapped via CR3 walk.
             let already_mapped_chirho = {
                 let (cr3_am_chirho, _) = x86_64::registers::control::Cr3::read();
                 crate::pagetable_chirho::walk_page_table_chirho(
                     cr3_am_chirho.start_address(),
                     VirtAddr::new(page_addr_chirho),
                 ).map(|pte_ptr_chirho| unsafe {
-                    // Check PRESENT flag specifically (not just non-zero).
                     (*pte_ptr_chirho).flags().contains(
                         x86_64::structures::paging::PageTableFlags::PRESENT
                     )
@@ -745,9 +741,9 @@ fn map_anonymous_pages_chirho(
                 );
             }
             if already_mapped_chirho {
-                // Reuse the existing frame — just update flags via CR3 walk.
-                // This is safe for reused mappings (same address, same frame).
-                {
+                if mmap_pid_chirho < 3 {
+                    // PID 0-2: reuse existing frame (update flags only).
+                    // Safe — boot PT, no stale mapper intermediates.
                     let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
                     if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
                         cr3_uf_chirho.start_address(),
@@ -762,6 +758,22 @@ fn map_anonymous_pages_chirho(
                     }
                     continue;
                 }
+                // PID >= 3: reuse the frame but update flags.
+                // Same as PID 0-2 for now — the stale frame issue
+                // needs frame refcounting to fix properly.
+                let (cr3_p3_chirho, _) = x86_64::registers::control::Cr3::read();
+                if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                    cr3_p3_chirho.start_address(),
+                    VirtAddr::new(page_addr_chirho),
+                ) {
+                    unsafe {
+                        (*pte_ptr_chirho).set_addr(
+                            (*pte_ptr_chirho).addr(), flags_chirho,
+                        );
+                    }
+                    x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                }
+                continue;
             }
         }
 
