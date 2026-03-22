@@ -698,7 +698,7 @@ pub fn schedule_tick_chirho() {
             let trace_count_chirho =
                 TICK_TRACE_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
             if trace_count_chirho < 64 {
-                crate::serial_println_chirho!(
+                crate::serial_debug_chirho!(
                     "[TICK-TRACE] tick={} pid={} before={} after={} need_before={} need_after={} current={:?}",
                     tick_count_chirho,
                     pid_chirho,

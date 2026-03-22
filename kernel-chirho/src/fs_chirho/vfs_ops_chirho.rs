@@ -1721,35 +1721,69 @@ pub fn sys_read_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: 
         return 0;
     }
 
-    // Get the file from the fd table (global or per-task fallback).
-    let file_arc_chirho = match lookup_fd_chirho(fd_chirho) {
-        Some(f_chirho) => f_chirho,
-        None => return -EBADF_CHIRHO,
-    };
-
     // Read into a stack-based kernel buffer (avoid heap allocation
     // which can trigger page faults in the allocator during syscalls).
     let capped_count_chirho = core::cmp::min(count_chirho, 4096);
     let mut kernel_buf_storage_chirho = [0u8; 4096];
     let kernel_buf_chirho = &mut kernel_buf_storage_chirho[..capped_count_chirho];
-    let bytes_read_chirho = {
-        let mut file_guard_chirho = file_arc_chirho.lock();
-        match file_guard_chirho.ops_chirho.read_chirho(&mut file_guard_chirho, kernel_buf_chirho) {
-            Ok(n_chirho) => n_chirho,
+
+    // Retry loop: for blocking pipe reads that return EAGAIN, yield the
+    // CPU and retry instead of returning EAGAIN to userspace.  Real Linux
+    // blocks in the kernel until data arrives or the write end closes;
+    // our pipe read does a short spin then returns EAGAIN.  This loop
+    // bridges the gap: yield → network poll → retry, up to a limit.
+    const MAX_BLOCKING_RETRIES_CHIRHO: u32 = 5000;
+    let mut retry_count_chirho: u32 = 0;
+
+    loop {
+        // Get the file from the fd table (global or per-task fallback).
+        let file_arc_chirho = match lookup_fd_chirho(fd_chirho) {
+            Some(f_chirho) => f_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+
+        let (read_result_chirho, is_blocking_pipe_chirho) = {
+            let mut file_guard_chirho = file_arc_chirho.lock();
+            let is_nonblock_chirho = file_guard_chirho.flags_chirho & crate::vfs_chirho::O_NONBLOCK_CHIRHO != 0;
+            let is_fifo_chirho = (file_guard_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
+            let is_blocking_chirho = is_fifo_chirho && !is_nonblock_chirho;
+            let result_chirho = file_guard_chirho.ops_chirho.read_chirho(
+                &mut file_guard_chirho,
+                kernel_buf_chirho,
+            );
+            (result_chirho, is_blocking_chirho)
+        };
+
+        match read_result_chirho {
+            Ok(n_chirho) => {
+                // Copy to user space
+                if n_chirho > 0 {
+                    if let Err(_) = copy_to_user_chirho(
+                        buf_addr_chirho,
+                        &kernel_buf_chirho[..n_chirho],
+                        n_chirho,
+                    ) {
+                        return -EFAULT_CHIRHO;
+                    }
+                }
+                return n_chirho as i64;
+            }
+            Err(-11) if is_blocking_pipe_chirho && retry_count_chirho < MAX_BLOCKING_RETRIES_CHIRHO => {
+                // EAGAIN on a blocking pipe — yield and retry.
+                // Check for pending signals (return EINTR if any).
+                let has_signal_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pending_signals_chirho != 0)
+                    .unwrap_or(false);
+                if has_signal_chirho {
+                    return -4; // EINTR
+                }
+                retry_count_chirho += 1;
+                crate::scheduler_chirho::yield_current_chirho();
+                continue;
+            }
             Err(errno_chirho) => return errno_chirho,
         }
-    };
-
-    // Copy to user space
-    if bytes_read_chirho > 0 {
-        if let Err(_) =
-            copy_to_user_chirho(buf_addr_chirho, &kernel_buf_chirho[..bytes_read_chirho], bytes_read_chirho)
-        {
-            return -EFAULT_CHIRHO;
-        }
     }
-
-    bytes_read_chirho as i64
 }
 
 /// `write(2)` -- write to a file descriptor using the VFS.

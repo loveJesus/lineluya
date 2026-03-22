@@ -13,7 +13,7 @@ name = "kernel-chirho"
 path = "src/main_chirho.rs"
 
 [features]
-default = ["debug_serial"]  # Enable debug output during development
+default = []  # Remove "debug_serial" for production/demo builds
 debug_serial = []            # serial_debug_chirho!() prints to serial
 # Remove "debug_serial" from default for production builds
 
