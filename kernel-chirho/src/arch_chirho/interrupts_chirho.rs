@@ -522,33 +522,23 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 }
 
                 // Not in boot PT — allocate a new frame.
-                let page_chirho: Page<Size4KiB> = Page::containing_address(fault_addr_chirho);
-                let mut mg_chirho = loop {
-                    if let Some(g_chirho) = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock() { break g_chirho; }
-                    core::hint::spin_loop();
-                };
                 let mut ag_chirho = loop {
                     if let Some(g_chirho) = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() { break g_chirho; }
                     core::hint::spin_loop();
                 };
-                if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+                if let Some(alloc_chirho) = ag_chirho.as_mut() {
                     if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
                         let phys_chirho = frame_chirho.start_address().as_u64();
-                        match unsafe { mapper_chirho.map_to(page_chirho, frame_chirho, rw_flags_chirho, alloc_chirho) } {
-                            Ok(flush_chirho) => flush_chirho.flush(),
-                            Err(map_error_chirho) => {
-                                crate::serial_println_chirho!(
-                                    "[PF] boot map_to failed for {:#x}: {:?}",
-                                    page_vaddr_chirho,
-                                    map_error_chirho
-                                );
-                            }
-                        }
+                        // Use ONLY map_page_in_pt_chirho (via CR3).
+                        // The old GLOBAL_MAPPER.map_to created duplicate
+                        // intermediate PT pages that caused cross-process
+                        // PTE corruption (the sqlite3 channels GPF).
+                        let (cr3_pf_chirho, _) = x86_64::registers::control::Cr3::read();
                         if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
-                            current_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
+                            cr3_pf_chirho.start_address(), page_vaddr_chirho, phys_chirho, rw_flags_chirho,
                         ) {
                             crate::serial_println_chirho!(
-                                "[PF] per-process map failed for {:#x}: {:?}",
+                                "[PF] map failed for {:#x}: {:?}",
                                 page_vaddr_chirho,
                                 map_error_chirho
                             );
@@ -601,42 +591,29 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 | PageTableFlags::WRITABLE
                 | PageTableFlags::USER_ACCESSIBLE;
 
-            // Spin-wait for mapper and allocator locks.
-            let mut mg_chirho = loop {
-                if let Some(g_chirho) = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.try_lock() {
-                    break g_chirho;
-                }
-                core::hint::spin_loop();
-            };
+            // Allocate a new frame for the faulting page.
             let mut ag_chirho = loop {
                 if let Some(g_chirho) = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() {
                     break g_chirho;
                 }
                 core::hint::spin_loop();
             };
-            if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+            if let Some(alloc_chirho) = ag_chirho.as_mut() {
                 if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
                     let frame_phys_chirho = frame_chirho.start_address().as_u64();
 
-                    // Map in the boot PML4 (via global mapper).
-                    let map_result_chirho = unsafe {
-                        mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
-                    };
-                    if let Ok(flush_chirho) = map_result_chirho {
-                        flush_chirho.flush();
-                    }
-
-                    // ALSO map in the current (per-process) PML4.
-                    // Without this, the page exists in the boot PML4 but
-                    // not the current PML4, causing infinite page faults.
+                    // Map via CR3-based map_page_in_pt_chirho ONLY.
+                    // NO GLOBAL_MAPPER.map_to — it creates duplicate intermediate
+                    // PT pages that cause cross-process PTE corruption.
+                    let (cr3_upf_chirho, _) = x86_64::registers::control::Cr3::read();
                     if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
-                        current_pml4_chirho,
+                        cr3_upf_chirho.start_address(),
                         page_vaddr_chirho,
                         frame_phys_chirho,
                         flags_chirho,
                     ) {
                         crate::serial_println_chirho!(
-                            "[PF] user per-process map failed for {:#x}: {:?}",
+                            "[PF] user map failed for {:#x}: {:?}",
                             page_vaddr_chirho,
                             map_error_chirho
                         );

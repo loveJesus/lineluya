@@ -809,7 +809,7 @@ fn map_anonymous_pages_chirho(
         let frame_phys_chirho = frame_chirho.start_address().as_u64();
         let mapping_pid_chirho = crate::task_chirho::current_task_chirho()
             .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if mapping_pid_chirho >= 3 {
+        if mapping_pid_chirho >= 2 {
             let (cr3_map_chirho, _) = x86_64::registers::control::Cr3::read();
             if crate::pagetable_chirho::map_page_in_pt_chirho(
                 cr3_map_chirho.start_address(),
