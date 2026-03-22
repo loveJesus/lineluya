@@ -1685,10 +1685,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             let pid_dbg_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
             if pid_dbg_chirho >= 3 {
-                let fd0_exists_chirho = crate::fs_chirho::lookup_fd_chirho(0).is_some();
                 crate::serial_debug_chirho!(
-                    "[CLOSE] pid={} close({}) fd0_exists={}",
-                    pid_dbg_chirho, arg0_chirho, fd0_exists_chirho
+                    "[CLOSE] pid={} close({})",
+                    pid_dbg_chirho, arg0_chirho
                 );
             }
             crate::fs_chirho::sys_close_real_chirho(arg0_chirho)
