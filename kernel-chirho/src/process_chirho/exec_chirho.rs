@@ -300,16 +300,12 @@ fn load_segment_chirho(
     // Allocate the pages. We use MAP_FIXED to place them at the exact vaddr
     // the ELF specifies. We always map writable initially so we can copy data
     // in, then mprotect to the correct permissions afterward.
-    //
-    // Set EXEC_MMAP_MODE so the mmap path knows to unmap inherited COW pages
-    // instead of reusing them (which would corrupt the parent's data).
     let alloc_prot_chirho = PROT_READ_CHIRHO | PROT_WRITE_CHIRHO | PROT_EXEC_CHIRHO;
     {
-        crate::mm_chirho::EXEC_MMAP_MODE_CHIRHO.store(true, core::sync::atomic::Ordering::Relaxed);
         let mut mm_chirho = mm_lock_chirho.lock();
         let mm_ref_chirho = &mut *mm_chirho;
 
-        let mmap_result_chirho = mm_ref_chirho
+        mm_ref_chirho
             .mmap_chirho(
                 page_start_chirho,
                 map_len_chirho,
@@ -317,9 +313,8 @@ fn load_segment_chirho(
                 MAP_ANONYMOUS_CHIRHO | MAP_PRIVATE_CHIRHO | MAP_FIXED_CHIRHO,
                 -1,
                 0,
-            );
-        crate::mm_chirho::EXEC_MMAP_MODE_CHIRHO.store(false, core::sync::atomic::Ordering::Relaxed);
-        mmap_result_chirho.map_err(|err_chirho| ExecErrorChirho::MmapFailedChirho(err_chirho))?;
+            )
+            .map_err(|err_chirho| ExecErrorChirho::MmapFailedChirho(err_chirho))?;
     }
 
     // Copy the initialised data from the ELF file into the mapped region.

@@ -470,49 +470,6 @@ fn clone_table_level_chirho(
 }
 
 // ============================================================================
-// flush_user_pages_chirho — clear all user-space PT entries (for exec)
-// ============================================================================
-
-/// Clear all user-space page table entries from the current page table.
-///
-/// Analogous to Linux's `flush_old_exec` / `exec_mmap`: before loading a
-/// new ELF binary, all inherited user-space mappings (from fork's COW)
-/// are removed. This prevents exec's `copy_nonoverlapping` from writing
-/// to COW-shared frames that the parent still reads.
-///
-/// Only clears PML4 entries 0..255 (user space). Kernel entries (256+)
-/// are preserved. The TLB is flushed after clearing.
-pub fn flush_user_pages_chirho() {
-    let (pml4_frame_chirho, _) = Cr3::read();
-    let pml4_phys_chirho = pml4_frame_chirho.start_address();
-    let pml4_chirho = unsafe { table_from_phys_chirho(pml4_phys_chirho) };
-
-    // Zero out all user-space PML4 entries (0..255).
-    // This removes ALL user-space mappings. The PT pages below
-    // (PDPT/PD/PT) become orphaned but are not freed (bump allocator).
-    for i_chirho in 0..KERNEL_PML4_START_CHIRHO {
-        if !pml4_chirho[i_chirho].is_unused() {
-            pml4_chirho[i_chirho].set_unused();
-        }
-    }
-
-    // Flush TLB (CR3 write flushes all non-global entries).
-    unsafe {
-        Cr3::write(pml4_frame_chirho, x86_64::registers::control::Cr3Flags::empty());
-    }
-
-    // Reinitialize the global mapper for the now-clean page table.
-    unsafe {
-        crate::mm_chirho::reinit_mapper_for_current_cr3_chirho();
-    }
-
-    crate::serial_debug_chirho!(
-        "[EXEC] Flushed user pages from PT root {:#x}",
-        pml4_phys_chirho.as_u64(),
-    );
-}
-
-// ============================================================================
 // switch_page_table_chirho
 // ============================================================================
 
@@ -635,20 +592,6 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
     let mut new_flags_chirho = flags_chirho;
     new_flags_chirho.insert(PageTableFlags::WRITABLE);
     new_flags_chirho.remove(PageTableFlags::BIT_9);
-
-    // WATCHPOINT: catch COW on the channels array page
-    let cow_page_chirho = faulting_addr_chirho.as_u64() & !0xFFF;
-    if cow_page_chirho == 0x7efffffe4000 {
-        let cow_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(99);
-        let (cr3_cow_chirho, _) = Cr3::read();
-        crate::serial_println_chirho!(
-            "[COW-WATCH] pid={} addr={:#x} old_frame={:#x} new_frame={:#x} pml4_walked={:#x} cr3={:#x}",
-            cow_pid_chirho, faulting_addr_chirho.as_u64(),
-            old_frame_phys_chirho.as_u64(), new_frame_phys_chirho.as_u64(),
-            pml4_phys_chirho.as_u64(), cr3_cow_chirho.start_address().as_u64(),
-        );
-    }
 
     unsafe {
         (*pte_ptr_chirho).set_addr(new_frame_phys_chirho, new_flags_chirho);
@@ -850,7 +793,7 @@ pub fn restore_cow_to_writable_chirho(pml4_phys_chirho: PhysAddr) -> u64 {
 /// for the intermediate level reads (PML4, PDPT, PD).  The final PT level
 /// still needs `table_from_phys_chirho` because the caller requires a
 /// mutable pointer for COW write-back.
-pub fn walk_page_table_chirho(
+fn walk_page_table_chirho(
     pml4_phys_chirho: PhysAddr,
     addr_chirho: VirtAddr,
 ) -> Option<*mut PageTableEntry> {
@@ -1050,21 +993,6 @@ pub fn map_page_in_pt_chirho(
 
     // Level 1: PT → set the leaf entry
     let pt_chirho = unsafe { table_from_phys_chirho(pt_phys_chirho) };
-    // WATCHPOINT: log any mapping of the channels array page
-    let page_base_chirho = vaddr_chirho & !0xFFF;
-    if page_base_chirho == 0x7efffffe4000 {
-        let old_phys_chirho = if !pt_chirho[pt_idx_chirho].is_unused() {
-            pt_chirho[pt_idx_chirho].addr().as_u64()
-        } else { 0 };
-        let pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(99);
-        let (cr3_f_chirho, _) = x86_64::registers::control::Cr3::read();
-        crate::serial_println_chirho!(
-            "[PTE-WATCH] pid={} vaddr={:#x} old_phys={:#x} new_phys={:#x} pml4={:#x} cr3={:#x}",
-            pid_chirho, page_base_chirho, old_phys_chirho, paddr_chirho,
-            pml4_phys_chirho.as_u64(), cr3_f_chirho.start_address().as_u64(),
-        );
-    }
     pt_chirho[pt_idx_chirho].set_addr(
         PhysAddr::new(paddr_chirho),
         flags_chirho,

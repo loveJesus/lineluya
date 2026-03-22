@@ -745,10 +745,51 @@ fn map_anonymous_pages_chirho(
                 );
             }
             if already_mapped_chirho {
-                // Reuse the existing frame — just update flags via CR3 walk.
-                // This is safe for reused mappings (same address, same frame).
-                {
-                    let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
+                // Check if the existing mapping is COW (read-only).
+                // If COW, the frame is shared with the parent — DO NOT
+                // reuse it. Unmap and fall through to fresh allocation.
+                // If writable, it's genuinely owned — safe to reuse.
+                let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
+                let is_cow_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                    cr3_uf_chirho.start_address(),
+                    VirtAddr::new(page_addr_chirho),
+                ).map(|pte_ptr_chirho| unsafe {
+                    !(*pte_ptr_chirho).flags().contains(
+                        x86_64::structures::paging::PageTableFlags::WRITABLE
+                    )
+                }).unwrap_or(false);
+
+                if is_cow_chirho {
+                    // COW page found during mmap. Two strategies:
+                    // 1. For PID >= 3 exec-time pages (EXEC_MMAP_MODE):
+                    //    unmap + reallocate (prevents cross-process corruption)
+                    // 2. All other COW pages: make writable in-place (saves memory)
+                    if EXEC_MMAP_MODE_CHIRHO.load(core::sync::atomic::Ordering::Relaxed) {
+                        // Exec mode: unmap stale COW frame, fall through to fresh alloc
+                        if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                            cr3_uf_chirho.start_address(),
+                            VirtAddr::new(page_addr_chirho),
+                        ) {
+                            unsafe { (*pte_ptr_chirho).set_unused(); }
+                            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                        }
+                        // Fall through to fresh frame allocation below
+                    } else {
+                        // Runtime mmap: make writable in-place (no realloc)
+                        if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                            cr3_uf_chirho.start_address(),
+                            VirtAddr::new(page_addr_chirho),
+                        ) {
+                            unsafe {
+                                let addr_chirho = (*pte_ptr_chirho).addr();
+                                (*pte_ptr_chirho).set_addr(addr_chirho, flags_chirho);
+                            }
+                            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                        }
+                        continue;
+                    }
+                } else {
+                    // Writable (owned): safe to reuse, just update flags
                     if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
                         cr3_uf_chirho.start_address(),
                         VirtAddr::new(page_addr_chirho),

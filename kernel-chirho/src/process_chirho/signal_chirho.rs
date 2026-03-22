@@ -1014,29 +1014,6 @@ pub struct RtSigframeChirho {
     pub saved_rsi_chirho: u64,
     /// Saved RDX
     pub saved_rdx_chirho: u64,
-    // --- Full GPR save: callee-saved + remaining caller-saved ---
-    // A signal can arrive between any two instructions, so ALL registers
-    // must be preserved. Without these, the interrupted code resumes with
-    // corrupted registers (e.g., rbx after SIGCHLD handler causes GPF in
-    // dropbear's channelio where `mov edx, [rbx+0x2c]` faults).
-    /// Saved RBX (callee-saved — most critical for the GPF fix)
-    pub saved_rbx_chirho: u64,
-    /// Saved RBP (callee-saved, frame pointer)
-    pub saved_rbp_chirho: u64,
-    /// Saved R8 (caller-saved)
-    pub saved_r8_chirho: u64,
-    /// Saved R9 (caller-saved)
-    pub saved_r9_chirho: u64,
-    /// Saved R10 (caller-saved, arg3 in syscall ABI)
-    pub saved_r10_chirho: u64,
-    /// Saved R12 (callee-saved)
-    pub saved_r12_chirho: u64,
-    /// Saved R13 (callee-saved)
-    pub saved_r13_chirho: u64,
-    /// Saved R14 (callee-saved)
-    pub saved_r14_chirho: u64,
-    /// Saved R15 (callee-saved)
-    pub saved_r15_chirho: u64,
     /// Old signal mask (restored on sigreturn)
     pub old_mask_chirho: u64,
     /// Signal number (for reference)
@@ -1121,18 +1098,11 @@ pub fn deliver_one_signal_on_return_chirho(
                 // Build the signal frame on the user stack.
                 let user_rsp_chirho = frame_chirho.rsp_chirho;
 
-                // Skip the 128-byte red zone mandated by the x86_64 ABI.
-                // Functions may store live data in [rsp-128, rsp) without
-                // adjusting rsp. The kernel must not clobber this region.
-                // Without this skip, our sigframe overwrites the red zone,
-                // corrupting local variables (e.g., dropbear's fd_set on
-                // the stack after select returns, causing GPF when it reads
-                // the clobbered memory as a struct pointer).
-                const RED_ZONE_CHIRHO: u64 = 128;
+                // Ensure 16-byte alignment for the sigframe.
                 let frame_size_chirho =
                     core::mem::size_of::<RtSigframeChirho>() as u64;
                 let new_rsp_chirho =
-                    (user_rsp_chirho - RED_ZONE_CHIRHO - frame_size_chirho) & !0xF;
+                    (user_rsp_chirho - frame_size_chirho) & !0xF;
 
                 let sigframe_chirho = RtSigframeChirho {
                     restorer_chirho,
@@ -1144,15 +1114,6 @@ pub fn deliver_one_signal_on_return_chirho(
                     saved_rdi_chirho: frame_chirho.rdi_chirho,
                     saved_rsi_chirho: frame_chirho.rsi_chirho,
                     saved_rdx_chirho: frame_chirho.rdx_chirho,
-                    saved_rbx_chirho: frame_chirho.rbx_chirho,
-                    saved_rbp_chirho: frame_chirho.rbp_chirho,
-                    saved_r8_chirho: frame_chirho.r8_chirho,
-                    saved_r9_chirho: frame_chirho.r9_chirho,
-                    saved_r10_chirho: frame_chirho.r10_chirho,
-                    saved_r12_chirho: frame_chirho.r12_chirho,
-                    saved_r13_chirho: frame_chirho.r13_chirho,
-                    saved_r14_chirho: frame_chirho.r14_chirho,
-                    saved_r15_chirho: frame_chirho.r15_chirho,
                     old_mask_chirho,
                     signo_chirho: signo_chirho as u64,
                 };

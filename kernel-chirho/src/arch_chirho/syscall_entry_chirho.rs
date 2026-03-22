@@ -230,26 +230,7 @@ syscall_entry_chirho:
     //         slot so the popq below picks up the return value.
     movq    %rax, (%rsp)
 
-    // Step 7b: Restore callee-saved registers from the frame.
-    // The dispatcher (specifically rt_sigreturn) may have modified these
-    // frame slots. The old code relied on the C ABI callee-save convention,
-    // which preserves the ENTRY values — but rt_sigreturn intentionally
-    // overwrites them with the pre-signal context. Without this load,
-    // rbx/rbp/r12-r15 have the signal HANDLER's values, not the
-    // interrupted code's values, causing GPFs (e.g., dropbear's
-    // `mov edx, [rbx+0x2c]` faults because rbx is garbage).
-    //
-    // Frame layout offsets (from SyscallFrameChirho):
-    //   0x50 = rbx, 0x58 = rbp, 0x60 = r12, 0x68 = r13, 0x70 = r14, 0x78 = r15
-    // %rdi still points to the frame (set at movq %rdi, %rsp above).
-    movq    0x50(%rdi), %rbx
-    movq    0x58(%rdi), %rbp
-    movq    0x60(%rdi), %r12
-    movq    0x68(%rdi), %r13
-    movq    0x70(%rdi), %r14
-    movq    0x78(%rdi), %r15
-
-    // Step 8: Pop caller-saved registers back (offsets 0-64).
+    // Step 8: Pop registers back (same order as pushes, reversed).
     popq    %rax                             // rax_chirho  (return value)
     popq    %rdi                             // rdi_chirho
     popq    %rsi                             // rsi_chirho
@@ -268,7 +249,7 @@ syscall_entry_chirho:
     // Current register state:
     //   RCX = user RIP, R11 = user RFLAGS, RSP points to user_rsp slot
     //   RAX = syscall return value, RDI-R10 restored
-    //   RBX/RBP/R12-R15 = loaded from frame (authoritative for rt_sigreturn)
+    //   RBX/RBP/R12-R15 = user values (C ABI callee-saved)
     //
     // Read user RSP from the stack (next value to pop), save it to scratch.
     popq    %rsp                             // rsp_chirho = user RSP
@@ -345,102 +326,7 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         }
     }
 
-    // Diagnostic: log frame.rbx on entry for PID 3's first syscall after
-    // rt_sigreturn, to determine if user code or kernel corrupts rbx.
-    {
-        use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-        static AFTER_SIGRET_CHIRHO: AtomicBool = AtomicBool::new(false);
-        static SIGRET_TRACE_CHIRHO: AtomicU64 = AtomicU64::new(0);
-        let pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if pid_chirho == 3 && syscall_nr_chirho == 15 { // rt_sigreturn
-            AFTER_SIGRET_CHIRHO.store(true, Ordering::Relaxed);
-            SIGRET_TRACE_CHIRHO.store(0, Ordering::Relaxed);
-        }
-        if pid_chirho == 3 && AFTER_SIGRET_CHIRHO.load(Ordering::Relaxed) {
-            let cnt_chirho = SIGRET_TRACE_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho < 5 {
-                crate::serial_println_chirho!(
-                    "[POST-SIGRET] #{} pid=3 nr={} frame.rbx={:#x} frame.rbp={:#x} frame.rcx={:#x}",
-                    cnt_chirho, syscall_nr_chirho,
-                    frame_chirho.rbx_chirho, frame_chirho.rbp_chirho, frame_chirho.rcx_chirho,
-                );
-            }
-        }
-    }
-
-    // Physical frame trace: when PID 3's select returns, dump the physical
-    // frame backing 0x55555559c000 (dropbear session data). If this frame
-    // changes after context switch, COW/PT is corrupted.
-    if syscall_nr_chirho == 23 || syscall_nr_chirho == 270 { // pselect6
-        let trace_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if trace_pid_chirho == 3 {
-            use core::sync::atomic::{AtomicU64, Ordering as FrOrd};
-            static FR_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let cnt_chirho = FR_CNT_CHIRHO.fetch_add(1, FrOrd::Relaxed);
-            if cnt_chirho < 3 {
-                // Read the data at 0x55555559c7e0 via the active CR3
-                let data_chirho = unsafe {
-                    core::ptr::read_volatile(0x55555559c7e0u64 as *const u64)
-                };
-                let (cr3_chirho, _) = x86_64::registers::control::Cr3::read();
-                let chan_ptr_chirho = unsafe {
-                    core::ptr::read_volatile(0x55555559c9b1u64 as *const u64)
-                };
-                crate::serial_println_chirho!(
-                    "[FRAME-TRACE] #{} pid=3 select-entry cr3={:#x} data@c7e0={:#x} chan_ptr@c9b1={:#x}",
-                    cnt_chirho, cr3_chirho.start_address().as_u64(), data_chirho, chan_ptr_chirho,
-                );
-            }
-        }
-    }
-
     let result_chirho = crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho);
-
-    // Physical frame trace AFTER select returns — follow ses.channels ptr
-    if (syscall_nr_chirho == 23 || syscall_nr_chirho == 270) && result_chirho > 0 {
-        let trace_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if trace_pid_chirho == 3 {
-            use core::sync::atomic::{AtomicU64, Ordering as FrOrd};
-            static FR_POST_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let cnt_chirho = FR_POST_CHIRHO.fetch_add(1, FrOrd::Relaxed);
-            if cnt_chirho < 3 {
-                // Dump 64 bytes at the ses global data area (around 0x55555559c9b0)
-                // to find the actual channels pointer. Also dump nearby aligned qwords.
-                // Follow the ALIGNED channels pointer at 0x55555559c9b0
-                let channels_ptr_chirho = unsafe {
-                    core::ptr::read_volatile(0x55555559c9b0u64 as *const u64)
-                };
-                let mut chan_entries_chirho = [0u64; 4];
-                if channels_ptr_chirho > 0x1000 && channels_ptr_chirho < 0x800000000000 {
-                    for i in 0..4u64 {
-                        chan_entries_chirho[i as usize] = unsafe {
-                            core::ptr::read_volatile((channels_ptr_chirho + i * 8) as *const u64)
-                        };
-                    }
-                }
-                // Also read the misaligned value at c9b1 to compare
-                let misaligned_chirho = unsafe {
-                    core::ptr::read_volatile(0x55555559c9b1u64 as *const u64)
-                };
-                // Also get the physical frame for the channels array page
-                let chan_phys_chirho = if channels_ptr_chirho > 0x1000 && channels_ptr_chirho < 0x800000000000 {
-                    let (cr3_f_chirho, _) = x86_64::registers::control::Cr3::read();
-                    crate::pagetable_chirho::walk_page_table_chirho(
-                        cr3_f_chirho.start_address(),
-                        x86_64::VirtAddr::new(channels_ptr_chirho & !0xFFF),
-                    ).map(|ptr| unsafe { (*ptr).addr().as_u64() }).unwrap_or(0)
-                } else { 0 };
-                crate::serial_println_chirho!(
-                    "[CHAN-TRACE] #{} ret={} chan_ptr={:#x} phys={:#x} entries=[{:#x},{:#x},{:#x},{:#x}]",
-                    cnt_chirho, result_chirho, channels_ptr_chirho, chan_phys_chirho,
-                    chan_entries_chirho[0], chan_entries_chirho[1], chan_entries_chirho[2], chan_entries_chirho[3],
-                );
-            }
-        }
-    }
 
     // Validate that RCX (user return address) wasn't corrupted by the dispatch.
     // sched_yield (nr=24) INTENTIONALLY modifies RCX to restore the preempted
@@ -470,50 +356,7 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
     // RIP, and signal delivery would clobber it with a handler address,
     // causing GPF at non-canonical addresses like 0x800000000000.
     let is_preempt_yield_chirho = syscall_nr_chirho == 24;
-    // PIPE-BEFORE-SIGNAL: Suppress SIGCHLD delivery while any child pipe fd
-    // still has unread data. The pipe data MUST be relayed to the SSH client
-    // via channelio BEFORE the SIGCHLD handler runs (which triggers session
-    // teardown). The signal stays pending; after channelio drains the pipe
-    // and sends SSH channel data, the NEXT syscall return delivers SIGCHLD.
-    //
-    // This fixes the slow-command relay race: sqlite3/python3 write to pipe
-    // then exit. SIGCHLD + pipe data arrive simultaneously. Without this
-    // gate, the SIGCHLD handler's sigframe delivery corrupts the interrupted
-    // code's state (rbx points to sigframe data instead of a channel struct,
-    // causing GPF at `mov edx, [rbx+0x2c]`).
-    let suppress_signal_chirho = {
-        let pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if pid_chirho >= 3 && crate::signal_chirho::current_has_deliverable_signal_chirho() {
-            // Check if any pipe fd has unread data
-            let mut has_pipe_data_chirho = false;
-            for fd_chirho in 5u64..16 {
-                if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
-                    let file_guard_chirho = file_arc_chirho.lock();
-                    let mode_chirho = file_guard_chirho.inode_chirho.lock().mode_chirho;
-                    if (mode_chirho & 0o170000) == 0o10000 {
-                        if let Some(ref fs_data_chirho) = file_guard_chirho.inode_chirho.lock().fs_data_chirho {
-                            if let Some(pipe_chirho) = fs_data_chirho
-                                .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
-                            {
-                                let pg_chirho = pipe_chirho.lock();
-                                if !pg_chirho.buffer_chirho.is_empty() {
-                                    has_pipe_data_chirho = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            has_pipe_data_chirho
-        } else {
-            false
-        }
-    };
-    if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho
-        && !is_preempt_yield_chirho && !suppress_signal_chirho
-    {
+    if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho && !is_preempt_yield_chirho {
         // Deliver user signal handlers (enables dropbear SIGCHLD self-pipe).
         crate::signal_chirho::deliver_one_signal_on_return_chirho(frame_chirho);
         // Check for fatal pending signals.
