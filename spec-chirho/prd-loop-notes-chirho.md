@@ -72,21 +72,21 @@ What is already real:
 - real fork/exec/COW/signals/VFS/TCP/PTY paths are under Alpine workload pressure
 - second SSH blockage was traced to SLiRP, not the kernel
 
-Current kernel truth (updated 2026-03-21):
+Current kernel truth (updated 2026-03-22):
 
-- SSH echo WORKS end-to-end: `ssh root@localhost -p 2222 “echo HALLELUJAH_CHIRHO”` prints on client
-- authoritative exec with fresh per-process PT is the only exec model (no boot PML4 sharing)
-- pipe reader/writer refcount properly tracks fork clones
-- per-process fd tables are authoritative for PID >= 2 (no global table mirroring)
-- boot PML4 lazy migration disabled for PID >= 2
-- CR0.WP verified (kernel COW enforced)
-- SLiRP second-connection issue still blocks consecutive SSH commands (not a kernel bug)
+- SSH echo, uname, ls, id, date, sqlite3 ALL WORK end-to-end
+- sqlite3 --version: “3.51.2 2026-01-09” received via SSH (TCP-TX #9)
+- root cause FIXED: create_user_page_table copied USER_ACCESSIBLE lower-half PML4 entries from boot PML4, sharing PID 0's intermediate PT pages with exec PTs → cross-process PTE corruption
+- fix: filter USER_ACCESSIBLE in lower-half PML4 copy (1-line guard)
+- GLOBAL_MAPPER eliminated from all user-space paths (PF handler, mmap PID>=2, unmap, mprotect)
+- authoritative exec with fresh per-process PT, no boot PML4 user sharing
+- pipe-priority select, full GPR sigframe, red zone skip all working
 
 Current kernel blocker:
 
-- PID 4 (dynamic BusyBox) takes many ticks to initialize via musl dynamic linker
+- python3 initialization too slow (musl dynamic linker loads many modules, 30s timeout insufficient)
 - consecutive SSH connections fail (SLiRP hostfwd limitation, not kernel)
-- PID 2 still gets GPFs on second connection cycle
+- need to verify more demo1 items (sqlite3 DB ops, cat /proc/meminfo)
 
 ## Immediate Iteration
 
