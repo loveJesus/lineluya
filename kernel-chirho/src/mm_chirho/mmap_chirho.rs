@@ -772,7 +772,7 @@ fn map_anonymous_pages_chirho(
                 // to fresh allocation (overwrites stale phantom PTE).
                 // For all other pages, reuse (safe — same process's frame).
                 if page_addr_chirho >= 0x7EFFFFFE0000 && page_addr_chirho < 0x7EFFFFF00000 {
-                    // Fall through — map_page_in_pt_chirho overwrites stale PTE
+                    // Channels PT range: fall through to fresh allocation
                 } else {
                     // Safe to reuse — update flags and continue
                     let (cr3_p3_chirho, _) = x86_64::registers::control::Cr3::read();
