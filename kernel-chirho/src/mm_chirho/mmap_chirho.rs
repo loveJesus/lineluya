@@ -651,24 +651,6 @@ fn map_anonymous_pages_chirho(
     len_chirho: u64,
     prot_chirho: u32,
 ) -> Result<(), i64> {
-    // Trace: log ALL mmap calls for PIDs 2-4 to find who creates 0x7f000a7c1000
-    {
-        let pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if (pid_chirho >= 2 && pid_chirho <= 4) && addr_chirho >= 0x7f0000000000 {
-            use core::sync::atomic::{AtomicU64, Ordering as MmapOrd};
-            static MMAP_HI_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let cnt_chirho = MMAP_HI_CHIRHO.fetch_add(1, MmapOrd::Relaxed);
-            if cnt_chirho < 40 {
-                let (cr3_f_chirho, _) = x86_64::registers::control::Cr3::read();
-                crate::serial_println_chirho!(
-                    "[MMAP-HI] #{} pid={} addr={:#x} len={:#x} cr3={:#x}",
-                    cnt_chirho, pid_chirho, addr_chirho, len_chirho,
-                    cr3_f_chirho.start_address().as_u64(),
-                );
-            }
-        }
-    }
     use crate::syscall_chirho::ENOMEM_CHIRHO;
     use x86_64::structures::paging::{
         FrameAllocator, Mapper, Page, Size4KiB,
@@ -684,17 +666,6 @@ fn map_anonymous_pages_chirho(
         let page_chirho: Page<Size4KiB> =
             Page::containing_address(VirtAddr::new(page_addr_chirho));
 
-        // Diagnostic: catch unexpected mapping of PID 0's BusyBox range
-        if page_addr_chirho >= 0x400000 && page_addr_chirho < 0x800000 {
-            let map_pid_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if map_pid_chirho >= 2 {
-                crate::serial_println_chirho!(
-                    "[MMAP-BUSYBOX-BUG] pid={} mapping page {:#x} in PID 0 BusyBox range!",
-                    map_pid_chirho, page_addr_chirho,
-                );
-            }
-        }
         // Check if the page is already mapped (from a previous exec).
         // If so, just update flags — don't allocate a new frame.
         //
@@ -725,21 +696,6 @@ fn map_anonymous_pages_chirho(
                 }).unwrap_or(false)
             };
 
-            // Trace: log PTE value when page IS present
-            if page_addr_chirho >= 0x7efffffe4000 && page_addr_chirho < 0x7efffffe5000 {
-                let (cr3_dbg_chirho, _) = x86_64::registers::control::Cr3::read();
-                let pid_dbg_chirho = crate::task_chirho::current_task_chirho()
-                    .map(|t| t.lock().pid_chirho).unwrap_or(99);
-                let pte_val_chirho = crate::pagetable_chirho::walk_page_table_chirho(
-                    cr3_dbg_chirho.start_address(),
-                    VirtAddr::new(page_addr_chirho),
-                ).map(|p| unsafe { (*p).addr().as_u64() }).unwrap_or(0);
-                crate::serial_println_chirho!(
-                    "[MMAP-TRACE] pid={} page={:#x} cr3={:#x} mapped={} pte_phys={:#x}",
-                    pid_dbg_chirho, page_addr_chirho, cr3_dbg_chirho.start_address().as_u64(),
-                    already_mapped_chirho, pte_val_chirho,
-                );
-            }
             if already_mapped_chirho {
                 if mmap_pid_chirho < 3 {
                     // PID 0-2: reuse existing frame (update flags only).
@@ -757,16 +713,6 @@ fn map_anonymous_pages_chirho(
                         x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
                     }
                     continue;
-                }
-                {
-                    use core::sync::atomic::{AtomicU64, Ordering as FtOrd};
-                    static FT_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                    let c_chirho = FT_CNT_CHIRHO.fetch_add(1, FtOrd::Relaxed);
-                    if c_chirho < 5 || c_chirho % 100 == 0 {
-                        crate::serial_println_chirho!(
-                            "[FALLTHRU] #{} pid={} page={:#x}", c_chirho, mmap_pid_chirho, page_addr_chirho,
-                        );
-                    }
                 }
                 // PID >= 3: for pages in the channels PT range, fall through
                 // to fresh allocation (overwrites stale phantom PTE).

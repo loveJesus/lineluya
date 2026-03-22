@@ -4077,34 +4077,6 @@ fn sys_select_chirho(
         }
         // Scan pipe fds beyond nfds
         let actual_nfds_chirho = nfds_chirho as usize;
-        // Debug: check if lookup_fd works for fd=9 (pipe read end)
-        {
-            let scan_pid_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if scan_pid_chirho == 3 {
-                use core::sync::atomic::{AtomicU64, Ordering as LuOrd};
-                static LU9_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                let cnt_chirho = LU9_CHIRHO.fetch_add(1, LuOrd::Relaxed);
-                if cnt_chirho > 30 && cnt_chirho < 35 {
-                    let (fd9_in_task_chirho, fd_count_chirho, table_ptr_chirho) = crate::task_chirho::current_task_chirho()
-                        .map(|t| {
-                            let tg = t.lock();
-                            if let Some(ref fdt) = tg.fd_table_chirho {
-                                let has9_chirho = fdt.get_chirho(9).is_some();
-                                let count_chirho = fdt.fds_chirho.iter().filter(|s| s.is_some()).count();
-                                let ptr_chirho = fdt.fds_chirho.as_ptr() as u64;
-                                (has9_chirho, count_chirho, ptr_chirho)
-                            } else {
-                                (false, 0, 0)
-                            }
-                        }).unwrap_or((false, 0, 0));
-                    crate::serial_println_chirho!(
-                        "[FD9-CHECK] #{} pid=3 fd9={} open_fds={} table_ptr={:#x}",
-                        cnt_chirho, fd9_in_task_chirho, fd_count_chirho, table_ptr_chirho,
-                    );
-                }
-            }
-        }
         // NOTE: pipe fds beyond nfds are NOT auto-included in readfds.
         // Writing bits beyond nfds would overflow the user's readfds buffer
         // (which is only (nfds+7)/8 bytes), causing stack/heap corruption
@@ -4175,36 +4147,6 @@ fn sys_select_chirho(
         set_size_chirho,
         nfds_chirho,
     );
-
-    // GPT-directed: trace PID 3's select to find which fd keeps it spinning
-    {
-        let sel_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if sel_pid_chirho == 3 && ready_count_chirho > 0 {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static P3_SEL_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let cnt_chirho = P3_SEL_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho < 5 || (cnt_chirho > 20 && cnt_chirho < 30) {
-                // Log which fds are ready
-                let mut ready_fds_chirho = alloc::vec::Vec::new();
-                for fd_chirho in 0..nfds_chirho as usize {
-                    let bi_chirho = fd_chirho / 8;
-                    let bt_chirho = fd_chirho % 8;
-                    if bi_chirho < set_size_chirho
-                        && fds_buf_chirho[bi_chirho] & (1 << bt_chirho) != 0
-                        && fd_is_read_ready_chirho(fd_chirho)
-                    {
-                        ready_fds_chirho.push(fd_chirho);
-                    }
-                }
-                crate::serial_println_chirho!(
-                    "[P3-SEL] #{} ready={} fds={:?} wfds={}",
-                    cnt_chirho, ready_count_chirho,
-                    ready_fds_chirho, write_ready_total_chirho,
-                );
-            }
-        }
-    }
 
     if ready_count_chirho > 0 || write_ready_total_chirho > 0 {
         maybe_yield_to_runnable_child_chirho();
