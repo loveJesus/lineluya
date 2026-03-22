@@ -1778,6 +1778,61 @@ fn alloc_socket_slot_chirho(socket_chirho: SocketChirho) -> Result<usize, i64> {
     Err(-crate::syscall_chirho::EMFILE_CHIRHO)
 }
 
+/// Free a socket table slot, sending TCP RST if the connection is still active.
+/// Called from VFS close() when the last fd reference to a socket is dropped.
+pub fn free_socket_slot_chirho(idx_chirho: usize) {
+    let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    if idx_chirho >= table_chirho.len() {
+        return;
+    }
+    if let Some(ref sock_chirho) = table_chirho[idx_chirho] {
+        // Don't free listening sockets — those belong to the daemon.
+        if sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::ListenChirho {
+            return;
+        }
+        // For established/closewait connections, send RST to force cleanup
+        // in QEMU SLiRP so it accepts new connections immediately.
+        if sock_chirho.family_chirho == 2
+            && matches!(
+                sock_chirho.tcb_chirho.state_chirho,
+                TcpStateChirho::EstablishedChirho
+                | TcpStateChirho::CloseWaitChirho
+                | TcpStateChirho::FinWait1Chirho
+                | TcpStateChirho::FinWait2Chirho
+            )
+        {
+            if let (Some(local_chirho), Some(remote_chirho)) =
+                (sock_chirho.local_addr_chirho, sock_chirho.remote_addr_chirho)
+            {
+                let rst_seg_chirho = TcpSegmentChirho {
+                    src_port_chirho: local_chirho.port_chirho,
+                    dst_port_chirho: remote_chirho.port_chirho,
+                    seq_num_chirho: sock_chirho.tcb_chirho.snd_nxt_chirho,
+                    ack_num_chirho: sock_chirho.tcb_chirho.rcv_nxt_chirho,
+                    data_offset_chirho: 5,
+                    flags_chirho: TCP_RST_CHIRHO | TCP_ACK_CHIRHO,
+                    window_chirho: 0,
+                    checksum_chirho: 0,
+                    urgent_ptr_chirho: 0,
+                    payload_chirho: alloc::vec::Vec::new(),
+                };
+                let src_ip_chirho = get_interface_ip_chirho(0);
+                let dst_ip_chirho = remote_chirho.addr_chirho;
+                // Clear slot BEFORE sending to avoid reentrance.
+                table_chirho[idx_chirho] = None;
+                drop(table_chirho);
+                send_tcp_response_chirho(&rst_seg_chirho, src_ip_chirho, dst_ip_chirho);
+                crate::serial_println_chirho!(
+                    "[TCP] Socket {} freed on close (RST sent)", idx_chirho,
+                );
+                return;
+            }
+        }
+    }
+    // Non-TCP or no active connection — just free the slot.
+    table_chirho[idx_chirho] = None;
+}
+
 // ============================================================================
 // SocketFileOpsChirho — FileOps implementation for socket fds (A3-003)
 // ============================================================================

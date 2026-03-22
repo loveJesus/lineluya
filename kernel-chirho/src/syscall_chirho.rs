@@ -3027,19 +3027,26 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
     let caller_pid_chirho = threads_chirho.first().map(|&(p, _)| p).unwrap_or(0);
     if caller_pid_chirho >= 3 {
         crate::serial_println_chirho!(
-            "[SYSCALL] exit_group: PID {} is daemon child — yielding to parent",
+            "[SYSCALL] exit_group: PID {} is daemon child — auto-reaping",
             caller_pid_chirho
         );
         // Wake parent in case it's blocked on wait4.
-        // Do NOT wake SOCKET_DATA_WAITQUEUE — that would wake PID 2
-        // (listener daemon) from its select, causing it to resume
-        // unnecessarily and GPF on a misaligned code path.
         crate::process_chirho::wake_child_exit_waitqueue_chirho();
-        // Keep yielding until the parent processes our exit.
-        // Must retry schedule on each HLT wake because the first
-        // yield may ABORT (PID 0 in queue) before reaching PID 3.
+        // Auto-reap all zombies from this thread group so PID/context
+        // slots are freed for new SSH sessions.
+        {
+            let zombie_pids_chirho: alloc::vec::Vec<u64> = threads_chirho
+                .iter().map(|&(p, _)| p).collect();
+            let mut task_list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+            task_list_chirho.retain(|t| {
+                let pid_chirho = t.lock().pid_chirho;
+                !zombie_pids_chirho.contains(&pid_chirho)
+            });
+        }
+        // Yield to parent — schedule() will pick the next runnable task
+        // since this PID is no longer in the run queue or task list.
+        crate::scheduler_chirho::schedule_chirho();
         loop {
-            crate::scheduler_chirho::yield_current_chirho();
             x86_64::instructions::hlt();
         }
     }
@@ -4279,6 +4286,14 @@ fn sys_select_chirho(
                         }
                         crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, sel_pid_chirho);
                         crate::scheduler_chirho::remove_task_chirho(sel_pid_chirho);
+                        // Auto-reap: remove zombie from task list so PID slots
+                        // are freed for new SSH sessions. Without this, zombies
+                        // accumulate (PID 2 may not call wait4 promptly) and
+                        // the kernel runs out of context slots after ~30 connections.
+                        {
+                            let mut task_list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+                            task_list_chirho.retain(|t| t.lock().pid_chirho != sel_pid_chirho);
+                        }
                         crate::scheduler_chirho::schedule_chirho();
                     }
                     return 0;
