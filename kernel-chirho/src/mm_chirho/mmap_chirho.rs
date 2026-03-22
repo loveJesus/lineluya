@@ -861,6 +861,9 @@ use x86_64::structures::paging::{OffsetPageTable, PhysFrame, Size4KiB, FrameAllo
 pub struct GlobalFrameAllocatorChirho {
     next_frame_index_chirho: usize,
     memory_regions_chirho: &'static bootloader_api::info::MemoryRegions,
+    /// Free list of previously-deallocated frames available for reuse.
+    /// Checked before bumping the index, so freed frames are recycled.
+    free_list_chirho: alloc::vec::Vec<PhysFrame<Size4KiB>>,
 }
 
 impl GlobalFrameAllocatorChirho {
@@ -873,12 +876,29 @@ impl GlobalFrameAllocatorChirho {
         Self {
             next_frame_index_chirho: start_index_chirho,
             memory_regions_chirho,
+            free_list_chirho: alloc::vec::Vec::new(),
         }
+    }
+
+    /// Return a frame to the free list for reuse.
+    pub fn deallocate_frame_chirho(&mut self, frame_chirho: PhysFrame<Size4KiB>) {
+        self.free_list_chirho.push(frame_chirho);
+    }
+
+    /// Number of frames on the free list.
+    pub fn free_count_chirho(&self) -> usize {
+        self.free_list_chirho.len()
     }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocatorChirho {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        // Prefer recycled frames from the free list.
+        if let Some(frame_chirho) = self.free_list_chirho.pop() {
+            return Some(frame_chirho);
+        }
+
+        // Fall back to bump allocation from the memory map.
         use bootloader_api::info::MemoryRegionKind;
         use x86_64::PhysAddr;
 
@@ -896,6 +916,14 @@ unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocatorChirho {
 
         self.next_frame_index_chirho += 1;
         frame_chirho
+    }
+}
+
+/// Deallocate a physical frame, returning it to the free list.
+/// Safe to call from any context that holds the GLOBAL_FRAME_ALLOCATOR lock.
+pub fn deallocate_frame_chirho(frame_chirho: PhysFrame<Size4KiB>) {
+    if let Some(ref mut alloc_chirho) = *GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock() {
+        alloc_chirho.deallocate_frame_chirho(frame_chirho);
     }
 }
 
