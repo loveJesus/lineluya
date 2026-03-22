@@ -2,19 +2,20 @@
   "header_chirho": "For God so loved the world that he gave his only begotten Son, that whoever believes in him should not perish but have eternal life. - John 3:16",
   "document_name_chirho": "Lineluya Kernel Architecture PRD Chirho",
   "version_chirho": "0.1.0",
-  "last_updated_chirho": "2026-03-20",
+  "last_updated_chirho": "2026-03-22",
   "project_name_chirho": "Lineluya",
   "primary_goal_chirho": "Turn Lineluya into a sensibly designed Rust kernel by hardening core primitives, deleting workaround glue, and making real Alpine workloads validate the kernel without shaping generic semantics.",
   "project_state_summary_chirho": {
-    "current_milestone_chirho": "First SSH command execution works end-to-end",
+    "current_milestone_chirho": "13 Alpine SSH commands verified and 6-7 consecutive SSH sessions per QEMU instance",
     "verified_runtime_chirho": [
-      "ssh root@localhost -p 2222 'echo SSH1_HALLELUJAH' returns SSH1_HALLELUJAH",
-      "Dropbear boots from ext4 rootfs and reaches real auth, session, fork, exec, pipe, and TCP paths",
-      "Per-process page tables, COW, dynamic musl ELF loading, signals, VFS, loop mount, PTY, and TCP are all real subsystems under live pressure",
-      "Second SSH blockage was traced to SLiRP rather than the kernel"
+      "13 SSH commands verified over the live Alpine/dropbear path, including uname -a, id, date, ls /, cat /proc/meminfo, cat /proc/version, sqlite3 DB ops, and python3 -c 'print(42)'",
+      "6-7 consecutive SSH sessions per QEMU instance now succeed; the old second-connection frontier is no longer the main kernel story",
+      "Dropbear boots from ext4 rootfs and reaches real auth, session, fork, exec, pipe, zombie reaping, and TCP paths under repeated workload pressure",
+      "Per-process page tables, COW, dynamic musl ELF loading, signals, VFS, PTY, TCP, blocking pipe reads, and a 512-entry ext4 cache are all live and under pressure",
+      "The GLOBAL_MAPPER corruption frontier materially receded; the current kernel-shaped limiter is fd-table and childpipe lifecycle cleanup, not basic exec viability"
     ],
-    "current_blocker_chirho": "Embedded static BusyBox applets such as uname/id/date crash with GPF while shell builtins like echo work, and the current exec cleanup path still uses a fragile hybrid restore_cow versus clear_user_pages approach.",
-    "interpretation_chirho": "The kernel is already real enough that the next phase must optimize for authoritative primitives and deletion of debt, not for ad hoc demo momentum."
+    "current_blocker_chirho": "The main kernel-shaped blocker is childpipe lifecycle and pipe endpoint cleanup across exec/fd-table cloning: consecutive SSH sessions still cap around 7 because the parent select/read path does not yet observe childpipe write-end closure through one authoritative fd/OFD/pipe lifetime model. Secondary limits are python3 cold-start I/O and remaining demo items (loop mount and module load over SSH).",
+    "interpretation_chirho": "The address-space frontier improved enough that the next phase should center on authoritative fd-table/OFD/pipe lifetime semantics and teardown deletion, while treating performance and remaining demo items as secondary unless they expose a generic primitive gap."
   },
   "source_documents_chirho": [
     "spec-chirho/kernel_architecture_synthesis_chirho.md",
@@ -179,8 +180,8 @@
     {
       "id_chirho": "workstream_exec_and_address_space_chirho",
       "title_chirho": "Authoritative Exec and Address-Space Ownership",
-      "priority_chirho": 3,
-      "why_now_chirho": "Exec through shared boot-PML4 staging and lingering shared mappings have been a recurring source of corruption and reasoning failure.",
+      "priority_chirho": 5,
+      "why_now_chirho": "The worst exec corruption frontier was materially reduced, but hybrid cleanup and bootstrap-only fallback paths are still debt that must not creep back in while the current fd/pipe lifecycle frontier is being resolved.",
       "success_criteria_chirho": [
         "Exec replaces the old user mappings authoritatively.",
         "Boot-PML4 user execution is bounded to bootstrap-only behavior.",
@@ -189,12 +190,14 @@
       "tasks_for_codex_chirho": [
         "Design the exact exec replacement contract and migration plan.",
         "Identify all remaining shared-PML4 fallback paths and rank them for deletion.",
-        "Define what address-space operations must be substrate-only."
+        "Define what address-space operations must be substrate-only.",
+        "Keep the GLOBAL_MAPPER elimination and explicit-PT plan current so short-term session-limit fixes do not reintroduce old address-space debt."
       ],
       "tasks_for_claude_chirho": [
         "Implement the replacement/cleanup path incrementally.",
         "Add trace points proving which PT is active at exec, fault, and return-to-user boundaries.",
-        "Delete transitional mapping paths after the authoritative path is verified."
+        "Delete transitional mapping paths after the authoritative path is verified.",
+        "Avoid reintroducing singleton-mapper shortcuts in user-memory paths while fixing current SSH lifecycle issues."
       ],
       "tasks_for_gemini_chirho": [
         "Research Asterinas and Linux page-table ownership patterns relevant to exec replacement and user-memory authority."
@@ -208,22 +211,25 @@
     {
       "id_chirho": "workstream_typed_fd_identity_chirho",
       "title_chirho": "Typed Open File Descriptions",
-      "priority_chirho": 4,
-      "why_now_chirho": "Socket, pipe, and PTY correctness remain too dependent on inference from inode metadata.",
+      "priority_chirho": 3,
+      "why_now_chirho": "The current SSH session-limit frontier points directly at fd-table clone/drop semantics and pipe endpoint lifetime, not just inode-mode inference. Temporary exec-time fd-table mirrors must not perturb pipe reader/writer counts.",
       "success_criteria_chirho": [
         "Generic dispatch is based on typed file description identity.",
         "Socket/pipe/PTY/regular-file behavior no longer depends on inode-mode guessing in generic syscall paths.",
-        "Close and readiness semantics operate on typed endpoint state."
+        "Close and readiness semantics operate on typed endpoint state.",
+        "Temporary fd-table clones during fork, exec, or snapshotting do not inflate or suppress pipe endpoint counts."
       ],
       "tasks_for_codex_chirho": [
         "Design the OpenFileChirho enum or equivalent typed dispatch layer.",
         "Plan migration of read, write, poll, select, ioctl, and close semantics to typed OFDs.",
-        "Define how to separate fd-table lifetime from OFD lifetime cleanly."
+        "Define how to separate fd-table lifetime from OFD lifetime cleanly.",
+        "Specify authoritative clone/drop semantics for fd tables and pipe endpoints across fork, exec, CLOEXEC cleanup, and temporary mirror snapshots."
       ],
       "tasks_for_claude_chirho": [
         "Implement the typed dispatch layer incrementally.",
         "Migrate syscall paths off is_socket_fd-style inference.",
-        "Verify that pipe/socket/PTTY close and readiness semantics still hold under real Dropbear and BusyBox workloads."
+        "Verify that pipe/socket/PTTY close and readiness semantics still hold under real Dropbear and BusyBox workloads.",
+        "Use the current childpipe/session-limit traces to prove that clone_table and close paths preserve endpoint counts correctly."
       ],
       "tasks_for_gemini_chirho": [
         "Audit typed OFD design choices and compare them with Asterinas, Linux, and Rust-for-Linux patterns."
@@ -237,22 +243,24 @@
     {
       "id_chirho": "workstream_teardown_and_lifecycle_chirho",
       "title_chirho": "Authoritative Teardown, EOF, SIGCHLD, and Session Lifecycle",
-      "priority_chirho": 5,
-      "why_now_chirho": "The current first-SSH-works and second-SSH-fails state is exactly the right canary for missing teardown contracts.",
+      "priority_chirho": 4,
+      "why_now_chirho": "The kernel now sustains 6-7 consecutive SSH sessions and 13 real commands, so the remaining childpipe cleanup and missed-EOF frontier is sharply isolated and worth fixing as generic teardown semantics rather than demo glue.",
       "success_criteria_chirho": [
-        "First SSH command completes cleanly without timeout artifact.",
-        "Second SSH connection succeeds without restarting Dropbear.",
-        "Socket EOF, CloseWait, pipe EOF, SIGCHLD, wait4, and session exit ordering are explicit and stable."
+        "10+ consecutive SSH sessions succeed without QEMU restart and without a kernel-side childpipe cleanup artifact.",
+        "Socket EOF, CloseWait, pipe EOF, SIGCHLD, wait4, and session exit ordering are explicit and stable.",
+        "Parent select/read observes childpipe write-end closure through endpoint state rather than a workload-specific workaround."
       ],
       "tasks_for_codex_chirho": [
         "Own the teardown state-machine design across task, pipe, socket, and session boundaries.",
         "Define publish-before-wake ordering rules.",
-        "Break down the current SSH teardown failure into generic endpoint and lifecycle primitives."
+        "Break down the current SSH teardown failure into generic endpoint and lifecycle primitives.",
+        "Integrate childpipe EOF, SIGCHLD, wait4, and select ordering with the fd-table/OFD lifetime model so the fix lands as one coherent contract."
       ],
       "tasks_for_claude_chirho": [
         "Instrument and implement the teardown transitions.",
         "Run SSH multi-connection tests and trace EOF, FIN, SIGCHLD, and select/read behavior.",
-        "Delete session-specific patches once the generic teardown model holds."
+        "Delete session-specific patches once the generic teardown model holds.",
+        "Keep proving the childpipe close path against repeated SSH sessions and the full 13-command regression set."
       ],
       "tasks_for_gemini_chirho": [
         "Audit teardown ordering and endpoint-state model for gaps or hidden race conditions."
@@ -293,25 +301,29 @@
     }
   ],
   "immediate_iteration_chirho": {
-    "title_chirho": "Fix Embedded BusyBox Applet Exec and Harden Exec Replacement",
-    "why_chirho": "First SSH command execution is real now. The next high-value kernel blocker is that embedded static BusyBox applets crash while shell builtins work, which strongly suggests an embedded-binary exec-path or relocation/setup problem. The restore_cow versus clear_user_pages hybrid exec cleanup also needs to be replaced with one authoritative model.",
+    "title_chirho": "Remove The Childpipe Session-Limit Artifact And Harden Fd/OFD Lifetime",
+    "why_chirho": "The old BusyBox-applet exec frontier is no longer the day-to-day blocker: Claude has verified 13 SSH commands and 6-7 consecutive sessions. The current kernel-shaped limiter is childpipe cleanup after exec, where temporary fd-table cloning appears to inflate pipe endpoint counts or otherwise prevent authoritative write-end closure observation in the parent select path.",
     "tasks_for_codex_chirho": [
-      "Own the hard analysis for the embedded BusyBox applet crash path and determine whether the root is GOT/PLT, relocation, auxiliary state, or stack/setup semantics in the embedded static binary exec path.",
-      "Break down the restore_cow versus clear_user_pages hybrid exec path into an authoritative replacement contract and deletion plan.",
+      "Define authoritative fd-table clone/drop semantics across fork, exec, CLOEXEC cleanup, and temporary mirror snapshots so pipe endpoint counts cannot drift.",
+      "Specify how pipe reader/writer counters relate to Arc lifetime, fd-table entry lifetime, and open-file-description lifetime, and identify what must be deleted if a no-pipe-inc snapshot path becomes permanent.",
+      "Decide whether the current childpipe frontier belongs primarily under typed OFD identity or teardown, and produce the deletion plan either way.",
       "Reject PID-specific or workload-specific fixes in generic paths unless they are explicitly temporary diagnostics.",
       "Continuously turn Claude's runtime traces into generic kernel primitives or deletion targets."
     ],
     "tasks_for_claude_chirho": [
-      "Continue implementation and runtime validation for the embedded BusyBox applet crash and the exec cleanup path.",
+      "Continue tracing clone_table_chirho, clone_table_no_pipe_inc_chirho, close_chirho, and exec cleanup interactions until the endpoint-lifetime model is explicit.",
+      "Implement the chosen authoritative fix and validate it with 10+ consecutive SSH sessions plus the current 13-command regression set.",
+      "Keep python3 startup speed and the remaining demo items secondary unless they reveal a missing generic primitive.",
       "Use the PRD decision rule before patching generic paths.",
       "Escalate immediately when the next patch would otherwise be a workaround."
     ],
     "tasks_for_gemini_chirho": [
-      "Audit proposed embedded-binary exec design or research Linux/Asterinas/static-ELF setup patterns if requested."
+      "Audit proposed fd-table/OFD/pipe lifetime rules or research Linux/Asterinas open-file-description and pipe endpoint lifetime patterns if requested."
     ],
     "definition_of_done_chirho": [
-      "Embedded static BusyBox applets such as uname, id, and date execute successfully over the current shell path.",
-      "The exec cleanup path no longer depends on a fragile hybrid restore_cow versus clear_user_pages approach.",
+      "10+ consecutive SSH sessions succeed without QEMU restart and without a kernel-side childpipe cleanup cap.",
+      "Pipe write-end closure becomes visible to the parent through authoritative endpoint lifetime semantics rather than a workload-specific special case.",
+      "The fix does not regress the current 13 verified SSH commands, sqlite3, or python3 workloads.",
       "No new demo glue is introduced to achieve this."
     ]
   },

@@ -86,7 +86,7 @@ Current kernel truth (updated 2026-03-22):
 
 Current known limits:
 
-- 8th+ SSH session fails: custom-built dropbear with MAX_UNAUTH_PER_IP=100 (static, from source) extends limit from 5 to 7 sessions. Remaining limit is childpipe cleanup (write end not detected as closed by parent's select). 7 sessions sufficient for demo.
+- 8th+ SSH session fails: custom-built dropbear with MAX_UNAUTH_PER_IP=100 (static, from source) removed the stock 5-session userland cap and extended the run to 7 sessions. Remaining kernel-shaped limit is childpipe cleanup: parent select does not yet observe childpipe write-end closure authoritatively. Current live hypothesis is exec-time fd-table mirror cloning inflating pipe endpoint counts when temporary clones are dropped without symmetric counter updates.
 - python3 module loading ~130s — ext4 cold I/O, 512-entry block cache, yield every 10 in select
 - remaining demo items: loop mount, kernel module load via SSH
 
@@ -94,12 +94,13 @@ Current known limits:
 
 ### Goal
 
-Demo1 items #1-#4 verified. Focus on python3 startup speed and remaining demo items (loop mount, kernel module loading).
+Remove the remaining SSH session-limit artifact by making childpipe endpoint lifetime authoritative. Keep python3 startup speed and the remaining demo items secondary unless they expose a missing generic primitive.
 
 ### Definition Of Done
 
-- python3 loads within 60s (currently 90-180s)
-- loop mount works via SSH
+- 10+ consecutive SSH sessions succeed without QEMU restart
+- parent select/read observes childpipe EOF from authoritative endpoint state
+- the fix does not regress the 13 verified SSH commands
 - no new demo glue is added
 
 ## Work Loop
@@ -129,13 +130,12 @@ When escalating, include:
 
 ## Current Priority Order
 
-1. Embedded BusyBox applet exec correctness
-2. Authoritative exec/address-space replacement
+1. Typed open file descriptions and fd/OFD lifetime cleanup
+2. Authoritative teardown, EOF, SIGCHLD, and session lifecycle
 3. Unified blocking and signal interruption semantics
-4. Single authoritative arch-transition boundary
-5. Typed open file descriptions
-6. Teardown and lifecycle hardening
-7. Unsafe substrate boundary cleanup
+4. Authoritative exec/address-space replacement
+5. Single authoritative arch-transition boundary
+6. Unsafe substrate boundary cleanup
 
 ## Strong Deletion Targets
 
