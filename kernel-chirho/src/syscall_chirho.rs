@@ -1749,13 +1749,25 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 core::ptr::read_volatile(sigframe_ptr_chirho)
             };
 
-            // Restore registers from the saved frame.
+            // Restore ALL registers from the saved frame.
+            // Missing callee-saved registers (rbx, rbp, r12-r15) caused
+            // GPFs in dropbear after SIGCHLD handler return — the handler
+            // clobbered rbx, and `mov edx, [rbx+0x2c]` faulted.
             frame_chirho.rcx_chirho = sigframe_chirho.saved_rcx_chirho;
             frame_chirho.r11_chirho = sigframe_chirho.saved_r11_chirho;
             frame_chirho.rsp_chirho = sigframe_chirho.saved_rsp_chirho;
             frame_chirho.rdi_chirho = sigframe_chirho.saved_rdi_chirho;
             frame_chirho.rsi_chirho = sigframe_chirho.saved_rsi_chirho;
             frame_chirho.rdx_chirho = sigframe_chirho.saved_rdx_chirho;
+            frame_chirho.rbx_chirho = sigframe_chirho.saved_rbx_chirho;
+            frame_chirho.rbp_chirho = sigframe_chirho.saved_rbp_chirho;
+            frame_chirho.r8_chirho = sigframe_chirho.saved_r8_chirho;
+            frame_chirho.r9_chirho = sigframe_chirho.saved_r9_chirho;
+            frame_chirho.r10_chirho = sigframe_chirho.saved_r10_chirho;
+            frame_chirho.r12_chirho = sigframe_chirho.saved_r12_chirho;
+            frame_chirho.r13_chirho = sigframe_chirho.saved_r13_chirho;
+            frame_chirho.r14_chirho = sigframe_chirho.saved_r14_chirho;
+            frame_chirho.r15_chirho = sigframe_chirho.saved_r15_chirho;
 
             // Restore old signal mask.
             if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
@@ -1763,9 +1775,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     sigframe_chirho.old_mask_chirho;
             }
 
-            crate::serial_debug_chirho!(
-                "[SYSCALL] rt_sigreturn: restored rip={:#x} rsp={:#x}",
+            crate::serial_println_chirho!(
+                "[SYSCALL] rt_sigreturn: restored rip={:#x} rsp={:#x} rbx={:#x} rbp={:#x}",
                 sigframe_chirho.saved_rcx_chirho, sigframe_chirho.saved_rsp_chirho,
+                sigframe_chirho.saved_rbx_chirho, sigframe_chirho.saved_rbp_chirho,
             );
 
             // Return the saved RAX (the original syscall return value).
@@ -4223,6 +4236,14 @@ fn sys_select_chirho(
                 },
             );
             if crate::signal_chirho::current_has_deliverable_signal_chirho() {
+                // PIPE-BEFORE-EINTR (wait_event path): same as HLT loop —
+                // drain pipe data before returning EINTR for SIGCHLD.
+                let drain_count_chirho = write_ready_fds_chirho(
+                    &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
+                );
+                if drain_count_chirho > 0 {
+                    return drain_count_chirho;
+                }
                 return -EINTR_CHIRHO;
             }
             maybe_yield_to_runnable_child_chirho();
@@ -4248,7 +4269,97 @@ fn sys_select_chirho(
             }
 
             if crate::signal_chirho::current_has_deliverable_signal_chirho() {
+                {
+                    let sig_pid_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if sig_pid_chirho == 3 {
+                        crate::serial_println_chirho!(
+                            "[HLT-SIG] pid=3 signal pending, checking pipe data (attempt {})",
+                            _attempt_chirho,
+                        );
+                    }
+                }
+                // PIPE-BEFORE-EINTR: Before returning EINTR, check if any
+                // monitored fds (especially pipe fds) have data ready. This
+                // handles the critical slow-command relay race:
+                //
+                //   PID 4 writev(pipe) → exit_group → SIGCHLD to PID 3
+                //
+                // Without this check, select returns EINTR, dropbear processes
+                // SIGCHLD (wait4 reaps child), and tears down the session
+                // WITHOUT channelio ever reading the pipe. Result: sqlite3
+                // and python3 output is lost.
+                //
+                // With this check, select returns the pipe fd as ready. The
+                // SIGCHLD stays pending and is delivered via sigframe on
+                // syscall return. Dropbear's session_loop runs channelio
+                // (reads pipe → sends SSH channel data) BEFORE processing
+                // SIGCHLD on the next iteration.
+                //
+                // The pipe-priority logic in write_ready_fds_chirho suppresses
+                // socket fds when both pipe and socket are ready, ensuring
+                // channelio reads the pipe before process_packet sees
+                // SSH_MSG_CHANNEL_CLOSE.
+                let drain_count_chirho = write_ready_fds_chirho(
+                    &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
+                );
+                {
+                    let dp_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if dp_chirho == 3 {
+                        crate::serial_println_chirho!(
+                            "[HLT-SIG] pid=3 drain_count={} nfds={}",
+                            drain_count_chirho, nfds_chirho,
+                        );
+                    }
+                }
+                if drain_count_chirho > 0 {
+                    // Consume (dequeue) the pending signal so the sigframe
+                    // handler does NOT run on this syscall return. Delivering
+                    // the signal AND returning ready fds on the same return
+                    // causes a conflict: the handler's stack modifications
+                    // interfere with the select result processing, leading
+                    // to GPFs (corrupted rbx in dropbear's channel I/O).
+                    //
+                    // The pipe EOF (from closed_write after child exit) will
+                    // trigger channel close + wait4 via channelio, so the
+                    // signal handler's work (write to self-pipe → wait4) is
+                    // redundant.
+                    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                        let mut task_chirho = task_arc_chirho.lock();
+                        // Dequeue all pending signals to prevent sigframe
+                        // delivery on this syscall return.
+                        let pending_chirho = task_chirho.pending_signals_chirho;
+                        for signo_chirho in 1..=64u32 {
+                            if pending_chirho & (1u64 << signo_chirho) != 0 {
+                                task_chirho.signal_state_chirho.pending_chirho
+                                    .dequeue_chirho(signo_chirho);
+                            }
+                        }
+                        task_chirho.pending_signals_chirho = 0;
+                    }
+                    crate::serial_println_chirho!(
+                        "[SELECT-PIPE-BEFORE-EINTR] PID {} has {} fds ready — returning data, signal consumed",
+                        crate::task_chirho::current_task_chirho()
+                            .map(|t| t.lock().pid_chirho).unwrap_or(0),
+                        drain_count_chirho,
+                    );
+                    return drain_count_chirho;
+                }
                 return -EINTR_CHIRHO;
+            }
+
+            // Check pipe/fd data BEFORE CloseWait exit. If any monitored
+            // fd has data (especially pipe fd 9), return it immediately.
+            // Without this, the CloseWait force-exit fires first and
+            // kills the session before channelio can relay pipe data.
+            {
+                let pre_cw_count_chirho = write_ready_fds_chirho(
+                    &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
+                );
+                if pre_cw_count_chirho > 0 {
+                    return pre_cw_count_chirho;
+                }
             }
 
             // Force-exit daemon session handlers when their TCP connection
@@ -4343,6 +4454,9 @@ fn sys_select_chirho(
                 }
             }
 
+            // Check pipe data BEFORE CloseWait exit. The pipe data
+            // from child commands must be relayed to the SSH client
+            // BEFORE the session closes from the client's FIN.
             let count_chirho = write_ready_fds_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
             );

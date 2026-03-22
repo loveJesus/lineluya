@@ -779,6 +779,9 @@ pub fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
     );
 
     // Map pages using the global mapper + frame allocator.
+    // Transition safety: reinit mapper from CR3 (delete-me: option C).
+    x86_64::instructions::interrupts::disable();
+    unsafe { crate::mm_chirho::reinit_mapper_for_current_cr3_chirho(); }
     let mut mg_chirho = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.lock();
     let mut ag_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
 
@@ -812,6 +815,7 @@ pub fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
             core::ptr::write_bytes(base_vaddr_chirho as *mut u8, 0, num_pages_chirho * 4096);
         }
     }
+    x86_64::instructions::interrupts::enable();
 
     base_vaddr_chirho
 }

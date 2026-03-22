@@ -84,7 +84,7 @@ Current kernel truth (updated 2026-03-21):
 
 Current kernel blocker:
 
-- PID 4 (dynamic BusyBox) takes many ticks to initialize via musl dynamic linker
+- PID 3 (dropbear session handler) GPFs at `mov edx, [rbx+0x2c]` with rbx=instruction bytes (0x10ff00012c62058b) when PID 3 is context-switched during select's HLT loop. Echo works (no ctx switch). sqlite3/python3 GPF (ctx switch occurs). The pipe relay primitives (PIPE-BEFORE-EINTR, full GPR sigframe, red zone skip, callee-saved restore, signal suppression) are correct but the GPF is caused by COW data corruption during the context switch. Zero-fill PF handler NOT the cause (watch did not fire). FRAME-TRACE confirms 0x55555559c7e0 is not corrupted. The corruption is in a different address from which a channel pointer is loaded.
 - consecutive SSH connections fail (SLiRP hostfwd limitation, not kernel)
 - PID 2 still gets GPFs on second connection cycle
 

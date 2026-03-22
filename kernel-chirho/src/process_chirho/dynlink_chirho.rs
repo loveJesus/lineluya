@@ -557,10 +557,12 @@ pub fn load_elf_at_base_chirho(
         );
 
         // Map with RWX initially so we can copy data in.
+        // Set EXEC_MMAP_MODE to unmap inherited COW pages.
         let alloc_prot_chirho = PROT_READ_CHIRHO | PROT_WRITE_CHIRHO | PROT_EXEC_CHIRHO;
         {
+            crate::mm_chirho::EXEC_MMAP_MODE_CHIRHO.store(true, core::sync::atomic::Ordering::Relaxed);
             let mut mm_guard_chirho = mm_lock_chirho.lock();
-            mm_guard_chirho
+            let mmap_res_chirho = mm_guard_chirho
                 .mmap_chirho(
                     page_start_chirho,
                     map_len_chirho,
@@ -568,8 +570,9 @@ pub fn load_elf_at_base_chirho(
                     MAP_ANONYMOUS_CHIRHO | MAP_PRIVATE_CHIRHO | MAP_FIXED_CHIRHO,
                     -1,
                     0,
-                )
-                .map_err(|err_chirho| DynlinkErrorChirho::MmapErrorChirho(err_chirho))?;
+                );
+            crate::mm_chirho::EXEC_MMAP_MODE_CHIRHO.store(false, core::sync::atomic::Ordering::Relaxed);
+            mmap_res_chirho.map_err(|err_chirho| DynlinkErrorChirho::MmapErrorChirho(err_chirho))?;
         }
 
         // Copy initialised data.

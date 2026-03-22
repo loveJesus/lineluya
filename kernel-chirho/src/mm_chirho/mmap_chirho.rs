@@ -697,26 +697,71 @@ fn map_anonymous_pages_chirho(
         }
         // Check if the page is already mapped (from a previous exec).
         // If so, just update flags — don't allocate a new frame.
-        // NOTE: This optimization can cause memory corruption if the reused
-        // frame aliases with kernel heap. Per-process PT ownership (workstream 3)
-        // is the proper fix. For now, tolerated because echo/uname work.
+        //
+        // CRITICAL: This optimization MUST be disabled for forked processes
+        // (PID >= 2). After fork, the child's page table has deep-copied
+        // entries pointing to COW-shared physical frames. If exec reuses
+        // these frames (via already_mapped), the new ELF data overwrites
+        // the shared frame. The parent then reads the child's ELF .text
+        // instead of its own .data, causing deterministic GPFs (e.g.,
+        // rbx loads instruction bytes 0x10ff00012c62058b from what should
+        // be a channel struct pointer).
+        //
+        // Only PID 0/1 (boot process before any fork) can safely reuse
+        // pre-existing mappings from the bootloader.
         {
+            let mmap_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            // Check already_mapped by walking the CURRENT CR3's page table
+            // directly (not via GLOBAL_MAPPER which can be stale even with
+            // reinit). This is the reliable way to check if a page exists
+            // in the active address space.
             let already_mapped_chirho = {
-                if let Some(ref mapper_chirho) = *GLOBAL_MAPPER_CHIRHO.lock() {
-                    mapper_chirho.translate_page(page_chirho).is_ok()
-                } else {
-                    false
-                }
+                let (cr3_am_chirho, _) = x86_64::registers::control::Cr3::read();
+                crate::pagetable_chirho::walk_page_table_chirho(
+                    cr3_am_chirho.start_address(),
+                    VirtAddr::new(page_addr_chirho),
+                ).map(|pte_ptr_chirho| unsafe {
+                    // Check PRESENT flag specifically (not just non-zero).
+                    (*pte_ptr_chirho).flags().contains(
+                        x86_64::structures::paging::PageTableFlags::PRESENT
+                    )
+                }).unwrap_or(false)
             };
 
+            // Trace: log PTE value when page IS present
+            if page_addr_chirho >= 0x7efffffe4000 && page_addr_chirho < 0x7efffffe5000 {
+                let (cr3_dbg_chirho, _) = x86_64::registers::control::Cr3::read();
+                let pid_dbg_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pid_chirho).unwrap_or(99);
+                let pte_val_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                    cr3_dbg_chirho.start_address(),
+                    VirtAddr::new(page_addr_chirho),
+                ).map(|p| unsafe { (*p).addr().as_u64() }).unwrap_or(0);
+                crate::serial_println_chirho!(
+                    "[MMAP-TRACE] pid={} page={:#x} cr3={:#x} mapped={} pte_phys={:#x}",
+                    pid_dbg_chirho, page_addr_chirho, cr3_dbg_chirho.start_address().as_u64(),
+                    already_mapped_chirho, pte_val_chirho,
+                );
+            }
             if already_mapped_chirho {
-                // Page exists — just update flags (no new frame needed)
-                if let Some(ref mut mapper_chirho) = *GLOBAL_MAPPER_CHIRHO.lock() {
-                    let _ = unsafe {
-                        mapper_chirho.update_flags(page_chirho, flags_chirho)
-                    }.map(|flush_chirho| flush_chirho.flush());
+                // Reuse the existing frame — just update flags via CR3 walk.
+                // This is safe for reused mappings (same address, same frame).
+                {
+                    let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
+                    if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                        cr3_uf_chirho.start_address(),
+                        VirtAddr::new(page_addr_chirho),
+                    ) {
+                        unsafe {
+                            (*pte_ptr_chirho).set_addr(
+                                (*pte_ptr_chirho).addr(), flags_chirho,
+                            );
+                        }
+                        x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                    }
+                    continue;
                 }
-                continue; // Skip frame allocation + zero-fill
             }
         }
 
@@ -732,34 +777,55 @@ fn map_anonymous_pages_chirho(
             }
         };
 
-        // Map the page via GLOBAL_MAPPER (which now follows the active CR3
-        // thanks to reinit_mapper_for_current_cr3 in switch_page_table).
-        let result_chirho = {
-            let mut mapper_lock_chirho = GLOBAL_MAPPER_CHIRHO.lock();
-            match mapper_lock_chirho.as_mut() {
-                Some(mapper_chirho) => {
-                    let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
-                    match alloc_lock_chirho.as_mut() {
-                        Some(alloc_chirho) => unsafe {
-                            mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
-                        },
-                        None => return Err(-ENOMEM_CHIRHO),
-                    }
-                }
-                None => return Err(-ENOMEM_CHIRHO),
+        // For PID >= 3: map directly via CR3-based map_page_in_pt_chirho
+        // (no GLOBAL_MAPPER). For PID 0-2: use GLOBAL_MAPPER (boot PT).
+        let frame_phys_chirho = frame_chirho.start_address().as_u64();
+        let mapping_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if mapping_pid_chirho >= 3 {
+            let (cr3_map_chirho, _) = x86_64::registers::control::Cr3::read();
+            if crate::pagetable_chirho::map_page_in_pt_chirho(
+                cr3_map_chirho.start_address(),
+                page_addr_chirho, frame_phys_chirho, flags_chirho,
+            ).is_err() {
+                continue;
             }
-        };
-
-        match result_chirho {
-            Ok(flush_chirho) => flush_chirho.flush(),
-            Err(_e_chirho) => continue,
-        }
-
-        // Zero-fill the page.
-        // SAFETY: The page was just mapped and backed by a fresh physical
-        // frame; writing zeroes to it is safe.
-        unsafe {
-            core::ptr::write_bytes(page_addr_chirho as *mut u8, 0, PAGE_SIZE_CHIRHO as usize);
+            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+            // Zero-fill via physical identity mapping (avoids PF on user addr)
+            let po_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+            unsafe {
+                core::ptr::write_bytes(
+                    (frame_phys_chirho + po_chirho) as *mut u8, 0,
+                    PAGE_SIZE_CHIRHO as usize,
+                );
+            }
+        } else {
+            // PID 0-2: use GLOBAL_MAPPER (boot PT hierarchy)
+            x86_64::instructions::interrupts::disable();
+            unsafe { crate::mm_chirho::reinit_mapper_for_current_cr3_chirho(); }
+            let result_chirho = {
+                let mut ml_chirho = GLOBAL_MAPPER_CHIRHO.lock();
+                match ml_chirho.as_mut() {
+                    Some(m_chirho) => {
+                        let mut al_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+                        match al_chirho.as_mut() {
+                            Some(a_chirho) => unsafe {
+                                m_chirho.map_to(page_chirho, frame_chirho, flags_chirho, a_chirho)
+                            },
+                            None => return Err(-ENOMEM_CHIRHO),
+                        }
+                    }
+                    None => return Err(-ENOMEM_CHIRHO),
+                }
+            };
+            x86_64::instructions::interrupts::enable();
+            match result_chirho {
+                Ok(f_chirho) => f_chirho.flush(),
+                Err(_) => continue,
+            }
+            unsafe {
+                core::ptr::write_bytes(page_addr_chirho as *mut u8, 0, PAGE_SIZE_CHIRHO as usize);
+            }
         }
     }
 
@@ -776,6 +842,10 @@ fn unmap_pages_chirho(addr_chirho: u64, len_chirho: u64) {
 
     let num_pages_chirho = len_chirho / PAGE_SIZE_CHIRHO;
 
+    // Transition safety: reinit mapper from CR3 with interrupts disabled
+    // to prevent stale-mapper cross-process corruption (delete-me: option C).
+    x86_64::instructions::interrupts::disable();
+    unsafe { crate::mm_chirho::reinit_mapper_for_current_cr3_chirho(); }
     let mut mapper_lock_chirho = GLOBAL_MAPPER_CHIRHO.lock();
     if let Some(mapper_chirho) = mapper_lock_chirho.as_mut() {
         for i_chirho in 0..num_pages_chirho {
@@ -783,8 +853,6 @@ fn unmap_pages_chirho(addr_chirho: u64, len_chirho: u64) {
             let page_chirho: Page<Size4KiB> =
                 Page::containing_address(VirtAddr::new(page_addr_chirho));
 
-            // Attempt to unmap.  If the page was never mapped (e.g., lazy
-            // allocation) we silently ignore the error.
             match mapper_chirho.unmap(page_chirho) {
                 Ok((_frame_chirho, flush_chirho)) => {
                     flush_chirho.flush();
@@ -797,6 +865,7 @@ fn unmap_pages_chirho(addr_chirho: u64, len_chirho: u64) {
             }
         }
     }
+    x86_64::instructions::interrupts::enable();
 }
 
 /// Update page-table protection flags for a range of pages.
@@ -810,6 +879,10 @@ fn update_page_protection_chirho(addr_chirho: u64, len_chirho: u64, prot_chirho:
     let flags_chirho = prot_to_page_flags_chirho(prot_chirho);
     let num_pages_chirho = len_chirho / PAGE_SIZE_CHIRHO;
 
+    // Transition safety: reinit mapper from CR3 with interrupts disabled
+    // to prevent stale-mapper cross-process corruption (delete-me: option C).
+    x86_64::instructions::interrupts::disable();
+    unsafe { crate::mm_chirho::reinit_mapper_for_current_cr3_chirho(); }
     let mut mapper_lock_chirho = GLOBAL_MAPPER_CHIRHO.lock();
     if let Some(mapper_chirho) = mapper_lock_chirho.as_mut() {
         for i_chirho in 0..num_pages_chirho {
@@ -817,16 +890,13 @@ fn update_page_protection_chirho(addr_chirho: u64, len_chirho: u64, prot_chirho:
             let page_chirho: Page<Size4KiB> =
                 Page::containing_address(VirtAddr::new(page_addr_chirho));
 
-            // SAFETY: We are updating flags on a page that is already mapped
-            // in the current address space.  The caller has verified via the
-            // VMA list that this region is valid.
             unsafe {
                 let _ = mapper_chirho.update_flags(page_chirho, flags_chirho);
             }
-            // Flush the TLB entry for this page since its permissions changed.
             x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
         }
     }
+    x86_64::instructions::interrupts::enable();
 }
 
 /// Convert Linux `PROT_*` flags to x86_64 [`PageTableFlags`].
@@ -904,6 +974,13 @@ unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocatorChirho {
 
 /// Global page table mapper.  Set during kernel init.
 pub static GLOBAL_MAPPER_CHIRHO: Mutex<Option<OffsetPageTable<'static>>> = Mutex::new(None);
+
+/// Flag: set to true during exec's ELF loading (load_segment_chirho).
+/// When true, mmap always unmaps inherited COW pages instead of reusing
+/// them via update_flags. This prevents exec's copy_nonoverlapping from
+/// writing ELF data to COW-shared frames that the parent still reads.
+pub static EXEC_MMAP_MODE_CHIRHO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// Global frame allocator.  Set during kernel init.
 pub static GLOBAL_FRAME_ALLOCATOR_CHIRHO: Mutex<Option<GlobalFrameAllocatorChirho>> =

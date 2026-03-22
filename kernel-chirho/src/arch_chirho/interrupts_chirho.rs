@@ -475,7 +475,12 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
                 };
 
-                let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
+                // Use CR3 (not task struct) to avoid cross-process PTE
+                // corruption during scheduler context switch window.
+                let current_pml4_chirho = {
+                    let (cr3_frame_chirho, _) = x86_64::registers::control::Cr3::read();
+                    cr3_frame_chirho.start_address()
+                };
                 let rw_flags_chirho = PageTableFlags::PRESENT
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::USER_ACCESSIBLE;
@@ -531,29 +536,43 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     if let Some(g_chirho) = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() { break g_chirho; }
                     core::hint::spin_loop();
                 };
-                if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+                if let (Some(_mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
                     if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
                         let phys_chirho = frame_chirho.start_address().as_u64();
-                        match unsafe { mapper_chirho.map_to(page_chirho, frame_chirho, rw_flags_chirho, alloc_chirho) } {
-                            Ok(flush_chirho) => flush_chirho.flush(),
-                            Err(map_error_chirho) => {
-                                crate::serial_println_chirho!(
-                                    "[PF] boot map_to failed for {:#x}: {:?}",
-                                    page_vaddr_chirho,
-                                    map_error_chirho
-                                );
-                            }
-                        }
+                        // Use ONLY map_page_in_pt_chirho (via CR3 root).
+                        // REMOVED: mapper.map_to — this and map_page_in_pt_chirho
+                        // both allocate intermediate PT pages independently,
+                        // potentially overwriting each other's PML4/PDPT/PD
+                        // entries. The second allocation orphans the first's
+                        // mappings, causing cross-process PTE corruption.
+                        let cr3_pml4_chirho = {
+                            let (cr3_frame_chirho, _) = x86_64::registers::control::Cr3::read();
+                            cr3_frame_chirho.start_address()
+                        };
                         if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
-                            current_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
+                            cr3_pml4_chirho, page_vaddr_chirho, phys_chirho, rw_flags_chirho,
                         ) {
                             crate::serial_println_chirho!(
-                                "[PF] per-process map failed for {:#x}: {:?}",
+                                "[PF] kernel map failed for {:#x}: {:?}",
                                 page_vaddr_chirho,
                                 map_error_chirho
                             );
                         }
                         x86_64::instructions::tlb::flush(fault_addr_chirho);
+                        // WATCH: Catch zero-fill on PID 3's data pages.
+                        // If this fires, it means a not-present fault replaced
+                        // PID 3's real data with zeros (Codex-identified root cause).
+                        {
+                            let watch_pid_chirho = crate::task_chirho::current_task_chirho()
+                                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                            if page_vaddr_chirho >= 0x555555550000 && page_vaddr_chirho < 0x555555600000 {
+                                crate::serial_println_chirho!(
+                                    "[PF-ZEROFILL-WATCH] pid={} ZEROING data page {:#x}! error_code={:?} present={} write={}",
+                                    watch_pid_chirho, page_vaddr_chirho,
+                                    error_code_chirho, is_present_chirho, is_write_chirho,
+                                );
+                            }
+                        }
                         unsafe { core::ptr::write_bytes(page_vaddr_chirho as *mut u8, 0, 4096); }
                         return;
                     }
@@ -574,7 +593,12 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
             // --- Lazy page migration from boot PT (PID 0/1 only) ---
             // For PID >= 2 with authoritative per-process PTs, do NOT
             // import boot PML4 mappings — they belong to PID 0's init shell.
-            let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
+            // Use CR3 (not task struct) to avoid cross-process PTE corruption
+            // during scheduler context switch window.
+            let current_pml4_chirho = {
+                let (cr3_frame_chirho, _) = x86_64::registers::control::Cr3::read();
+                cr3_frame_chirho.start_address()
+            };
             let user_fault_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
             if user_fault_pid_chirho <= 1 {
@@ -619,16 +643,10 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     let frame_phys_chirho = frame_chirho.start_address().as_u64();
 
                     // Map in the boot PML4 (via global mapper).
-                    let map_result_chirho = unsafe {
-                        mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
-                    };
-                    if let Ok(flush_chirho) = map_result_chirho {
-                        flush_chirho.flush();
-                    }
-
-                    // ALSO map in the current (per-process) PML4.
-                    // Without this, the page exists in the boot PML4 but
-                    // not the current PML4, causing infinite page faults.
+                    // Use ONLY map_page_in_pt_chirho (via CR3 root).
+                    // REMOVED: mapper.map_to — double-mapping with
+                    // map_page_in_pt_chirho causes intermediate PT page
+                    // allocation races that corrupt other processes' PTEs.
                     if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
                         current_pml4_chirho,
                         page_vaddr_chirho,
@@ -636,7 +654,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                         flags_chirho,
                     ) {
                         crate::serial_println_chirho!(
-                            "[PF] user per-process map failed for {:#x}: {:?}",
+                            "[PF] user map failed for {:#x}: {:?}",
                             page_vaddr_chirho,
                             map_error_chirho
                         );
@@ -753,6 +771,9 @@ static GPF_SAVED_RAX_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic:
 static GPF_SAVED_RCX_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static GPF_SAVED_RDI_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static GPF_SAVED_RSI_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static GPF_SAVED_RBX_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static GPF_SAVED_RBP_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static GPF_SAVED_RDX_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// General Protection Fault handler. Logs the error code and stack frame,
 /// then halts.
@@ -768,6 +789,9 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
         let rcx_val_chirho: u64;
         let rdi_val_chirho: u64;
         let rsi_val_chirho: u64;
+        let rdx_val_chirho: u64;
+        let rbx_via_r14_chirho: u64;
+        let rbp_via_r15_chirho: u64;
         unsafe {
             core::arch::asm!(
                 "",
@@ -775,6 +799,17 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
                 out("rcx") rcx_val_chirho,
                 out("rdi") rdi_val_chirho,
                 out("rsi") rsi_val_chirho,
+                out("rdx") rdx_val_chirho,
+                options(nomem, nostack, preserves_flags),
+            );
+            // rbx/rbp can't be used as asm operands, so copy them
+            // through scratch registers. The interrupt prologue pushes
+            // callee-saved regs, so these are the user-mode values.
+            core::arch::asm!(
+                "mov {0}, rbx",
+                "mov {1}, rbp",
+                out(reg) rbx_via_r14_chirho,
+                out(reg) rbp_via_r15_chirho,
                 options(nomem, nostack, preserves_flags),
             );
         }
@@ -782,6 +817,9 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
         GPF_SAVED_RCX_CHIRHO.store(rcx_val_chirho, core::sync::atomic::Ordering::Relaxed);
         GPF_SAVED_RDI_CHIRHO.store(rdi_val_chirho, core::sync::atomic::Ordering::Relaxed);
         GPF_SAVED_RSI_CHIRHO.store(rsi_val_chirho, core::sync::atomic::Ordering::Relaxed);
+        GPF_SAVED_RBX_CHIRHO.store(rbx_via_r14_chirho, core::sync::atomic::Ordering::Relaxed);
+        GPF_SAVED_RBP_CHIRHO.store(rbp_via_r15_chirho, core::sync::atomic::Ordering::Relaxed);
+        GPF_SAVED_RDX_CHIRHO.store(rdx_val_chirho, core::sync::atomic::Ordering::Relaxed);
     }
 
     // Check if this GPF occurred in user mode (CS RPL == 3).
@@ -805,9 +843,13 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
             let saved_rcx_chirho = GPF_SAVED_RCX_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
             let saved_rdi_chirho = GPF_SAVED_RDI_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
             let saved_rsi_chirho = GPF_SAVED_RSI_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            let saved_rbx_chirho = GPF_SAVED_RBX_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            let saved_rbp_chirho = GPF_SAVED_RBP_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            let saved_rdx_chirho = GPF_SAVED_RDX_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
             crate::serial_println_chirho!(
-                "[GPF-GPRS] rax={:#x} rcx={:#x} rdi={:#x} rsi={:#x} (may be compiler-clobbered)",
-                saved_rax_chirho, saved_rcx_chirho, saved_rdi_chirho, saved_rsi_chirho,
+                "[GPF-GPRS] rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rdi={:#x} rsi={:#x} rbp={:#x}",
+                saved_rax_chirho, saved_rbx_chirho, saved_rcx_chirho, saved_rdx_chirho,
+                saved_rdi_chirho, saved_rsi_chirho, saved_rbp_chirho,
             );
         }
 
@@ -877,6 +919,116 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
                             i_chirho * 8, val_chirho,
                         );
                     }
+                }
+            }
+            // At GPF site: follow ses.channels pointer and dump entries
+            if gpf_rip_chirho == 0x55555555ef00 || gpf_rip_chirho == 0x55555555b581 {
+                // Read ses.channels ptr from correct aligned address
+                let chan_ptr_chirho = unsafe {
+                    core::ptr::read_volatile(0x55555559c9b0u64 as *const u64)
+                };
+                let mut entries_chirho = [0u64; 4];
+                if chan_ptr_chirho > 0x1000 && chan_ptr_chirho < 0x800000000000 {
+                    for i_chirho in 0..4u64 {
+                        entries_chirho[i_chirho as usize] = unsafe {
+                            core::ptr::read_volatile((chan_ptr_chirho + i_chirho * 8) as *const u64)
+                        };
+                    }
+                }
+                // Walk PT to find the physical frame for the channels page
+                let (cr3_frame_chirho, _) = x86_64::registers::control::Cr3::read();
+                let pte_info_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                    cr3_frame_chirho.start_address(),
+                    x86_64::VirtAddr::new(chan_ptr_chirho & !0xFFF),
+                ).map(|ptr| unsafe { (*ptr).addr().as_u64() }).unwrap_or(0);
+                crate::serial_println_chirho!(
+                    "[GPF-CHANNELS] ses.channels={:#x} phys_frame={:#x} entries=[{:#x},{:#x},{:#x},{:#x}] rbx={:#x}",
+                    chan_ptr_chirho, pte_info_chirho,
+                    entries_chirho[0], entries_chirho[1], entries_chirho[2], entries_chirho[3],
+                    GPF_SAVED_RBX_CHIRHO.load(core::sync::atomic::Ordering::Relaxed),
+                );
+                // Also dump the chancount (at 0x55555559c9b8+1 based on cmp ebp,[rip+0x3dad4])
+                // objdump: eedf: 3b 2d d4 da 03 00  cmp ebp,[rip+0x3dad4]  # 4c9b9
+                // 4c9b9 + PIE base = 0x55555559c9b9, but let's read aligned
+                let chancount_area_chirho = unsafe {
+                    core::ptr::read_volatile(0x55555559c9b8u64 as *const u64)
+                };
+                crate::serial_println_chirho!(
+                    "[GPF-CHANCOUNT] @0x55555559c9b8={:#x} (chancount at +1 = {})",
+                    chancount_area_chirho,
+                    (chancount_area_chirho >> 8) & 0xFF, // byte at +1
+                );
+            }
+            // Dump 64 bytes BEFORE the faulting RIP to trace function entry
+            if gpf_rip_chirho >= 0x555555550040 && gpf_rip_chirho < 0x555555600000 {
+                let pre_addr_chirho = gpf_rip_chirho - 0x40;
+                let pre_bytes_chirho: [u8; 64] = unsafe {
+                    core::ptr::read_volatile(pre_addr_chirho as *const [u8; 64])
+                };
+                crate::serial_println_chirho!(
+                    "[GPF-PRE-BYTES] {:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                    pre_addr_chirho,
+                    pre_bytes_chirho[0], pre_bytes_chirho[1], pre_bytes_chirho[2], pre_bytes_chirho[3],
+                    pre_bytes_chirho[4], pre_bytes_chirho[5], pre_bytes_chirho[6], pre_bytes_chirho[7],
+                    pre_bytes_chirho[8], pre_bytes_chirho[9], pre_bytes_chirho[10], pre_bytes_chirho[11],
+                    pre_bytes_chirho[12], pre_bytes_chirho[13], pre_bytes_chirho[14], pre_bytes_chirho[15],
+                );
+                crate::serial_println_chirho!(
+                    "[GPF-PRE-BYTES] {:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                    pre_addr_chirho + 0x10,
+                    pre_bytes_chirho[16], pre_bytes_chirho[17], pre_bytes_chirho[18], pre_bytes_chirho[19],
+                    pre_bytes_chirho[20], pre_bytes_chirho[21], pre_bytes_chirho[22], pre_bytes_chirho[23],
+                    pre_bytes_chirho[24], pre_bytes_chirho[25], pre_bytes_chirho[26], pre_bytes_chirho[27],
+                    pre_bytes_chirho[28], pre_bytes_chirho[29], pre_bytes_chirho[30], pre_bytes_chirho[31],
+                );
+                crate::serial_println_chirho!(
+                    "[GPF-PRE-BYTES] {:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                    pre_addr_chirho + 0x20,
+                    pre_bytes_chirho[32], pre_bytes_chirho[33], pre_bytes_chirho[34], pre_bytes_chirho[35],
+                    pre_bytes_chirho[36], pre_bytes_chirho[37], pre_bytes_chirho[38], pre_bytes_chirho[39],
+                    pre_bytes_chirho[40], pre_bytes_chirho[41], pre_bytes_chirho[42], pre_bytes_chirho[43],
+                    pre_bytes_chirho[44], pre_bytes_chirho[45], pre_bytes_chirho[46], pre_bytes_chirho[47],
+                );
+                crate::serial_println_chirho!(
+                    "[GPF-PRE-BYTES] {:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                    pre_addr_chirho + 0x30,
+                    pre_bytes_chirho[48], pre_bytes_chirho[49], pre_bytes_chirho[50], pre_bytes_chirho[51],
+                    pre_bytes_chirho[52], pre_bytes_chirho[53], pre_bytes_chirho[54], pre_bytes_chirho[55],
+                    pre_bytes_chirho[56], pre_bytes_chirho[57], pre_bytes_chirho[58], pre_bytes_chirho[59],
+                    pre_bytes_chirho[60], pre_bytes_chirho[61], pre_bytes_chirho[62], pre_bytes_chirho[63],
+                );
+            }
+            // Dump bytes at the CALLER's RIP (return address on stack)
+            // and the dropbear data pointer from the stack
+            if gpf_rsp_chirho > 0x7fff00000000 && gpf_rsp_chirho < 0x800000000000 {
+                let ret_addr_chirho = unsafe { core::ptr::read_volatile(gpf_rsp_chirho as *const u64) };
+                if ret_addr_chirho > 0x1000 && ret_addr_chirho < 0x800000000000 {
+                    let caller_bytes_chirho: [u8; 16] = unsafe {
+                        core::ptr::read_volatile((ret_addr_chirho - 8) as *const [u8; 16])
+                    };
+                    crate::serial_println_chirho!(
+                        "[GPF-CALLER] bytes@{:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                        ret_addr_chirho - 8,
+                        caller_bytes_chirho[0], caller_bytes_chirho[1], caller_bytes_chirho[2], caller_bytes_chirho[3],
+                        caller_bytes_chirho[4], caller_bytes_chirho[5], caller_bytes_chirho[6], caller_bytes_chirho[7],
+                        caller_bytes_chirho[8], caller_bytes_chirho[9], caller_bytes_chirho[10], caller_bytes_chirho[11],
+                        caller_bytes_chirho[12], caller_bytes_chirho[13], caller_bytes_chirho[14], caller_bytes_chirho[15],
+                    );
+                }
+                // Dump data at key dropbear pointer 0x55555559c7e0
+                let data_ptr_chirho = unsafe { core::ptr::read_volatile((gpf_rsp_chirho + 8) as *const u64) };
+                if data_ptr_chirho > 0x555555550000 && data_ptr_chirho < 0x555555600000 {
+                    let data_bytes_chirho: [u8; 16] = unsafe {
+                        core::ptr::read_volatile(data_ptr_chirho as *const [u8; 16])
+                    };
+                    crate::serial_println_chirho!(
+                        "[GPF-DATA] @{:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                        data_ptr_chirho,
+                        data_bytes_chirho[0], data_bytes_chirho[1], data_bytes_chirho[2], data_bytes_chirho[3],
+                        data_bytes_chirho[4], data_bytes_chirho[5], data_bytes_chirho[6], data_bytes_chirho[7],
+                        data_bytes_chirho[8], data_bytes_chirho[9], data_bytes_chirho[10], data_bytes_chirho[11],
+                        data_bytes_chirho[12], data_bytes_chirho[13], data_bytes_chirho[14], data_bytes_chirho[15],
+                    );
                 }
             }
             // Dump bytes at the faulting RIP
