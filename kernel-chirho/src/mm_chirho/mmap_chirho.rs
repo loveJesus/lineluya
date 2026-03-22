@@ -745,49 +745,43 @@ fn map_anonymous_pages_chirho(
                 );
             }
             if already_mapped_chirho {
-                // Check if the existing mapping is COW (read-only).
-                // If COW, the frame is shared with the parent — DO NOT
-                // reuse it. Unmap and fall through to fresh allocation.
-                // If writable, it's genuinely owned — safe to reuse.
+                // Check COW status and frame refcount to decide action.
                 let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
-                let is_cow_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                let (is_cow_chirho, frame_phys_val_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
                     cr3_uf_chirho.start_address(),
                     VirtAddr::new(page_addr_chirho),
                 ).map(|pte_ptr_chirho| unsafe {
-                    !(*pte_ptr_chirho).flags().contains(
+                    let cow_chirho = !(*pte_ptr_chirho).flags().contains(
                         x86_64::structures::paging::PageTableFlags::WRITABLE
-                    )
-                }).unwrap_or(false);
+                    );
+                    let phys_chirho = (*pte_ptr_chirho).addr().as_u64();
+                    (cow_chirho, phys_chirho)
+                }).unwrap_or((false, 0));
 
-                if is_cow_chirho {
-                    // COW page found during mmap. Two strategies:
-                    // 1. For PID >= 3 exec-time pages (EXEC_MMAP_MODE):
-                    //    unmap + reallocate (prevents cross-process corruption)
-                    // 2. All other COW pages: make writable in-place (saves memory)
-                    if EXEC_MMAP_MODE_CHIRHO.load(core::sync::atomic::Ordering::Relaxed) {
-                        // Exec mode: unmap stale COW frame, fall through to fresh alloc
-                        if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                            cr3_uf_chirho.start_address(),
-                            VirtAddr::new(page_addr_chirho),
-                        ) {
-                            unsafe { (*pte_ptr_chirho).set_unused(); }
-                            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
-                        }
-                        // Fall through to fresh frame allocation below
-                    } else {
-                        // Runtime mmap: make writable in-place (no realloc)
-                        if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                            cr3_uf_chirho.start_address(),
-                            VirtAddr::new(page_addr_chirho),
-                        ) {
-                            unsafe {
-                                let addr_chirho = (*pte_ptr_chirho).addr();
-                                (*pte_ptr_chirho).set_addr(addr_chirho, flags_chirho);
-                            }
-                            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
-                        }
-                        continue;
+                // Log COW+ref info for channels page
+                if page_addr_chirho >= 0x7efffffe4000 && page_addr_chirho < 0x7efffffe5000 {
+                    let ref_dbg_chirho = crate::pagetable_chirho::frame_ref_count_chirho(frame_phys_val_chirho);
+                    crate::serial_println_chirho!(
+                        "[COW-REF] pid={} page={:#x} cow={} ref={} phys={:#x}",
+                        mmap_pid_chirho, page_addr_chirho, is_cow_chirho,
+                        ref_dbg_chirho, frame_phys_val_chirho,
+                    );
+                }
+                if false && mmap_pid_chirho >= 3 {
+                    // DISABLED: forced unmap causes OOM (bump allocator).
+                    // Needs frame deallocation before this can be enabled.
+                    // For COW pages OR PID>=3 pages in the mmap heap arena:
+                    // always unmap + reallocate fresh frame. The mmap arena
+                    // range is limited (~32MB max) to prevent OOM.
+                    // Unmap stale mapping, fall through to fresh alloc
+                    if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                        cr3_uf_chirho.start_address(),
+                        VirtAddr::new(page_addr_chirho),
+                    ) {
+                        unsafe { (*pte_ptr_chirho).set_unused(); }
+                        x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
                     }
+                    crate::pagetable_chirho::frame_ref_dec_chirho(frame_phys_val_chirho);
                 } else {
                     // Writable (owned): safe to reuse, just update flags
                     if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
@@ -811,7 +805,13 @@ fn map_anonymous_pages_chirho(
             let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
             match alloc_lock_chirho.as_mut() {
                 Some(alloc_chirho) => match alloc_chirho.allocate_frame() {
-                    Some(f_chirho) => f_chirho,
+                    Some(f_chirho) => {
+                        // Initialize refcount to 1 (single owner).
+                        crate::pagetable_chirho::frame_ref_inc_chirho(
+                            f_chirho.start_address().as_u64()
+                        );
+                        f_chirho
+                    },
                     None => return Err(-ENOMEM_CHIRHO),
                 },
                 None => return Err(-ENOMEM_CHIRHO),

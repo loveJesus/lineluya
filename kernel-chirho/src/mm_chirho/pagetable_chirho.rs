@@ -45,6 +45,48 @@ const KERNEL_PML4_START_CHIRHO: usize = 256;
 pub const COW_BIT_CHIRHO: u64 = 1 << 9;
 
 // ============================================================================
+// Frame reference counting for COW
+// ============================================================================
+
+/// Simple frame refcount table. Indexed by physical frame number
+/// (phys_addr >> 12). Supports up to 512 MB / 4 KB = 131072 frames.
+/// Refcount 0 = untracked, 1 = private, 2+ = shared via COW.
+const MAX_FRAMES_CHIRHO: usize = 131072; // 512 MB in 4K pages
+static FRAME_REFCOUNTS_CHIRHO: spin::Mutex<[u8; MAX_FRAMES_CHIRHO]> =
+    spin::Mutex::new([0u8; MAX_FRAMES_CHIRHO]);
+
+/// Increment the refcount for a physical frame (called during fork COW marking).
+pub fn frame_ref_inc_chirho(phys_addr_chirho: u64) {
+    let idx_chirho = (phys_addr_chirho >> 12) as usize;
+    if idx_chirho < MAX_FRAMES_CHIRHO {
+        let mut refs_chirho = FRAME_REFCOUNTS_CHIRHO.lock();
+        if refs_chirho[idx_chirho] < 255 {
+            refs_chirho[idx_chirho] = refs_chirho[idx_chirho].saturating_add(1);
+        }
+    }
+}
+
+/// Decrement the refcount for a physical frame (called during COW resolution).
+pub fn frame_ref_dec_chirho(phys_addr_chirho: u64) {
+    let idx_chirho = (phys_addr_chirho >> 12) as usize;
+    if idx_chirho < MAX_FRAMES_CHIRHO {
+        let mut refs_chirho = FRAME_REFCOUNTS_CHIRHO.lock();
+        refs_chirho[idx_chirho] = refs_chirho[idx_chirho].saturating_sub(1);
+    }
+}
+
+/// Get the current refcount for a physical frame.
+pub fn frame_ref_count_chirho(phys_addr_chirho: u64) -> u8 {
+    let idx_chirho = (phys_addr_chirho >> 12) as usize;
+    if idx_chirho < MAX_FRAMES_CHIRHO {
+        let refs_chirho = FRAME_REFCOUNTS_CHIRHO.lock();
+        refs_chirho[idx_chirho]
+    } else {
+        0
+    }
+}
+
+// ============================================================================
 // Physical memory offset storage
 // ============================================================================
 
@@ -450,6 +492,17 @@ fn clone_table_level_chirho(
                 cow_flags_chirho.insert(PageTableFlags::BIT_9);
                 source_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
+                // Track sharing: both parent and child now share this frame.
+                // Increment refcount (from 0→2 for first fork, or N→N+1 for re-fork).
+                let current_ref_chirho = frame_ref_count_chirho(entry_addr_chirho.as_u64());
+                if current_ref_chirho == 0 {
+                    // First time sharing: set to 2 (parent + child)
+                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
+                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
+                } else {
+                    // Already shared: just add one more reference
+                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
+                }
             } else {
                 // Kernel or non-user page — share directly.
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
@@ -467,6 +520,49 @@ fn clone_table_level_chirho(
     }
 
     Some(new_table_phys_chirho)
+}
+
+// ============================================================================
+// flush_user_pages_chirho — clear all user-space PT entries (for exec)
+// ============================================================================
+
+/// Clear all user-space page table entries from the current page table.
+///
+/// Analogous to Linux's `flush_old_exec` / `exec_mmap`: before loading a
+/// new ELF binary, all inherited user-space mappings (from fork's COW)
+/// are removed. This prevents exec's `copy_nonoverlapping` from writing
+/// to COW-shared frames that the parent still reads.
+///
+/// Only clears PML4 entries 0..255 (user space). Kernel entries (256+)
+/// are preserved. The TLB is flushed after clearing.
+pub fn flush_user_pages_chirho() {
+    let (pml4_frame_chirho, _) = Cr3::read();
+    let pml4_phys_chirho = pml4_frame_chirho.start_address();
+    let pml4_chirho = unsafe { table_from_phys_chirho(pml4_phys_chirho) };
+
+    // Zero out all user-space PML4 entries (0..255).
+    // This removes ALL user-space mappings. The PT pages below
+    // (PDPT/PD/PT) become orphaned but are not freed (bump allocator).
+    for i_chirho in 0..KERNEL_PML4_START_CHIRHO {
+        if !pml4_chirho[i_chirho].is_unused() {
+            pml4_chirho[i_chirho].set_unused();
+        }
+    }
+
+    // Flush TLB (CR3 write flushes all non-global entries).
+    unsafe {
+        Cr3::write(pml4_frame_chirho, x86_64::registers::control::Cr3Flags::empty());
+    }
+
+    // Reinitialize the global mapper for the now-clean page table.
+    unsafe {
+        crate::mm_chirho::reinit_mapper_for_current_cr3_chirho();
+    }
+
+    crate::serial_debug_chirho!(
+        "[EXEC] Flushed user pages from PT root {:#x}",
+        pml4_phys_chirho.as_u64(),
+    );
 }
 
 // ============================================================================
@@ -540,8 +636,23 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
         return false; // Not a COW page — genuine fault.
     }
 
-    // The page is COW. Allocate a new frame, copy data, remap writable.
+    // The page is COW. Check refcount to decide whether to copy or just
+    // make writable. If refcount <= 1, the frame is effectively private
+    // (the other side exec'd or exited) — just clear COW and make writable.
     let old_frame_phys_chirho = pte_chirho.addr();
+    let ref_count_chirho = frame_ref_count_chirho(old_frame_phys_chirho.as_u64());
+    if ref_count_chirho <= 1 {
+        // Frame is private (or untracked) — just make writable, no copy needed.
+        let mut new_flags_chirho = flags_chirho;
+        new_flags_chirho.insert(PageTableFlags::WRITABLE);
+        new_flags_chirho.remove(PageTableFlags::BIT_9);
+        unsafe {
+            (*pte_ptr_chirho).set_addr(old_frame_phys_chirho, new_flags_chirho);
+        }
+        x86_64::instructions::tlb::flush(faulting_addr_chirho);
+        return true;
+    }
+    // Refcount >= 2: frame is genuinely shared. Must copy.
 
     let new_frame_chirho = {
         // Use try_lock to avoid deadlock if the allocator is already locked
@@ -588,10 +699,27 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
         );
     }
 
+    // Decrement refcount on old frame (one fewer reference after copy).
+    frame_ref_dec_chirho(old_frame_phys_chirho.as_u64());
+
     // Update the PTE: point to new frame, set WRITABLE, clear COW bit.
     let mut new_flags_chirho = flags_chirho;
     new_flags_chirho.insert(PageTableFlags::WRITABLE);
     new_flags_chirho.remove(PageTableFlags::BIT_9);
+
+    // WATCHPOINT: catch COW on the channels array page
+    let cow_page_chirho = faulting_addr_chirho.as_u64() & !0xFFF;
+    if cow_page_chirho == 0x7efffffe4000 {
+        let cow_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(99);
+        let (cr3_cow_chirho, _) = Cr3::read();
+        crate::serial_println_chirho!(
+            "[COW-WATCH] pid={} addr={:#x} old_frame={:#x} new_frame={:#x} pml4_walked={:#x} cr3={:#x}",
+            cow_pid_chirho, faulting_addr_chirho.as_u64(),
+            old_frame_phys_chirho.as_u64(), new_frame_phys_chirho.as_u64(),
+            pml4_phys_chirho.as_u64(), cr3_cow_chirho.start_address().as_u64(),
+        );
+    }
 
     unsafe {
         (*pte_ptr_chirho).set_addr(new_frame_phys_chirho, new_flags_chirho);
@@ -793,7 +921,7 @@ pub fn restore_cow_to_writable_chirho(pml4_phys_chirho: PhysAddr) -> u64 {
 /// for the intermediate level reads (PML4, PDPT, PD).  The final PT level
 /// still needs `table_from_phys_chirho` because the caller requires a
 /// mutable pointer for COW write-back.
-fn walk_page_table_chirho(
+pub fn walk_page_table_chirho(
     pml4_phys_chirho: PhysAddr,
     addr_chirho: VirtAddr,
 ) -> Option<*mut PageTableEntry> {
@@ -993,6 +1121,21 @@ pub fn map_page_in_pt_chirho(
 
     // Level 1: PT → set the leaf entry
     let pt_chirho = unsafe { table_from_phys_chirho(pt_phys_chirho) };
+    // WATCHPOINT: log any mapping of the channels array page
+    let page_base_chirho = vaddr_chirho & !0xFFF;
+    if page_base_chirho == 0x7efffffe4000 {
+        let old_phys_chirho = if !pt_chirho[pt_idx_chirho].is_unused() {
+            pt_chirho[pt_idx_chirho].addr().as_u64()
+        } else { 0 };
+        let pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(99);
+        let (cr3_f_chirho, _) = x86_64::registers::control::Cr3::read();
+        crate::serial_println_chirho!(
+            "[PTE-WATCH] pid={} vaddr={:#x} old_phys={:#x} new_phys={:#x} pml4={:#x} cr3={:#x}",
+            pid_chirho, page_base_chirho, old_phys_chirho, paddr_chirho,
+            pml4_phys_chirho.as_u64(), cr3_f_chirho.start_address().as_u64(),
+        );
+    }
     pt_chirho[pt_idx_chirho].set_addr(
         PhysAddr::new(paddr_chirho),
         flags_chirho,
