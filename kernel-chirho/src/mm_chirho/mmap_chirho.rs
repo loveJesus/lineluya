@@ -869,30 +869,22 @@ fn unmap_pages_chirho(addr_chirho: u64, len_chirho: u64) {
 
     let num_pages_chirho = len_chirho / PAGE_SIZE_CHIRHO;
 
-    // Transition safety: reinit mapper from CR3 with interrupts disabled
-    // to prevent stale-mapper cross-process corruption (delete-me: option C).
-    x86_64::instructions::interrupts::disable();
-    unsafe { crate::mm_chirho::reinit_mapper_for_current_cr3_chirho(); }
-    let mut mapper_lock_chirho = GLOBAL_MAPPER_CHIRHO.lock();
-    if let Some(mapper_chirho) = mapper_lock_chirho.as_mut() {
+    // Unmap pages via CR3-based PT walk (no GLOBAL_MAPPER).
+    let (cr3_unmap_chirho, _) = x86_64::registers::control::Cr3::read();
+    {
         for i_chirho in 0..num_pages_chirho {
             let page_addr_chirho = addr_chirho + i_chirho * PAGE_SIZE_CHIRHO;
-            let page_chirho: Page<Size4KiB> =
-                Page::containing_address(VirtAddr::new(page_addr_chirho));
-
-            match mapper_chirho.unmap(page_chirho) {
-                Ok((_frame_chirho, flush_chirho)) => {
-                    flush_chirho.flush();
-                    // TODO: Return the frame to the allocator once we have a
-                    // frame deallocator.
-                }
-                Err(_e_chirho) => {
-                    // Page was not mapped — nothing to do.
-                }
+            if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                cr3_unmap_chirho.start_address(),
+                VirtAddr::new(page_addr_chirho),
+            ) {
+                unsafe { (*pte_ptr_chirho).set_unused(); }
+                x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+            } else {
+                // Page was not mapped — nothing to do.
             }
         }
     }
-    x86_64::instructions::interrupts::enable();
 }
 
 /// Update page-table protection flags for a range of pages.
@@ -906,24 +898,20 @@ fn update_page_protection_chirho(addr_chirho: u64, len_chirho: u64, prot_chirho:
     let flags_chirho = prot_to_page_flags_chirho(prot_chirho);
     let num_pages_chirho = len_chirho / PAGE_SIZE_CHIRHO;
 
-    // Transition safety: reinit mapper from CR3 with interrupts disabled
-    // to prevent stale-mapper cross-process corruption (delete-me: option C).
-    x86_64::instructions::interrupts::disable();
-    unsafe { crate::mm_chirho::reinit_mapper_for_current_cr3_chirho(); }
-    let mut mapper_lock_chirho = GLOBAL_MAPPER_CHIRHO.lock();
-    if let Some(mapper_chirho) = mapper_lock_chirho.as_mut() {
-        for i_chirho in 0..num_pages_chirho {
-            let page_addr_chirho = addr_chirho + i_chirho * PAGE_SIZE_CHIRHO;
-            let page_chirho: Page<Size4KiB> =
-                Page::containing_address(VirtAddr::new(page_addr_chirho));
-
+    // Update flags via CR3-based PT walk (no GLOBAL_MAPPER).
+    let (cr3_prot_chirho, _) = x86_64::registers::control::Cr3::read();
+    for i_chirho in 0..num_pages_chirho {
+        let page_addr_chirho = addr_chirho + i_chirho * PAGE_SIZE_CHIRHO;
+        if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+            cr3_prot_chirho.start_address(),
+            VirtAddr::new(page_addr_chirho),
+        ) {
             unsafe {
-                let _ = mapper_chirho.update_flags(page_chirho, flags_chirho);
+                (*pte_ptr_chirho).set_addr((*pte_ptr_chirho).addr(), flags_chirho);
             }
             x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
         }
     }
-    x86_64::instructions::interrupts::enable();
 }
 
 /// Convert Linux `PROT_*` flags to x86_64 [`PageTableFlags`].
