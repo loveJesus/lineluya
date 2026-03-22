@@ -48,43 +48,12 @@ pub const COW_BIT_CHIRHO: u64 = 1 << 9;
 // Frame reference counting for COW
 // ============================================================================
 
-/// Simple frame refcount table. Indexed by physical frame number
-/// (phys_addr >> 12). Supports up to 512 MB / 4 KB = 131072 frames.
-/// Refcount 0 = untracked, 1 = private, 2+ = shared via COW.
-const MAX_FRAMES_CHIRHO: usize = 131072; // 512 MB in 4K pages
-static FRAME_REFCOUNTS_CHIRHO: spin::Mutex<[u8; MAX_FRAMES_CHIRHO]> =
-    spin::Mutex::new([0u8; MAX_FRAMES_CHIRHO]);
-
-/// Increment the refcount for a physical frame (called during fork COW marking).
-pub fn frame_ref_inc_chirho(phys_addr_chirho: u64) {
-    let idx_chirho = (phys_addr_chirho >> 12) as usize;
-    if idx_chirho < MAX_FRAMES_CHIRHO {
-        let mut refs_chirho = FRAME_REFCOUNTS_CHIRHO.lock();
-        if refs_chirho[idx_chirho] < 255 {
-            refs_chirho[idx_chirho] = refs_chirho[idx_chirho].saturating_add(1);
-        }
-    }
-}
-
-/// Decrement the refcount for a physical frame (called during COW resolution).
-pub fn frame_ref_dec_chirho(phys_addr_chirho: u64) {
-    let idx_chirho = (phys_addr_chirho >> 12) as usize;
-    if idx_chirho < MAX_FRAMES_CHIRHO {
-        let mut refs_chirho = FRAME_REFCOUNTS_CHIRHO.lock();
-        refs_chirho[idx_chirho] = refs_chirho[idx_chirho].saturating_sub(1);
-    }
-}
-
-/// Get the current refcount for a physical frame.
-pub fn frame_ref_count_chirho(phys_addr_chirho: u64) -> u8 {
-    let idx_chirho = (phys_addr_chirho >> 12) as usize;
-    if idx_chirho < MAX_FRAMES_CHIRHO {
-        let refs_chirho = FRAME_REFCOUNTS_CHIRHO.lock();
-        refs_chirho[idx_chirho]
-    } else {
-        0
-    }
-}
+/// Frame refcounting stubs. The 128KB static array caused OOM by
+/// consuming kernel BSS space that the bump allocator needs.
+/// TODO: implement with heap-allocated storage after kernel heap init.
+pub fn frame_ref_inc_chirho(_phys_addr_chirho: u64) {}
+pub fn frame_ref_dec_chirho(_phys_addr_chirho: u64) {}
+pub fn frame_ref_count_chirho(_phys_addr_chirho: u64) -> u8 { 0 }
 
 // ============================================================================
 // Physical memory offset storage
@@ -701,6 +670,10 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
 
     // Decrement refcount on old frame (one fewer reference after copy).
     frame_ref_dec_chirho(old_frame_phys_chirho.as_u64());
+    // If refcount dropped to 0, return the old frame to the free list.
+    if frame_ref_count_chirho(old_frame_phys_chirho.as_u64()) == 0 {
+        crate::mm_chirho::free_frame_chirho(old_frame_phys_chirho.as_u64());
+    }
 
     // Update the PTE: point to new frame, set WRITABLE, clear COW bit.
     let mut new_flags_chirho = flags_chirho;

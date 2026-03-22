@@ -767,9 +767,9 @@ fn map_anonymous_pages_chirho(
                         ref_dbg_chirho, frame_phys_val_chirho,
                     );
                 }
-                if false && mmap_pid_chirho >= 3 {
-                    // DISABLED: forced unmap causes OOM (bump allocator).
-                    // Needs frame deallocation before this can be enabled.
+                if is_cow_chirho {
+                    // COW page: unmap stale mapping and allocate fresh.
+                    // The old frame is returned to the free list.
                     // For COW pages OR PID>=3 pages in the mmap heap arena:
                     // always unmap + reallocate fresh frame. The mmap arena
                     // range is limited (~32MB max) to prevent OOM.
@@ -782,6 +782,10 @@ fn map_anonymous_pages_chirho(
                         x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
                     }
                     crate::pagetable_chirho::frame_ref_dec_chirho(frame_phys_val_chirho);
+                    // Return old frame to free list (prevents OOM).
+                    if frame_phys_val_chirho != 0 {
+                        crate::mm_chirho::free_frame_chirho(frame_phys_val_chirho);
+                    }
                 } else {
                     // Writable (owned): safe to reuse, just update flags
                     if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
@@ -975,6 +979,9 @@ use x86_64::structures::paging::{OffsetPageTable, PhysFrame, Size4KiB, FrameAllo
 pub struct GlobalFrameAllocatorChirho {
     next_frame_index_chirho: usize,
     memory_regions_chirho: &'static bootloader_api::info::MemoryRegions,
+    /// Free list: frames returned by deallocate_frame.
+    /// Checked first by allocate_frame before bumping the index.
+    free_list_chirho: alloc::vec::Vec<PhysFrame<Size4KiB>>,
 }
 
 impl GlobalFrameAllocatorChirho {
@@ -987,12 +994,18 @@ impl GlobalFrameAllocatorChirho {
         Self {
             next_frame_index_chirho: start_index_chirho,
             memory_regions_chirho,
+            free_list_chirho: alloc::vec::Vec::new(),
         }
     }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocatorChirho {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        // Check free list first (recycled frames).
+        if let Some(recycled_chirho) = self.free_list_chirho.pop() {
+            return Some(recycled_chirho);
+        }
+        // Bump allocator fallback.
         use bootloader_api::info::MemoryRegionKind;
         use x86_64::PhysAddr;
 
@@ -1010,6 +1023,24 @@ unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocatorChirho {
 
         self.next_frame_index_chirho += 1;
         frame_chirho
+    }
+}
+
+impl GlobalFrameAllocatorChirho {
+    /// Return a frame to the free list for reuse.
+    pub fn deallocate_frame_chirho(&mut self, frame_chirho: PhysFrame<Size4KiB>) {
+        self.free_list_chirho.push(frame_chirho);
+    }
+}
+
+/// Helper: return a frame to the global allocator's free list.
+pub fn free_frame_chirho(phys_addr_chirho: u64) {
+    use x86_64::PhysAddr;
+    let frame_chirho = PhysFrame::<Size4KiB>::containing_address(
+        PhysAddr::new(phys_addr_chirho)
+    );
+    if let Some(alloc_chirho) = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock().as_mut() {
+        alloc_chirho.deallocate_frame_chirho(frame_chirho);
     }
 }
 
