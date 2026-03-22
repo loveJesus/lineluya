@@ -74,32 +74,31 @@ What is already real:
 
 Current kernel truth (updated 2026-03-22):
 
-- SSH echo, uname, ls, id, date, sqlite3, python3 ALL WORK end-to-end
-- python3 -c 'print(42)' → 42 via SSH (fixed: blocking pipe read + debug_serial perf)
-- sqlite3 :memory: 'SELECT 316, 42+1;' → 316|43 via SSH
-- ls / → full Alpine directory listing via SSH
-- root cause FIXED: create_user_page_table copied USER_ACCESSIBLE lower-half PML4 entries from boot PML4, sharing PID 0's intermediate PT pages with exec PTs → cross-process PTE corruption
-- fix: filter USER_ACCESSIBLE in lower-half PML4 copy (1-line guard)
-- GLOBAL_MAPPER eliminated from all user-space paths (PF handler, mmap PID>=2, unmap, mprotect)
-- authoritative exec with fresh per-process PT, no boot PML4 user sharing
-- pipe-priority select, full GPR sigframe, red zone skip all working
+- SSH echo, uname, ls, id, date, sqlite3, python3, cat /proc/meminfo ALL WORK end-to-end
+- 6+ consecutive SSH connections work without QEMU restart (SLiRP blocker resolved)
+- python3 -c 'print(42)' → 42 via SSH
+- sqlite3 on-disk DB: CREATE/INSERT/SELECT all work
+- sqlite3 --version: 3.51.2 2026-01-09 (64-bit)
+- cat /proc/meminfo: MemTotal 294912 kB, MemFree 147456 kB
+- root cause FIXED: create_user_page_table copied USER_ACCESSIBLE lower-half PML4 entries from boot PML4
+- GLOBAL_MAPPER eliminated from all user-space paths
 - blocking pipe read: sys_read_real yields+retries for EAGAIN on blocking pipes (POSIX correct)
-- debug_serial disabled by default: 60KB smaller kernel, 100x less serial output → python3 loads in time
+- debug_serial disabled by default: 60KB smaller kernel, 100x less serial output
 
 Current kernel blocker:
 
-- consecutive SSH connections fail (SLiRP hostfwd limitation, not kernel)
-- need to verify more demo1 items (sqlite3 DB ops, cat /proc/meminfo)
+- ls /proc returns empty (needs procfs directory listing)
+- need to verify remaining demo1 items (loop mount, kernel module load via SSH)
 
 ## Immediate Iteration
 
 ### Goal
 
-Get more demo1 items working: `uname -a`, `ls /`, `cat /proc/meminfo`, etc. Fix PID 2's cleanup after first SSH session so a second connection can succeed.
+Get remaining demo1 items working: loop mount, kernel module load via SSH. Improve /proc directory listing.
 
 ### Definition Of Done
 
-- multiple SSH commands work without QEMU restart
+- all demo-script-chirho.md items through #4 work via SSH without restart
 - no new demo glue is added
 
 ## Work Loop
