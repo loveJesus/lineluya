@@ -86,8 +86,8 @@ Current kernel truth (updated 2026-03-22):
 
 Current known limits:
 
-- 6th SSH session fails: dropbear internal state issue after 5 fork cycles (not per-IP limit, not frame exhaustion — tested both). 5 sessions sufficient for demo.
-- python3 module loading slow (~90-180s) — needs scheduler priority or ext4 caching
+- 8th+ SSH session fails: custom-built dropbear with MAX_UNAUTH_PER_IP=100 (static, from source) extends limit from 5 to 7 sessions. Remaining limit is childpipe cleanup (write end not detected as closed by parent's select). 7 sessions sufficient for demo.
+- python3 module loading ~130s — ext4 cold I/O, 512-entry block cache, yield every 10 in select
 - remaining demo items: loop mount, kernel module load via SSH
 
 ## Immediate Iteration
