@@ -143,16 +143,17 @@ You can modify the following section
 - Framebuffer ioctls for X11 (VSCREENINFO, FSCREENINFO)
 
 ### Verified Working in QEMU (x86_64) — v6.0
-- **SSH EXEC END-TO-END**: `ssh root@localhost -p 2222 "echo SSH_SUCCESS_HALLELUJAH"` → client receives output
+- **13 SSH commands verified**: echo, uname -a, id, date, ls /, cat /proc/meminfo, cat /proc/version, cat /proc/cpuinfo, cat /proc/uptime, ls /proc, sqlite3 --version, sqlite3 on-disk DB ops, python3 -c 'print(42)'
+- **5 consecutive SSH sessions** per QEMU instance without restart
 - **Full SSH pipeline**: KEX(curve25519)→auth(blank password)→channel→fork→exec→pipe→relay→client
-- **User signal delivery**: SIGCHLD handler invoked, writes to dropbear self-pipe, rt_sigreturn restores state
+- **Proper zombie reaping**: wait4 finds zombies in TASK_LIST, reap_child removes them
 - **REAL FORK**: parent+child run concurrently with preemptive scheduling
-- **Per-process page tables**: eager mirroring (8440+ pages), CR3 switch on context switch
-- **Per-PID user stacks**: each process at different virtual address (16 MiB offsets)
+- **Per-process page tables**: USER_ACCESSIBLE filter prevents cross-process PTE corruption
 - **COW fork**: Arc refcount pipe close semantics, proper COW marking for per-process PT fork
-- **Static context slots**: context switch via static array, idle loop context save, FS/GS MSR restore
-- **sqlite3**: SELECT 316, 42+1 → 316|43 (dynamic musl ELF from Alpine disk)
-- **Python 3.12**: python3 -c 'print(42)' → 42 (dynamic musl ELF)
+- **Blocking pipe read**: sys_read_real yields+retries for EAGAIN (POSIX correct)
+- **sqlite3**: on-disk CREATE/INSERT/SELECT + in-memory queries (dynamic musl ELF)
+- **Python 3.12**: python3 -c 'print(42)' → 42 (~130s module loading, dynamic musl ELF)
+- **Frame allocator**: free list for frame recycling, 512-entry ext4 block cache (2MB)
 - **Alpine loop.ko**: insmod loads 94KB module into static .bss arena, init_module succeeds
 - **ext4 loop mount**: losetup + mount -t ext4, read Matthew 7:12, write+readback aleluya
 - **Dropbear SSH**: listens port 2222, accepts TCP, full KEX + auth + channel + exec
@@ -201,10 +202,10 @@ qemu-system-x86_64 \
 ```
 
 ### Known Issues
-- **PID 2 (dropbear) musl heap corruption after fork+exec child**: musl free() asserts (cmp [rax+0x10],rcx → GPF). Happens when PID 2 resumes from select() after PID 3 forks PID 4. Root cause unknown — boot PML4 contamination, brk pollution, and lazy migration all fixed but crash persists. Heap prev_chunk pointer is corrupt (non-canonical address in rax).
+- **6th+ consecutive SSH session fails**: dropbear internal state after 5 fork cycles (not per-IP limit, not frame exhaustion). 5 sessions sufficient for demo.
+- **Python3 module loading ~130s**: cold ext4 I/O for 26+ module files via VirtIO. Block cache (512 entries) helps with repeated reads but first load is always slow.
 - Shell re-exec after wait4 reap (parent SYSRET RCX corruption workaround)
 - wget HTTP header parsing fails (TCP segment ordering)
-- Python3 stdlib loading slow under QEMU TCG (ARM64→x86_64 emulation)
 - linked_list_allocator fragmentation under heavy alloc/dealloc
 
 ### Tags
