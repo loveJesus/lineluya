@@ -758,22 +758,61 @@ fn map_anonymous_pages_chirho(
                     }
                     continue;
                 }
-                // PID >= 3: reuse the frame but update flags.
-                // Same as PID 0-2 for now — the stale frame issue
-                // needs frame refcounting to fix properly.
+                // PID >= 3: check frame refcount to decide action.
                 let (cr3_p3_chirho, _) = x86_64::registers::control::Cr3::read();
-                if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                let existing_phys_chirho = crate::pagetable_chirho::walk_page_table_chirho(
                     cr3_p3_chirho.start_address(),
                     VirtAddr::new(page_addr_chirho),
-                ) {
-                    unsafe {
-                        (*pte_ptr_chirho).set_addr(
-                            (*pte_ptr_chirho).addr(), flags_chirho,
-                        );
-                    }
-                    x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                ).map(|p| unsafe { (*p).addr().as_u64() }).unwrap_or(0);
+                let ref_cnt_chirho = crate::pagetable_chirho::frame_ref_count_chirho(existing_phys_chirho);
+                if page_addr_chirho >= 0x7efffffe4000 && page_addr_chirho < 0x7efffffe5000 {
+                    crate::serial_println_chirho!(
+                        "[REF-CHECK] pid={} page={:#x} phys={:#x} ref={}",
+                        mmap_pid_chirho, page_addr_chirho, existing_phys_chirho, ref_cnt_chirho,
+                    );
                 }
-                continue;
+                if ref_cnt_chirho >= 2 {
+                    // Shared frame: unmap, fall through to fresh allocation.
+                    if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                        cr3_p3_chirho.start_address(),
+                        VirtAddr::new(page_addr_chirho),
+                    ) {
+                        unsafe { (*pte_ptr_chirho).set_unused(); }
+                        x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                    }
+                    // NOTE: do NOT dec refcount here — the parent still
+                    // maps this frame. Refcount is managed by fork+COW only.
+                    // Fall through to fresh frame allocation
+                } else {
+                    // Ref <= 1: check if this is genuinely OUR frame
+                    // (allocated by us) or a phantom from stale GLOBAL_MAPPER.
+                    // If the frame is untracked (ref=0), it's a phantom — unmap.
+                    if ref_cnt_chirho == 0 {
+                        // Phantom PTE from stale mapper: unmap, alloc fresh.
+                        if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                            cr3_p3_chirho.start_address(),
+                            VirtAddr::new(page_addr_chirho),
+                        ) {
+                            unsafe { (*pte_ptr_chirho).set_unused(); }
+                            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                        }
+                        // Fall through to fresh frame allocation
+                    } else {
+                        // Ref=1: genuinely ours, safe to reuse.
+                        if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                            cr3_p3_chirho.start_address(),
+                            VirtAddr::new(page_addr_chirho),
+                        ) {
+                            unsafe {
+                                (*pte_ptr_chirho).set_addr(
+                                    (*pte_ptr_chirho).addr(), flags_chirho,
+                                );
+                            }
+                            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
+                        }
+                        continue;
+                    }
+                }
             }
         }
 
@@ -782,7 +821,13 @@ fn map_anonymous_pages_chirho(
             let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
             match alloc_lock_chirho.as_mut() {
                 Some(alloc_chirho) => match alloc_chirho.allocate_frame() {
-                    Some(f_chirho) => f_chirho,
+                    Some(f_chirho) => {
+                        // Init refcount to 1 (single owner).
+                        crate::pagetable_chirho::frame_ref_inc_chirho(
+                            f_chirho.start_address().as_u64()
+                        );
+                        f_chirho
+                    },
                     None => return Err(-ENOMEM_CHIRHO),
                 },
                 None => return Err(-ENOMEM_CHIRHO),

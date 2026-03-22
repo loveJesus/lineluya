@@ -45,6 +45,61 @@ const KERNEL_PML4_START_CHIRHO: usize = 256;
 pub const COW_BIT_CHIRHO: u64 = 1 << 9;
 
 // ============================================================================
+// Frame reference counting for COW (heap-allocated, lazy init)
+// ============================================================================
+
+/// Heap-allocated frame refcount table. Initialized lazily on first use
+/// (after kernel heap is available). Uses Vec<u8> on the heap instead of
+/// a static [u8; N] array to avoid consuming BSS space (which starves
+/// the bump frame allocator).
+static FRAME_REFCOUNTS_CHIRHO: spin::Mutex<Option<alloc::vec::Vec<u8>>> =
+    spin::Mutex::new(None);
+
+const MAX_FRAMES_CHIRHO: usize = 131072; // 512 MB in 4K pages
+
+fn get_refcounts_chirho() -> spin::MutexGuard<'static, Option<alloc::vec::Vec<u8>>> {
+    let mut guard_chirho = FRAME_REFCOUNTS_CHIRHO.lock();
+    if guard_chirho.is_none() {
+        // Lazy init: allocate on heap. This runs after kernel heap init.
+        let mut v_chirho = alloc::vec::Vec::with_capacity(MAX_FRAMES_CHIRHO);
+        v_chirho.resize(MAX_FRAMES_CHIRHO, 0u8);
+        *guard_chirho = Some(v_chirho);
+    }
+    guard_chirho
+}
+
+/// Increment refcount for a physical frame (called during fork COW marking).
+pub fn frame_ref_inc_chirho(phys_addr_chirho: u64) {
+    let idx_chirho = (phys_addr_chirho >> 12) as usize;
+    if idx_chirho < MAX_FRAMES_CHIRHO {
+        if let Some(ref mut v_chirho) = *get_refcounts_chirho() {
+            v_chirho[idx_chirho] = v_chirho[idx_chirho].saturating_add(1);
+        }
+    }
+}
+
+/// Decrement refcount for a physical frame (called during COW resolution).
+pub fn frame_ref_dec_chirho(phys_addr_chirho: u64) {
+    let idx_chirho = (phys_addr_chirho >> 12) as usize;
+    if idx_chirho < MAX_FRAMES_CHIRHO {
+        if let Some(ref mut v_chirho) = *get_refcounts_chirho() {
+            v_chirho[idx_chirho] = v_chirho[idx_chirho].saturating_sub(1);
+        }
+    }
+}
+
+/// Get current refcount for a physical frame.
+pub fn frame_ref_count_chirho(phys_addr_chirho: u64) -> u8 {
+    let idx_chirho = (phys_addr_chirho >> 12) as usize;
+    if idx_chirho < MAX_FRAMES_CHIRHO {
+        if let Some(ref v_chirho) = *get_refcounts_chirho() {
+            return v_chirho[idx_chirho];
+        }
+    }
+    0
+}
+
+// ============================================================================
 // Physical memory offset storage
 // ============================================================================
 
@@ -450,6 +505,16 @@ fn clone_table_level_chirho(
                 cow_flags_chirho.insert(PageTableFlags::BIT_9);
                 source_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
+                // Track sharing: increment refcount for the shared frame.
+                let cur_ref_chirho = frame_ref_count_chirho(entry_addr_chirho.as_u64());
+                if cur_ref_chirho == 0 {
+                    // First share: set to 2 (parent + child)
+                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
+                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
+                } else {
+                    // Already shared: add one more reference
+                    frame_ref_inc_chirho(entry_addr_chirho.as_u64());
+                }
             } else {
                 // Kernel or non-user page — share directly.
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
@@ -583,8 +648,20 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
         return false; // Not a COW page — genuine fault.
     }
 
-    // The page is COW. Allocate a new frame, copy data, remap writable.
+    // The page is COW. Check refcount: if ≤1, frame is private
+    // (other side exec'd/exited). Just make writable, no copy needed.
     let old_frame_phys_chirho = pte_chirho.addr();
+    let ref_count_chirho = frame_ref_count_chirho(old_frame_phys_chirho.as_u64());
+    if ref_count_chirho <= 1 {
+        // Private frame: just clear COW and make writable.
+        let mut writable_flags_chirho = flags_chirho;
+        writable_flags_chirho.insert(PageTableFlags::WRITABLE);
+        writable_flags_chirho.remove(PageTableFlags::BIT_9);
+        unsafe { (*pte_ptr_chirho).set_addr(old_frame_phys_chirho, writable_flags_chirho); }
+        x86_64::instructions::tlb::flush(faulting_addr_chirho);
+        return true;
+    }
+    // Refcount >= 2: frame is genuinely shared, must copy.
 
     let new_frame_chirho = {
         // Use try_lock to avoid deadlock if the allocator is already locked
@@ -635,6 +712,9 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
     let mut new_flags_chirho = flags_chirho;
     new_flags_chirho.insert(PageTableFlags::WRITABLE);
     new_flags_chirho.remove(PageTableFlags::BIT_9);
+
+    // Decrement refcount on old frame (one fewer reference after copy).
+    frame_ref_dec_chirho(old_frame_phys_chirho.as_u64());
 
     // WATCHPOINT: catch COW on the channels array page
     let cow_page_chirho = faulting_addr_chirho.as_u64() & !0xFFF;
