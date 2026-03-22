@@ -1543,21 +1543,10 @@ fn preserve_fd_table_across_exec_chirho_impl(preserve_sockets_chirho: bool) {
         if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
             let fd0_before_chirho = fd_table_chirho.fds_chirho.get(0).map(|s| s.is_some()).unwrap_or(false);
             let fd0_cloexec_chirho = fd_table_chirho.cloexec_chirho.get(0).copied().unwrap_or(false);
-            // For procfd exec (dropbear fexecve): preserve ALL fds so the
-            // connection socket on fd=8 (from `-2 8`) survives exec.
-            // Without this, fd=8 is closed (O_CLOEXEC), dropbear falls
-            // back to fd=0, computes nfds=1, and never reads pipe fds.
             if preserve_sockets_chirho {
                 fd_table_chirho.clear_all_cloexec_flags_chirho();
             } else {
                 fd_table_chirho.close_cloexec_fds_chirho();
-                // Close inherited pipe fds > 2 that don't have O_CLOEXEC.
-                // Dropbear's childpipe write end is inherited by the exec'd
-                // grandchild without CLOEXEC, keeping writers_chirho > 0 and
-                // preventing the daemon from detecting childpipe EOF via
-                // select. This closefrom(3)-style cleanup matches Linux SSH
-                // behavior where exec'd commands don't inherit parent pipes.
-                fd_table_chirho.close_non_stdio_pipes_chirho();
             }
             let fd0_after_chirho = fd_table_chirho.fds_chirho.get(0).map(|s| s.is_some()).unwrap_or(false);
             if ppid_chirho != 0 {

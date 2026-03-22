@@ -552,14 +552,43 @@ impl FdTableChirho {
         }
     }
 
-    /// Clone the fd table WITHOUT incrementing pipe reader/writer counters.
-    /// Used during exec where the cloned table replaces the existing one
-    /// (same process, not a new process) — no new pipe references are created.
-    pub fn clone_table_no_pipe_inc_chirho(&self) -> Self {
-        Self {
-            fds_chirho: self.fds_chirho.clone(),
-            paths_chirho: self.paths_chirho.clone(),
-            cloexec_chirho: self.cloexec_chirho.clone(),
+    /// Decrement pipe reader/writer counters for all pipe fds in this table.
+    /// Called when this table is about to be REPLACED (not closed fd-by-fd).
+    /// The Arcs will be dropped without going through close_chirho, so the
+    /// pipe refcounts would be left inflated. This compensates.
+    pub fn dec_pipe_refcounts_chirho(&self) {
+        for slot_chirho in &self.fds_chirho {
+            if let Some(ref file_arc_chirho) = slot_chirho {
+                let file_guard_chirho = file_arc_chirho.lock();
+                let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+                let is_fifo_chirho = (inode_guard_chirho.mode_chirho & 0o170000) == 0o010000;
+                if is_fifo_chirho {
+                    let flags_chirho = file_guard_chirho.flags_chirho;
+                    if let Some(ref fs_data_chirho) = inode_guard_chirho.fs_data_chirho {
+                        if let Some(pipe_arc_chirho) = fs_data_chirho
+                            .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
+                        {
+                            let mut pipe_chirho = pipe_arc_chirho.lock();
+                            if flags_chirho & O_WRONLY_CHIRHO != 0 || flags_chirho & O_RDWR_CHIRHO != 0 {
+                                if pipe_chirho.writers_chirho > 0 {
+                                    pipe_chirho.writers_chirho -= 1;
+                                }
+                                if pipe_chirho.writers_chirho == 0 {
+                                    pipe_chirho.closed_write_chirho = true;
+                                }
+                            }
+                            if flags_chirho == O_RDONLY_CHIRHO {
+                                if pipe_chirho.readers_chirho > 0 {
+                                    pipe_chirho.readers_chirho -= 1;
+                                }
+                                if pipe_chirho.readers_chirho == 0 {
+                                    pipe_chirho.closed_read_chirho = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
