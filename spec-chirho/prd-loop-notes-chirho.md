@@ -74,11 +74,13 @@ What is already real:
 
 Current kernel truth (updated 2026-03-22):
 
-- 11+ SSH commands verified working end-to-end (demo1 items #1-#4 complete):
+- 15+ SSH commands verified working end-to-end (demo1 items #1-#4 complete, plus real .ko loading):
   - echo, uname -a, id, date, ls /, cat /proc/meminfo, cat /proc/version
   - ls /proc (18 entries), sqlite3 --version, sqlite3 on-disk CREATE/INSERT/SELECT
   - python3 -c 'print(42)' → 42 (needs 90-180s, fresh QEMU)
+  - insmod /lib/modules/hello_chirho.ko → INSMOD_OK (real Alpine .ko parsed, relocated, and loaded via SSH)
 - 5 consecutive SSH sessions per QEMU instance (8s delays between sessions)
+- 6-7 consecutive SSH sessions per QEMU instance with the custom dropbear build
 - frame allocator free list infrastructure ready for future COW frame recycling
 - proper zombie reaping: wait4 finds zombies, reap_child removes from TASK_LIST
 - blocking pipe read: sys_read_real yields+retries for EAGAIN (POSIX correct)
@@ -88,7 +90,8 @@ Current known limits:
 
 - 8th+ SSH session fails: custom-built dropbear with MAX_UNAUTH_PER_IP=100 (static, from source) removed the stock 5-session userland cap and extended the run to 7 sessions. Remaining kernel-shaped limit is childpipe cleanup: parent select does not yet observe childpipe write-end closure authoritatively. Current live hypothesis is exec-time fd-table mirror cloning inflating pipe endpoint counts when temporary clones are dropped without symmetric counter updates.
 - python3 module loading ~130s — ext4 cold I/O, 512-entry block cache, yield every 10 in select
-- remaining demo items: loop mount, kernel module load via SSH
+- kernel module load via SSH is real, but init_module is still skipped for Alpine .ko files that require R_X86_64_32S relocations against Linux-style negative-half kernel addresses
+- remaining demo items: loop mount via SSH and module-init address-space compatibility
 
 ## Immediate Iteration
 

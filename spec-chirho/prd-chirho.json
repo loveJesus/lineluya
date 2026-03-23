@@ -6,12 +6,12 @@
   "project_name_chirho": "Lineluya",
   "primary_goal_chirho": "Turn Lineluya into a sensibly designed Rust kernel by hardening core primitives, deleting workaround glue, and making real Alpine workloads validate the kernel without shaping generic semantics.",
   "project_state_summary_chirho": {
-    "current_milestone_chirho": "13 Alpine SSH commands verified and 6-7 consecutive SSH sessions per QEMU instance",
+    "current_milestone_chirho": "15 Alpine SSH commands verified, including real .ko loading via SSH, and 6-7 consecutive SSH sessions per QEMU instance",
     "verified_runtime_chirho": [
-      "13 SSH commands verified over the live Alpine/dropbear path, including uname -a, id, date, ls /, cat /proc/meminfo, cat /proc/version, sqlite3 DB ops, and python3 -c 'print(42)'",
+      "15 SSH commands verified over the live Alpine/dropbear path, including uname -a, id, date, ls /, cat /proc/meminfo, cat /proc/version, sqlite3 DB ops, python3 -c 'print(42)', and insmod of a real Alpine-built .ko file",
       "6-7 consecutive SSH sessions per QEMU instance now succeed; the old second-connection frontier is no longer the main kernel story",
       "Dropbear boots from ext4 rootfs and reaches real auth, session, fork, exec, pipe, zombie reaping, and TCP paths under repeated workload pressure",
-      "Per-process page tables, COW, dynamic musl ELF loading, signals, VFS, PTY, TCP, blocking pipe reads, and a 512-entry ext4 cache are all live and under pressure",
+      "Per-process page tables, COW, dynamic musl ELF loading, signals, VFS, PTY, TCP, blocking pipe reads, a 512-entry ext4 cache, and the kernel module loader are all live and under pressure",
       "The GLOBAL_MAPPER corruption frontier materially receded; the current kernel-shaped limiter is fd-table and childpipe lifecycle cleanup, not basic exec viability"
     ],
     "current_blocker_chirho": "The main kernel-shaped blocker is childpipe lifecycle and pipe endpoint cleanup across exec/fd-table cloning: consecutive SSH sessions still cap around 7 because the parent select/read path does not yet observe childpipe write-end closure through one authoritative fd/OFD/pipe lifetime model. Secondary limits are python3 cold-start I/O and remaining demo items (loop mount and module load over SSH).",
