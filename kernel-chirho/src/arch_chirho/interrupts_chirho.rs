@@ -678,12 +678,11 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 }
                 // For Xorg crash debugging: halt ONLY for PID >= 5
                 // (skip boot processes that also hit NULL deref)
-                if user_fault_pid_chirho >= 4 && fault_addr_chirho.as_u64() == 0x2b33d {
-                    crate::serial_println_chirho!(
-                        "[PF] XORG CRASH HALT — GDB: target remote :1234"
-                    );
-                    loop { unsafe { core::arch::asm!("hlt"); } }
-                }
+                // GDB halt for Xorg crash debugging (enable with -s flag):
+                // if user_fault_pid_chirho >= 4 && fault_addr_chirho.as_u64() == 0x2b33d {
+                //     crate::serial_println_chirho!("[PF] XORG CRASH HALT");
+                //     loop { unsafe { core::arch::asm!("hlt"); } }
+                // }
                 // Kill the process with SIGSEGV
                 if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
                     task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
