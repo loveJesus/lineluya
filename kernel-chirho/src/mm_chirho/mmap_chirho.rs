@@ -271,16 +271,9 @@ impl MmChirho {
                     map_addr_chirho, aligned_len_chirho, initial_prot_chirho,
                 )?;
 
-                // Read file data into the mapped region using sys_read_real
-                // in a loop.  Each read copies up to 4K directly into the
-                // mapped pages (already RWX from above).
-                //
-                // IMPORTANT: We seek to the requested offset first and read
-                // sequentially.  sys_read_real internally calls ext4
-                // read_file_data which re-reads the file each time — but
-                // for 4K chunks this is acceptable (ext4 has a block cache).
-                // The alternative (bulk read via read_file_data_at_offset)
-                // caused heap corruption from nested Vec allocations.
+                // Read file data into the mapped region.
+                // Use sys_read_real in a loop — each read copies blocks
+                // directly into the mapped pages.
                 let saved_pos_chirho = crate::fs_chirho::sys_lseek_chirho(
                     fd_chirho as u64, 0, 1,
                 );
@@ -290,7 +283,7 @@ impl MmChirho {
                 let total_chirho = aligned_len_chirho.min(8 * 1024 * 1024) as usize;
                 let mut done_chirho: usize = 0;
                 while done_chirho < total_chirho {
-                    let chunk_chirho = core::cmp::min(4096, total_chirho - done_chirho);
+                    let chunk_chirho = core::cmp::min(65536, total_chirho - done_chirho);
                     let n_chirho = crate::fs_chirho::sys_read_real_chirho(
                         fd_chirho as u64,
                         map_addr_chirho + done_chirho as u64,

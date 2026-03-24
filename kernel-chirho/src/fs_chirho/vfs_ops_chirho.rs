@@ -1760,11 +1760,18 @@ pub fn sys_read_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: 
         return 0;
     }
 
-    // Read into a stack-based kernel buffer (avoid heap allocation
-    // which can trigger page faults in the allocator during syscalls).
-    let capped_count_chirho = core::cmp::min(count_chirho, 4096);
+    // Use stack buffer for small reads (≤4K), heap for larger reads.
+    // File-backed mmap uses 64K reads for performance — heap alloc is safe
+    // for those since the page allocator is initialized by mmap time.
+    let capped_count_chirho = core::cmp::min(count_chirho, 65536);
     let mut kernel_buf_storage_chirho = [0u8; 4096];
-    let kernel_buf_chirho = &mut kernel_buf_storage_chirho[..capped_count_chirho];
+    let mut heap_buf_chirho: Option<alloc::vec::Vec<u8>> = None;
+    let kernel_buf_chirho: &mut [u8] = if capped_count_chirho <= 4096 {
+        &mut kernel_buf_storage_chirho[..capped_count_chirho]
+    } else {
+        heap_buf_chirho = Some(alloc::vec![0u8; capped_count_chirho]);
+        heap_buf_chirho.as_mut().unwrap().as_mut_slice()
+    };
 
     // Retry loop: for blocking pipe reads that return EAGAIN, yield the
     // CPU and retry instead of returning EAGAIN to userspace.  Real Linux
