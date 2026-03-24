@@ -313,6 +313,28 @@ impl MmChirho {
                     if n_chirho <= 0 { break; }
                     done_chirho += n_chirho as usize;
                 }
+                // Verify mmap data integrity for file-backed mappings
+                {
+                    let pid_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if pid_chirho >= 5 && done_chirho > 0 {
+                        let first4_chirho = unsafe {
+                            core::ptr::read_volatile(map_addr_chirho as *const [u8; 4])
+                        };
+                        use core::sync::atomic::{AtomicU64, Ordering as MmOrd};
+                        static MMAP_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                        let mc_chirho = MMAP_LOG_CHIRHO.fetch_add(1, MmOrd::Relaxed);
+                        if mc_chirho < 30 {
+                            crate::serial_println_chirho!(
+                                "[MMAP-DATA] #{} pid={} addr={:#x} off={:#x} len={:#x} done={:#x} first=[{:#04x},{:#04x},{:#04x},{:#04x}] fixed={}",
+                                mc_chirho, pid_chirho, map_addr_chirho, _offset_chirho,
+                                aligned_len_chirho, done_chirho,
+                                first4_chirho[0], first4_chirho[1], first4_chirho[2], first4_chirho[3],
+                                is_fixed_chirho,
+                            );
+                        }
+                    }
+                }
                 if saved_pos_chirho >= 0 {
                     let _ = crate::fs_chirho::sys_lseek_chirho(
                         fd_chirho as u64, saved_pos_chirho, 0,
