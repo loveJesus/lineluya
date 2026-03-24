@@ -249,6 +249,21 @@ impl MmChirho {
             }
 
             MappingKindChirho::AnonymousChirho => {
+                // PROT_NONE: just reserve address space (VMA only, no pages).
+                // musl's dynamic linker uses mmap(PROT_NONE) to reserve a
+                // contiguous address range, then MAP_FIXED to place segments.
+                // If we allocate real frames here, they waste memory and
+                // interfere with the subsequent MAP_FIXED file-backed mmaps.
+                if prot_chirho == PROT_NONE_CHIRHO {
+                    let vma_chirho = VmaChirho {
+                        start_chirho: map_addr_chirho,
+                        end_chirho: map_addr_chirho + aligned_len_chirho,
+                        prot_chirho,
+                        flags_chirho,
+                    };
+                    self.insert_vma_chirho(vma_chirho);
+                    return Ok(map_addr_chirho);
+                }
                 // Zero-filled anonymous pages — the common case.
                 map_anonymous_pages_chirho(map_addr_chirho, aligned_len_chirho, prot_chirho)?;
 
