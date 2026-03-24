@@ -435,7 +435,12 @@ pub fn init_module_arena_mapping_chirho() {
     let total_chirho =
         MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO * MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO;
     let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-    let pml4_phys_chirho = crate::pagetable_chirho::get_boot_pml4_chirho().as_u64();
+    // Use CURRENT CR3 via raw assembly (Cr3::read may panic on non-standard values)
+    let pml4_phys_chirho: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) pml4_phys_chirho, options(nostack));
+    }
+    let pml4_phys_chirho = pml4_phys_chirho & 0x000F_FFFF_FFFF_F000; // mask flags
 
     let mut ok_chirho = 0u64;
     for off_chirho in (0..total_chirho).step_by(4096) {
@@ -3949,6 +3954,10 @@ pub fn sys_init_module_impl_chirho(
             unsafe {
                 let boot_e_chirho = *((boot_phys_chirho + off_chirho) as *const u64).add(511);
                 let cur_e_chirho = *((cur_phys_chirho + off_chirho) as *const u64).add(511);
+                crate::serial_println_chirho!(
+                    "[KO] PML4 copy: boot[511]={:#x} cur[511]={:#x} boot_pml4={:#x}",
+                    boot_e_chirho, cur_e_chirho, boot_phys_chirho,
+                );
                 if cur_e_chirho != boot_e_chirho {
                     *((cur_phys_chirho + off_chirho) as *mut u64).add(511) = boot_e_chirho;
                     // Full TLB flush

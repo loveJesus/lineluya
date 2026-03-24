@@ -1202,9 +1202,51 @@ pub fn map_page_raw_chirho(
         Ok(pa_u64_chirho)
     };
 
+    // For high-canonical module arena: the bootloader's intermediate page
+    // table frames at PML4[511] are read-only. We must allocate entirely
+    // new PDPT/PD/PT frames, copy existing entries to preserve kernel text
+    // mappings, then point PML4[511] to our new writable PDPT.
+    static MODULE_PDPT_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
+    static MODULE_PD_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
+    static MODULE_PT_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+    let is_module_arena_chirho = vaddr_chirho >= 0xFFFF_FFFF_0000_0000;
+
     // Walk PML4 → PDPT
     let pml4e_chirho = read_entry_chirho(pml4_phys_chirho, pml4i_chirho);
-    let pdpt_phys_chirho = if pml4e_chirho & 1 == 0 {
+    let pdpt_phys_chirho = if is_module_arena_chirho {
+        let cached_chirho = MODULE_PDPT_PHYS_CHIRHO.load(Ordering::Relaxed);
+        if cached_chirho != 0 {
+            cached_chirho
+        } else {
+            // Allocate fresh PDPT + copy all 512 entries from bootloader's
+            let old_pdpt_chirho = addr_from_entry_chirho(pml4e_chirho);
+            let new_pdpt_chirho = new_frame_chirho()?;
+            // Copy all existing entries (preserves kernel text mapping)
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (old_pdpt_chirho + phys_off_chirho) as *const u8,
+                    (new_pdpt_chirho + phys_off_chirho) as *mut u8,
+                    4096,
+                );
+            }
+            MODULE_PDPT_PHYS_CHIRHO.store(new_pdpt_chirho, Ordering::Relaxed);
+            // Update PML4 to point to our writable PDPT
+            write_entry_chirho(pml4_phys_chirho, pml4i_chirho, new_pdpt_chirho | flags_inter_chirho);
+            // Flush the PML4 entry's cache line + reload CR3 to commit
+            unsafe {
+                let pml4_entry_virt_chirho = (pml4_phys_chirho + phys_off_chirho) as *const u8;
+                core::arch::asm!(
+                    "clflush [{}]",
+                    in(reg) pml4_entry_virt_chirho.add(pml4i_chirho * 8),
+                    options(nostack)
+                );
+                core::arch::asm!("mfence", options(nostack));
+                core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
+            }
+            new_pdpt_chirho
+        }
+    } else if pml4e_chirho & 1 == 0 {
         let f_chirho = new_frame_chirho()?;
         write_entry_chirho(pml4_phys_chirho, pml4i_chirho, f_chirho | flags_inter_chirho);
         f_chirho
@@ -1213,22 +1255,27 @@ pub fn map_page_raw_chirho(
     };
 
     // Walk PDPT → PD
-    // For high-canonical addresses: track whether we've already created
-    // fresh tables for this PDPT entry. Static is safe during boot (single-core).
-    static MODULE_ARENA_PD_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
-    static MODULE_ARENA_PT_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
-
     let pdpte_chirho = read_entry_chirho(pdpt_phys_chirho, pdpti_chirho);
-    let pd_phys_chirho = if vaddr_chirho >= 0xFFFF_FFFF_0000_0000 {
-        // Module arena: use fresh PD (allocated once, reused for all pages)
-        let cached_chirho = MODULE_ARENA_PD_PHYS_CHIRHO.load(Ordering::Relaxed);
+    let pd_phys_chirho = if is_module_arena_chirho {
+        let cached_chirho = MODULE_PD_PHYS_CHIRHO.load(Ordering::Relaxed);
         if cached_chirho != 0 {
             cached_chirho
         } else {
-            let f_chirho = new_frame_chirho()?;
-            MODULE_ARENA_PD_PHYS_CHIRHO.store(f_chirho, Ordering::Relaxed);
-            write_entry_chirho(pdpt_phys_chirho, pdpti_chirho, f_chirho | flags_inter_chirho);
-            f_chirho
+            // Fresh PD — copy from old PD if it existed
+            let new_pd_chirho = new_frame_chirho()?;
+            if pdpte_chirho & 1 != 0 {
+                let old_pd_chirho = addr_from_entry_chirho(pdpte_chirho);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        (old_pd_chirho + phys_off_chirho) as *const u8,
+                        (new_pd_chirho + phys_off_chirho) as *mut u8,
+                        4096,
+                    );
+                }
+            }
+            MODULE_PD_PHYS_CHIRHO.store(new_pd_chirho, Ordering::Relaxed);
+            write_entry_chirho(pdpt_phys_chirho, pdpti_chirho, new_pd_chirho | flags_inter_chirho);
+            new_pd_chirho
         }
     } else if pdpte_chirho & 1 == 0 {
         let f_chirho = new_frame_chirho()?;
@@ -1240,15 +1287,16 @@ pub fn map_page_raw_chirho(
 
     // Walk PD → PT
     let pde_chirho = read_entry_chirho(pd_phys_chirho, pdi_chirho);
-    let pt_phys_chirho = if vaddr_chirho >= 0xFFFF_FFFF_0000_0000 {
-        let cached_chirho = MODULE_ARENA_PT_PHYS_CHIRHO.load(Ordering::Relaxed);
+    let pt_phys_chirho = if is_module_arena_chirho {
+        let cached_chirho = MODULE_PT_PHYS_CHIRHO.load(Ordering::Relaxed);
         if cached_chirho != 0 {
             cached_chirho
         } else {
-            let f_chirho = new_frame_chirho()?;
-            MODULE_ARENA_PT_PHYS_CHIRHO.store(f_chirho, Ordering::Relaxed);
-            write_entry_chirho(pd_phys_chirho, pdi_chirho, f_chirho | flags_inter_chirho);
-            f_chirho
+            // Fresh PT — zeroed (no old entries to copy for our PD range)
+            let new_pt_chirho = new_frame_chirho()?;
+            MODULE_PT_PHYS_CHIRHO.store(new_pt_chirho, Ordering::Relaxed);
+            write_entry_chirho(pd_phys_chirho, pdi_chirho, new_pt_chirho | flags_inter_chirho);
+            new_pt_chirho
         }
     } else if pde_chirho & 1 == 0 {
         let f_chirho = new_frame_chirho()?;
