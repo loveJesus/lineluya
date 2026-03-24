@@ -196,6 +196,28 @@ pub fn init_fs_chirho() {
         });
     }
 
+    // 5d. Create subdirectories needed by Xorg and system services.
+    // Use the mounted tmpfs superblock's root inode directly (not
+    // resolve_path which returns the root tmpfs's entry, not the mount).
+    {
+        let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
+        for (parent_path_chirho, child_name_chirho) in &[("/var", "log"), ("/var", "run"), ("/tmp", ".X11-unix")] {
+            for mount_chirho in mounts_chirho.iter() {
+                if mount_chirho.path_chirho == *parent_path_chirho {
+                    let sb_guard_chirho = mount_chirho.superblock_chirho.lock();
+                    let root_dentry_chirho = sb_guard_chirho.root_chirho.lock();
+                    if let Some(ref inode_arc_chirho) = root_dentry_chirho.inode_chirho {
+                        let inode_guard_chirho = inode_arc_chirho.lock();
+                        let _ = inode_guard_chirho.ops_chirho.mkdir_chirho(
+                            &inode_guard_chirho, child_name_chirho, 0o1777,
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     // 6. Initialise the FD table with stdin/stdout/stderr -> /dev/console
     {
         let mut fd_table_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
@@ -974,36 +996,52 @@ pub fn resolve_parent_live_chirho(
         (inode_arc_chirho, parent_components_chirho.to_vec())
     };
 
-    // Walk the parent components through the live tmpfs tree
+    // Walk the parent components through the live tmpfs tree.
+    // For tmpfs directories, walk the actual entry list (not lookup_chirho
+    // which clones) so mutations propagate back to the real directory.
     let mut current_chirho = start_inode_chirho;
     for comp_chirho in walk_components_chirho.iter() {
-        // Use the generic VFS lookup (works for both tmpfs and ext4)
         let next_chirho = {
             let inode_guard_chirho = current_chirho.lock();
-            // Check if directory
             if inode_guard_chirho.mode_chirho & S_IFDIR_CHIRHO != S_IFDIR_CHIRHO {
                 return Err(-ENOTDIR_CHIRHO);
             }
-            let child_result_chirho = inode_guard_chirho.ops_chirho.lookup_chirho(
-                &inode_guard_chirho,
-                comp_chirho,
-            );
-            match child_result_chirho {
-                Ok(child_inode_arc_chirho) => {
-                    // Wrap Arc<InodeChirho> into Arc<Mutex<InodeChirho>>
-                    let i_chirho = &*child_inode_arc_chirho;
-                    Arc::new(Mutex::new(crate::vfs_chirho::InodeChirho {
-                        ino_chirho: i_chirho.ino_chirho,
-                        mode_chirho: i_chirho.mode_chirho,
-                        uid_chirho: i_chirho.uid_chirho,
-                        gid_chirho: i_chirho.gid_chirho,
-                        size_chirho: i_chirho.size_chirho,
-                        nlink_chirho: i_chirho.nlink_chirho,
-                        atime_chirho: i_chirho.atime_chirho,
-                        mtime_chirho: i_chirho.mtime_chirho,
-                        ctime_chirho: i_chirho.ctime_chirho,
-                        ops_chirho: i_chirho.ops_chirho,
-                        // Reconstruct fs_data for ext4 inodes
+            // Try direct tmpfs entry access first (returns live Arc)
+            let tmpfs_child_chirho = if let Some(ref data_chirho) = inode_guard_chirho.fs_data_chirho {
+                if let Some(tmpfs_mutex_chirho) = data_chirho.downcast_ref::<Mutex<crate::tmpfs_chirho::TmpfsDataChirho>>() {
+                    let inner_chirho = tmpfs_mutex_chirho.lock();
+                    if let crate::tmpfs_chirho::TmpfsDataChirho::DirChirho(entries_chirho) = &*inner_chirho {
+                        entries_chirho.iter()
+                            .find(|(n_chirho, _)| n_chirho.as_str() == *comp_chirho)
+                            .map(|(_, inode_chirho)| inode_chirho.clone())
+                    } else {
+                        None
+                    }
+                } else { None }
+            } else { None };
+
+            if let Some(live_child_chirho) = tmpfs_child_chirho {
+                live_child_chirho
+            } else {
+                // Fallback: generic lookup (ext4, procfs, etc.)
+                let child_result_chirho = inode_guard_chirho.ops_chirho.lookup_chirho(
+                    &inode_guard_chirho, comp_chirho,
+                );
+                match child_result_chirho {
+                    Ok(child_inode_arc_chirho) => {
+                        let i_chirho = &*child_inode_arc_chirho;
+                        Arc::new(Mutex::new(crate::vfs_chirho::InodeChirho {
+                            ino_chirho: i_chirho.ino_chirho,
+                            mode_chirho: i_chirho.mode_chirho,
+                            uid_chirho: i_chirho.uid_chirho,
+                            gid_chirho: i_chirho.gid_chirho,
+                            size_chirho: i_chirho.size_chirho,
+                            nlink_chirho: i_chirho.nlink_chirho,
+                            atime_chirho: i_chirho.atime_chirho,
+                            mtime_chirho: i_chirho.mtime_chirho,
+                            ctime_chirho: i_chirho.ctime_chirho,
+                            ops_chirho: i_chirho.ops_chirho,
+                            // Reconstruct fs_data for ext4 inodes
                         fs_data_chirho: {
                             if let Some(ref d_chirho) = i_chirho.fs_data_chirho {
                                 if let Some(ed_chirho) = d_chirho.downcast_ref::<crate::ext4_chirho::Ext4FsDataChirho>() {
@@ -1020,7 +1058,8 @@ pub fn resolve_parent_live_chirho(
                         },
                     }))
                 }
-                Err(e_chirho) => return Err(e_chirho),
+                    Err(e_chirho) => return Err(e_chirho),
+                }
             }
         };
 
