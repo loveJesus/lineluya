@@ -1213,8 +1213,24 @@ pub fn map_page_raw_chirho(
     };
 
     // Walk PDPT → PD
+    // For high-canonical addresses: track whether we've already created
+    // fresh tables for this PDPT entry. Static is safe during boot (single-core).
+    static MODULE_ARENA_PD_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
+    static MODULE_ARENA_PT_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
     let pdpte_chirho = read_entry_chirho(pdpt_phys_chirho, pdpti_chirho);
-    let pd_phys_chirho = if pdpte_chirho & 1 == 0 {
+    let pd_phys_chirho = if vaddr_chirho >= 0xFFFF_FFFF_0000_0000 {
+        // Module arena: use fresh PD (allocated once, reused for all pages)
+        let cached_chirho = MODULE_ARENA_PD_PHYS_CHIRHO.load(Ordering::Relaxed);
+        if cached_chirho != 0 {
+            cached_chirho
+        } else {
+            let f_chirho = new_frame_chirho()?;
+            MODULE_ARENA_PD_PHYS_CHIRHO.store(f_chirho, Ordering::Relaxed);
+            write_entry_chirho(pdpt_phys_chirho, pdpti_chirho, f_chirho | flags_inter_chirho);
+            f_chirho
+        }
+    } else if pdpte_chirho & 1 == 0 {
         let f_chirho = new_frame_chirho()?;
         write_entry_chirho(pdpt_phys_chirho, pdpti_chirho, f_chirho | flags_inter_chirho);
         f_chirho
@@ -1224,7 +1240,17 @@ pub fn map_page_raw_chirho(
 
     // Walk PD → PT
     let pde_chirho = read_entry_chirho(pd_phys_chirho, pdi_chirho);
-    let pt_phys_chirho = if pde_chirho & 1 == 0 {
+    let pt_phys_chirho = if vaddr_chirho >= 0xFFFF_FFFF_0000_0000 {
+        let cached_chirho = MODULE_ARENA_PT_PHYS_CHIRHO.load(Ordering::Relaxed);
+        if cached_chirho != 0 {
+            cached_chirho
+        } else {
+            let f_chirho = new_frame_chirho()?;
+            MODULE_ARENA_PT_PHYS_CHIRHO.store(f_chirho, Ordering::Relaxed);
+            write_entry_chirho(pd_phys_chirho, pdi_chirho, f_chirho | flags_inter_chirho);
+            f_chirho
+        }
+    } else if pde_chirho & 1 == 0 {
         let f_chirho = new_frame_chirho()?;
         write_entry_chirho(pd_phys_chirho, pdi_chirho, f_chirho | flags_inter_chirho);
         f_chirho
