@@ -1834,7 +1834,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             crate::scheduler_chirho::yield_current_chirho();
             0
         }
-        SYS_MREMAP_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_MREMAP_CHIRHO => sys_mremap_chirho(
+            arg0_chirho, arg1_chirho, arg2_chirho, arg3_chirho as u32,
+        ),
         SYS_MSYNC_CHIRHO => 0,   // stub: silently succeed
         SYS_MINCORE_CHIRHO => -ENOSYS_CHIRHO,
         SYS_MADVISE_CHIRHO => 0, // advisory, silently ignore
@@ -3367,6 +3369,63 @@ fn sys_munmap_chirho(
         Ok(()) => 0,
         Err(errno_chirho) => errno_chirho,
     }
+}
+
+/// `mremap(2)` implementation — remap a virtual memory address.
+///
+/// Supports MREMAP_MAYMOVE: allocates new pages at a kernel-chosen address,
+/// copies old data, unmaps old pages. This is critical for musl's realloc
+/// which uses mremap for large mmap-based allocations. Without this, musl
+/// falls back to mmap+memcpy+munmap which can expose use-after-free bugs
+/// in the page fault handler (accessing munmap'd pages gets zero instead
+/// of SIGSEGV).
+fn sys_mremap_chirho(
+    old_addr_chirho: u64,
+    old_size_chirho: u64,
+    new_size_chirho: u64,
+    flags_chirho: u32,
+) -> i64 {
+    const MREMAP_MAYMOVE_CHIRHO: u32 = 1;
+
+    if old_addr_chirho % 4096 != 0 || old_size_chirho == 0 || new_size_chirho == 0 {
+        return -EINVAL_CHIRHO;
+    }
+
+    if flags_chirho & MREMAP_MAYMOVE_CHIRHO == 0 {
+        // Without MAYMOVE, we can only shrink in place or fail
+        if new_size_chirho <= old_size_chirho {
+            return old_addr_chirho as i64; // shrink is a no-op for us
+        }
+        return -ENOMEM_CHIRHO;
+    }
+
+    // Allocate new region via mmap
+    let new_addr_chirho = sys_mmap_chirho(
+        0, // no hint
+        new_size_chirho,
+        3, // PROT_READ | PROT_WRITE
+        0x22, // MAP_PRIVATE | MAP_ANONYMOUS
+        -1, // no fd
+        0, // no offset
+    );
+    if new_addr_chirho < 0 {
+        return new_addr_chirho; // error
+    }
+
+    // Copy old data to new region
+    let copy_len_chirho = core::cmp::min(old_size_chirho, new_size_chirho) as usize;
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            old_addr_chirho as *const u8,
+            new_addr_chirho as *mut u8,
+            copy_len_chirho,
+        );
+    }
+
+    // Unmap old region
+    sys_munmap_chirho(old_addr_chirho, old_size_chirho);
+
+    new_addr_chirho
 }
 
 /// `set_tid_address(2)` implementation.

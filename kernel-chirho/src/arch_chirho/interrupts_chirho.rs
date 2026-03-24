@@ -655,6 +655,34 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 return;
             }
 
+            // --- VMA validation: only demand-page addresses within valid VMAs ---
+            // Without this check, accesses to munmap'd regions silently get
+            // zero-filled pages instead of SIGSEGV. This caused the Xorg crash:
+            // musl's realloc does mmap+memcpy+munmap (mremap=ENOSYS), then
+            // accessing the old pointer after munmap read zeros, corrupting
+            // struct pointers → NULL deref at 0x2b33d.
+            {
+                let mm_arc_chirho = crate::mm_chirho::get_current_mm_chirho();
+                let has_vma_chirho = if let Some(mm_guard_chirho) = mm_arc_chirho.try_lock() {
+                    mm_guard_chirho.is_in_vma_chirho(page_vaddr_chirho)
+                } else {
+                    true // Can't check — allow (avoid deadlock)
+                };
+                if !has_vma_chirho {
+                    crate::serial_println_chirho!(
+                        "[PF] SIGSEGV: pid={} addr={:#x} rip={:#x} — no VMA",
+                        user_fault_pid_chirho, fault_addr_chirho.as_u64(),
+                        _stack_frame_chirho.instruction_pointer.as_u64(),
+                    );
+                    if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
+                        task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
+                        task_chirho.lock().exit_code_chirho = 139;
+                    }
+                    crate::scheduler_chirho::schedule_chirho();
+                    return;
+                }
+            }
+
             // --- Normal page fault: allocate a new frame ---
             let page_chirho: Page<Size4KiB> =
                 Page::containing_address(fault_addr_chirho);

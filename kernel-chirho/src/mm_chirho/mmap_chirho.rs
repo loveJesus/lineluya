@@ -505,6 +505,14 @@ impl MmChirho {
 
     /// Check whether the region `[addr, addr + len)` is fully covered by
     /// existing VMAs.
+    /// Check if a single page address falls within any VMA.
+    /// Used by the page fault handler to reject accesses to unmapped regions.
+    pub fn is_in_vma_chirho(&self, addr_chirho: u64) -> bool {
+        self.vmas_chirho.iter().any(|vma_chirho| {
+            vma_chirho.start_chirho <= addr_chirho && addr_chirho < vma_chirho.end_chirho
+        })
+    }
+
     fn is_region_mapped_chirho(&self, addr_chirho: u64, len_chirho: u64) -> bool {
         // Walk through the required range, checking that every page is
         // covered by at least one VMA.
