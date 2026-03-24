@@ -1041,6 +1041,15 @@ pub fn setup_user_stack_dynlink_chirho(
     auxv_entries_chirho.push((AT_BASE_CHIRHO, interp_base_chirho));
     auxv_entries_chirho.push((AT_NULL_CHIRHO, 0));
 
+    crate::serial_println_chirho!(
+        "[AUXV] AT_PHDR={:#x} AT_PHNUM={} AT_PHENT={} AT_ENTRY={:#x} AT_BASE={:#x}",
+        loaded_chirho.phdr_addr_chirho,
+        loaded_chirho.phdr_num_chirho,
+        loaded_chirho.phdr_size_chirho,
+        exe_entry_chirho,
+        interp_base_chirho,
+    );
+
     // Calculate total frame size for alignment.
     let argc_chirho = argv_chirho.len() as u64;
     let auxv_size_chirho = auxv_entries_chirho.len() * 2 * 8;
