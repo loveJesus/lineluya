@@ -419,9 +419,11 @@ static mut MODULE_IMAGE_ARENA_STORAGE_CHIRHO: ModuleImageArenaStorageChirho =
 // For God so loved the world that he gave his only begotten Son,
 // that whoever believes in him should not perish but have eternal life. - John 3:16
 
-/// High-canonical base for module arena. 0xFFFFFFFF80100000 sign-extends
-/// from 0x80100000, making R_X86_64_32S relocations work correctly.
-const MODULE_ARENA_HIGH_BASE_CHIRHO: u64 = 0xFFFF_FFFF_8010_0000;
+/// High-canonical base for module arena. 0xFFFFFFFFC0100000 uses PDPT[3]
+/// within PML4[511] to avoid colliding with the bootloader's kernel text
+/// mapping at PDPT[510] (0xFFFFFFFF80xxxxxx). The truncated 32-bit value
+/// 0xC0100000 sign-extends to the full address, so R_X86_64_32S works.
+const MODULE_ARENA_HIGH_BASE_CHIRHO: u64 = 0xFFFF_FFFF_C010_0000;
 
 static MODULE_ARENA_HIGH_READY_CHIRHO: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -444,7 +446,40 @@ pub fn init_module_arena_mapping_chirho() {
             ok_chirho += 1;
         }
     }
+    // Direct serial byte to prove we reach this point
+    unsafe {
+        while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+        x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'V');
+        while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+        x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'\n');
+    }
     if ok_chirho > 0 {
+        let first_phys_chirho = bss_base_chirho - phys_off_chirho;
+        let first_virt_chirho = MODULE_ARENA_HIGH_BASE_CHIRHO;
+        let i4 = ((first_virt_chirho >> 39) & 0x1FF) as usize;
+        let i3 = ((first_virt_chirho >> 30) & 0x1FF) as usize;
+        let i2 = ((first_virt_chirho >> 21) & 0x1FF) as usize;
+        let i1 = ((first_virt_chirho >> 12) & 0x1FF) as usize;
+        let rd = |phys: u64, idx: usize| -> u64 {
+            unsafe { *((phys + phys_off_chirho) as *const u64).add(idx) }
+        };
+        let ae = |e: u64| -> u64 { e & 0x000F_FFFF_FFFF_F000 };
+        let pml4e = rd(pml4_phys_chirho, i4);
+        let pdpte = rd(ae(pml4e), i3);
+        let pde = rd(ae(pdpte), i2);
+        let pte = rd(ae(pde), i1);
+        // Use raw serial to avoid format macro issues during early boot
+        let verify_msg_chirho = if pte == (first_phys_chirho | 0x03) {
+            "[KO] arena PTE CORRECT\r\n"
+        } else {
+            "[KO] arena PTE WRONG\r\n"
+        };
+        for &b_chirho in verify_msg_chirho.as_bytes() {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
         MODULE_ARENA_HIGH_READY_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
     }
     crate::serial_println_chirho!(
@@ -3904,6 +3939,26 @@ pub fn sys_init_module_impl_chirho(
     len_chirho: u64,
     _params_ptr_chirho: u64,
 ) -> i64 {
+    // Ensure PML4[511] (high-canonical module arena) is in the current
+    // per-process page table BEFORE any code that might touch the arena.
+    if MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
+        let boot_phys_chirho = crate::pagetable_chirho::get_boot_pml4_chirho().as_u64();
+        let (cur_cr3_chirho, _) = x86_64::registers::control::Cr3::read();
+        let cur_phys_chirho = cur_cr3_chirho.start_address().as_u64();
+        if cur_phys_chirho != boot_phys_chirho {
+            let off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+            unsafe {
+                let boot_e_chirho = *((boot_phys_chirho + off_chirho) as *const u64).add(511);
+                let cur_e_chirho = *((cur_phys_chirho + off_chirho) as *const u64).add(511);
+                if cur_e_chirho != boot_e_chirho {
+                    *((cur_phys_chirho + off_chirho) as *mut u64).add(511) = boot_e_chirho;
+                    // Full TLB flush
+                    core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
+                }
+            }
+        }
+    }
+
     crate::serial_println_chirho!(
         "[KO] sys_init_module: img_ptr={:#x}, len={}",
         img_ptr_chirho,
