@@ -3948,29 +3948,27 @@ pub fn sys_init_module_impl_chirho(
     len_chirho: u64,
     _params_ptr_chirho: u64,
 ) -> i64 {
-    // Force the module arena's verified PML4[511] entry into the CURRENT
-    // page table. The entry was captured at boot after verification.
-    let arena_pml4e_chirho = crate::pagetable_chirho::module_arena_pml4_entry_chirho();
-    crate::serial_println_chirho!(
-        "[KO] arena_pml4e={:#x} arena_ready={}",
-        arena_pml4e_chirho,
-        MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Relaxed),
-    );
-    if arena_pml4e_chirho != 0 {
+    // Fix PML4[511] in the current per-process page table by reading the
+    // boot PML4's entry (which has our fresh PDPT from arena init).
+    // Use ONLY raw operations — no serial_println (mutex deadlock in syscall).
+    {
         let off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho().as_u64();
         let cr3_chirho: u64;
         unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_chirho, options(nostack)); }
-        let pml4_phys_chirho = cr3_chirho & 0x000F_FFFF_FFFF_F000;
-        let cur_511_chirho = unsafe {
-            *((pml4_phys_chirho + off_chirho) as *const u64).add(511)
+        let cur_pml4_chirho = cr3_chirho & 0x000F_FFFF_FFFF_F000;
+
+        let boot_511_chirho = unsafe {
+            *((boot_pml4_chirho + off_chirho) as *const u64).add(511)
         };
-        if cur_511_chirho != arena_pml4e_chirho {
-            crate::serial_println_chirho!(
-                "[KO] Fixing PML4[511]: {:#x} -> {:#x}",
-                cur_511_chirho, arena_pml4e_chirho,
-            );
+        let cur_511_chirho = unsafe {
+            *((cur_pml4_chirho + off_chirho) as *const u64).add(511)
+        };
+
+        // Always overwrite current PML4[511] with boot PML4[511]
+        if cur_pml4_chirho != boot_pml4_chirho {
             unsafe {
-                *((pml4_phys_chirho + off_chirho) as *mut u64).add(511) = arena_pml4e_chirho;
+                *((cur_pml4_chirho + off_chirho) as *mut u64).add(511) = boot_511_chirho;
                 core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
             }
         }
