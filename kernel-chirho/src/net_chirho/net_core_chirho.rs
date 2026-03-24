@@ -2558,15 +2558,19 @@ pub fn sys_bind_chirho(
         };
         let path_chirho = match read_sockaddr_un_path_chirho(addr_chirho, addrlen_chirho) {
             Some(p_chirho) => p_chirho,
-            None => return -EINVAL_CHIRHO,
+            None => {
+                crate::serial_println_chirho!(
+                    "[NET] sys_bind(AF_UNIX) fd={} path=None (addrlen={})",
+                    sockfd_chirho, addrlen_chirho,
+                );
+                return -EINVAL_CHIRHO;
+            }
         };
         let result_chirho = unix_socket_bind_chirho(unix_idx_chirho, &path_chirho);
-        if result_chirho == 0 {
-            crate::serial_debug_chirho!(
-                "[NET] sys_bind(AF_UNIX) fd={} path='{}' -> 0",
-                sockfd_chirho, path_chirho,
-            );
-        }
+        crate::serial_println_chirho!(
+            "[NET] sys_bind(AF_UNIX) fd={} path='{}' -> {}",
+            sockfd_chirho, path_chirho, result_chirho,
+        );
         return result_chirho;
     }
 
@@ -7784,7 +7788,22 @@ fn read_sockaddr_un_path_chirho(addr_chirho: u64, addrlen_chirho: u64) -> Option
     let nul_pos_chirho = path_bytes_chirho.iter().position(|&b_chirho| b_chirho == 0)
         .unwrap_or(path_bytes_chirho.len());
     if nul_pos_chirho == 0 {
-        return None; // Abstract socket (starts with \0) — treat as empty
+        // Abstract socket: sun_path starts with \0, followed by a name.
+        // Linux uses the entire remaining buffer as the name (no NUL terminator).
+        // Prefix with "@" to distinguish from filesystem paths.
+        if path_bytes_chirho.len() > 1 {
+            let abstract_name_chirho = &path_bytes_chirho[1..];
+            let end_chirho = abstract_name_chirho.iter().position(|&b| b == 0)
+                .unwrap_or(abstract_name_chirho.len());
+            if end_chirho > 0 {
+                if let Ok(name_chirho) = core::str::from_utf8(&abstract_name_chirho[..end_chirho]) {
+                    let mut prefixed_chirho = alloc::string::String::from("@");
+                    prefixed_chirho.push_str(name_chirho);
+                    return Some(prefixed_chirho);
+                }
+            }
+        }
+        return None;
     }
     core::str::from_utf8(&path_bytes_chirho[..nul_pos_chirho])
         .ok()
