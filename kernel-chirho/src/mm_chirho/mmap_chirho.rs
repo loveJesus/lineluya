@@ -263,6 +263,12 @@ impl MmChirho {
             }
 
             MappingKindChirho::FileBackedChirho => {
+                // For MAP_FIXED file-backed: unmap existing pages first so
+                // map_anonymous_pages allocates fresh frames (don't reuse
+                // zero-filled PROT_NONE reservation pages).
+                if is_fixed_chirho {
+                    unmap_pages_chirho(map_addr_chirho, aligned_len_chirho);
+                }
                 // Map as RWX initially so we can copy file data in, then
                 // the VMA records the originally requested protection.
                 let initial_prot_chirho =
