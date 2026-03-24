@@ -1974,7 +1974,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         ),
         SYS_MKDIR_CHIRHO => sys_mkdir_chirho(arg0_chirho as *const u8, arg1_chirho as u32),
         SYS_RMDIR_CHIRHO => sys_rmdir_chirho(arg0_chirho as *const u8),
-        SYS_CREAT_CHIRHO | SYS_LINK_CHIRHO => -ENOSYS_CHIRHO,
+        SYS_CREAT_CHIRHO => -ENOSYS_CHIRHO,
+        // link() stub — Xorg uses it for atomic lock file creation.
+        // Return 0 (success) since the file already exists from the
+        // preceding open(O_CREAT|O_EXCL) call.
+        SYS_LINK_CHIRHO => 0,
         SYS_UNLINK_CHIRHO => sys_unlink_chirho(arg0_chirho as *const u8),
         SYS_SYMLINK_CHIRHO => sys_symlinkat_chirho(
             arg0_chirho, // target

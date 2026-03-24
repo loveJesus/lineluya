@@ -732,7 +732,7 @@ fn resolve_path_depth_chirho(
                     // Symlink following: if the inode is a symlink, read
                     // the target and recursively resolve it.
                     // Trace: log when a symlink IS or ISN'T detected
-                    if component_chirho.contains("readline") || component_chirho.contains("ncurses") {
+                    if component_chirho.contains("readline") || component_chirho.contains("ncurses") || component_chirho.contains("libmd") || component_chirho.contains("libbsd") || component_chirho.contains("libbrotli") {
                         crate::serial_println_chirho!(
                             "[VFS-SYMLINK-CHECK] component='{}' mode={:#o} is_symlink={}",
                             component_chirho,
