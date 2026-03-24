@@ -1155,3 +1155,90 @@ fn zero_frame_chirho(phys_chirho: PhysAddr) {
         core::ptr::write_bytes(virt_chirho.as_mut_ptr::<u8>(), 0, 4096);
     }
 }
+
+// For God so loved the world that he gave his only begotten Son,
+// that whoever believes in him should not perish but have eternal life. - John 3:16
+
+/// Map a single 4KB page using raw u64 pointer arithmetic.
+/// Bypasses x86_64 crate's PhysAddr validation (which panics on PML4[511]
+/// entries with non-standard bit patterns from BIOS/bootloader setup).
+/// Used to map module arena to high-canonical addresses for R_X86_64_32S.
+pub fn map_page_raw_chirho(
+    pml4_phys_chirho: u64,
+    vaddr_chirho: u64,
+    paddr_chirho: u64,
+) -> Result<(), &'static str> {
+    let phys_off_chirho = PHYS_MEM_OFFSET_CHIRHO.load(Ordering::Acquire);
+    if phys_off_chirho == 0 {
+        return Err("phys offset not set");
+    }
+
+    let pml4i_chirho = ((vaddr_chirho >> 39) & 0x1FF) as usize;
+    let pdpti_chirho = ((vaddr_chirho >> 30) & 0x1FF) as usize;
+    let pdi_chirho   = ((vaddr_chirho >> 21) & 0x1FF) as usize;
+    let pti_chirho   = ((vaddr_chirho >> 12) & 0x1FF) as usize;
+
+    let flags_inter_chirho: u64 = 0x03; // PRESENT | WRITABLE
+    let flags_leaf_chirho: u64  = 0x03; // PRESENT | WRITABLE
+
+    // Read/write a PTE as raw u64
+    let read_entry_chirho = |table_phys: u64, idx: usize| -> u64 {
+        let ptr_chirho = (table_phys + phys_off_chirho) as *const u64;
+        unsafe { core::ptr::read_volatile(ptr_chirho.add(idx)) }
+    };
+    let write_entry_chirho = |table_phys: u64, idx: usize, val: u64| {
+        let ptr_chirho = (table_phys + phys_off_chirho) as *mut u64;
+        unsafe { core::ptr::write_volatile(ptr_chirho.add(idx), val); }
+    };
+    let addr_from_entry_chirho = |e: u64| -> u64 { e & 0x000F_FFFF_FFFF_F000 };
+
+    // Allocate a zeroed frame (returns PhysAddr, convert to u64 immediately)
+    let new_frame_chirho = || -> Result<u64, &'static str> {
+        let pa_chirho = alloc_frame_chirho().ok_or("OOM")?;
+        let pa_u64_chirho = pa_chirho.as_u64();
+        unsafe {
+            core::ptr::write_bytes((pa_u64_chirho + phys_off_chirho) as *mut u8, 0, 4096);
+        }
+        Ok(pa_u64_chirho)
+    };
+
+    // Walk PML4 → PDPT
+    let pml4e_chirho = read_entry_chirho(pml4_phys_chirho, pml4i_chirho);
+    let pdpt_phys_chirho = if pml4e_chirho & 1 == 0 {
+        let f_chirho = new_frame_chirho()?;
+        write_entry_chirho(pml4_phys_chirho, pml4i_chirho, f_chirho | flags_inter_chirho);
+        f_chirho
+    } else {
+        addr_from_entry_chirho(pml4e_chirho)
+    };
+
+    // Walk PDPT → PD
+    let pdpte_chirho = read_entry_chirho(pdpt_phys_chirho, pdpti_chirho);
+    let pd_phys_chirho = if pdpte_chirho & 1 == 0 {
+        let f_chirho = new_frame_chirho()?;
+        write_entry_chirho(pdpt_phys_chirho, pdpti_chirho, f_chirho | flags_inter_chirho);
+        f_chirho
+    } else {
+        addr_from_entry_chirho(pdpte_chirho)
+    };
+
+    // Walk PD → PT
+    let pde_chirho = read_entry_chirho(pd_phys_chirho, pdi_chirho);
+    let pt_phys_chirho = if pde_chirho & 1 == 0 {
+        let f_chirho = new_frame_chirho()?;
+        write_entry_chirho(pd_phys_chirho, pdi_chirho, f_chirho | flags_inter_chirho);
+        f_chirho
+    } else {
+        addr_from_entry_chirho(pde_chirho)
+    };
+
+    // Write leaf PTE
+    write_entry_chirho(pt_phys_chirho, pti_chirho, paddr_chirho | flags_leaf_chirho);
+
+    // Flush TLB for this virtual address
+    unsafe {
+        core::arch::asm!("invlpg [{}]", in(reg) vaddr_chirho, options(nostack, preserves_flags));
+    }
+
+    Ok(())
+}

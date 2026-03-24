@@ -416,11 +416,50 @@ static mut MODULE_IMAGE_ARENA_STORAGE_CHIRHO: ModuleImageArenaStorageChirho =
             MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO],
     };
 
+// For God so loved the world that he gave his only begotten Son,
+// that whoever believes in him should not perish but have eternal life. - John 3:16
+
+/// High-canonical base for module arena. 0xFFFFFFFF80100000 sign-extends
+/// from 0x80100000, making R_X86_64_32S relocations work correctly.
+const MODULE_ARENA_HIGH_BASE_CHIRHO: u64 = 0xFFFF_FFFF_8010_0000;
+
+static MODULE_ARENA_HIGH_READY_CHIRHO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Map BSS module arena to high-canonical addresses using raw page table ops.
+pub fn init_module_arena_mapping_chirho() {
+    let bss_base_chirho = unsafe {
+        core::ptr::addr_of_mut!(MODULE_IMAGE_ARENA_STORAGE_CHIRHO.bytes_chirho) as u64
+    };
+    let total_chirho =
+        MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO * MODULE_IMAGE_ARENA_SLOT_COUNT_CHIRHO;
+    let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let pml4_phys_chirho = crate::pagetable_chirho::get_boot_pml4_chirho().as_u64();
+
+    let mut ok_chirho = 0u64;
+    for off_chirho in (0..total_chirho).step_by(4096) {
+        let phys_chirho = (bss_base_chirho + off_chirho as u64) - phys_off_chirho;
+        let virt_chirho = MODULE_ARENA_HIGH_BASE_CHIRHO + off_chirho as u64;
+        if crate::pagetable_chirho::map_page_raw_chirho(pml4_phys_chirho, virt_chirho, phys_chirho).is_ok() {
+            ok_chirho += 1;
+        }
+    }
+    if ok_chirho > 0 {
+        MODULE_ARENA_HIGH_READY_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
+    }
+    crate::serial_println_chirho!(
+        "[KO] Module arena: {:#x} ({} pages)", MODULE_ARENA_HIGH_BASE_CHIRHO, ok_chirho,
+    );
+}
+
 unsafe fn module_image_arena_slot_ptr_chirho(slot_index_chirho: usize) -> *mut u8 {
-    let arena_base_ptr_chirho =
-        core::ptr::addr_of_mut!(MODULE_IMAGE_ARENA_STORAGE_CHIRHO.bytes_chirho) as *mut u8;
-    unsafe {
-        arena_base_ptr_chirho.add(slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO)
+    if MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
+        (MODULE_ARENA_HIGH_BASE_CHIRHO
+            + (slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO) as u64) as *mut u8
+    } else {
+        let base_chirho =
+            core::ptr::addr_of_mut!(MODULE_IMAGE_ARENA_STORAGE_CHIRHO.bytes_chirho) as *mut u8;
+        unsafe { base_chirho.add(slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO) }
     }
 }
 
@@ -453,6 +492,22 @@ fn allocate_module_image_slot_chirho(
     arena_state_chirho[slot_index_chirho].in_use_chirho = true;
     arena_state_chirho[slot_index_chirho].used_bytes_chirho = requested_bytes_chirho;
     drop(arena_state_chirho);
+
+    // Ensure PML4[511] is in the current page table before accessing the
+    // high-canonical module arena. Copy the boot PML4[511] entry to current CR3.
+    if MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
+        let boot_phys_chirho = crate::pagetable_chirho::get_boot_pml4_chirho().as_u64();
+        let (cur_cr3_chirho, _) = x86_64::registers::control::Cr3::read();
+        let cur_phys_chirho = cur_cr3_chirho.start_address().as_u64();
+        if cur_phys_chirho != boot_phys_chirho {
+            let off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+            unsafe {
+                let boot_e_chirho = *((boot_phys_chirho + off_chirho) as *const u64).add(511);
+                *((cur_phys_chirho + off_chirho) as *mut u64).add(511) = boot_e_chirho;
+                core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
+            }
+        }
+    }
 
     let slot_ptr_chirho = unsafe { module_image_arena_slot_ptr_chirho(slot_index_chirho) };
     unsafe {
@@ -3833,7 +3888,6 @@ pub fn sys_init_module_impl_chirho(
 
     // Sanity checks.
     if len_chirho == 0 || len_chirho > 16 * 1024 * 1024 {
-        // Reject zero-length or absurdly large images (> 16 MiB).
         return -EINVAL_CHIRHO;
     }
 

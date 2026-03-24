@@ -712,6 +712,22 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
             }
         }
+        // Print RIP from the stack frame
+        let rip_prefix_chirho = b" rip=0x";
+        for &b_chirho in rip_prefix_chirho {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
+        let rip_val_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
+        for shift_chirho in (0..16).rev() {
+            let nibble_chirho = ((rip_val_chirho >> (shift_chirho * 4)) & 0xF) as usize;
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(hex_chars_chirho[nibble_chirho]);
+            }
+        }
         let nl_chirho = b"\r\n";
         for &b_chirho in nl_chirho {
             unsafe {
