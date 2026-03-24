@@ -454,7 +454,7 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
             use core::sync::atomic::{AtomicU64, Ordering};
             static XORG_SC_CHIRHO: AtomicU64 = AtomicU64::new(0);
             let xc_chirho = XORG_SC_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if xc_chirho < 500 {
+            if xc_chirho < 2000 {
                 crate::serial_println_chirho!(
                     "[XORG-SC] #{} pid={} nr={} result={}",
                     xc_chirho, pid_chirho, syscall_nr_chirho, result_chirho,
