@@ -505,6 +505,52 @@ impl FileOpsChirho for TtyFileOpsChirho {
             }
             // TIOCSPGRP (0x5410) — set foreground process group
             0x5410 => Ok(0), // silently accept
+
+            // VT ioctls — Xorg probes these on /dev/tty0
+            // VT_GETSTATE (0x5603) — get VT state
+            0x5603 => {
+                // Return: active VT = 1, state bitmask = bit 1 set
+                if arg_chirho != 0 {
+                    let state_chirho: [u16; 2] = [1, 0x02]; // v_active=1, v_state=VT1 open
+                    let _ = crate::uaccess_chirho::copy_to_user_chirho(
+                        arg_chirho,
+                        unsafe { core::slice::from_raw_parts(state_chirho.as_ptr() as *const u8, 4) },
+                        4,
+                    );
+                }
+                Ok(0)
+            }
+            // VT_SETMODE (0x5602) — set VT switching mode
+            0x5602 => Ok(0), // accept silently (no actual VT switching)
+            // VT_ACTIVATE (0x5606) — switch to VT N
+            0x5606 => Ok(0),
+            // VT_WAITACTIVE (0x5607) — wait until VT N is active
+            0x5607 => Ok(0),
+            // VT_RELDISP (0x5605) — release display
+            0x5605 => Ok(0),
+            // VT_OPENQRY (0x5600) — find first available VT
+            0x5600 => {
+                if arg_chirho != 0 {
+                    let vt_chirho: i32 = 7; // return VT 7 (traditional X11 VT)
+                    let _ = crate::uaccess_chirho::copy_to_user_chirho(
+                        arg_chirho, &vt_chirho.to_ne_bytes(), 4,
+                    );
+                }
+                Ok(0)
+            }
+            // KDSETMODE (0x4B3A) — set text/graphics mode
+            0x4B3A => Ok(0),
+            // KDGETMODE (0x4B3B) — get text/graphics mode
+            0x4B3B => {
+                if arg_chirho != 0 {
+                    let mode_chirho: i32 = 1; // KD_GRAPHICS
+                    let _ = crate::uaccess_chirho::copy_to_user_chirho(
+                        arg_chirho, &mode_chirho.to_ne_bytes(), 4,
+                    );
+                }
+                Ok(0)
+            }
+
             _ => Err(25), // ENOTTY (positive errno)
         }
     }

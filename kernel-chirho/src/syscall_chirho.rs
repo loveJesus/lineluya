@@ -4151,8 +4151,8 @@ fn sys_select_chirho(
             // Fall through to the 50k HLT poll loop below.
         }
 
-        for _attempt_chirho in 0..5_000_000u32 {
-            core::hint::spin_loop();
+        for _attempt_chirho in 0..500_000u32 {
+            x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
 
             // Yield every 10 iterations when children are running.

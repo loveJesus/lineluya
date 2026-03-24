@@ -1786,6 +1786,18 @@ pub fn free_socket_slot_chirho(idx_chirho: usize) {
         return;
     }
     if let Some(ref sock_chirho) = table_chirho[idx_chirho] {
+        // AF_UNIX: clean up the unix socket mapping and free the unix slot.
+        if sock_chirho.family_chirho == 1 {
+            if let Some(unix_idx_chirho) = lookup_unix_idx_chirho(idx_chirho) {
+                let mut ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                if unix_idx_chirho < ut_chirho.len() {
+                    ut_chirho[unix_idx_chirho] = None;
+                }
+            }
+            clear_unix_mapping_chirho(idx_chirho);
+            table_chirho[idx_chirho] = None;
+            return;
+        }
         // Don't free listening sockets — those belong to the daemon.
         if sock_chirho.tcb_chirho.state_chirho == TcpStateChirho::ListenChirho {
             return;
@@ -2356,6 +2368,23 @@ pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
         Ok(idx_chirho) => idx_chirho,
         Err(_) => return false,
     };
+
+    // AF_UNIX: check if the unix socket has pending recv data or backlog.
+    if is_unix_socket_idx_chirho(socket_idx_chirho) {
+        if let Some(unix_idx_chirho) = lookup_unix_idx_chirho(socket_idx_chirho) {
+            let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+            if let Some(ref sk_chirho) = ut_chirho.get(unix_idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) {
+                if !sk_chirho.recv_buf_chirho.is_empty() {
+                    return true;
+                }
+                if sk_chirho.listening_chirho && !sk_chirho.backlog_chirho.is_empty() {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     let sockets_chirho = SOCKET_TABLE_CHIRHO.lock();
     if let Some(Some(sock_chirho)) = sockets_chirho.get(socket_idx_chirho) {
         // Check if there's data in the receive buffer
@@ -2448,6 +2477,42 @@ pub fn sys_socket_chirho(
         return -EINVAL_CHIRHO;
     }
 
+    // ---- AF_UNIX branch ----
+    if domain_chirho == AF_UNIX_CHIRHO {
+        let base_type_chirho = (type_chirho & 0xF) as u32;
+        let unix_idx_chirho = match unix_socket_create_chirho(base_type_chirho) {
+            Some(idx_chirho) => idx_chirho,
+            None => return -crate::syscall_chirho::EMFILE_CHIRHO,
+        };
+        // Also allocate a slot in the global SOCKET_TABLE so that
+        // socket_idx_from_fd_chirho works (it reads inode.ino as table index).
+        let socket_chirho = SocketChirho::new_chirho(domain_chirho, type_chirho, protocol_chirho);
+        let sock_idx_chirho = match alloc_socket_slot_chirho(socket_chirho) {
+            Ok(idx_chirho) => idx_chirho,
+            Err(e_chirho) => return e_chirho,
+        };
+        // Record the mapping from socket table → unix socket table.
+        register_unix_mapping_chirho(sock_idx_chirho, unix_idx_chirho);
+        // Register fd with AF_UNIX file ops (routes read/write to unix send/recv).
+        match register_unix_socket_fd_chirho(sock_idx_chirho) {
+            Ok(fd_chirho) => {
+                crate::serial_debug_chirho!(
+                    "[NET] sys_socket(AF_UNIX) -> fd={} (sock_idx={}, unix_idx={})",
+                    fd_chirho, sock_idx_chirho, unix_idx_chirho,
+                );
+                return fd_chirho;
+            }
+            Err(e_chirho) => {
+                let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
+                table_chirho[sock_idx_chirho] = None;
+                clear_unix_mapping_chirho(sock_idx_chirho);
+                return e_chirho;
+            }
+        }
+    }
+
+    // ---- AF_INET / AF_INET6 / other path (unchanged) ----
+
     // Create the socket
     let socket_chirho = SocketChirho::new_chirho(domain_chirho, type_chirho, protocol_chirho);
 
@@ -2484,6 +2549,28 @@ pub fn sys_bind_chirho(
         Ok(idx_chirho) => idx_chirho,
         Err(e_chirho) => return e_chirho,
     };
+
+    // ---- AF_UNIX branch ----
+    if is_unix_socket_idx_chirho(socket_idx_chirho) {
+        let unix_idx_chirho = match lookup_unix_idx_chirho(socket_idx_chirho) {
+            Some(idx_chirho) => idx_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        let path_chirho = match read_sockaddr_un_path_chirho(addr_chirho, addrlen_chirho) {
+            Some(p_chirho) => p_chirho,
+            None => return -EINVAL_CHIRHO,
+        };
+        let result_chirho = unix_socket_bind_chirho(unix_idx_chirho, &path_chirho);
+        if result_chirho == 0 {
+            crate::serial_debug_chirho!(
+                "[NET] sys_bind(AF_UNIX) fd={} path='{}' -> 0",
+                sockfd_chirho, path_chirho,
+            );
+        }
+        return result_chirho;
+    }
+
+    // ---- AF_INET / AF_INET6 path (unchanged) ----
 
     let parsed_addr_chirho = unsafe { read_sockaddr_from_user_chirho(addr_chirho, addrlen_chirho) };
 
@@ -2542,6 +2629,22 @@ pub fn sys_listen_chirho(sockfd_chirho: u64, backlog_chirho: u64) -> i64 {
         Err(e_chirho) => return e_chirho,
     };
 
+    // ---- AF_UNIX branch ----
+    if is_unix_socket_idx_chirho(socket_idx_chirho) {
+        let unix_idx_chirho = match lookup_unix_idx_chirho(socket_idx_chirho) {
+            Some(idx_chirho) => idx_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        let result_chirho = unix_socket_listen_chirho(unix_idx_chirho);
+        crate::serial_debug_chirho!(
+            "[NET] sys_listen(AF_UNIX) fd={} -> {}",
+            sockfd_chirho, result_chirho,
+        );
+        return result_chirho;
+    }
+
+    // ---- AF_INET / AF_INET6 path (unchanged) ----
+
     let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
     let socket_chirho = match table_chirho.get_mut(socket_idx_chirho).and_then(|s_chirho| s_chirho.as_mut()) {
         Some(s_chirho) => s_chirho,
@@ -2594,6 +2697,42 @@ pub fn sys_accept_chirho(
         Ok(idx_chirho) => idx_chirho,
         Err(e_chirho) => return e_chirho,
     };
+
+    // ---- AF_UNIX branch ----
+    if is_unix_socket_idx_chirho(socket_idx_chirho) {
+        let listen_unix_idx_chirho = match lookup_unix_idx_chirho(socket_idx_chirho) {
+            Some(idx_chirho) => idx_chirho,
+            None => return -EBADF_CHIRHO,
+        };
+        let new_unix_idx_chirho = match unix_socket_accept_chirho(listen_unix_idx_chirho) {
+            Some(idx_chirho) => idx_chirho,
+            None => return -EAGAIN_CHIRHO,
+        };
+        // Allocate a new SocketChirho slot for the accepted connection.
+        let new_socket_chirho = SocketChirho::new_chirho(AF_UNIX_CHIRHO, 1, 0); // SOCK_STREAM
+        let new_sock_idx_chirho = match alloc_socket_slot_chirho(new_socket_chirho) {
+            Ok(idx_chirho) => idx_chirho,
+            Err(e_chirho) => return e_chirho,
+        };
+        register_unix_mapping_chirho(new_sock_idx_chirho, new_unix_idx_chirho);
+        match register_unix_socket_fd_chirho(new_sock_idx_chirho) {
+            Ok(fd_chirho) => {
+                crate::serial_debug_chirho!(
+                    "[NET] sys_accept(AF_UNIX) fd={} -> new_fd={} (sock_idx={}, unix_idx={})",
+                    sockfd_chirho, fd_chirho, new_sock_idx_chirho, new_unix_idx_chirho,
+                );
+                return fd_chirho;
+            }
+            Err(e_chirho) => {
+                let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
+                table_chirho[new_sock_idx_chirho] = None;
+                clear_unix_mapping_chirho(new_sock_idx_chirho);
+                return e_chirho;
+            }
+        }
+    }
+
+    // ---- AF_INET / AF_INET6 path (unchanged) ----
 
     let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
     let socket_chirho = match table_chirho.get_mut(socket_idx_chirho).and_then(|s_chirho| s_chirho.as_mut()) {
@@ -2673,17 +2812,43 @@ pub fn sys_connect_chirho(
 ) -> i64 {
     crate::serial_debug_chirho!("[NET] sys_connect(fd={})", sockfd_chirho);
 
-    // Check address family: AF_UNIX (1) connections are not supported.
-    // Return ENOENT so musl's __nscd_query falls back to /etc/group
-    // (instead of returning -1 from getgrouplist → initgroups fails).
+    // ---- AF_UNIX branch ----
+    // Check if THIS socket is AF_UNIX (via the socket table), not just the
+    // address family in the sockaddr. This lets non-AF_UNIX sockets with
+    // AF_UNIX sockaddr still fall through (e.g., musl nscd probe).
+    let socket_idx_chirho_pre = socket_idx_from_fd_chirho(sockfd_chirho);
+    if let Ok(si_chirho) = socket_idx_chirho_pre {
+        if is_unix_socket_idx_chirho(si_chirho) {
+            let unix_idx_chirho = match lookup_unix_idx_chirho(si_chirho) {
+                Some(idx_chirho) => idx_chirho,
+                None => return -EBADF_CHIRHO,
+            };
+            let path_chirho = match read_sockaddr_un_path_chirho(addr_chirho, addrlen_chirho) {
+                Some(p_chirho) => p_chirho,
+                None => return -EINVAL_CHIRHO,
+            };
+            let result_chirho = unix_socket_connect_chirho(unix_idx_chirho, &path_chirho);
+            crate::serial_debug_chirho!(
+                "[NET] sys_connect(AF_UNIX) fd={} path='{}' -> {}",
+                sockfd_chirho, path_chirho, result_chirho,
+            );
+            return result_chirho;
+        }
+    }
+
+    // For non-AF_UNIX sockets that receive an AF_UNIX sockaddr (e.g., musl
+    // __nscd_query), return ENOENT so musl falls back to /etc/group.
     if addr_chirho != 0 && addrlen_chirho >= 2 {
         let mut family_buf_chirho = [0u8; 2];
         let _ = crate::uaccess_chirho::copy_from_user_chirho(&mut family_buf_chirho, addr_chirho, 2);
         let family_chirho = u16::from_ne_bytes(family_buf_chirho);
         if family_chirho == 1 {
+            // Non-AF_UNIX socket trying to connect to a Unix path — ENOENT.
             return -2; // ENOENT — path doesn't exist
         }
     }
+
+    // ---- AF_INET / AF_INET6 path (unchanged) ----
 
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
@@ -3078,28 +3243,39 @@ pub fn sys_sendto_chirho(
         }
     };
 
-    // Check if this is a Unix domain socket (syslog) — short-circuit to avoid
-    // heap allocation and user-memory reads that can trigger GPFs in forked children.
-    {
-        let table_check_chirho = SOCKET_TABLE_CHIRHO.lock();
-        if let Some(Some(sock_check_chirho)) = table_check_chirho.get(socket_idx_chirho) {
-            if sock_check_chirho.family_chirho == 1 {
-                // AF_UNIX: log syslog messages for debugging, then discard.
-                if buf_chirho != 0 && len_chirho > 0 {
-                    let preview_len_chirho = core::cmp::min(len_chirho as usize, 120);
-                    let mut preview_chirho = alloc::vec![0u8; preview_len_chirho];
-                    for i_chirho in 0..preview_len_chirho {
-                        preview_chirho[i_chirho] = unsafe {
-                            core::ptr::read_volatile((buf_chirho as *const u8).add(i_chirho))
-                        };
-                    }
-                    if let Ok(msg_chirho) = core::str::from_utf8(&preview_chirho) {
-                        crate::serial_println_chirho!("[SYSLOG] {}", msg_chirho);
-                    }
+    // ---- AF_UNIX branch for sendto ----
+    if is_unix_socket_idx_chirho(socket_idx_chirho) {
+        let unix_idx_chirho = match lookup_unix_idx_chirho(socket_idx_chirho) {
+            Some(idx_chirho) => idx_chirho,
+            None => return len_chirho as i64, // fallback: pretend success
+        };
+        // Read user data
+        let count_chirho = core::cmp::min(len_chirho as usize, 65536);
+        let mut data_chirho = alloc::vec![0u8; count_chirho];
+        if buf_chirho != 0 && count_chirho > 0 {
+            if crate::uaccess_chirho::copy_from_user_chirho(
+                &mut data_chirho, buf_chirho, count_chirho,
+            ).is_err() {
+                // Fallback: try volatile reads
+                for i_chirho in 0..count_chirho {
+                    data_chirho[i_chirho] = unsafe {
+                        core::ptr::read_volatile((buf_chirho as *const u8).add(i_chirho))
+                    };
+                }
+            }
+        }
+        let result_chirho = unix_socket_send_chirho(unix_idx_chirho, &data_chirho);
+        if result_chirho < 0 {
+            // If not connected (e.g., syslog SOCK_DGRAM), log and discard.
+            if result_chirho == -ENOTCONN_CHIRHO {
+                if let Ok(msg_chirho) = core::str::from_utf8(&data_chirho[..core::cmp::min(count_chirho, 120)]) {
+                    crate::serial_println_chirho!("[SYSLOG] {}", msg_chirho);
                 }
                 return len_chirho as i64;
             }
+            return result_chirho;
         }
+        return result_chirho;
     }
 
     // Read data from user-space
@@ -3347,6 +3523,41 @@ pub fn sys_recvfrom_chirho(
         Ok(idx_chirho) => idx_chirho,
         Err(_) => return 0, // Fallback for non-socket fds
     };
+
+    // ---- AF_UNIX branch for recvfrom ----
+    if is_unix_socket_idx_chirho(socket_idx_chirho) {
+        let unix_idx_chirho = match lookup_unix_idx_chirho(socket_idx_chirho) {
+            Some(idx_chirho) => idx_chirho,
+            None => return 0,
+        };
+        match unix_socket_recv_chirho(unix_idx_chirho) {
+            Some(data_chirho) => {
+                let copy_len_chirho = core::cmp::min(len_chirho as usize, data_chirho.len());
+                if buf_chirho != 0 && copy_len_chirho > 0 {
+                    if crate::uaccess_chirho::copy_to_user_chirho(
+                        buf_chirho, &data_chirho[..copy_len_chirho], copy_len_chirho,
+                    ).is_err() {
+                        // Fallback: try volatile writes
+                        for i_chirho in 0..copy_len_chirho {
+                            unsafe {
+                                core::ptr::write_volatile(
+                                    (buf_chirho as *mut u8).add(i_chirho),
+                                    data_chirho[i_chirho],
+                                );
+                            }
+                        }
+                    }
+                }
+                return copy_len_chirho as i64;
+            }
+            None => {
+                // No data available
+                return -EAGAIN_CHIRHO;
+            }
+        }
+    }
+
+    // ---- AF_INET / AF_INET6 path (unchanged) ----
 
     let mut table_chirho = SOCKET_TABLE_CHIRHO.lock();
     let socket_chirho = match table_chirho.get_mut(socket_idx_chirho).and_then(|s_chirho| s_chirho.as_mut()) {
@@ -7449,11 +7660,248 @@ const MAX_UNIX_SOCKETS_CHIRHO: usize = 64;
 pub struct UnixSocketChirho { pub path_chirho: Option<alloc::string::String>, pub recv_buf_chirho: VecDeque<Vec<u8>>, pub peer_idx_chirho: Option<usize>, pub sock_type_chirho: u32, pub backlog_chirho: VecDeque<usize>, pub listening_chirho: bool }
 static UNIX_SOCKET_TABLE_CHIRHO: Mutex<[Option<UnixSocketChirho>; MAX_UNIX_SOCKETS_CHIRHO]> = Mutex::new([const { None }; MAX_UNIX_SOCKETS_CHIRHO]);
 
-#[allow(dead_code)] pub fn unix_socket_create_chirho(st_chirho: u32) -> Option<usize> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() { if s_chirho.is_none() { *s_chirho = Some(UnixSocketChirho { path_chirho: None, recv_buf_chirho: VecDeque::new(), peer_idx_chirho: None, sock_type_chirho: st_chirho, backlog_chirho: VecDeque::new(), listening_chirho: false }); return Some(i_chirho); } } None }
-#[allow(dead_code)] pub fn unix_socket_bind_chirho(idx_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for s_chirho in t_chirho.iter() { if let Some(ref sk_chirho) = s_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { return -EADDRINUSE_CHIRHO; } } } } if let Some(ref mut sk_chirho) = t_chirho[idx_chirho] { sk_chirho.path_chirho = Some(alloc::string::String::from(p_chirho)); return 0; } -EBADF_CHIRHO }
-#[allow(dead_code)] pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let mut si_chirho: Option<usize> = None; for (i_chirho, s_chirho) in t_chirho.iter().enumerate() { if let Some(ref sk_chirho) = s_chirho { if sk_chirho.listening_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { si_chirho = Some(i_chirho); break; } } } } } let sv_chirho = match si_chirho { Some(v_chirho) => v_chirho, None => return -ECONNREFUSED_CHIRHO }; if let Some(ref mut s_chirho) = t_chirho[sv_chirho] { s_chirho.backlog_chirho.push_back(ci_chirho); } if let Some(ref mut c_chirho) = t_chirho[ci_chirho] { c_chirho.peer_idx_chirho = Some(sv_chirho); } 0 }
-#[allow(dead_code)] pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let pi_chirho = match t_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) { Some(sk_chirho) => match sk_chirho.peer_idx_chirho { Some(p_chirho) => p_chirho, None => return -ENOTCONN_CHIRHO }, None => return -EBADF_CHIRHO }; if let Some(ref mut peer_chirho) = t_chirho[pi_chirho] { peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec()); return d_chirho.len() as i64; } -EBADF_CHIRHO }
-#[allow(dead_code)] pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()).and_then(|sk_chirho| sk_chirho.recv_buf_chirho.pop_front()) }
+pub fn unix_socket_create_chirho(st_chirho: u32) -> Option<usize> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() { if s_chirho.is_none() { *s_chirho = Some(UnixSocketChirho { path_chirho: None, recv_buf_chirho: VecDeque::new(), peer_idx_chirho: None, sock_type_chirho: st_chirho, backlog_chirho: VecDeque::new(), listening_chirho: false }); return Some(i_chirho); } } None }
+pub fn unix_socket_bind_chirho(idx_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for s_chirho in t_chirho.iter() { if let Some(ref sk_chirho) = s_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { return -EADDRINUSE_CHIRHO; } } } } if let Some(ref mut sk_chirho) = t_chirho[idx_chirho] { sk_chirho.path_chirho = Some(alloc::string::String::from(p_chirho)); return 0; } -EBADF_CHIRHO }
+pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let mut si_chirho: Option<usize> = None; for (i_chirho, s_chirho) in t_chirho.iter().enumerate() { if let Some(ref sk_chirho) = s_chirho { if sk_chirho.listening_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { si_chirho = Some(i_chirho); break; } } } } } let sv_chirho = match si_chirho { Some(v_chirho) => v_chirho, None => return -ECONNREFUSED_CHIRHO }; if let Some(ref mut s_chirho) = t_chirho[sv_chirho] { s_chirho.backlog_chirho.push_back(ci_chirho); } if let Some(ref mut c_chirho) = t_chirho[ci_chirho] { c_chirho.peer_idx_chirho = Some(sv_chirho); } 0 }
+pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let pi_chirho = match t_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) { Some(sk_chirho) => match sk_chirho.peer_idx_chirho { Some(p_chirho) => p_chirho, None => return -ENOTCONN_CHIRHO }, None => return -EBADF_CHIRHO }; if let Some(ref mut peer_chirho) = t_chirho[pi_chirho] { peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec()); return d_chirho.len() as i64; } -EBADF_CHIRHO }
+pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()).and_then(|sk_chirho| sk_chirho.recv_buf_chirho.pop_front()) }
+
+/// Mark a unix socket as listening for incoming connections.
+pub fn unix_socket_listen_chirho(idx_chirho: usize) -> i64 {
+    let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    if let Some(ref mut sk_chirho) = t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()) {
+        sk_chirho.listening_chirho = true;
+        0
+    } else {
+        -EBADF_CHIRHO
+    }
+}
+
+/// Accept a pending connection from the backlog of a listening unix socket.
+/// Returns the unix socket index of the newly connected peer, or None if empty.
+pub fn unix_socket_accept_chirho(idx_chirho: usize) -> Option<usize> {
+    let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    let client_idx_chirho = {
+        let sk_chirho = t_chirho.get_mut(idx_chirho)?.as_mut()?;
+        if !sk_chirho.listening_chirho {
+            return None;
+        }
+        sk_chirho.backlog_chirho.pop_front()?
+    };
+    // Create a new server-side unix socket that is peered with the client.
+    let mut new_idx_chirho: Option<usize> = None;
+    for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() {
+        if s_chirho.is_none() {
+            *s_chirho = Some(UnixSocketChirho {
+                path_chirho: None,
+                recv_buf_chirho: VecDeque::new(),
+                peer_idx_chirho: Some(client_idx_chirho),
+                sock_type_chirho: 1, // SOCK_STREAM
+                backlog_chirho: VecDeque::new(),
+                listening_chirho: false,
+            });
+            new_idx_chirho = Some(i_chirho);
+            break;
+        }
+    }
+    let server_idx_chirho = new_idx_chirho?;
+    // Point the client at the newly created server-side socket (not the listener).
+    if let Some(ref mut client_sk_chirho) = t_chirho[client_idx_chirho] {
+        client_sk_chirho.peer_idx_chirho = Some(server_idx_chirho);
+    }
+    Some(server_idx_chirho)
+}
+
+// ============================================================================
+// A3-017b: AF_UNIX fd ↔ unix socket index mapping
+// ============================================================================
+
+/// Maps SOCKET_TABLE_CHIRHO slot index → UNIX_SOCKET_TABLE_CHIRHO slot index.
+/// Only valid when the corresponding socket has family_chirho == AF_UNIX (1).
+/// A value of usize::MAX means "no mapping".
+const NO_UNIX_MAPPING_CHIRHO: usize = usize::MAX;
+static SOCK_TO_UNIX_IDX_CHIRHO: Mutex<[usize; MAX_SOCKETS_CHIRHO]> =
+    Mutex::new([NO_UNIX_MAPPING_CHIRHO; MAX_SOCKETS_CHIRHO]);
+
+/// Register a mapping from a socket table slot to a unix socket table slot.
+fn register_unix_mapping_chirho(sock_idx_chirho: usize, unix_idx_chirho: usize) {
+    let mut map_chirho = SOCK_TO_UNIX_IDX_CHIRHO.lock();
+    if sock_idx_chirho < map_chirho.len() {
+        map_chirho[sock_idx_chirho] = unix_idx_chirho;
+    }
+}
+
+/// Look up the unix socket table index for a given socket table index.
+/// Returns None if there is no mapping or the socket is not AF_UNIX.
+fn lookup_unix_idx_chirho(sock_idx_chirho: usize) -> Option<usize> {
+    let map_chirho = SOCK_TO_UNIX_IDX_CHIRHO.lock();
+    let idx_chirho = *map_chirho.get(sock_idx_chirho)?;
+    if idx_chirho == NO_UNIX_MAPPING_CHIRHO {
+        None
+    } else {
+        Some(idx_chirho)
+    }
+}
+
+/// Clear the unix mapping for a socket table slot (called on close/free).
+fn clear_unix_mapping_chirho(sock_idx_chirho: usize) {
+    let mut map_chirho = SOCK_TO_UNIX_IDX_CHIRHO.lock();
+    if sock_idx_chirho < map_chirho.len() {
+        map_chirho[sock_idx_chirho] = NO_UNIX_MAPPING_CHIRHO;
+    }
+}
+
+/// Check if a socket table slot is an AF_UNIX socket by checking
+/// both family_chirho in the SocketChirho and the presence of a mapping.
+fn is_unix_socket_idx_chirho(sock_idx_chirho: usize) -> bool {
+    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    if let Some(Some(ref s_chirho)) = table_chirho.get(sock_idx_chirho) {
+        s_chirho.family_chirho == 1
+    } else {
+        false
+    }
+}
+
+/// Read a Unix domain socket path from a user-space sockaddr_un structure.
+/// Layout: { sa_family: u16, sun_path: [u8; 108] }
+/// Returns None if the pointer is null, too short, or copy fails.
+fn read_sockaddr_un_path_chirho(addr_chirho: u64, addrlen_chirho: u64) -> Option<alloc::string::String> {
+    if addr_chirho == 0 || addrlen_chirho < 3 {
+        return None;
+    }
+    let max_copy_chirho = core::cmp::min(addrlen_chirho as usize, 110); // 2 + 108
+    let mut buf_chirho = alloc::vec![0u8; max_copy_chirho];
+    if crate::uaccess_chirho::copy_from_user_chirho(
+        &mut buf_chirho,
+        addr_chirho,
+        max_copy_chirho,
+    ).is_err() {
+        return None;
+    }
+    // Skip sa_family (2 bytes), path starts at offset 2
+    let path_bytes_chirho = &buf_chirho[2..];
+    // Find the NUL terminator
+    let nul_pos_chirho = path_bytes_chirho.iter().position(|&b_chirho| b_chirho == 0)
+        .unwrap_or(path_bytes_chirho.len());
+    if nul_pos_chirho == 0 {
+        return None; // Abstract socket (starts with \0) — treat as empty
+    }
+    core::str::from_utf8(&path_bytes_chirho[..nul_pos_chirho])
+        .ok()
+        .map(|s_chirho| alloc::string::String::from(s_chirho))
+}
+
+// ============================================================================
+// A3-017c: AF_UNIX socket file operations
+// ============================================================================
+
+/// File operations for AF_UNIX socket fds.
+/// Routes read/write to unix_socket_recv/send_chirho via the mapping table.
+struct UnixSocketFileOpsChirho;
+
+impl FileOpsChirho for UnixSocketFileOpsChirho {
+    fn read_chirho(
+        &self,
+        file_chirho: &mut FileChirho,
+        buf_chirho: &mut [u8],
+    ) -> Result<usize, i64> {
+        let sock_idx_chirho = {
+            let inode_guard_chirho = file_chirho.inode_chirho.lock();
+            inode_guard_chirho.ino_chirho as usize
+        };
+        let unix_idx_chirho = lookup_unix_idx_chirho(sock_idx_chirho)
+            .ok_or(-EBADF_CHIRHO)?;
+        match unix_socket_recv_chirho(unix_idx_chirho) {
+            Some(data_chirho) => {
+                let copy_len_chirho = core::cmp::min(buf_chirho.len(), data_chirho.len());
+                buf_chirho[..copy_len_chirho].copy_from_slice(&data_chirho[..copy_len_chirho]);
+                Ok(copy_len_chirho)
+            }
+            None => {
+                if (file_chirho.flags_chirho & crate::vfs_chirho::O_NONBLOCK_CHIRHO) != 0 {
+                    Err(-EAGAIN_CHIRHO)
+                } else {
+                    // Blocking: yield and retry a few times
+                    for _wait_chirho in 0..1000u32 {
+                        crate::scheduler_chirho::yield_current_chirho();
+                        if let Some(data_chirho) = unix_socket_recv_chirho(unix_idx_chirho) {
+                            let copy_len_chirho = core::cmp::min(buf_chirho.len(), data_chirho.len());
+                            buf_chirho[..copy_len_chirho].copy_from_slice(&data_chirho[..copy_len_chirho]);
+                            return Ok(copy_len_chirho);
+                        }
+                    }
+                    Err(-EAGAIN_CHIRHO)
+                }
+            }
+        }
+    }
+
+    fn write_chirho(
+        &self,
+        file_chirho: &mut FileChirho,
+        buf_chirho: &[u8],
+    ) -> Result<usize, i64> {
+        let sock_idx_chirho = {
+            let inode_guard_chirho = file_chirho.inode_chirho.lock();
+            inode_guard_chirho.ino_chirho as usize
+        };
+        let unix_idx_chirho = lookup_unix_idx_chirho(sock_idx_chirho)
+            .ok_or(-EBADF_CHIRHO)?;
+        let result_chirho = unix_socket_send_chirho(unix_idx_chirho, buf_chirho);
+        if result_chirho < 0 {
+            Err(result_chirho)
+        } else {
+            Ok(result_chirho as usize)
+        }
+    }
+
+    fn seek_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _offset_chirho: i64,
+        _whence_chirho: u32,
+    ) -> Result<u64, i64> {
+        Err(-crate::syscall_chirho::ESPIPE_CHIRHO)
+    }
+
+    fn ioctl_chirho(
+        &self,
+        _file_chirho: &FileChirho,
+        _cmd_chirho: u64,
+        _arg_chirho: u64,
+    ) -> Result<i64, i64> {
+        Err(-crate::syscall_chirho::ENOTTY_CHIRHO)
+    }
+
+    fn readdir_chirho(
+        &self,
+        _file_chirho: &mut FileChirho,
+        _callback_chirho: &mut dyn FnMut(&str, u64, u8) -> bool,
+    ) -> Result<usize, i64> {
+        Err(-EINVAL_CHIRHO)
+    }
+}
+
+/// Static instance of AF_UNIX socket file ops.
+static UNIX_SOCKET_FILE_OPS_CHIRHO: UnixSocketFileOpsChirho = UnixSocketFileOpsChirho;
+
+/// Register an AF_UNIX socket fd in the VFS fd table.
+/// Uses the UNIX-specific file ops so read/write route to unix_socket_send/recv.
+fn register_unix_socket_fd_chirho(socket_idx_chirho: usize) -> Result<i64, i64> {
+    let inode_chirho = make_socket_inode_chirho(socket_idx_chirho);
+    let file_chirho = Arc::new(Mutex::new(FileChirho {
+        inode_chirho,
+        pos_chirho: 0,
+        flags_chirho: crate::vfs_chirho::O_RDWR_CHIRHO,
+        ops_chirho: &UNIX_SOCKET_FILE_OPS_CHIRHO,
+    }));
+    let fd_chirho = crate::fs_chirho::alloc_and_insert_fd_chirho(file_chirho, None);
+    if fd_chirho < 0 {
+        Err(fd_chirho)
+    } else {
+        Ok(fd_chirho)
+    }
+}
 
 // ============================================================================
 // A3-018: setsockopt/getsockopt

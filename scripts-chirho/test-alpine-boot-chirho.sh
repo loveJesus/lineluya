@@ -216,7 +216,7 @@ launch_qemu_chirho() {
     fi
 
     # VirtIO-net with QEMU user-mode networking (DHCP + port forwarding)
-    qemu_args_chirho+=(-netdev "user,id=net0-chirho,hostfwd=tcp::2222-:22")
+    qemu_args_chirho+=(-netdev "user,id=net0-chirho,hostfwd=tcp::2222-:2222")
     qemu_args_chirho+=(-device "virtio-net-pci,netdev=net0-chirho")
     log_chirho "  Network: VirtIO-net (user-mode, SSH on localhost:2222)"
 
