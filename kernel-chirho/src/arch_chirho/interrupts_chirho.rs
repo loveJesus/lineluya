@@ -676,7 +676,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                         }
                     }
                 }
-                // Kill the process by setting it to zombie state
+                // Kill the process with SIGSEGV
                 if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
                     task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
                     task_chirho.lock().exit_code_chirho = 139; // SIGSEGV
