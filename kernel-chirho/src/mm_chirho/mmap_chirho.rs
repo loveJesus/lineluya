@@ -427,11 +427,9 @@ impl MmChirho {
             return Err(-ENOMEM_CHIRHO);
         }
 
-        // Skip actual page table protection updates for now.
-        // The GLOBAL_MAPPER lock in update_page_protection can deadlock
-        // with the page fault handler during execve's dynamic linking.
-        // The VMA metadata is still updated so future mmap/munmap work.
-        // TODO: fix lock ordering between MM lock and GLOBAL_MAPPER.
+        // Skip actual page table protection updates — VMA metadata only.
+        // Real mprotect would change PTE flags, but our page fault handler
+        // doesn't distinguish permission faults from COW faults yet.
         self.update_vma_prot_chirho(addr_chirho, end_chirho, prot_chirho);
 
 
