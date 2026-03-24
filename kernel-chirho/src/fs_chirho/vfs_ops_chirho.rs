@@ -1844,10 +1844,16 @@ pub fn sys_write_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho:
         None => return -EBADF_CHIRHO,
     };
 
-    // Copy from user space into stack-based kernel buffer
-    let capped_write_chirho = core::cmp::min(count_chirho, 4096);
+    // Copy from user space — stack buffer for ≤4K, heap for larger
+    let capped_write_chirho = core::cmp::min(count_chirho, 65536);
     let mut kernel_buf_storage2_chirho = [0u8; 4096];
-    let kernel_buf_chirho = &mut kernel_buf_storage2_chirho[..capped_write_chirho];
+    let mut heap_wbuf_chirho: Option<alloc::vec::Vec<u8>> = None;
+    let kernel_buf_chirho: &mut [u8] = if capped_write_chirho <= 4096 {
+        &mut kernel_buf_storage2_chirho[..capped_write_chirho]
+    } else {
+        heap_wbuf_chirho = Some(alloc::vec![0u8; capped_write_chirho]);
+        heap_wbuf_chirho.as_mut().unwrap().as_mut_slice()
+    };
     if let Err(_) =
         copy_from_user_chirho(kernel_buf_chirho, buf_addr_chirho, capped_write_chirho)
     {
