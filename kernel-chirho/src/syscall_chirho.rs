@@ -1416,8 +1416,7 @@ pub unsafe fn init_syscalls_chirho() {
     use x86_64::registers::model_specific::Efer;
     let mut efer_flags_chirho = Efer::read();
     efer_flags_chirho |=
-        x86_64::registers::model_specific::EferFlags::SYSTEM_CALL_EXTENSIONS
-        | x86_64::registers::model_specific::EferFlags::NO_EXECUTE_ENABLE;
+        x86_64::registers::model_specific::EferFlags::SYSTEM_CALL_EXTENSIONS;
     Efer::write(efer_flags_chirho);
 
     crate::serial_debug_chirho!("[SYSCALL] MSRs configured (STAR, LSTAR, FMASK, EFER.SCE)");
@@ -4029,17 +4028,10 @@ fn sys_select_chirho(
                 count_chirho += 1;
             }
         }
-        // Also check pipe fds beyond nfds (same as write_ready_fds)
-        let actual_nfds_chirho = nfds_chirho as usize;
-        for fd_chirho in actual_nfds_chirho..16 {
-            if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64) {
-                let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
-                let is_fifo_chirho = (mode_chirho & 0o170000) == 0o10000;
-                if is_fifo_chirho && fd_is_read_ready_chirho(fd_chirho) {
-                    count_chirho += 1;
-                }
-            }
-        }
+        // REMOVED: scanning pipe fds beyond nfds. This caused select
+        // to return immediately when PID 2 had inherited pipe fds with
+        // closed write ends, preventing the blocking poll loop from ever
+        // executing (no network polling → SSH never works).
         count_chirho
     };
 
@@ -4152,31 +4144,15 @@ fn sys_select_chirho(
         let read_count_chirho = write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho);
         read_count_chirho + write_ready_total_chirho
     } else {
-        // Proper indefinite blocking: sleep on network/socket activity and
-        // leave the run queue until a relevant event arrives.
+        // Indefinite blocking: use the 50k HLT poll loop.
+        // Each iteration halts (enabling interrupts), timer fires and
+        // polls VirtIO-net, then we manually poll and re-check fds.
         if timeout_ptr_chirho == 0 {
-            crate::waitqueue_chirho::wait_event_chirho(
-                &crate::net_chirho::SOCKET_DATA_WAITQUEUE_CHIRHO,
-                || {
-                    crate::net_chirho::poll_network_chirho();
-                    count_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho) > 0
-                        || crate::signal_chirho::current_has_deliverable_signal_chirho()
-                },
-            );
-            if crate::signal_chirho::current_has_deliverable_signal_chirho() {
-                return -EINTR_CHIRHO;
-            }
-            maybe_yield_to_runnable_child_chirho();
-            return write_ready_fds_chirho(
-                &fds_buf_chirho,
-                set_size_chirho,
-                nfds_chirho,
-                readfds_ptr_chirho,
-            );
+            // Fall through to the 50k HLT poll loop below.
         }
 
-        for _attempt_chirho in 0..50_000u32 {
-            x86_64::instructions::interrupts::enable_and_hlt();
+        for _attempt_chirho in 0..5_000_000u32 {
+            core::hint::spin_loop();
             crate::net_chirho::poll_network_chirho();
 
             // Yield every 10 iterations when children are running.

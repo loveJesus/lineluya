@@ -198,8 +198,22 @@ build_qemu_cmd_chirho() {
     cmd_chirho+=(-nographic)
 
     # ---- Networking (VirtIO-net, user-mode, port forward SSH) ----
-    cmd_chirho+=(-netdev "user,id=net0-chirho,hostfwd=tcp::2222-:22")
+    cmd_chirho+=(-netdev "user,id=net0-chirho,hostfwd=tcp::2222-:2222")
     cmd_chirho+=(-device "virtio-net-pci,netdev=net0-chirho")
+
+    # ---- Audio (Intel HDA + AC97 for /dev/dsp + PC speaker) ----
+    # Use wav backend on headless/WSL2, pa/pipewire if available
+    local audio_backend_chirho="none"
+    if command -v pactl &>/dev/null && pactl info &>/dev/null 2>&1; then
+        audio_backend_chirho="pa"
+    elif command -v pipewire &>/dev/null; then
+        audio_backend_chirho="pipewire"
+    fi
+    cmd_chirho+=(-audiodev "${audio_backend_chirho},id=snd0-chirho")
+    cmd_chirho+=(-device "intel-hda")
+    cmd_chirho+=(-device "hda-duplex,audiodev=snd0-chirho")
+    cmd_chirho+=(-device "AC97,audiodev=snd0-chirho")
+    cmd_chirho+=(-machine "pcspk-audiodev=snd0-chirho")
 
     # ---- Debug mode ----
     if [[ "$DEBUG_MODE_CHIRHO" -eq 1 ]]; then

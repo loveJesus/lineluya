@@ -169,7 +169,16 @@ impl FileOpsChirho for DevDspOpsChirho {
         _file_chirho: &mut FileChirho,
         buf_chirho: &[u8],
     ) -> Result<usize, i64> {
-        // Silently consume PCM data — playback is a stub.
+        // Drive PC speaker with PCM data for audible output.
+        // Interpret as signed 16-bit LE samples, extract amplitude for beep.
+        if buf_chirho.len() >= 2 {
+            // Take the first sample's amplitude as a frequency hint
+            let sample_chirho = i16::from_le_bytes([buf_chirho[0], buf_chirho[1]]);
+            let freq_chirho = if sample_chirho.unsigned_abs() > 100 { 440 } else { 0 };
+            if freq_chirho > 0 {
+                pc_speaker_beep_chirho(freq_chirho, 10); // 10ms beep
+            }
+        }
         Ok(buf_chirho.len())
     }
 
@@ -256,6 +265,66 @@ impl FileOpsChirho for DevDspOpsChirho {
 
 /// Static instance of /dev/dsp file operations.
 pub static DEV_DSP_OPS_CHIRHO: DevDspOpsChirho = DevDspOpsChirho;
+
+// ============================================================================
+// PC speaker beep via PIT channel 2 + speaker gate (port 0x61)
+// ============================================================================
+
+/// Drive the PC speaker at the given frequency for `duration_ms_chirho` milliseconds.
+///
+/// Uses PIT channel 2 (ports 0x42/0x43) to generate a square wave and
+/// port 0x61 bits 0-1 to gate it to the speaker. A frequency of 0 silences
+/// the speaker immediately.
+fn pc_speaker_beep_chirho(freq_chirho: u32, duration_ms_chirho: u32) {
+    use x86_64::instructions::port::Port;
+
+    if freq_chirho == 0 || duration_ms_chirho == 0 {
+        // Silence: clear speaker gate bits
+        unsafe {
+            let mut port61_chirho = Port::<u8>::new(0x61);
+            let val_chirho = port61_chirho.read() & 0xFC; // clear bits 0-1
+            port61_chirho.write(val_chirho);
+        }
+        return;
+    }
+
+    // PIT oscillator runs at 1,193,182 Hz
+    let divisor_chirho: u32 = 1_193_182 / freq_chirho;
+    let divisor_chirho = if divisor_chirho > 0xFFFF { 0xFFFF } else if divisor_chirho == 0 { 1 } else { divisor_chirho };
+
+    unsafe {
+        // Configure PIT channel 2 for square wave (mode 3), lo/hi byte
+        let mut cmd_port_chirho = Port::<u8>::new(0x43);
+        cmd_port_chirho.write(0xB6); // channel 2, lo/hi, mode 3, binary
+
+        // Load frequency divisor (lo byte then hi byte)
+        let mut ch2_port_chirho = Port::<u8>::new(0x42);
+        ch2_port_chirho.write((divisor_chirho & 0xFF) as u8);
+        ch2_port_chirho.write(((divisor_chirho >> 8) & 0xFF) as u8);
+
+        // Enable speaker: set bits 0 (gate) and 1 (speaker data)
+        let mut port61_chirho = Port::<u8>::new(0x61);
+        let val_chirho = port61_chirho.read();
+        port61_chirho.write(val_chirho | 0x03);
+    }
+
+    // Busy-wait for the requested duration using PIT channel 0 ticks.
+    // Each PIT tick is ~838 ns. 1 ms ≈ 1193 ticks.
+    // We read PIT ch0 counter to approximate elapsed time.
+    // For simplicity, use a loop counter calibrated to ~1ms per iteration
+    // on typical QEMU speeds (this is a stub, not precision timing).
+    let loops_chirho = duration_ms_chirho * 1000;
+    for _ in 0..loops_chirho {
+        unsafe { core::arch::asm!("pause", options(nomem, nostack)); }
+    }
+
+    // Silence speaker after duration
+    unsafe {
+        let mut port61_chirho = Port::<u8>::new(0x61);
+        let val_chirho = port61_chirho.read() & 0xFC;
+        port61_chirho.write(val_chirho);
+    }
+}
 
 // ============================================================================
 // AC97 controller driver (A2-SOUND-005)

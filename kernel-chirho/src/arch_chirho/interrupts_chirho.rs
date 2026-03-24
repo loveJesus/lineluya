@@ -237,6 +237,22 @@ static IDT_CHIRHO: spin::Lazy<InterruptDescriptorTable> = spin::Lazy::new(|| {
     idt_chirho[(PIC_1_OFFSET_CHIRHO + 11)]
         .set_handler_fn(virtio_interrupt_handler_chirho);
 
+    // IRQ 5 (vector 37) — common PCI audio IRQ (AC97/HDA). ACK and ignore.
+    idt_chirho[(PIC_1_OFFSET_CHIRHO + 5)]
+        .set_handler_fn(pci_audio_irq_handler_chirho);
+
+    // IRQ 9 (vector 41) — ACPI / PCI steering. ACK and ignore.
+    idt_chirho[(PIC_2_OFFSET_CHIRHO + 1)]
+        .set_handler_fn(pci_audio_irq_handler_chirho);
+
+    // IRQ 10 (vector 42) — PCI audio IRQ (AC97/HDA). ACK and ignore.
+    idt_chirho[(PIC_2_OFFSET_CHIRHO + 2)]
+        .set_handler_fn(pci_audio_irq_handler_chirho);
+
+    // IRQ 3 (vector 35) — COM2 / PCI. ACK and ignore.
+    idt_chirho[(PIC_1_OFFSET_CHIRHO + 3)]
+        .set_handler_fn(pci_audio_irq_handler_chirho);
+
     idt_chirho
 });
 
@@ -379,8 +395,9 @@ pub fn init_pics_chirho() {
         // corrupts the child's kernel stack or context.
         // Master PIC (0x21): unmask all (timer=0, kbd=1, cascade=2, serial=4)
         x86_64::instructions::port::Port::<u8>::new(0x21).write(0x00);
-        // Slave PIC (0xA1): mask IRQ 11 (bit 3) — VirtIO-net
-        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0x08);
+        // Slave PIC (0xA1): unmask all including IRQ 11 (VirtIO-net).
+        // VirtIO interrupt handler now polls network + wakes waitqueues.
+        x86_64::instructions::port::Port::<u8>::new(0xA1).write(0x00);
 
         // PS/2 keyboard controller re-enable removed — it was causing
         // keyboard interrupt issues. The bootloader leaves the PS/2
@@ -982,12 +999,7 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         write_lapic_eoi_chirho(phys_offset_chirho);
     }
 
-    // Drive the polled network RX path from the periodic timer.  VirtIO-net
-    // IRQ 11 is currently masked/ack-only during the SSH work, so blocked
-    // tasks sleeping on SOCKET_DATA_WAITQUEUE_CHIRHO still need a periodic
-    // kernel entry point that drains device RX rings and wakes them.
-    // Try to poll network — skip if NET_DEVICES lock is held (avoids
-    // deadlock when timer fires while a task is mid-poll_network).
+    // Drive the polled network RX path from the periodic timer.
     crate::net_chirho::try_poll_network_chirho();
 
     // Deferred user-mode preemption:
@@ -1382,6 +1394,26 @@ extern "x86-interrupt" fn virtio_interrupt_handler_chirho(
         PICS_CHIRHO
             .lock()
             .notify_end_of_interrupt((PIC_1_OFFSET_CHIRHO + 11) as u8);
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        write_lapic_eoi_chirho(phys_offset_chirho);
+    }
+
+    // Poll network on VirtIO interrupt — this is the primary RX path.
+    // The timer also polls, but VirtIO interrupts arrive immediately
+    // when new packets arrive, giving much lower latency.
+    crate::net_chirho::try_poll_network_chirho();
+}
+
+/// PCI audio device IRQ handler (AC97/HDA — IRQ 3/5/9/10).
+/// Just ACK the PIC so the device doesn't lock up the interrupt line.
+extern "x86-interrupt" fn pci_audio_irq_handler_chirho(
+    _stack_frame_chirho: InterruptStackFrame,
+) {
+    unsafe {
+        // ACK both PICs (safe even if only master fired)
+        PICS_CHIRHO
+            .lock()
+            .notify_end_of_interrupt(PIC_2_OFFSET_CHIRHO + 2);
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         write_lapic_eoi_chirho(phys_offset_chirho);
     }

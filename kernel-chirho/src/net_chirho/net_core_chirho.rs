@@ -4639,14 +4639,14 @@ impl VirtioNetDeviceChirho {
                 self.rx_vq_chirho.last_used_idx_chirho.wrapping_add(1);
         }
 
-        // Notify device about re-posted RX buffers.
-        if !self.sw_rx_queue_chirho.is_empty() {
-            unsafe {
-                ptr::write_volatile(
-                    (self.base_addr_chirho + 0x050) as *mut u32, // QUEUE_NOTIFY
-                    0, // queue index 0 = receiveq
-                );
-            }
+        // Always notify device about available RX buffers so it can
+        // deliver future packets. The old conditional (only when sw_rx_queue
+        // was non-empty) caused RX to stop after DHCP consumed all buffers.
+        unsafe {
+            ptr::write_volatile(
+                (self.base_addr_chirho + 0x050) as *mut u32, // QUEUE_NOTIFY
+                0, // queue index 0 = receiveq
+            );
         }
     }
 
@@ -6888,6 +6888,7 @@ impl VirtioNetIoDeviceChirho {
         let device_used_idx_chirho: u16 = unsafe {
             ptr::read_volatile(used_base_chirho.add(1))
         };
+
 
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         let buf_size_chirho = VIRTIO_NET_HDR_SIZE_CHIRHO + MAX_FRAME_SIZE_CHIRHO;
