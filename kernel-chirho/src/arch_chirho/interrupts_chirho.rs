@@ -578,6 +578,24 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
 
             let page_vaddr_chirho = fault_addr_chirho.as_u64() & !0xFFF;
 
+            // Trace page faults for PID >= 5 (Xorg)
+            {
+                let pf_pid_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                if pf_pid_chirho >= 5 {
+                    use core::sync::atomic::{AtomicU64, Ordering as PfOrd};
+                    static PF5_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let pfc_chirho = PF5_CNT_CHIRHO.fetch_add(1, PfOrd::Relaxed);
+                    if pfc_chirho < 20 || pfc_chirho % 1000 == 0 {
+                        crate::serial_println_chirho!(
+                            "[PF-PID{}] #{} addr={:#x} write={} present={}",
+                            pf_pid_chirho, pfc_chirho, fault_addr_chirho.as_u64(),
+                            is_write_chirho, is_present_chirho,
+                        );
+                    }
+                }
+            }
+
             // --- Lazy page migration from boot PT (PID 0/1 only) ---
             // For PID >= 2 with authoritative per-process PTs, do NOT
             // import boot PML4 mappings — they belong to PID 0's init shell.
@@ -598,6 +616,26 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                         return; // Retry — page now mapped from boot PT
                     }
                 }
+            }
+
+            // --- Guard: reject faults in the NULL page guard zone ---
+            // Accessing addresses below 64KB is almost certainly a NULL
+            // pointer dereference (struct->field with NULL base).
+            // Don't allocate pages — deliver SIGSEGV or kill the process.
+            if page_vaddr_chirho < 0x100000 {
+                crate::serial_println_chirho!(
+                    "[PF] NULL deref: pid={} addr={:#x} rip={:#x} — killing",
+                    user_fault_pid_chirho,
+                    fault_addr_chirho.as_u64(),
+                    _stack_frame_chirho.instruction_pointer.as_u64(),
+                );
+                // Kill the process by setting it to zombie state
+                if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
+                    task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
+                    task_chirho.lock().exit_code_chirho = 139; // SIGSEGV
+                }
+                crate::scheduler_chirho::schedule_chirho();
+                return;
             }
 
             // --- Normal page fault: allocate a new frame ---
