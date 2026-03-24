@@ -419,11 +419,10 @@ static mut MODULE_IMAGE_ARENA_STORAGE_CHIRHO: ModuleImageArenaStorageChirho =
 // For God so loved the world that he gave his only begotten Son,
 // that whoever believes in him should not perish but have eternal life. - John 3:16
 
-/// High-canonical base for module arena. 0xFFFFFFFFC0100000 uses PDPT[3]
-/// within PML4[511] to avoid colliding with the bootloader's kernel text
-/// mapping at PDPT[510] (0xFFFFFFFF80xxxxxx). The truncated 32-bit value
-/// 0xC0100000 sign-extends to the full address, so R_X86_64_32S works.
-const MODULE_ARENA_HIGH_BASE_CHIRHO: u64 = 0xFFFF_FFFF_C010_0000;
+/// High-canonical base for module arena. Uses PDPT[510] PD[1] (not PD[0]
+/// which is used by the bootloader's kernel text). The truncated 32-bit
+/// value 0x80200000 sign-extends correctly for R_X86_64_32S relocations.
+const MODULE_ARENA_HIGH_BASE_CHIRHO: u64 = 0xFFFF_FFFF_8020_0000;
 
 static MODULE_ARENA_HIGH_READY_CHIRHO: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
