@@ -548,6 +548,20 @@ impl MmChirho {
             return Err(-ENOMEM_CHIRHO);
         }
 
+        // Verify no overlap with existing VMAs
+        let overlaps_chirho = self.vmas_chirho.iter().any(|vma_chirho| {
+            addr_chirho < vma_chirho.end_chirho && (addr_chirho + len_chirho) > vma_chirho.start_chirho
+        });
+        if overlaps_chirho {
+            let pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if pid_chirho >= 5 {
+                crate::serial_println_chirho!(
+                    "[MMAP-OVERLAP] pid={} new={:#x}..{:#x} overlaps existing VMA!",
+                    pid_chirho, addr_chirho, addr_chirho + len_chirho,
+                );
+            }
+        }
         self.next_mmap_addr_chirho = addr_chirho;
         Ok(addr_chirho)
     }
