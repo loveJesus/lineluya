@@ -623,12 +623,29 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
             // pointer dereference (struct->field with NULL base).
             // Don't allocate pages — deliver SIGSEGV or kill the process.
             if page_vaddr_chirho < 0x100000 {
+                let rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
+                let rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
                 crate::serial_println_chirho!(
-                    "[PF] NULL deref: pid={} addr={:#x} rip={:#x} — killing",
+                    "[PF] NULL deref: pid={} addr={:#x} rip={:#x} rsp={:#x} — killing",
                     user_fault_pid_chirho,
-                    fault_addr_chirho.as_u64(),
-                    _stack_frame_chirho.instruction_pointer.as_u64(),
+                    fault_addr_chirho.as_u64(), rip_chirho, rsp_chirho,
                 );
+                // Dump user stack to find return addresses (backtrace)
+                if rsp_chirho > 0x7f0000000000 && rsp_chirho < 0x800000000000 {
+                    for frame_idx_chirho in 0..8u64 {
+                        let stack_addr_chirho = rsp_chirho + frame_idx_chirho * 8;
+                        let val_chirho = unsafe { core::ptr::read_volatile(stack_addr_chirho as *const u64) };
+                        // Only print values that look like code addresses
+                        if (val_chirho > 0x555555550000 && val_chirho < 0x555555800000)
+                            || (val_chirho > 0x7e0000000000 && val_chirho < 0x800000000000)
+                        {
+                            crate::serial_println_chirho!(
+                                "[PF]   [rsp+{:#x}] = {:#x}",
+                                frame_idx_chirho * 8, val_chirho,
+                            );
+                        }
+                    }
+                }
                 // Kill the process by setting it to zombie state
                 if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
                     task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
