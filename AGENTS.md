@@ -117,10 +117,19 @@ You can modify the following section
 
 ## Project: Lineluya — Linux Kernel Rewrite in Rust
 
-### Current State (v6.0 — "Hallelujah SSH Works")
-- 80,000+ lines of Rust across 90+ kernel modules
-- **SSH command execution works end-to-end**: `ssh root@localhost "echo SSH_SUCCESS_HALLELUJAH"` outputs on client
-- **8 real Alpine Linux programs run**: sqlite3, python3, dropbear, apk, BusyBox, losetup, mount, sh
+### Current State (v7.0 — "Hallelujah X11 Loads")
+- 85,000+ lines of Rust across 90+ kernel modules
+- **X.Org Server 1.21.1.21 loads and prints version** via SSH
+- **XTerm(403) works** — dynamically linked musl binary
+- **Audio**: Intel HDA + AC97 PCI detection, /dev/dsp PC speaker beep
+- **Framebuffer**: /dev/fb0 writable (1280x800 32bpp)
+- **AF_UNIX sockets**: abstract + filesystem, full create/bind/listen/connect/accept
+- **Shebang `#!` execution** in execve
+- **MAP_FIXED mmap fix**: musl library loading now copies file data correctly
+- **PROT_NONE skip**: address reservation without frame allocation
+- **NULL deref guard**: 1MB guard zone prevents infinite loops
+- **SSH command execution works end-to-end**: 5 consecutive sessions
+- **10 real Alpine Linux programs run**: sqlite3, python3, dropbear, Xorg, xterm, BusyBox, losetup, mount, sh, insmod
 - **User signal handler delivery**: SIGCHLD handler invoked via sigframe on user stack + rt_sigreturn
 - **Per-process page tables with eager mirroring**: each process has isolated address space
 - **Per-PID user stacks**: 16 MiB apart, prevents stack collisions in shared boot PML4
@@ -142,9 +151,18 @@ You can modify the following section
 - evdev keyboard driver (/dev/input/event0)
 - Framebuffer ioctls for X11 (VSCREENINFO, FSCREENINFO)
 
-### Verified Working in QEMU (x86_64) — v6.0
+### Verified Working in QEMU (x86_64) — v7.0
+- **Xorg -version**: X.Org X Server 1.21.1.21, EXIT=0
+- **xterm -version**: XTerm(403)
+- **Audio**: /dev/dsp write → PC speaker beep OK
+- **Framebuffer**: /dev/fb0 write OK
+- **SQLite3**: dynamic musl ELF, CREATE/INSERT/SELECT
+- **SSH**: 5 consecutive sessions per QEMU instance
+- **AF_UNIX sockets**: abstract (@prefix) + filesystem paths
+- **Intel HDA + AC97**: PCI detection at bus scan
+- **VT ioctls**: VT_GETSTATE, KDSETMODE stubs for Xorg
+- **Shebang**: #!/bin/sh scripts execute interpreter
 - **13 SSH commands verified**: echo, uname -a, id, date, ls /, cat /proc/meminfo, cat /proc/version, cat /proc/cpuinfo, cat /proc/uptime, ls /proc, sqlite3 --version, sqlite3 on-disk DB ops, python3 -c 'print(42)'
-- **5 consecutive SSH sessions** per QEMU instance without restart
 - **Full SSH pipeline**: KEX(curve25519)→auth(blank password)→channel→fork→exec→pipe→relay→client
 - **Proper zombie reaping**: wait4 finds zombies in TASK_LIST, reap_child removes them
 - **REAL FORK**: parent+child run concurrently with preemptive scheduling
@@ -209,4 +227,4 @@ qemu-system-x86_64 \
 - linked_list_allocator fragmentation under heavy alloc/dealloc
 
 ### Tags
-v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ, v5.0 Alpine loop.ko Loads
+v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ, v5.0 Alpine loop.ko Loads, v7.0 Hallelujah X11 Loads
