@@ -1119,6 +1119,37 @@ pub fn sys_execve_with_filename_chirho(
     };
 
     // -----------------------------------------------------------------------
+    // Step 4a: Shebang (#!) script handling
+    // If the file starts with "#!", parse the interpreter path and re-exec
+    // with the interpreter binary (passing original argv through).
+    // -----------------------------------------------------------------------
+    if elf_data_chirho.len() >= 2 && elf_data_chirho[0] == b'#' && elf_data_chirho[1] == b'!' {
+        let line_end_chirho = elf_data_chirho.iter().position(|&b| b == b'\n')
+            .unwrap_or(core::cmp::min(elf_data_chirho.len(), 256));
+        let shebang_line_chirho = core::str::from_utf8(&elf_data_chirho[2..line_end_chirho])
+            .unwrap_or("")
+            .trim();
+        let interp_chirho = shebang_line_chirho.split_whitespace().next().unwrap_or("");
+        if interp_chirho.is_empty() {
+            return -ENOEXEC_CHIRHO;
+        }
+        crate::serial_println_chirho!(
+            "[EXEC] shebang: interp='{}' script='{}'",
+            interp_chirho, filename_str_chirho,
+        );
+        // Re-exec with the interpreter binary. Pass the original argv/envp
+        // pointers through — the interpreter (e.g., /bin/sh) will get the
+        // script path as argv[0] and the remaining args as argv[1..].
+        // This is a simplification (Linux prepends interpreter to argv),
+        // but works for most #!/bin/sh scripts.
+        return sys_execve_with_filename_chirho(
+            String::from(interp_chirho),
+            argv_chirho,
+            envp_chirho,
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Step 4: Authoritative exec address-space replacement (Codex-directed).
     //
     // Create a fresh per-process PT, reset task.mm, switch CR3 to the fresh

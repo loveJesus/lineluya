@@ -449,6 +449,18 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
                 );
             }
         }
+        // Xorg debug: log syscalls for PIDs >= 4
+        if pid_chirho >= 4 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static XORG_SC_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let xc_chirho = XORG_SC_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if xc_chirho < 500 {
+                crate::serial_println_chirho!(
+                    "[XORG-SC] #{} pid={} nr={} result={}",
+                    xc_chirho, pid_chirho, syscall_nr_chirho, result_chirho,
+                );
+            }
+        }
     }
 
     result_chirho
