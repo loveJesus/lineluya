@@ -484,6 +484,11 @@ pub fn init_module_arena_mapping_chirho() {
                 x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
             }
         }
+        // Store the PDPT phys address for insmod PML4[511] fixup
+        // pml4e = current PML4[511] entry, extract phys addr from bits 12-51
+        let pdpt_phys_from_pml4_chirho = ae(pml4e);
+        // Store full PML4[511] entry value (phys + flags) for direct write
+        crate::pagetable_chirho::set_module_arena_pml4_entry_chirho(pml4e);
         MODULE_ARENA_HIGH_READY_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
     }
     crate::serial_println_chirho!(
@@ -3943,26 +3948,30 @@ pub fn sys_init_module_impl_chirho(
     len_chirho: u64,
     _params_ptr_chirho: u64,
 ) -> i64 {
-    // Ensure PML4[511] (high-canonical module arena) is in the current
-    // per-process page table BEFORE any code that might touch the arena.
-    if MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
-        let boot_phys_chirho = crate::pagetable_chirho::get_boot_pml4_chirho().as_u64();
-        let (cur_cr3_chirho, _) = x86_64::registers::control::Cr3::read();
-        let cur_phys_chirho = cur_cr3_chirho.start_address().as_u64();
-        if cur_phys_chirho != boot_phys_chirho {
-            let off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    // Force the module arena's verified PML4[511] entry into the CURRENT
+    // page table. The entry was captured at boot after verification.
+    let arena_pml4e_chirho = crate::pagetable_chirho::module_arena_pml4_entry_chirho();
+    crate::serial_println_chirho!(
+        "[KO] arena_pml4e={:#x} arena_ready={}",
+        arena_pml4e_chirho,
+        MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Relaxed),
+    );
+    if arena_pml4e_chirho != 0 {
+        let off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let cr3_chirho: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_chirho, options(nostack)); }
+        let pml4_phys_chirho = cr3_chirho & 0x000F_FFFF_FFFF_F000;
+        let cur_511_chirho = unsafe {
+            *((pml4_phys_chirho + off_chirho) as *const u64).add(511)
+        };
+        if cur_511_chirho != arena_pml4e_chirho {
+            crate::serial_println_chirho!(
+                "[KO] Fixing PML4[511]: {:#x} -> {:#x}",
+                cur_511_chirho, arena_pml4e_chirho,
+            );
             unsafe {
-                let boot_e_chirho = *((boot_phys_chirho + off_chirho) as *const u64).add(511);
-                let cur_e_chirho = *((cur_phys_chirho + off_chirho) as *const u64).add(511);
-                crate::serial_println_chirho!(
-                    "[KO] PML4 copy: boot[511]={:#x} cur[511]={:#x} boot_pml4={:#x}",
-                    boot_e_chirho, cur_e_chirho, boot_phys_chirho,
-                );
-                if cur_e_chirho != boot_e_chirho {
-                    *((cur_phys_chirho + off_chirho) as *mut u64).add(511) = boot_e_chirho;
-                    // Full TLB flush
-                    core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
-                }
+                *((pml4_phys_chirho + off_chirho) as *mut u64).add(511) = arena_pml4e_chirho;
+                core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
             }
         }
     }

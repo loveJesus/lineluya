@@ -58,6 +58,29 @@ static PHYS_MEM_OFFSET_CHIRHO: AtomicU64 = AtomicU64::new(0);
 /// per-process page tables.
 static BOOT_PML4_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
+/// Physical address of the fresh PDPT allocated for the module arena.
+/// Set by `map_page_raw_chirho` during boot, read by the insmod path
+/// to fix PML4[511] in per-process page tables.
+static MODULE_ARENA_PDPT_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Get the module arena's fresh PDPT physical address.
+pub fn module_arena_pdpt_phys_chirho() -> u64 {
+    MODULE_ARENA_PDPT_PHYS_CHIRHO.load(Ordering::Relaxed)
+}
+
+/// Full PML4[511] entry value (phys + flags) for direct fixup.
+static MODULE_ARENA_PML4_ENTRY_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Store the verified PML4[511] entry for insmod fixup.
+pub fn set_module_arena_pml4_entry_chirho(entry_chirho: u64) {
+    MODULE_ARENA_PML4_ENTRY_CHIRHO.store(entry_chirho, Ordering::Relaxed);
+}
+
+/// Get the verified PML4[511] entry.
+pub fn module_arena_pml4_entry_chirho() -> u64 {
+    MODULE_ARENA_PML4_ENTRY_CHIRHO.load(Ordering::Relaxed)
+}
+
 /// Store the physical memory offset. Called once during kernel init.
 pub fn set_phys_mem_offset_chirho(offset_chirho: u64) {
     PHYS_MEM_OFFSET_CHIRHO.store(offset_chirho, Ordering::Release);
@@ -282,6 +305,28 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
                 entry_chirho.addr(),
                 entry_chirho.flags(),
             );
+        }
+    }
+
+    // Force PML4[511] from the CURRENT CR3 (which has the module arena's
+    // fresh PDPT). Use raw read to avoid PhysAddr validation issues and
+    // ensure we get the up-to-date entry regardless of which PML4 is active.
+    {
+        let current_cr3_chirho: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) current_cr3_chirho, options(nostack)); }
+        let cr3_pml4_phys_chirho = current_cr3_chirho & 0x000F_FFFF_FFFF_F000;
+        let phys_off_chirho = PHYS_MEM_OFFSET_CHIRHO.load(Ordering::Acquire);
+        let boot_511_raw_chirho = unsafe {
+            *((cr3_pml4_phys_chirho + phys_off_chirho) as *const u64).add(511)
+        };
+        // Force PML4[511] into the new page table via raw write
+        // (This is the actual fix — the serial markers above were for debugging)
+        if boot_511_raw_chirho & 1 != 0 {
+            // Write raw u64 directly to new PML4[511] — bypass PageTableEntry methods
+            let new_pml4_ptr_chirho = pml4_phys_chirho.as_u64() + phys_off_chirho;
+            unsafe {
+                *((new_pml4_ptr_chirho) as *mut u64).add(511) = boot_511_raw_chirho;
+            }
         }
     }
 
@@ -1206,6 +1251,9 @@ pub fn map_page_raw_chirho(
     // table frames at PML4[511] are read-only. We must allocate entirely
     // new PDPT/PD/PT frames, copy existing entries to preserve kernel text
     // mappings, then point PML4[511] to our new writable PDPT.
+    // These statics are defined at function scope but have 'static lifetime.
+    // They're used to cache freshly allocated page table frames for the
+    // module arena. MODULE_PDPT_PHYS is exposed via module_arena_pdpt_phys.
     static MODULE_PDPT_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
     static MODULE_PD_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
     static MODULE_PT_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
@@ -1231,6 +1279,7 @@ pub fn map_page_raw_chirho(
                 );
             }
             MODULE_PDPT_PHYS_CHIRHO.store(new_pdpt_chirho, Ordering::Relaxed);
+            MODULE_ARENA_PDPT_PHYS_CHIRHO.store(new_pdpt_chirho, Ordering::Relaxed);
             // Update PML4 to point to our writable PDPT
             write_entry_chirho(pml4_phys_chirho, pml4i_chirho, new_pdpt_chirho | flags_inter_chirho);
             // Flush the PML4 entry's cache line + reload CR3 to commit
