@@ -510,6 +510,30 @@ fn allocate_module_image_slot_chirho(
     }
 
     let slot_ptr_chirho = unsafe { module_image_arena_slot_ptr_chirho(slot_index_chirho) };
+
+    // Debug: dump page table entries for the arena address
+    {
+        let va_chirho = slot_ptr_chirho as u64;
+        let (cr3_chirho, _) = x86_64::registers::control::Cr3::read();
+        let pml4p_chirho = cr3_chirho.start_address().as_u64();
+        let off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        let i4 = ((va_chirho >> 39) & 0x1FF) as usize;
+        let i3 = ((va_chirho >> 30) & 0x1FF) as usize;
+        let i2 = ((va_chirho >> 21) & 0x1FF) as usize;
+        let i1 = ((va_chirho >> 12) & 0x1FF) as usize;
+        let rd = |phys: u64, idx: usize| -> u64 {
+            unsafe { *((phys + off_chirho) as *const u64).add(idx) }
+        };
+        let pml4e = rd(pml4p_chirho, i4);
+        let pdpte = if pml4e & 1 != 0 { rd(pml4e & 0xFFFFFFFFF000, i3) } else { 0 };
+        let pde = if pdpte & 1 != 0 { rd(pdpte & 0xFFFFFFFFF000, i2) } else { 0 };
+        let pte = if pde & 1 != 0 { rd(pde & 0xFFFFFFFFF000, i1) } else { 0 };
+        crate::serial_println_chirho!(
+            "[PT-DUMP] va={:#x} CR3={:#x} PML4[{}]={:#x} PDPT[{}]={:#x} PD[{}]={:#x} PT[{}]={:#x}",
+            va_chirho, pml4p_chirho, i4, pml4e, i3, pdpte, i2, pde, i1, pte,
+        );
+    }
+
     unsafe {
         core::ptr::write_bytes(slot_ptr_chirho, 0, requested_bytes_chirho);
     }
