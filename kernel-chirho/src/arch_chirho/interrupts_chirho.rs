@@ -641,11 +641,38 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
             if page_vaddr_chirho < 0x100000 {
                 let rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
                 let rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
+                // Dump user registers for crash analysis
+                let saved_rbp_chirho: u64;
+                unsafe { core::arch::asm!("mov {}, rbp", out(reg) saved_rbp_chirho); }
                 crate::serial_println_chirho!(
                     "[PF] NULL deref: pid={} addr={:#x} rip={:#x} rsp={:#x} — killing",
                     user_fault_pid_chirho,
                     fault_addr_chirho.as_u64(), rip_chirho, rsp_chirho,
                 );
+                // Read user stack values to find RDI (corrupted pointer)
+                {
+                    let po_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+                    let (cr3_d_chirho, _) = x86_64::registers::control::Cr3::read();
+                    // User's RSP has the return state. Walk stack for context.
+                    for off_chirho in 0..8u64 {
+                        let saddr_chirho = rsp_chirho + off_chirho * 8;
+                        if let Some(pte_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                            cr3_d_chirho.start_address(),
+                            x86_64::VirtAddr::new(saddr_chirho & !0xFFF),
+                        ) {
+                            let phys_chirho = unsafe { (*pte_chirho).addr().as_u64() };
+                            if phys_chirho != 0 {
+                                let val_chirho = unsafe {
+                                    *((phys_chirho + po_chirho + (saddr_chirho & 0xFFF)) as *const u64)
+                                };
+                                crate::serial_println_chirho!(
+                                    "[PF-STACK] rsp+{:#x} = {:#018x}",
+                                    off_chirho * 8, val_chirho,
+                                );
+                            }
+                        }
+                    }
+                }
                 // User stack dump via page table walk (reads user pages
                 // through physical memory offset)
                 let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
