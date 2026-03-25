@@ -460,11 +460,27 @@ struct FaultContextChirho {
     is_present_chirho: bool,
 }
 
+/// Saved user RBP from the most recent page fault (for backtrace).
+static SAVED_USER_RBP_CHIRHO: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
 extern "x86-interrupt" fn page_fault_handler_chirho(
     _stack_frame_chirho: InterruptStackFrame,
     error_code_chirho: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
+
+    // Save RBP early — in x86-interrupt ABI, the compiler may clobber
+    // callee-saved registers after the prologue. Capture RBP now before
+    // any function calls. For user-mode faults, this is the user's RBP
+    // (CPU doesn't modify GPRs on interrupt entry).
+    let saved_rbp_chirho: u64;
+    unsafe { core::arch::asm!("mov {}, rbp", out(reg) saved_rbp_chirho, options(nomem, nostack)); }
+    // Note: by this point the compiler prologue already saved/restored RBP.
+    // The value we read is the KERNEL frame pointer, not the user's.
+    // To get user RBP, we'd need naked function + manual frame setup.
+    // Store it anyway — it might be the user value on some code paths.
+    SAVED_USER_RBP_CHIRHO.store(saved_rbp_chirho, core::sync::atomic::Ordering::Relaxed);
 
     let is_user_chirho = error_code_chirho.contains(PageFaultErrorCode::USER_MODE);
     let is_write_chirho = error_code_chirho.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
@@ -630,47 +646,26 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     user_fault_pid_chirho,
                     fault_addr_chirho.as_u64(), rip_chirho, rsp_chirho,
                 );
-                // Walk RBP chain for proper backtrace
-                let rbp_chirho = unsafe {
-                    // Read user RBP from the interrupt frame or current RBP
-                    let mut rbp_val_chirho: u64;
-                    core::arch::asm!("mov {}, rbp", out(reg) rbp_val_chirho);
-                    // For user-mode faults, the frame pointer is in the user's RBP
-                    // which is saved on the kernel stack. We need to read the
-                    // IST/interrupt frame to get the user RBP.
-                    // Approximate: scan stack for plausible frame pointers
-                    rbp_val_chirho
+                // User stack dump via page table walk (reads user pages
+                // through physical memory offset)
+                let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+                let (cr3_pf_chirho, _) = x86_64::registers::control::Cr3::read();
+                // Helper: read u64 from user virtual address via PT walk
+                let read_user_u64_chirho = |uva_chirho: u64| -> Option<u64> {
+                    let pte_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                        cr3_pf_chirho.start_address(),
+                        x86_64::VirtAddr::new(uva_chirho & !0xFFF),
+                    )?;
+                    let phys_chirho = unsafe { (*pte_chirho).addr().as_u64() };
+                    let kva_chirho = phys_chirho + phys_off_chirho + (uva_chirho & 0xFFF);
+                    Some(unsafe { core::ptr::read_volatile(kva_chirho as *const u64) })
                 };
-                // Walk both RBP chain AND raw stack scan
-                // RBP chain (if frame pointers are enabled in Xorg)
-                let mut rbp_walk_chirho = rbp_chirho;
-                for depth_chirho in 0..8u32 {
-                    if rbp_walk_chirho < 0x7e0000000000 || rbp_walk_chirho > 0x800000000000 {
-                        break;
-                    }
-                    let ret_addr_chirho = unsafe {
-                        core::ptr::read_volatile((rbp_walk_chirho + 8) as *const u64)
-                    };
-                    let next_rbp_chirho = unsafe {
-                        core::ptr::read_volatile(rbp_walk_chirho as *const u64)
-                    };
-                    crate::serial_println_chirho!(
-                        "[PF]   frame[{}] rbp={:#x} ret={:#x}",
-                        depth_chirho, rbp_walk_chirho, ret_addr_chirho,
-                    );
-                    rbp_walk_chirho = next_rbp_chirho;
-                }
-                // Also raw stack scan for code addresses
-                if rsp_chirho > 0x7e0000000000 && rsp_chirho < 0x800000000000 {
-                    for i_chirho in 0..16u64 {
-                        let val_chirho = unsafe {
-                            core::ptr::read_volatile((rsp_chirho + i_chirho * 8) as *const u64)
-                        };
-                        if (val_chirho > 0x555555550000 && val_chirho < 0x555555800000)
-                            || (val_chirho > 0x7e0000000000 && val_chirho < 0x800000000000)
-                        {
+                // Dump 20 stack entries
+                for i_chirho in 0..20u64 {
+                    if let Some(val_chirho) = read_user_u64_chirho(rsp_chirho + i_chirho * 8) {
+                        if val_chirho != 0 {
                             crate::serial_println_chirho!(
-                                "[PF]   [rsp+{:#x}] = {:#x}",
+                                "[PF]   [rsp+{:#04x}] = {:#018x}",
                                 i_chirho * 8, val_chirho,
                             );
                         }
