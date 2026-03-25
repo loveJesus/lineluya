@@ -209,6 +209,10 @@ fn make_dir_dentry_chirho(
     name_chirho: &str,
     parent_chirho: Option<Arc<Mutex<DentryChirho>>>,
 ) -> Arc<Mutex<DentryChirho>> {
+    use crate::tmpfs_chirho::{TmpfsDataChirho, new_tmpfs_fs_data_chirho, TMPFS_INODE_OPS_CHIRHO};
+    // Use tmpfs inode ops + DirChirho data so getdents64/readdir works.
+    // Children are added to BOTH the DentryChirho::children AND the
+    // TmpfsDataChirho::DirChirho entries via register_sysfs_child_chirho.
     let inode_chirho = Arc::new(Mutex::new(InodeChirho {
         ino_chirho: alloc_ino_chirho(),
         mode_chirho: S_IFDIR_CHIRHO | 0o555,
@@ -219,8 +223,8 @@ fn make_dir_dentry_chirho(
         atime_chirho: 0,
         mtime_chirho: 0,
         ctime_chirho: 0,
-        ops_chirho: &SYSFS_INODE_OPS_CHIRHO,
-        fs_data_chirho: None,
+        ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+        fs_data_chirho: new_tmpfs_fs_data_chirho(TmpfsDataChirho::DirChirho(Vec::new())),
     }));
 
     Arc::new(Mutex::new(DentryChirho {
@@ -229,6 +233,33 @@ fn make_dir_dentry_chirho(
         parent_chirho,
         children_chirho: Vec::new(),
     }))
+}
+
+/// Register a child dentry in BOTH the dentry tree AND the tmpfs DirChirho.
+fn register_sysfs_child_chirho(
+    parent_chirho: &Arc<Mutex<DentryChirho>>,
+    child_chirho: &Arc<Mutex<DentryChirho>>,
+) {
+    use crate::tmpfs_chirho::TmpfsDataChirho;
+    // Add to dentry children (for path resolution)
+    parent_chirho.lock().children_chirho.push(Arc::clone(child_chirho));
+    // Add to tmpfs DirChirho entries (for readdir/getdents64)
+    let child_guard_chirho = child_chirho.lock();
+    let child_name_chirho = child_guard_chirho.name_chirho.clone();
+    if let Some(ref child_inode_chirho) = child_guard_chirho.inode_chirho {
+        let parent_guard_chirho = parent_chirho.lock();
+        if let Some(ref parent_inode_chirho) = parent_guard_chirho.inode_chirho {
+            let pi_guard_chirho = parent_inode_chirho.lock();
+            if let Some(ref data_chirho) = pi_guard_chirho.fs_data_chirho {
+                if let Some(dir_data_chirho) = data_chirho.downcast_ref::<spin::Mutex<TmpfsDataChirho>>() {
+                    let mut dd_guard_chirho = dir_data_chirho.lock();
+                    if let TmpfsDataChirho::DirChirho(ref mut entries_chirho) = *dd_guard_chirho {
+                        entries_chirho.push((child_name_chirho, Arc::clone(child_inode_chirho)));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Create a sysfs file dentry with static content (stored as tmpfs file).
@@ -259,7 +290,7 @@ fn add_file_dentry_chirho(
         parent_chirho: Some(Arc::clone(parent_chirho)),
         children_chirho: Vec::new(),
     }));
-    parent_chirho.lock().children_chirho.push(dentry_chirho);
+    register_sysfs_child_chirho(parent_chirho, &dentry_chirho);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,31 +348,28 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
                 fb_phys_chirho, fb_phys_chirho + fb_size_chirho as u64 - 1, 0x0200u64,
             );
             add_file_dentry_chirho(&vga_dev_chirho, "resource", resource_str_chirho.as_bytes());
-            pci_devices_chirho.lock().children_chirho.push(vga_dev_chirho);
+            register_sysfs_child_chirho(&pci_devices_chirho, &vga_dev_chirho);
         }
-        pci_dentry_chirho.lock().children_chirho.push(pci_devices_chirho);
-        bus_dentry_chirho.lock().children_chirho.push(pci_dentry_chirho);
+        register_sysfs_child_chirho(&pci_dentry_chirho, &pci_devices_chirho);
+        register_sysfs_child_chirho(&bus_dentry_chirho, &pci_dentry_chirho);
     }
     // /sys/class/graphics/fb0 for fbdev driver detection
     {
         let graphics_chirho = make_dir_dentry_chirho("graphics", Some(Arc::clone(&class_dentry_chirho)));
         let fb0_chirho = make_dir_dentry_chirho("fb0", Some(Arc::clone(&graphics_chirho)));
-        graphics_chirho.lock().children_chirho.push(fb0_chirho);
-        class_dentry_chirho.lock().children_chirho.push(graphics_chirho);
+        register_sysfs_child_chirho(&graphics_chirho, &fb0_chirho);
+        register_sysfs_child_chirho(&class_dentry_chirho, &graphics_chirho);
     }
     // /sys/fs directory — filesystem parameters.
     let fs_dentry_chirho = make_dir_dentry_chirho("fs", Some(Arc::clone(&root_dentry_chirho)));
 
     // Attach children to root
-    {
-        let mut root_guard_chirho = root_dentry_chirho.lock();
-        root_guard_chirho.children_chirho.push(class_dentry_chirho);
-        root_guard_chirho.children_chirho.push(devices_dentry_chirho);
-        root_guard_chirho.children_chirho.push(kernel_dentry_chirho);
-        root_guard_chirho.children_chirho.push(module_dentry_chirho);
-        root_guard_chirho.children_chirho.push(bus_dentry_chirho);
-        root_guard_chirho.children_chirho.push(fs_dentry_chirho);
-    }
+    register_sysfs_child_chirho(&root_dentry_chirho, &class_dentry_chirho);
+    register_sysfs_child_chirho(&root_dentry_chirho, &devices_dentry_chirho);
+    register_sysfs_child_chirho(&root_dentry_chirho, &kernel_dentry_chirho);
+    register_sysfs_child_chirho(&root_dentry_chirho, &module_dentry_chirho);
+    register_sysfs_child_chirho(&root_dentry_chirho, &bus_dentry_chirho);
+    register_sysfs_child_chirho(&root_dentry_chirho, &fs_dentry_chirho);
 
     crate::serial_println_chirho!("[SYSFS] Mounted with /sys/class, /sys/devices, /sys/kernel, /sys/module, /sys/bus, /sys/fs");
 
