@@ -447,9 +447,40 @@ pub fn init_module_arena_mapping_chirho() {
     }
     let pml4_phys_chirho = pml4_phys_chirho & 0x000F_FFFF_FFFF_F000; // mask flags
 
+    // Convert BSS virtual address to physical using page table walk
+    // (can't use simple offset subtraction — BSS is in kernel PML4[1],
+    // not in the physical memory window).
+    let bss_phys_base_chirho = {
+        let (cr3_chirho, _) = x86_64::registers::control::Cr3::read();
+        if let Some(pte_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+            cr3_chirho.start_address(),
+            x86_64::VirtAddr::new(bss_base_chirho),
+        ) {
+            unsafe { (*pte_chirho).addr().as_u64() }
+        } else {
+            crate::serial_println_chirho!("[KO] FATAL: can't resolve BSS physical address");
+            return;
+        }
+    };
+    crate::serial_println_chirho!(
+        "[KO] BSS virt={:#x} phys={:#x}", bss_base_chirho, bss_phys_base_chirho
+    );
+
     let mut ok_chirho = 0u64;
     for off_chirho in (0..total_chirho).step_by(4096) {
-        let phys_chirho = (bss_base_chirho + off_chirho as u64) - phys_off_chirho;
+        // Get physical address for each BSS page via PT walk
+        let page_virt_chirho = bss_base_chirho + off_chirho as u64;
+        let phys_chirho = {
+            let (cr3_chirho, _) = x86_64::registers::control::Cr3::read();
+            if let Some(pte_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                cr3_chirho.start_address(),
+                x86_64::VirtAddr::new(page_virt_chirho),
+            ) {
+                unsafe { (*pte_chirho).addr().as_u64() }
+            } else {
+                continue; // Page not mapped
+            }
+        };
         let virt_chirho = MODULE_ARENA_HIGH_BASE_CHIRHO + off_chirho as u64;
         if crate::pagetable_chirho::map_page_raw_chirho(pml4_phys_chirho, virt_chirho, phys_chirho).is_ok() {
             ok_chirho += 1;
@@ -3968,9 +3999,7 @@ pub fn sys_init_module_impl_chirho(
         let stored_511_chirho = crate::pagetable_chirho::module_arena_pml4_entry_chirho();
         if stored_511_chirho & 1 != 0 {
             unsafe {
-                // Write PML4[511]
                 *((cur_pml4_chirho + off_chirho) as *mut u64).add(511) = stored_511_chirho;
-                // Full TLB flush: reload CR3 + INVLPG on the target address
                 core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
                 core::arch::asm!(
                     "invlpg [{}]",
@@ -3978,6 +4007,28 @@ pub fn sys_init_module_impl_chirho(
                     options(nostack)
                 );
             }
+            // Verify the write and walk the page table chain
+            let readback_chirho = unsafe {
+                *((cur_pml4_chirho + off_chirho) as *const u64).add(511)
+            };
+            let pdpt_phys_chirho = readback_chirho & 0x000F_FFFF_FFFF_F000;
+            // PDPT[511] for 0xFFFFFFFFC0000000 range
+            let pdpte_chirho = unsafe {
+                *((pdpt_phys_chirho + off_chirho) as *const u64).add(511)
+            };
+            let pd_phys_chirho = pdpte_chirho & 0x000F_FFFF_FFFF_F000;
+            // Walk full chain: PD[0] and PT[256]
+            let pde_chirho = if pd_phys_chirho != 0 {
+                unsafe { *((pd_phys_chirho + off_chirho) as *const u64).add(0) }
+            } else { 0 };
+            let pt_phys_chirho = pde_chirho & 0x000F_FFFF_FFFF_F000;
+            let pte_chirho = if pt_phys_chirho != 0 {
+                unsafe { *((pt_phys_chirho + off_chirho) as *const u64).add(256) }
+            } else { 0 };
+            crate::serial_println_chirho!(
+                "[KO] PT chain: PML4={:#x} PDPT[511]={:#x} PD[0]={:#x} PT[256]={:#x}",
+                readback_chirho, pdpte_chirho, pde_chirho, pte_chirho,
+            );
         }
     }
 
