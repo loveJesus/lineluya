@@ -14,7 +14,8 @@ import tarfile
 import subprocess
 import tempfile
 
-DEBUGFS_CHIRHO = "/opt/homebrew/opt/e2fsprogs/sbin/debugfs"
+import shutil as _shutil_chirho
+DEBUGFS_CHIRHO = _shutil_chirho.which("debugfs") or "/opt/homebrew/opt/e2fsprogs/sbin/debugfs"
 
 def run_debugfs_chirho(img_path_chirho, commands_chirho):
     """Run a batch of debugfs commands on the image."""
