@@ -836,6 +836,7 @@ fn unmap_pages_chirho(addr_chirho: u64, len_chirho: u64) {
     use x86_64::VirtAddr;
 
     let num_pages_chirho = len_chirho / PAGE_SIZE_CHIRHO;
+    let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
 
     // Unmap pages via CR3-based PT walk (no GLOBAL_MAPPER).
     let (cr3_unmap_chirho, _) = x86_64::registers::control::Cr3::read();
@@ -846,10 +847,20 @@ fn unmap_pages_chirho(addr_chirho: u64, len_chirho: u64) {
                 cr3_unmap_chirho.start_address(),
                 VirtAddr::new(page_addr_chirho),
             ) {
-                unsafe { (*pte_ptr_chirho).set_unused(); }
+                // Zero the physical frame before unmapping to prevent
+                // stale heap metadata from corrupting future allocations.
+                // This fixes the Xorg crash: musl's realloc does
+                // mmap+memcpy+munmap, and if the freed frame is reused
+                // by a later mmap, stale chunk headers cause corruption.
+                unsafe {
+                    let phys_addr_chirho = (*pte_ptr_chirho).addr().as_u64();
+                    if phys_addr_chirho != 0 {
+                        let kernel_va_chirho = phys_addr_chirho + phys_off_chirho;
+                        core::ptr::write_bytes(kernel_va_chirho as *mut u8, 0, 4096);
+                    }
+                    (*pte_ptr_chirho).set_unused();
+                }
                 x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
-            } else {
-                // Page was not mapped — nothing to do.
             }
         }
     }
