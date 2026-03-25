@@ -1235,11 +1235,21 @@ pub fn sys_openat_chirho(
             "/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n"),
             "/etc/shadow" => Some(b"root::0:0:99999:7:::\n"),
             "/etc/ld-musl-x86_64.path" => Some(b"/tmp/lib-chirho\n/lib\n/usr/lib\n"),
+            // Skip protocol.txt — Xorg handles missing gracefully
+            // Reading from ext4 causes heap corruption in Xorg's parser
             _ => None,
         };
         if let Some(content_chirho) = auth_content_chirho {
             return create_memory_backed_fd_chirho(&pathname_chirho, content_chirho, flags_chirho);
         }
+    }
+
+    // Block protocol.txt — Xorg crashes (heap corruption at 0x2b33d) when
+    // parsing it due to a musl malloc metadata corruption triggered by
+    // the large read+parse allocation pattern. Without protocol.txt,
+    // Xorg successfully creates X11 sockets and starts up.
+    if pathname_chirho == "/usr/lib/xorg/protocol.txt" {
+        return -ENOENT_CHIRHO;
     }
 
     // Special case: /dev/pts/N -- PTY slave devices are created dynamically
