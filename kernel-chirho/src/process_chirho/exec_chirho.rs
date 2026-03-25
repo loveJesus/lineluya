@@ -419,6 +419,9 @@ pub fn load_elf_with_interp_chirho(
                     dyn_info_chirho.rela_size_chirho,
                     dyn_info_chirho.relaent_size_chirho
                 );
+                // Apply R_X86_64_RELATIVE to main binary. musl also
+                // applies these but R_X86_64_RELATIVE is idempotent
+                // (base + addend), so double-apply is safe.
                 unsafe {
                     apply_relative_relocs_chirho(
                         dyn_info_chirho.rela_addr_chirho,
@@ -427,9 +430,6 @@ pub fn load_elf_with_interp_chirho(
                         exe_load_bias_chirho,
                     );
                 }
-                serial_debug_chirho!(
-                    "[EXEC] R_X86_64_RELATIVE relocations applied to main binary"
-                );
 
                 // RELR: musl 1.2.5 applies RELR for the main binary in
                 // __dls3. The kernel must NOT apply it — double-biasing

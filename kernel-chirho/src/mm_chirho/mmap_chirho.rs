@@ -255,13 +255,38 @@ impl MmChirho {
                 // If we allocate real frames here, they waste memory and
                 // interfere with the subsequent MAP_FIXED file-backed mmaps.
                 if prot_chirho == PROT_NONE_CHIRHO {
-                    // MAP_FIXED PROT_NONE at brk address: return success
-                    // without creating VMA (brk pages are directly mapped
-                    // in PT). This lets musl's __expand_heap think the
-                    // reservation succeeded, avoiding mmap-based fallback.
+                    // MAP_FIXED PROT_NONE: zero existing pages to match
+                    // Linux semantics. musl's mallocng expects mmap'd
+                    // PROT_NONE regions to be zero when later mprotect'd.
+                    // Stale data in existing pages corrupts malloc metadata.
                     if is_fixed_chirho {
+                        let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
                         let (cr3_pn_chirho, _) = x86_64::registers::control::Cr3::read();
-                        let has_page_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                        let num_pn_pages_chirho = aligned_len_chirho / PAGE_SIZE_CHIRHO;
+                        for pi_chirho in 0..num_pn_pages_chirho {
+                            let pa_chirho = map_addr_chirho + pi_chirho * PAGE_SIZE_CHIRHO;
+                            if let Some(pte_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                                cr3_pn_chirho.start_address(),
+                                x86_64::VirtAddr::new(pa_chirho),
+                            ) {
+                                let flags_chirho = unsafe { (*pte_chirho).flags() };
+                                if flags_chirho.contains(
+                                    x86_64::structures::paging::PageTableFlags::PRESENT
+                                ) {
+                                    // Zero the physical frame
+                                    unsafe {
+                                        let phys_chirho = (*pte_chirho).addr().as_u64();
+                                        core::ptr::write_bytes(
+                                            (phys_chirho + phys_off_chirho) as *mut u8,
+                                            0, PAGE_SIZE_CHIRHO as usize,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        // Don't create PROT_NONE VMA over brk pages —
+                        // would block demand-paging on COW faults
+                        let first_present_chirho = crate::pagetable_chirho::walk_page_table_chirho(
                             cr3_pn_chirho.start_address(),
                             x86_64::VirtAddr::new(map_addr_chirho),
                         ).map(|p| unsafe {
@@ -269,7 +294,7 @@ impl MmChirho {
                                 x86_64::structures::paging::PageTableFlags::PRESENT
                             )
                         }).unwrap_or(false);
-                        if has_page_chirho {
+                        if first_present_chirho {
                             return Ok(map_addr_chirho);
                         }
                     }
