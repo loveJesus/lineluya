@@ -421,12 +421,13 @@ impl MmChirho {
         let end_chirho = addr_chirho + aligned_len_chirho;
 
         // Update VMA protection bits for any overlapping VMAs.
-        // Don't fail if the region isn't fully VMA-covered — musl's
-        // library loader sometimes mprotects regions that span gaps
-        // between MAP_FIXED segment mappings, and Linux allows this
-        // as long as page table entries exist.
         self.update_vma_prot_chirho(addr_chirho, end_chirho, prot_chirho);
 
+        // Actually update PTE flags for mapped pages. This is critical
+        // for guard pages: mprotect(PROT_NONE) must make pages non-present
+        // so buffer overflows trigger SIGSEGV instead of silently corrupting
+        // adjacent memory (root cause of Xorg 0x2b33d crash).
+        update_page_protection_chirho(addr_chirho, aligned_len_chirho, prot_chirho);
 
         Ok(())
     }
@@ -505,6 +506,15 @@ impl MmChirho {
     pub fn is_in_vma_chirho(&self, addr_chirho: u64) -> bool {
         self.vmas_chirho.iter().any(|vma_chirho| {
             vma_chirho.start_chirho <= addr_chirho && addr_chirho < vma_chirho.end_chirho
+        })
+    }
+
+    /// Check if the address falls in a PROT_NONE VMA (guard page).
+    pub fn is_prot_none_chirho(&self, addr_chirho: u64) -> bool {
+        self.vmas_chirho.iter().any(|vma_chirho| {
+            vma_chirho.start_chirho <= addr_chirho
+                && addr_chirho < vma_chirho.end_chirho
+                && vma_chirho.prot_chirho == PROT_NONE_CHIRHO
         })
     }
 
@@ -896,6 +906,11 @@ fn update_page_protection_chirho(addr_chirho: u64, len_chirho: u64, prot_chirho:
 /// Convert Linux `PROT_*` flags to x86_64 [`PageTableFlags`].
 fn prot_to_page_flags_chirho(prot_chirho: u32) -> x86_64::structures::paging::PageTableFlags {
     use x86_64::structures::paging::PageTableFlags;
+
+    // PROT_NONE: page must NOT be present — any access triggers fault
+    if prot_chirho == PROT_NONE_CHIRHO {
+        return PageTableFlags::empty();
+    }
 
     let mut flags_chirho = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 

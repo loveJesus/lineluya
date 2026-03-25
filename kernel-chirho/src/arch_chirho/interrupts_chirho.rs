@@ -694,11 +694,27 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
             // struct pointers → NULL deref at 0x2b33d.
             {
                 let mm_arc_chirho = crate::mm_chirho::get_current_mm_chirho();
-                let has_vma_chirho = if let Some(mm_guard_chirho) = mm_arc_chirho.try_lock() {
-                    mm_guard_chirho.is_in_vma_chirho(page_vaddr_chirho)
+                let (has_vma_chirho, is_prot_none_chirho) = if let Some(mm_guard_chirho) = mm_arc_chirho.try_lock() {
+                    let in_vma_chirho = mm_guard_chirho.is_in_vma_chirho(page_vaddr_chirho);
+                    let prot_none_chirho = mm_guard_chirho.is_prot_none_chirho(page_vaddr_chirho);
+                    (in_vma_chirho, prot_none_chirho)
                 } else {
-                    true // Can't check — allow (avoid deadlock)
+                    (true, false) // Can't check — allow (avoid deadlock)
                 };
+                // PROT_NONE guard page: deliver SIGSEGV (don't demand-page)
+                if is_prot_none_chirho {
+                    crate::serial_println_chirho!(
+                        "[PF] PROT_NONE guard: pid={} addr={:#x} rip={:#x}",
+                        user_fault_pid_chirho, fault_addr_chirho.as_u64(),
+                        _stack_frame_chirho.instruction_pointer.as_u64(),
+                    );
+                    if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
+                        task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
+                        task_chirho.lock().exit_code_chirho = 139;
+                    }
+                    crate::scheduler_chirho::schedule_chirho();
+                    return;
+                }
                 if !has_vma_chirho {
                     crate::serial_println_chirho!(
                         "[PF] SIGSEGV: pid={} addr={:#x} rip={:#x} — no VMA",
