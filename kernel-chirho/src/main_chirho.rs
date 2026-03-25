@@ -487,7 +487,8 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         let libs_chirho: &[&str] = &[
             "libXft.so.2", "libfontconfig.so.1", "libfreetype.so.6",
             "libXext.so.6", "libXaw.so.7", "libXmu.so.6", "libXpm.so.4",
-            "libXt.so.6", "libX11.so.6", "libICE.so.6",
+            "libXt.so.6", "libX11.so.6", "libICE.so.6", "libncursesw.so.6",
+            "libxkbfile.so.1",
             "libXrender.so.1", "libexpat.so.1", "libz.so.1", "libbz2.so.1",
             "libpng16.so.16", "libbrotlidec.so.1", "libSM.so.6",
             "libxcb.so.1", "libbrotlicommon.so.1", "libuuid.so.1",

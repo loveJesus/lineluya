@@ -1247,6 +1247,10 @@ pub fn sys_openat_chirho(
                 "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
                 "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
                 "/usr/libexec/Xorg :0 vt7 -noreset 2>/dev/null &\n",
+                "if test -f /tmp/.X0-lock; then\n",
+                "  DISPLAY=:0 twm 2>/dev/null &\n",
+                "  DISPLAY=:0 xterm 2>/dev/null &\n",
+                "fi\n",
                 "echo '  Lineluya v8.0 — Hallelujah'\n",
                 "echo '  SSH: ssh -p 2222 root@localhost'\n",
                 "echo '  VNC: port 5901'\n",
@@ -1257,7 +1261,6 @@ Section \"Device\"\n\
     Identifier \"fb0-chirho\"\n\
     Driver \"fbdev\"\n\
     Option \"fbdev\" \"/dev/fb0\"\n\
-    Option \"ShadowFB\" \"false\"\n\
 EndSection\n\
 \n\
 Section \"Screen\"\n\

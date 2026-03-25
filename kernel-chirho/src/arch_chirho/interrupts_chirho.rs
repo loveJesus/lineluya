@@ -1172,7 +1172,7 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         && USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire)
     {
         let current_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if current_pid_chirho >= 4 && current_pid_chirho <= 6 { // Only preempt PIDs 4-6 (trampoline stack safety)
+        if current_pid_chirho >= 4 { // Preempt all user processes for fair scheduling
             let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
             let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
 
