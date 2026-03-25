@@ -432,21 +432,19 @@ pub fn load_elf_with_interp_chirho(
                 );
 
                 // Apply RELR (compact relative relocations) if present.
-                // Modern binaries (Alpine 3.23+) use .relr.dyn instead of
-                // .rela.dyn for relative relocations — much smaller encoding.
-                if dyn_info_chirho.relr_addr_chirho != 0 && dyn_info_chirho.relr_size_chirho != 0 {
-                    crate::serial_println_chirho!(
-                        "[EXEC] RELR: addr={:#x} size={:#x} — applying compact relative relocs",
-                        dyn_info_chirho.relr_addr_chirho, dyn_info_chirho.relr_size_chirho,
+                // ONLY for static-PIE binaries (no interpreter). For dynamically
+                // linked binaries, the musl interpreter handles ALL relocations
+                // including RELR. Applying RELR in the kernel for dyn-linked
+                // binaries causes double-biasing (kernel + musl both add bias).
+                // Skip RELR for main binary — musl handles ALL relocations
+                // including RELR for dynamically-linked binaries. Applying
+                // RELR here AND in musl causes double-biasing corruption.
+                // The kernel only needs to apply RELA RELATIVE (which has
+                // 0 entries for RELR binaries anyway).
+                if dyn_info_chirho.relr_addr_chirho != 0 {
+                    crate::serial_debug_chirho!(
+                        "[EXEC] RELR skipped for main binary (musl handles it)"
                     );
-                    unsafe {
-                        apply_relr_relocs_chirho(
-                            dyn_info_chirho.relr_addr_chirho,
-                            dyn_info_chirho.relr_size_chirho,
-                            dyn_info_chirho.relrent_size_chirho,
-                            exe_load_bias_chirho,
-                        );
-                    }
                 }
             }
             Err(err_chirho) => {
