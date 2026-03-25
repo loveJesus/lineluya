@@ -255,26 +255,6 @@ impl MmChirho {
                 // If we allocate real frames here, they waste memory and
                 // interfere with the subsequent MAP_FIXED file-backed mmaps.
                 if prot_chirho == PROT_NONE_CHIRHO {
-                    // For MAP_FIXED PROT_NONE at the brk address: skip VMA
-                    // creation entirely. brk pages are mapped directly in PT
-                    // (no VMA). A PROT_NONE VMA here would block COW fault
-                    // resolution after fork(), causing heap corruption.
-                    if is_fixed_chirho {
-                        // Check if pages are already mapped at this address
-                        let (cr3_check_chirho, _) = x86_64::registers::control::Cr3::read();
-                        let has_pages_chirho = crate::pagetable_chirho::walk_page_table_chirho(
-                            cr3_check_chirho.start_address(),
-                            x86_64::VirtAddr::new(map_addr_chirho),
-                        ).map(|pte_ptr_chirho| unsafe {
-                            (*pte_ptr_chirho).flags().contains(
-                                x86_64::structures::paging::PageTableFlags::PRESENT
-                            )
-                        }).unwrap_or(false);
-                        if has_pages_chirho {
-                            // brk pages exist — don't create PROT_NONE VMA
-                            return Ok(map_addr_chirho);
-                        }
-                    }
                     let vma_chirho = VmaChirho {
                         start_chirho: map_addr_chirho,
                         end_chirho: map_addr_chirho + aligned_len_chirho,
@@ -773,26 +753,17 @@ fn map_anonymous_pages_chirho(
 
         // Check if the page is already mapped. If so, update flags and reuse.
         {
-            let mmap_pid_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            // For ALL PIDs: check if page is already mapped via CR3 walk.
-            let already_mapped_chirho = {
-                let (cr3_am_chirho, _) = x86_64::registers::control::Cr3::read();
-                crate::pagetable_chirho::walk_page_table_chirho(
-                    cr3_am_chirho.start_address(),
-                    VirtAddr::new(page_addr_chirho),
-                ).map(|pte_ptr_chirho| unsafe {
-                    (*pte_ptr_chirho).flags().contains(
-                        x86_64::structures::paging::PageTableFlags::PRESENT
-                    )
-                }).unwrap_or(false)
-            };
+            let (cr3_am_chirho, _) = x86_64::registers::control::Cr3::read();
+            let already_mapped_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                cr3_am_chirho.start_address(),
+                VirtAddr::new(page_addr_chirho),
+            ).map(|pte_ptr_chirho| unsafe {
+                (*pte_ptr_chirho).flags().contains(
+                    x86_64::structures::paging::PageTableFlags::PRESENT
+                )
+            }).unwrap_or(false);
 
             if already_mapped_chirho {
-                // Page exists in current PT. Update flags and reuse.
-                // Safe for all PIDs: create_user_page_table_chirho no longer
-                // copies user-accessible boot PML4 entries (the fix that
-                // resolved the cross-process PTE corruption / sqlite3 GPF).
                 let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
                 if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
                     cr3_uf_chirho.start_address(),
