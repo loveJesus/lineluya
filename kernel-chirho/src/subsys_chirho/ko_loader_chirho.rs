@@ -3428,6 +3428,23 @@ unsafe fn call_init_module_chirho(addr_chirho: u64) -> i32 {
         );
     }
 
+    // Set up GS base for the module's stack canary access (%gs:0x28).
+    // Linux modules read the stack canary from per-CPU data via GS segment.
+    // Without a valid GS base, %gs:0x28 accesses address 0x28 which triggers
+    // a page fault in the frame allocator → potential deadlock.
+    // Fix: point GS base to a zeroed kernel page so %gs:0x28 reads 0.
+    {
+        static FAKE_PERCPU_DATA_CHIRHO: [u8; 4096] = [0u8; 4096];
+        let gs_base_chirho = FAKE_PERCPU_DATA_CHIRHO.as_ptr() as u64;
+        unsafe {
+            // Write to IA32_GS_BASE (MSR 0xC0000101)
+            x86_64::registers::model_specific::Msr::new(0xC000_0101).write(gs_base_chirho);
+        }
+        crate::serial_println_chirho!(
+            "[KO] Set GS base to {:#x} for stack canary", gs_base_chirho
+        );
+    }
+
     let init_fn_chirho: InitModuleFnChirho =
         unsafe { core::mem::transmute(addr_chirho) };
     let ret_chirho = unsafe { init_fn_chirho() };
