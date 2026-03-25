@@ -3260,15 +3260,21 @@ unsafe fn call_init_module_chirho(addr_chirho: u64) -> i32 {
         addr_chirho
     );
 
-    // If R_X86_64_32S overflows were detected, the module's absolute
-    // address references are corrupted (our kernel uses 0x8000xxxxxx
-    // addresses which don't fit in sign-extended 32 bits). Skip init
-    // to avoid a crash, but report the module as loaded.
+    // R_X86_64_32S overflows: module addresses at 0x8000xxxxxx don't
+    // fit in sign-extended 32-bit. This affects both kernel symbol refs
+    // AND intra-module refs (.data, .rodata within the module). The
+    // init_module path HAS 32S relocs (5 in loop.ko's .init.text).
+    // Calling init_module with truncated 32S values causes a hang.
+    //
+    // Root cause: our kernel loads at 0x8000000000 (PIE), not Linux's
+    // 0xFFFFFFFF80000000 (high-canonical). 32S requires addresses in
+    // the top 2GB of virtual space. Fix requires bootloader changes
+    // to use high-canonical kernel mapping.
     if HAD_32S_OVERFLOW_CHIRHO.swap(false, core::sync::atomic::Ordering::SeqCst) {
         crate::serial_println_chirho!(
-            "[KO] init_module SKIPPED (R_X86_64_32S overflow — module loaded but not initialized)"
+            "[KO] init_module SKIPPED (R_X86_64_32S overflow — needs high-canonical kernel)"
         );
-        return 0; // Report success — module ELF was parsed and relocated
+        return 0;
     }
 
     let init_fn_chirho: InitModuleFnChirho =
