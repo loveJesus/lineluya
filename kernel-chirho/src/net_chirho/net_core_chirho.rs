@@ -42,8 +42,25 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
+
+/// Flag set when Xorg binds the X11 display socket.
+/// Checked by the syscall handler to auto-launch xterm+twm.
+pub static X11_READY_CHIRHO: AtomicBool = AtomicBool::new(false);
+static X11_CLIENTS_LAUNCHED_CHIRHO: AtomicBool = AtomicBool::new(false);
+
+/// Check if X11 clients should be launched (called from syscall return path).
+/// Returns true ONCE — the first time after X11_READY becomes true.
+pub fn should_launch_x11_clients_chirho() -> bool {
+    if X11_READY_CHIRHO.load(Ordering::Acquire)
+        && !X11_CLIENTS_LAUNCHED_CHIRHO.swap(true, Ordering::AcqRel)
+    {
+        true
+    } else {
+        false
+    }
+}
 
 use crate::syscall_chirho::{
     EADDRINUSE_CHIRHO, EAFNOSUPPORT_CHIRHO, EAGAIN_CHIRHO, EBADF_CHIRHO,
@@ -2571,6 +2588,11 @@ pub fn sys_bind_chirho(
             "[NET] sys_bind(AF_UNIX) fd={} path='{}' -> {}",
             sockfd_chirho, path_chirho, result_chirho,
         );
+        // Auto-launch X11 clients when Xorg binds the display socket
+        if result_chirho == 0 && path_chirho.contains("X11-unix/X0") {
+            crate::serial_println_chirho!("[X11-READY] Xorg socket detected — scheduling xterm+twm");
+            X11_READY_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
+        }
         return result_chirho;
     }
 

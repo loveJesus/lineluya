@@ -6059,6 +6059,18 @@ fn sys_stat_chirho(
         raw_path_chirho
     };
 
+    // Dynamic synthetic stat: /tmp/.X0-lock appears after Xorg binds X11 socket
+    if path_str_chirho == "/tmp/.X0-lock"
+        && crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
+    {
+        let mut st_chirho = StatChirho::zeroed_chirho();
+        st_chirho.st_mode_chirho = 0o100644; // regular file
+        st_chirho.st_size_chirho = 10;
+        st_chirho.st_nlink_chirho = 1;
+        unsafe { core::ptr::write(statbuf_chirho, st_chirho); }
+        return 0;
+    }
+
     // Resolve through VFS
     let (inode_arc_chirho, _file_ops_chirho) = match crate::fs_chirho::resolve_path_chirho(&path_str_chirho) {
         Ok(result_chirho) => result_chirho,
@@ -6170,6 +6182,18 @@ fn sys_fstatat_chirho(
     } else {
         path_str_chirho
     };
+
+    // Dynamic synthetic stat: /tmp/.X0-lock appears after Xorg binds X11 socket
+    if resolved_path_chirho == "/tmp/.X0-lock"
+        && crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
+    {
+        let mut st_chirho = StatChirho::zeroed_chirho();
+        st_chirho.st_mode_chirho = 0o100644;
+        st_chirho.st_size_chirho = 10;
+        st_chirho.st_nlink_chirho = 1;
+        unsafe { core::ptr::write(statbuf_chirho, st_chirho); }
+        return 0;
+    }
 
     let (inode_arc_chirho, _file_ops_chirho) = match crate::fs_chirho::resolve_path_chirho(&resolved_path_chirho) {
         Ok(result_chirho) => result_chirho,
@@ -7519,6 +7543,13 @@ fn sys_faccessat_real_chirho(
     } else {
         pathname_chirho
     };
+
+    // Dynamic synthetic files: X11 lock file appears after Xorg binds socket
+    if full_path_chirho == "/tmp/.X0-lock"
+        && crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
+    {
+        return 0; // file exists
+    }
 
     // Try to resolve the path through VFS
     match crate::fs_chirho::resolve_path_chirho(&full_path_chirho) {

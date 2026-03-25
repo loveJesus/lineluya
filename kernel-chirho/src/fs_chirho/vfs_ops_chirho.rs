@@ -1247,9 +1247,11 @@ pub fn sys_openat_chirho(
                 "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
                 "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
                 "/usr/libexec/Xorg :0 vt7 -noreset 2>/dev/null &\n",
+                "DISPLAY=:0 xterm 2>/dev/null &\n",
                 "echo '  Lineluya v8.0 — Hallelujah'\n",
                 "echo '  SSH: ssh -p 2222 root@localhost'\n",
                 "echo '  VNC: port 5901'\n",
+                "echo '  X11: DISPLAY=:0 xterm (after Xorg ready)'\n",
             ).as_bytes()),
             // Xorg config: fbdev driver, no BusID (matches old probe BUS_NONE entity)
             "/etc/X11/xorg.conf" => Some(b"\
@@ -1275,6 +1277,14 @@ EndSection\n\
         if let Some(content_chirho) = auth_content_chirho {
             return create_memory_backed_fd_chirho(&pathname_chirho, content_chirho, flags_chirho);
         }
+    }
+
+    // Dynamic synthetic file: /tmp/.X0-lock — appears after Xorg creates the X11 socket.
+    // The shell profile checks `test -f /tmp/.X0-lock` to decide whether to start xterm.
+    if pathname_chirho == "/tmp/.X0-lock"
+        && crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
+    {
+        return create_memory_backed_fd_chirho(&pathname_chirho, b"X11 ready\n", flags_chirho);
     }
 
     // Block protocol.txt to test if its parsing causes heap corruption
