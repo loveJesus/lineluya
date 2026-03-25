@@ -2592,11 +2592,10 @@ pub fn init_kernel_symbols_chirho() {
         // Timer / scheduling
         "init_timer_key", "timer_reduce", "timer_shutdown_sync",
         "__SCT__preempt_schedule", "__SCT__might_resched", "__SCT__cond_resched",
-        "pcpu_hot", "const_pcpu_hot",
         "__percpu_down_read", "__rcu_read_lock", "__rcu_read_unlock",
         "rcuwait_wake_up",
         // Module / misc
-        "__module_get", "capable", "latent_entropy",
+        "__module_get", "capable",
         "kthread_associate_blkcg", "cgroup_get_e_css",
         "__list_add_valid_or_report", "__list_del_entry_valid_or_report",
         "rb_erase", "rb_insert_color", "sprintf",
@@ -2615,6 +2614,25 @@ pub fn init_kernel_symbols_chirho() {
     // Real loop.ko init_module stubs — each function has a proper C ABI
     // implementation above so that loop.ko's init path succeeds.
     // -----------------------------------------------------------------------
+
+    // pcpu_hot / const_pcpu_hot — per-CPU data variable (NOT a function).
+    // Module code reads struct fields from this. Must be a zeroed data area.
+    static FAKE_PCPU_HOT_CHIRHO: [u8; 256] = [0u8; 256];
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("pcpu_hot"),
+        FAKE_PCPU_HOT_CHIRHO.as_ptr() as u64,
+    );
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("const_pcpu_hot"),
+        FAKE_PCPU_HOT_CHIRHO.as_ptr() as u64,
+    );
+
+    // latent_entropy — also a data variable, not a function
+    static FAKE_LATENT_ENTROPY_CHIRHO: u64 = 0xDEADBEEFCAFEBABE;
+    KernelSymbolTableChirho::register_symbol_chirho(
+        String::from("latent_entropy"),
+        core::ptr::addr_of!(FAKE_LATENT_ENTROPY_CHIRHO) as u64,
+    );
 
     // 1. misc_register
     KernelSymbolTableChirho::register_symbol_chirho(
