@@ -1353,6 +1353,10 @@ impl Ext4MountChirho {
             )
             .is_none()
             {
+                crate::serial_println_chirho!(
+                    "[EXT4-DIR-FAIL] dir_ino={} block={}/{} name='{}'",
+                    dir_ino_chirho, blk_idx_chirho, num_blocks_chirho, name_chirho,
+                );
                 continue;
             }
 

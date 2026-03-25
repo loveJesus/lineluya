@@ -1652,7 +1652,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     let wr_pid_chirho = crate::task_chirho::current_task_chirho()
                         .map(|t| t.lock().pid_chirho).unwrap_or(999);
                     // Capture stderr/stdout content from PID 4+
-                    if wr_pid_chirho >= 4 && arg2_chirho > 0 && arg2_chirho <= 256 {
+                    if wr_pid_chirho >= 4 && arg2_chirho > 0 && arg2_chirho <= 512 {
                         let mut preview_chirho = alloc::vec![0u8; arg2_chirho as usize];
                         for i_chirho in 0..arg2_chirho as usize {
                             preview_chirho[i_chirho] = unsafe {
@@ -2638,6 +2638,23 @@ fn sys_writev_chirho(
                 iov_len_chirho,
             )
         } else {
+            // Capture writev content for Xorg debug
+            let wv_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if wv_pid_chirho >= 7 && iov_len_chirho > 0 && iov_len_chirho <= 512 {
+                let mut preview_chirho = alloc::vec![0u8; iov_len_chirho];
+                for j_chirho in 0..iov_len_chirho {
+                    preview_chirho[j_chirho] = unsafe {
+                        core::ptr::read_volatile((iov_base_chirho as *const u8).add(j_chirho))
+                    };
+                }
+                if let Ok(s_chirho) = core::str::from_utf8(&preview_chirho) {
+                    crate::serial_println_chirho!(
+                        "[WRITEV-DATA] pid={} fd={} len={}: '{}'",
+                        wv_pid_chirho, fd_chirho, iov_len_chirho, s_chirho,
+                    );
+                }
+            }
             sys_write_fd_dispatch_chirho(fd_chirho, iov_base_chirho, iov_len_chirho)
         };
         if result_chirho < 0 {

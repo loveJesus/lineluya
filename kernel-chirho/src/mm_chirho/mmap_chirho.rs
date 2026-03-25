@@ -261,6 +261,13 @@ impl MmChirho {
                 // If we allocate real frames here, they waste memory and
                 // interfere with the subsequent MAP_FIXED file-backed mmaps.
                 if prot_chirho == PROT_NONE_CHIRHO {
+                    // For MAP_FIXED PROT_NONE that overlaps existing VMAs
+                    // (e.g. musl's brk reservation), just return success
+                    // without creating a VMA — don't overwrite existing
+                    // protection bits which would block demand-paging.
+                    if is_fixed_chirho && !self.is_region_free_chirho(map_addr_chirho, aligned_len_chirho) {
+                        return Ok(map_addr_chirho);
+                    }
                     let vma_chirho = VmaChirho {
                         start_chirho: map_addr_chirho,
                         end_chirho: map_addr_chirho + aligned_len_chirho,
