@@ -255,6 +255,26 @@ impl MmChirho {
                 // If we allocate real frames here, they waste memory and
                 // interfere with the subsequent MAP_FIXED file-backed mmaps.
                 if prot_chirho == PROT_NONE_CHIRHO {
+                    // For MAP_FIXED PROT_NONE at the brk address: skip VMA
+                    // creation entirely. brk pages are mapped directly in PT
+                    // (no VMA). A PROT_NONE VMA here would block COW fault
+                    // resolution after fork(), causing heap corruption.
+                    if is_fixed_chirho {
+                        // Check if pages are already mapped at this address
+                        let (cr3_check_chirho, _) = x86_64::registers::control::Cr3::read();
+                        let has_pages_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                            cr3_check_chirho.start_address(),
+                            x86_64::VirtAddr::new(map_addr_chirho),
+                        ).map(|pte_ptr_chirho| unsafe {
+                            (*pte_ptr_chirho).flags().contains(
+                                x86_64::structures::paging::PageTableFlags::PRESENT
+                            )
+                        }).unwrap_or(false);
+                        if has_pages_chirho {
+                            // brk pages exist — don't create PROT_NONE VMA
+                            return Ok(map_addr_chirho);
+                        }
+                    }
                     let vma_chirho = VmaChirho {
                         start_chirho: map_addr_chirho,
                         end_chirho: map_addr_chirho + aligned_len_chirho,

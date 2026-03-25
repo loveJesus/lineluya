@@ -556,6 +556,8 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
             "  echo '  Lineluya v7.0 — For God so loved the world - John 3:16'\n",
             "  echo '  SSH: ssh -p 2222 root@localhost'\n",
             "  echo ''\n",
+            "  /usr/libexec/Xorg :0 vt7 -noreset > /tmp/xorg-log-chirho.txt 2>&1 &\n",
+            "  echo '  Xorg started in background'\n",
             "fi\n",
         );
         tmpfs_chirho::write_tmpfs_file_chirho(
