@@ -1247,11 +1247,9 @@ pub fn sys_openat_chirho(
                 "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
                 "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
                 "/usr/libexec/Xorg :0 vt7 -noreset 2>/dev/null &\n",
-                "DISPLAY=:0 xterm 2>/dev/null &\n",
                 "echo '  Lineluya v8.0 — Hallelujah'\n",
                 "echo '  SSH: ssh -p 2222 root@localhost'\n",
                 "echo '  VNC: port 5901'\n",
-                "echo '  X11: DISPLAY=:0 xterm (after Xorg ready)'\n",
             ).as_bytes()),
             // Xorg config: fbdev driver, no BusID (matches old probe BUS_NONE entity)
             "/etc/X11/xorg.conf" => Some(b"\
