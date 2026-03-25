@@ -255,9 +255,10 @@ impl MmChirho {
                 // If we allocate real frames here, they waste memory and
                 // interfere with the subsequent MAP_FIXED file-backed mmaps.
                 if prot_chirho == PROT_NONE_CHIRHO {
-                    // MAP_FIXED PROT_NONE at brk address: FAIL so musl falls
-                    // back to mmap-based heap expansion instead of trying to
-                    // reserve brk space (which corrupts malloc metadata).
+                    // MAP_FIXED PROT_NONE at brk address: return success
+                    // without creating VMA (brk pages are directly mapped
+                    // in PT). This lets musl's __expand_heap think the
+                    // reservation succeeded, avoiding mmap-based fallback.
                     if is_fixed_chirho {
                         let (cr3_pn_chirho, _) = x86_64::registers::control::Cr3::read();
                         let has_page_chirho = crate::pagetable_chirho::walk_page_table_chirho(
@@ -269,7 +270,7 @@ impl MmChirho {
                             )
                         }).unwrap_or(false);
                         if has_page_chirho {
-                            return Err(-crate::syscall_chirho::ENOMEM_CHIRHO);
+                            return Ok(map_addr_chirho);
                         }
                     }
                     let vma_chirho = VmaChirho {
