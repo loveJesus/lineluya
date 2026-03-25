@@ -679,10 +679,46 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 // For Xorg crash debugging: halt ONLY for PID >= 5
                 // (skip boot processes that also hit NULL deref)
                 // GDB halt for Xorg crash debugging (enable with -s flag):
-                // if user_fault_pid_chirho >= 4 && fault_addr_chirho.as_u64() == 0x2b33d {
-                //     crate::serial_println_chirho!("[PF] XORG CRASH HALT");
-                //     loop { unsafe { core::arch::asm!("hlt"); } }
-                // }
+                if user_fault_pid_chirho >= 4 && fault_addr_chirho.as_u64() == 0x2b33d {
+                    // Dump user stack BEFORE halting (kernel can read user pages
+                    // via physical memory offset since user PT is still in CR3)
+                    let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
+                    let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
+                    crate::serial_println_chirho!(
+                        "[XORG-CRASH] User RIP={:#x} RSP={:#x} cr2={:#x}",
+                        user_rip_chirho, user_rsp_chirho, fault_addr_chirho.as_u64(),
+                    );
+                    // Read user stack — pages are mapped in the process's PT
+                    // Use the physical memory offset to access via kernel VA
+                    let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+                    // Walk the process PT to find the physical frame for user RSP
+                    let (cr3_crash_chirho, _) = x86_64::registers::control::Cr3::read();
+                    if let Some(pte_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+                        cr3_crash_chirho.start_address(),
+                        x86_64::VirtAddr::new(user_rsp_chirho & !0xFFF),
+                    ) {
+                        let phys_chirho = unsafe { (*pte_chirho).addr().as_u64() };
+                        let page_offset_chirho = user_rsp_chirho & 0xFFF;
+                        let kernel_va_chirho = phys_chirho + phys_off_chirho + page_offset_chirho;
+                        crate::serial_println_chirho!(
+                            "[XORG-CRASH] User stack phys={:#x} kernel_va={:#x}",
+                            phys_chirho + page_offset_chirho, kernel_va_chirho,
+                        );
+                        // Dump 20 qwords from user stack
+                        for i_chirho in 0..20u64 {
+                            let addr_chirho = kernel_va_chirho + i_chirho * 8;
+                            let val_chirho = unsafe { core::ptr::read_volatile(addr_chirho as *const u64) };
+                            if val_chirho != 0 {
+                                crate::serial_println_chirho!(
+                                    "[XORG-CRASH]   [rsp+{:#04x}] = {:#018x}",
+                                    i_chirho * 8, val_chirho,
+                                );
+                            }
+                        }
+                    }
+                    crate::serial_println_chirho!("[XORG-CRASH] HALT — attach GDB :1234");
+                    loop { unsafe { core::arch::asm!("hlt"); } }
+                }
                 // Kill the process with SIGSEGV
                 if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
                     task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
