@@ -1767,15 +1767,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         },
         SYS_IOCTL_CHIRHO => {
             let ioctl_result_chirho = sys_ioctl_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho);
-            // Log failing ioctls for Xorg debugging
-            if ioctl_result_chirho < 0 {
+            // Log ALL ioctls for Xorg fb debugging
+            {
                 let ioctl_pid_chirho = crate::task_chirho::current_task_chirho()
                     .map(|t| t.lock().pid_chirho).unwrap_or(0);
                 if ioctl_pid_chirho >= 8 {
-                    crate::serial_println_chirho!(
-                        "[IOCTL-FAIL] pid={} fd={} cmd={:#x} => {}",
-                        ioctl_pid_chirho, arg0_chirho, arg1_chirho, ioctl_result_chirho,
-                    );
+                    // Log fb-related ioctls (0x46xx) and failures
+                    if (arg1_chirho & 0xFF00) == 0x4600 || ioctl_result_chirho < 0 {
+                        crate::serial_println_chirho!(
+                            "[IOCTL] pid={} fd={} cmd={:#x} => {}",
+                            ioctl_pid_chirho, arg0_chirho, arg1_chirho, ioctl_result_chirho,
+                        );
+                    }
                 }
             }
             ioctl_result_chirho
@@ -5848,6 +5851,13 @@ fn fill_stat_from_inode_chirho(
     st_chirho.st_atime_chirho = inode_chirho.atime_chirho;
     st_chirho.st_mtime_chirho = inode_chirho.mtime_chirho;
     st_chirho.st_ctime_chirho = inode_chirho.ctime_chirho;
+    // Set st_rdev for device nodes (fbdev driver checks major/minor)
+    if let Some(ref data_chirho) = inode_chirho.fs_data_chirho {
+        if let Some(dev_chirho) = data_chirho.downcast_ref::<crate::devtmpfs_chirho::DevNodeDataChirho>() {
+            st_chirho.st_rdev_chirho = ((dev_chirho.major_chirho as u64) << 8)
+                | (dev_chirho.minor_chirho as u64);
+        }
+    }
 }
 
 /// `fstat(2)` implementation.
