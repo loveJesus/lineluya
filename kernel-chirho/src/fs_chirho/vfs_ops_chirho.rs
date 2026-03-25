@@ -1235,7 +1235,39 @@ pub fn sys_openat_chirho(
             "/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n"),
             "/etc/shadow" => Some(b"root::0:0:99999:7:::\n"),
             "/etc/ld-musl-x86_64.path" => Some(b"/tmp/lib-chirho\n/lib\n/usr/lib\n"),
-            // ld-musl-x86_64.path handled as synthetic (see above)
+            // Full /etc/profile — synthetic overrides ext4 version.
+            // dropbear & Xorg auto-start; idempotent (fail if already running)
+            "/etc/profile" => Some(concat!(
+                "export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\n",
+                "export PS1='lineluya# '\n",
+                "export HOME=/root\n",
+                "export TERM=linux\n",
+                "export DISPLAY=:0\n",
+                "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
+                "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
+                "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
+                "echo '  Lineluya v7.0 — Hallelujah'\n",
+                "echo '  SSH: ssh -p 2222 root@localhost'\n",
+                "echo '  VNC: port 5901'\n",
+            ).as_bytes()),
+            // Xorg config: fbdev driver on /dev/fb0, no PCI matching needed
+            "/etc/X11/xorg.conf" => Some(b"\
+Section \"Device\"\n\
+    Identifier \"fb0-chirho\"\n\
+    Driver \"fbdev\"\n\
+    Option \"fbdev\" \"/dev/fb0\"\n\
+EndSection\n\
+\n\
+Section \"Screen\"\n\
+    Identifier \"screen-chirho\"\n\
+    Device \"fb0-chirho\"\n\
+EndSection\n\
+\n\
+Section \"ServerLayout\"\n\
+    Identifier \"layout-chirho\"\n\
+    Screen \"screen-chirho\"\n\
+EndSection\n\
+"),
             _ => None,
         };
         if let Some(content_chirho) = auth_content_chirho {

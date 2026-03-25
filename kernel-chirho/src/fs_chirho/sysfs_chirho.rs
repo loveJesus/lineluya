@@ -318,8 +318,9 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     {
         let pci_dentry_chirho = make_dir_dentry_chirho("pci", Some(Arc::clone(&bus_dentry_chirho)));
         let pci_devices_chirho = make_dir_dentry_chirho("devices", Some(Arc::clone(&pci_dentry_chirho)));
-        // Add a fake VGA PCI device (0000:00:02.0) for Xorg's PCI probe
-        {
+        // PCI device removed — Xorg falls back to fbdev old probe
+        // which uses xf86ClaimFbSlot without PCI.
+        if false {
             let vga_dev_chirho = make_dir_dentry_chirho("0000:00:02.0", Some(Arc::clone(&pci_devices_chirho)));
             // libpciaccess reads these files to enumerate PCI devices
             add_file_dentry_chirho(&vga_dev_chirho, "vendor", b"0x1234\n"); // QEMU VGA

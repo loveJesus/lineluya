@@ -292,6 +292,66 @@ impl FbConsoleChirho {
         self.row_chirho = 0;
     }
 
+    /// Draw a demo screen with colored bars, title, and John 3:16.
+    pub fn draw_demo_chirho(&mut self) {
+        if !self.ready_chirho { return; }
+        let w_chirho = self.width_chirho;
+        let h_chirho = self.height_chirho;
+        // Rainbow color bars (top 60% of screen)
+        let colors_chirho: [(u8,u8,u8); 8] = [
+            (0,0,0),       // black
+            (200,0,0),     // red
+            (0,180,0),     // green
+            (200,200,0),   // yellow
+            (0,0,200),     // blue
+            (200,0,200),   // magenta
+            (0,200,200),   // cyan
+            (255,255,255), // white
+        ];
+        let bar_h_chirho = (h_chirho * 6 / 10) / 8;
+        for (i_chirho, &(r_chirho, g_chirho, b_chirho)) in colors_chirho.iter().enumerate() {
+            let y0_chirho = i_chirho * bar_h_chirho;
+            for y_chirho in y0_chirho..(y0_chirho + bar_h_chirho) {
+                for x_chirho in 0..w_chirho {
+                    self.put_pixel_chirho(x_chirho, y_chirho, r_chirho, g_chirho, b_chirho);
+                }
+            }
+        }
+        // Dark blue background for text area (bottom 40%)
+        let text_y0_chirho = 8 * bar_h_chirho;
+        for y_chirho in text_y0_chirho..h_chirho {
+            for x_chirho in 0..w_chirho {
+                self.put_pixel_chirho(x_chirho, y_chirho, 10, 10, 60);
+            }
+        }
+        // Position cursor in text area and write title
+        self.bg_chirho = (10, 10, 60);
+        self.fg_chirho = (255, 255, 100);
+        self.row_chirho = text_y0_chirho / GLYPH_H_CHIRHO + 1;
+        self.col_chirho = 5;
+        self.write_str_chirho("LINELUYA v8.0 -- Linux Kernel in Rust");
+        self.fg_chirho = (180, 220, 255);
+        self.row_chirho += 2;
+        self.col_chirho = 5;
+        self.write_str_chirho("For God so loved the world that he gave his only");
+        self.row_chirho += 1;
+        self.col_chirho = 5;
+        self.write_str_chirho("begotten Son, that whoever believes in him should");
+        self.row_chirho += 1;
+        self.col_chirho = 5;
+        self.write_str_chirho("not perish but have eternal life. - John 3:16");
+        self.fg_chirho = (100, 255, 100);
+        self.row_chirho += 2;
+        self.col_chirho = 5;
+        self.write_str_chirho("Hallelujah! 90+ syscalls | ext4 | TCP/SSH | VirtIO");
+        self.row_chirho += 1;
+        self.col_chirho = 5;
+        self.write_str_chirho("Framebuffer 1280x800 | VNC :1 (port 5901)");
+        // Restore defaults
+        self.fg_chirho = (255, 255, 255);
+        self.bg_chirho = (0, 0, 0);
+    }
+
     /// Write a single pixel.
     #[inline]
     fn put_pixel_chirho(&self, x_chirho: usize, y_chirho: usize, r_chirho: u8, g_chirho: u8, b_chirho: u8) {

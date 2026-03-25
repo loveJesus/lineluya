@@ -3583,7 +3583,10 @@ fn sys_ioctl_real_chirho(
             );
             let ioctl_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if ioctl_pid_chirho >= 8 && (cmd_chirho & 0xFF00) == 0x5600 {
+            // Log FB ioctls (0x46xx) and VT ioctls (0x56xx) for Xorg PIDs
+            if ioctl_pid_chirho >= 8 && ((cmd_chirho & 0xFF00) == 0x4600
+                || (cmd_chirho & 0xFF00) == 0x5600
+                || result_chirho.is_err()) {
                 crate::serial_println_chirho!(
                     "[IOCTL-VFS] pid={} fd={} cmd={:#x} result={:?}",
                     ioctl_pid_chirho, fd_chirho, cmd_chirho, result_chirho,
