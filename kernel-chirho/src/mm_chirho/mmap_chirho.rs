@@ -579,11 +579,14 @@ impl MmChirho {
     ) -> Result<u64, i64> {
         use crate::syscall_chirho::ENOMEM_CHIRHO;
 
-        if self.next_mmap_addr_chirho < len_chirho {
+        // Add a 4-page guard gap between allocations to prevent
+        // musl's munmap of trailing space from affecting adjacent libs.
+        let guarded_len_chirho = len_chirho + 4 * PAGE_SIZE_CHIRHO;
+        if self.next_mmap_addr_chirho < guarded_len_chirho {
             return Err(-ENOMEM_CHIRHO);
         }
 
-        let addr_chirho = self.next_mmap_addr_chirho - len_chirho;
+        let addr_chirho = self.next_mmap_addr_chirho - guarded_len_chirho;
         // Page-align downward.
         let addr_chirho = addr_chirho & !(PAGE_SIZE_CHIRHO - 1);
 
