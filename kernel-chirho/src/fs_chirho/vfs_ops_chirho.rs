@@ -1243,6 +1243,11 @@ pub fn sys_openat_chirho(
         }
     }
 
+    // Block protocol.txt to test if its parsing causes heap corruption
+    if pathname_chirho == "/usr/lib/xorg/protocol.txt" {
+        return -ENOENT_CHIRHO;
+    }
+
     // Special case: /dev/pts/N -- PTY slave devices are created dynamically
     // and don't exist in the VFS tree.  We detect this pattern and create
     // the slave file directly.
@@ -1823,27 +1828,8 @@ pub fn sys_read_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: 
                         return -EFAULT_CHIRHO;
                     }
                 }
-                // Log reads that SHOULD be ELF headers but aren't
-                {
-                    let rd_pid_chirho = crate::task_chirho::current_task_chirho()
-                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                    // musl reads 960 bytes at pos 0 for ELF header check
-                    if rd_pid_chirho >= 7 && n_chirho > 0
-                        && (kernel_buf_chirho[0] != 0x7f || n_chirho < 64)
-                        && capped_count_chirho >= 896
-                    {
-                        let fd_path_chirho = crate::fs_chirho::get_fd_path_chirho(fd_chirho)
-                            .unwrap_or_else(|| alloc::string::String::from("?"));
-                        crate::serial_println_chirho!(
-                            "[READ-BAD-ELF] pid={} fd={} path='{}' req={} got={} first4=[{:#04x},{:#04x},{:#04x},{:#04x}]",
-                            rd_pid_chirho, fd_chirho, fd_path_chirho, capped_count_chirho, n_chirho,
-                            kernel_buf_chirho[0], kernel_buf_chirho[1],
-                            kernel_buf_chirho[2], kernel_buf_chirho[3],
-                        );
-                    }
-                }
-                // Log ELF header reads for library debugging
-                if n_chirho >= 64 && kernel_buf_chirho[0] == 0x7f && kernel_buf_chirho[1] == b'E' {
+                // ELF header read logging (disabled — was causing kernel heap pressure)
+                if false && n_chirho >= 64 && kernel_buf_chirho[0] == 0x7f && kernel_buf_chirho[1] == b'E' {
                     let rd_pid_chirho = crate::task_chirho::current_task_chirho()
                         .map(|t| t.lock().pid_chirho).unwrap_or(0);
                     if rd_pid_chirho >= 7 {
