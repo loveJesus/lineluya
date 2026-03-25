@@ -328,11 +328,32 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         fb_println_chirho!("[OK] Framebuffer console initialized ({}x{}, {}bpp)",
             fb_info_chirho.width, fb_info_chirho.height, fb_info_chirho.bytes_per_pixel * 8);
 
-        // Configure /dev/fb0 device with actual framebuffer parameters
-        // The physical address is derived from the virtual buffer pointer
-        // and the physical memory offset.
+        // Configure /dev/fb0 device with actual framebuffer parameters.
+        // Walk the boot page table to find the real physical address of
+        // the framebuffer (the bootloader may map it at an arbitrary VA).
         let fb_virt_addr_chirho = fb_buf_chirho.as_ptr() as u64;
-        let fb_phys_addr_chirho = fb_virt_addr_chirho.wrapping_sub(physical_memory_offset_chirho);
+        let fb_phys_addr_chirho = {
+            let (cr3_frame_chirho, _) = x86_64::registers::control::Cr3::read();
+            let pml4_phys_chirho = cr3_frame_chirho.start_address();
+            let pte_ptr_chirho = pagetable_chirho::walk_page_table_chirho(
+                pml4_phys_chirho,
+                x86_64::VirtAddr::new(fb_virt_addr_chirho),
+            );
+            match pte_ptr_chirho {
+                Some(pte_chirho) => {
+                    let entry_chirho = unsafe { (*pte_chirho).clone() };
+                    let frame_phys_chirho = entry_chirho.addr().as_u64();
+                    let page_offset_chirho = fb_virt_addr_chirho & 0xFFF;
+                    frame_phys_chirho + page_offset_chirho
+                }
+                None => {
+                    // Fallback: try subtracting phys_offset
+                    serial_println_chirho!("[WARN] Could not walk PT for fb, using offset math");
+                    fb_virt_addr_chirho.wrapping_sub(physical_memory_offset_chirho)
+                }
+            }
+        };
+        serial_println_chirho!("[FB] virt={:#x} → phys={:#x}", fb_virt_addr_chirho, fb_phys_addr_chirho);
         fb_device_chirho::set_fb_params_chirho(
             fb_phys_addr_chirho,
             fb_info_chirho.width as u32,

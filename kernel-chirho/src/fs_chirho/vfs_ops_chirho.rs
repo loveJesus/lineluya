@@ -1251,12 +1251,13 @@ pub fn sys_openat_chirho(
                 "echo '  SSH: ssh -p 2222 root@localhost'\n",
                 "echo '  VNC: port 5901'\n",
             ).as_bytes()),
-            // Xorg config: fbdev driver on /dev/fb0, no PCI matching needed
+            // Xorg config: fbdev driver, no BusID (matches old probe BUS_NONE entity)
             "/etc/X11/xorg.conf" => Some(b"\
 Section \"Device\"\n\
     Identifier \"fb0-chirho\"\n\
     Driver \"fbdev\"\n\
     Option \"fbdev\" \"/dev/fb0\"\n\
+    Option \"ShadowFB\" \"false\"\n\
 EndSection\n\
 \n\
 Section \"Screen\"\n\

@@ -230,22 +230,43 @@ impl MmChirho {
         // Dispatch based on the mapping kind.
         match kind_chirho {
             MappingKindChirho::FramebufferChirho => {
-                // Map the physical framebuffer pages directly instead of
-                // allocating new anonymous pages.
+                // Map physical framebuffer pages into user-space page tables.
+                // Xorg's fbdev driver mmaps /dev/fb0 to write pixels directly.
                 let fb_phys_chirho = crate::fb_device_chirho::fb_phys_addr_chirho();
-                let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-                // The framebuffer is already accessible via phys_offset + fb_phys.
-                // Return that address so userspace can write pixels directly.
-                let fb_virt_chirho = fb_phys_chirho + phys_offset_chirho;
-                // Record the VMA but don't allocate new pages.
+                let num_pages_chirho = (aligned_len_chirho + 0xFFF) / 0x1000;
+                use x86_64::structures::paging::PageTableFlags;
+                let user_flags_chirho = PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE;
+                // Validate fb physical address before mapping
+                if fb_phys_chirho == 0 || fb_phys_chirho >= (1u64 << 52) {
+                    crate::serial_println_chirho!(
+                        "[MMAP-FB] invalid fb_phys={:#x}, skipping", fb_phys_chirho
+                    );
+                    return Ok(map_addr_chirho);
+                }
+                let (cr3_frame_chirho, _) = x86_64::registers::control::Cr3::read();
+                let pml4_phys_chirho = cr3_frame_chirho.start_address();
+                for i_chirho in 0..num_pages_chirho as u64 {
+                    let vaddr_chirho = map_addr_chirho + i_chirho * 0x1000;
+                    let paddr_chirho = fb_phys_chirho + i_chirho * 0x1000;
+                    if paddr_chirho >= (1u64 << 52) { break; }
+                    let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                        pml4_phys_chirho, vaddr_chirho, paddr_chirho, user_flags_chirho,
+                    );
+                }
+                crate::serial_println_chirho!(
+                    "[MMAP-FB] mapped {}KB fb phys={:#x} → user={:#x}",
+                    aligned_len_chirho / 1024, fb_phys_chirho, map_addr_chirho,
+                );
                 let vma_chirho = VmaChirho {
-                    start_chirho: fb_virt_chirho,
-                    end_chirho: fb_virt_chirho + aligned_len_chirho,
+                    start_chirho: map_addr_chirho,
+                    end_chirho: map_addr_chirho + aligned_len_chirho,
                     prot_chirho,
                     flags_chirho,
                 };
                 self.insert_vma_chirho(vma_chirho);
-                Ok(fb_virt_chirho)
+                Ok(map_addr_chirho)
             }
 
             MappingKindChirho::AnonymousChirho => {

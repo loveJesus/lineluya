@@ -531,9 +531,18 @@ pub fn set_fb_fd_chirho(fd_chirho: u64) {
 }
 
 /// Check if a given fd is the framebuffer device (for mmap special-casing).
+/// Looks up the fd's inode to check major=29, minor=0.
 pub fn is_fb_fd_chirho(fd_chirho: u64) -> bool {
-    let stored_chirho = FB_OPEN_FD_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
-    stored_chirho >= 0 && stored_chirho == fd_chirho as i64
+    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        let file_guard_chirho = file_arc_chirho.lock();
+        let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+        if let Some(ref data_chirho) = inode_guard_chirho.fs_data_chirho {
+            if let Some(dev_chirho) = data_chirho.downcast_ref::<crate::devtmpfs_chirho::DevNodeDataChirho>() {
+                return dev_chirho.major_chirho == 29 && dev_chirho.minor_chirho == 0;
+            }
+        }
+    }
+    false
 }
 
 /// Get the framebuffer total size for mmap support.

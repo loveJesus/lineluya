@@ -318,9 +318,9 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     {
         let pci_dentry_chirho = make_dir_dentry_chirho("pci", Some(Arc::clone(&bus_dentry_chirho)));
         let pci_devices_chirho = make_dir_dentry_chirho("devices", Some(Arc::clone(&pci_dentry_chirho)));
-        // PCI device removed — Xorg falls back to fbdev old probe
-        // which uses xf86ClaimFbSlot without PCI.
-        if false {
+        // PCI VGA device — Xorg needs a primary bus/device to create
+        // screen entities. BusID "PCI:0:2:0" in xorg.conf binds it to fbdev.
+        {
             let vga_dev_chirho = make_dir_dentry_chirho("0000:00:02.0", Some(Arc::clone(&pci_devices_chirho)));
             // libpciaccess reads these files to enumerate PCI devices
             add_file_dentry_chirho(&vga_dev_chirho, "vendor", b"0x1234\n"); // QEMU VGA
@@ -360,6 +360,14 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
                 fb_phys_chirho, fb_phys_chirho + fb_size_chirho as u64 - 1, 0x00042200u64,
             );
             add_file_dentry_chirho(&vga_dev_chirho, "resource", resource_str_chirho.as_bytes());
+            // graphics/fb0 — Xorg's fbdevhw looks for this sysfs link to
+            // associate the PCI VGA device with the framebuffer (/dev/fb0).
+            let graphics_sub_chirho = make_dir_dentry_chirho("graphics", Some(Arc::clone(&vga_dev_chirho)));
+            let fb0_sub_chirho = make_dir_dentry_chirho("fb0", Some(Arc::clone(&graphics_sub_chirho)));
+            add_file_dentry_chirho(&fb0_sub_chirho, "dev", b"29:0\n");
+            add_file_dentry_chirho(&fb0_sub_chirho, "name", b"EFI VGA\n");
+            register_sysfs_child_chirho(&graphics_sub_chirho, &fb0_sub_chirho);
+            register_sysfs_child_chirho(&vga_dev_chirho, &graphics_sub_chirho);
             register_sysfs_child_chirho(&pci_devices_chirho, &vga_dev_chirho);
         }
         register_sysfs_child_chirho(&pci_dentry_chirho, &pci_devices_chirho);
