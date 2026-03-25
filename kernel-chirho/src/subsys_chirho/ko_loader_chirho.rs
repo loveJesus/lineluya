@@ -432,6 +432,66 @@ const MODULE_ARENA_HIGH_BASE_CHIRHO: u64 = 0xFFFF_FFFF_C010_0000;
 static MODULE_ARENA_HIGH_READY_CHIRHO: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// Next available offset in the thunk page (first page of module arena).
+/// Each thunk is 12 bytes: movabs rax, <addr>; jmp rax.
+static THUNK_NEXT_OFFSET_CHIRHO: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Thunk cache: maps kernel address → thunk address (avoid duplicates).
+static THUNK_CACHE_CHIRHO: Mutex<alloc::vec::Vec<(u64, u64)>> =
+    Mutex::new(alloc::vec::Vec::new());
+
+/// Get or create a thunk at high-canonical address for a kernel symbol.
+/// The thunk is: movabs rax, <kernel_addr>; jmp rax (12 bytes).
+fn get_or_create_thunk_chirho(kernel_addr_chirho: u64) -> u64 {
+    // Check cache first
+    {
+        let cache_chirho = THUNK_CACHE_CHIRHO.lock();
+        for (ka_chirho, ta_chirho) in cache_chirho.iter() {
+            if *ka_chirho == kernel_addr_chirho {
+                return *ta_chirho;
+            }
+        }
+    }
+
+    // Allocate 12 bytes in the thunk page
+    let offset_chirho = THUNK_NEXT_OFFSET_CHIRHO.fetch_add(12, core::sync::atomic::Ordering::SeqCst);
+    if offset_chirho >= 4096 {
+        // Thunk page full — return kernel addr as fallback
+        return kernel_addr_chirho;
+    }
+
+    let thunk_virt_chirho = MODULE_ARENA_HIGH_BASE_CHIRHO + offset_chirho;
+    // The thunk page is mapped to the same physical frame as BSS arena start.
+    // Write the thunk via the BSS address (which is the same physical memory).
+    let bss_base_chirho = unsafe {
+        core::ptr::addr_of_mut!(MODULE_IMAGE_ARENA_STORAGE_CHIRHO.bytes_chirho) as *mut u8
+    };
+    let thunk_ptr_chirho = unsafe { bss_base_chirho.add(offset_chirho as usize) };
+
+    // movabs rax, <kernel_addr>  = 0x48 0xB8 <8 bytes LE>
+    // jmp rax                    = 0xFF 0xE0
+    unsafe {
+        *thunk_ptr_chirho.add(0) = 0x48; // REX.W
+        *thunk_ptr_chirho.add(1) = 0xB8; // MOV RAX, imm64
+        core::ptr::copy_nonoverlapping(
+            &kernel_addr_chirho as *const u64 as *const u8,
+            thunk_ptr_chirho.add(2),
+            8,
+        );
+        *thunk_ptr_chirho.add(10) = 0xFF; // JMP
+        *thunk_ptr_chirho.add(11) = 0xE0; // RAX
+    }
+
+    // Cache it
+    {
+        let mut cache_chirho = THUNK_CACHE_CHIRHO.lock();
+        cache_chirho.push((kernel_addr_chirho, thunk_virt_chirho));
+    }
+
+    thunk_virt_chirho
+}
+
 /// Map BSS module arena to high-canonical addresses using raw page table ops.
 pub fn init_module_arena_mapping_chirho() {
     let bss_base_chirho = unsafe {
@@ -536,20 +596,22 @@ pub fn init_module_arena_mapping_chirho() {
     );
 }
 
+/// Offset to skip the first page (reserved for kernel symbol thunks).
+const THUNK_PAGE_SIZE_CHIRHO: usize = 4096;
+
 unsafe fn module_image_arena_slot_ptr_chirho(slot_index_chirho: usize) -> *mut u8 {
     // If high-canonical mapping is ready, return the high address.
-    // This makes R_X86_64_32S relocations work (0xC0xxxxxx fits in
-    // sign-extended 32 bits). The high mapping points to the SAME
-    // physical frames as the BSS, so reads/writes are equivalent.
+    // Skip first page (reserved for kernel symbol thunks).
     if MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
         let high_addr_chirho = MODULE_ARENA_HIGH_BASE_CHIRHO
+            + THUNK_PAGE_SIZE_CHIRHO as u64
             + (slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO) as u64;
         return high_addr_chirho as *mut u8;
     }
-    // Fallback: BSS pointer (R_X86_64_32S overflows, init_module skipped)
+    // Fallback: BSS pointer (skip thunk page for consistency)
     let base_chirho =
         core::ptr::addr_of_mut!(MODULE_IMAGE_ARENA_STORAGE_CHIRHO.bytes_chirho) as *mut u8;
-    unsafe { base_chirho.add(slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO) }
+    unsafe { base_chirho.add(THUNK_PAGE_SIZE_CHIRHO + slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO) }
 }
 
 fn allocate_module_image_slot_chirho(
@@ -2019,16 +2081,25 @@ impl KernelSymbolTableChirho {
     /// Symbols with address 0 are treated as "not yet resolved" and return
     /// `None` — a future phase will populate real addresses at boot.
     pub fn lookup_symbol_chirho(name_chirho: &str) -> Option<u64> {
+        let raw_addr_chirho = Self::lookup_raw_symbol_chirho(name_chirho)?;
+        // If high-canonical module arena is active, create a thunk at
+        // a high-canonical address that trampolines to the kernel stub.
+        // This makes PLT32 relocations work (thunk is within ±2GB).
+        if MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
+            return Some(get_or_create_thunk_chirho(raw_addr_chirho));
+        }
+        Some(raw_addr_chirho)
+    }
+
+    fn lookup_raw_symbol_chirho(name_chirho: &str) -> Option<u64> {
         for entry_chirho in KERNEL_SYMBOLS_CHIRHO.iter() {
             if entry_chirho.name_chirho == name_chirho {
                 if entry_chirho.addr_chirho != 0 {
                     return Some(entry_chirho.addr_chirho);
                 }
-                // Address not yet resolved — fall through to dynamic table.
             }
         }
 
-        // Check dynamically registered symbols.
         let dynamic_chirho = DYNAMIC_SYMBOLS_CHIRHO.lock();
         for (sym_name_chirho, sym_addr_chirho) in dynamic_chirho.iter() {
             if sym_name_chirho.as_str() == name_chirho {
