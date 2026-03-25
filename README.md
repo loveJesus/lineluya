@@ -44,64 +44,50 @@ Lineluya is an ambitious, ground-up rewrite of the Linux kernel in Rust. It aims
 | **Modern Design** | Built from scratch with modern OS research (EEVDF scheduler, framekernel patterns from Asterinas) |
 | **For Glory** | Every file begins with John 3:16. This is worship in code. |
 
-### Current Status: v3.4.0 — "Clearing the Land"
+### Current Status: v7.0 — "Hallelujah X11 Loads"
 
-![Lineluya running sqlite3, Python, Dropbear, apk](docs-chirho/screenshot-demo-chirho.png)
-
-Lineluya boots via UEFI in QEMU and runs **real Alpine Linux x86_64 programs** with **real fork() + preemptive scheduling**, **per-process page tables**, **ext4 read+write**, **TCP networking**, and **shell file I/O**:
+Lineluya boots via UEFI in QEMU, runs **real Alpine Linux x86_64 programs** over **SSH**, loads **X.Org Server** and **XTerm**, plays **audio**, writes to the **framebuffer**, and loads **real Linux .ko kernel modules** with `init_module` execution:
 
 ```
-lineluya# uname -a
-Lineluya lineluya 0.1.0 #1 SMP Lineluya 0.1.0 x86_64 Linux
+$ ssh root@localhost -p 2222 "uname -a"
+Lineluya lineluya 0.1.0 #1 SMP Lineluya 0.1.0 x86_64 GNU/Linux
 
-lineluya# echo "Praise Jesus" > /root/praise_chirho.txt
-lineluya# cat /root/praise_chirho.txt
-Praise Jesus
+$ ssh root@localhost -p 2222 "/usr/libexec/Xorg -version 2>&1 | head -2"
+X.Org X Server 1.21.1.21
 
-lineluya# sqlite3 :memory: "SELECT 316, 42+1;"
-316|43
+$ ssh root@localhost -p 2222 "xterm -version"
+XTerm(403)
 
-lineluya# python3 --version
-Python 3.12.12
+$ ssh root@localhost -p 2222 "printf '\xff\x7f' > /dev/dsp && echo OK"
+OK
 
-lineluya# dropbear -V
-Dropbear v2025.88
+$ ssh root@localhost -p 2222 "insmod /lib/modules/loop.ko; echo EXIT=$?"
+EXIT=0
 
-lineluya# id
-uid=0(root) gid=0(root)
-
-lineluya# date
-Sun Mar 15 00:00:00 UTC 2026
-
-lineluya# cat /etc/hostname
-localhost
-lineluya# python3 --version
-Python 3.12.12
-
-lineluya# /usr/sbin/dropbear -V
-Dropbear v2025.88
+$ ssh root@localhost -p 2222 "sqlite3 :memory: 'SELECT 42;'"
+42
 ```
 
 **QEMU-verified capabilities (x86_64):**
 
 | Feature | Status | Details |
 |---------|--------|---------|
-| **SQLite 3.51.2** | Verified | `SELECT 316, 42+1` returns `316\|43` via musl dynamic linker |
-| **Python 3.12.12** | Verified | CPython loads libpython3.12.so, outputs version |
-| **Dropbear SSH v2025.88** | Verified | SSH binary loads, generates ECDSA keys |
-| **apk-tools 2.14.6** | Verified | Alpine package manager prints version |
-| **BusyBox 1.37.0** | Verified | 200+ applets, color `ls`, shell with prompt |
-| **TCP networking** | Verified | 3-way handshake, HTTP GET, stream reassembly (1024B recv) |
-| **DHCP** | Verified | IP=10.0.2.15, GW=10.0.2.2, DNS=10.0.2.3 |
-| **ext4 read + write** | Verified | 512MB rootfs, symlinks, per-block I/O, page cache |
-| **Per-process page tables** | Verified | CR3 switching, lazy migration via page fault handler |
-| **Fault recovery** | Verified | GPF/#UD/page fault in user mode auto-relaunches shell |
-| **.ko module loading** | Verified | ELF relocations, 81 kernel symbol exports |
-| **75+ syscalls** | Working | fork/exec/wait, mmap, pipes, epoll, futex, signals |
-| **VirtIO drivers** | Working | VirtIO-blk (4K blocks) + VirtIO-net (I/O port transport) |
-| **Framebuffer console** | Working | 1280x800 green-on-black via UEFI |
+| **X.Org Server 1.21.1.21** | ✅ Verified | Loads 20+ shared libraries, prints version via SSH |
+| **XTerm(403)** | ✅ Verified | Dynamic musl ELF, reliable across 4 SSH sessions |
+| **insmod loop.ko** | ✅ Verified | `init_module` returns 0, registers loop devices via high-canonical thunks |
+| **Audio (PC speaker)** | ✅ Verified | Intel HDA + AC97 PCI detection, /dev/dsp write |
+| **Framebuffer** | ✅ Verified | /dev/fb0 writable, 1280x800 32bpp BGRA |
+| **SQLite3 3.51.2** | ✅ Verified | Dynamic musl ELF, CREATE/INSERT/SELECT |
+| **Dropbear SSH** | ✅ Verified | 5 consecutive SSH sessions, full KEX+auth pipeline |
+| **AF\_UNIX sockets** | ✅ Verified | Abstract (@prefix) + filesystem paths |
+| **ext4 read + write** | ✅ Verified | 512MB rootfs, symlink following, 8MB block cache |
+| **TCP networking** | ✅ Verified | DHCP, 3-way handshake, full SSH data relay |
+| **.ko module loading** | ✅ Verified | High-canonical arena (0xFFFFFFFFC0100000), R_X86_64_32S resolved, kernel symbol thunks |
+| **90+ syscalls** | Working | fork/exec/wait, mmap/mremap/munmap, pipes, epoll, futex, signals, AF_UNIX, shebang |
+| **VirtIO drivers** | Working | VirtIO-blk (read+write) + VirtIO-net (I/O port transport) |
+| **Framebuffer console** | Working | 1280x800 pixel rendering via UEFI GOP |
 
-**65,000+ lines of Rust** across 75+ kernel modules. Zero `unsafe` in the syscall dispatch path (except the mandatory SYSRET).
+**85,000+ lines of Rust** across 90+ kernel modules.
 
 ### Architecture
 
