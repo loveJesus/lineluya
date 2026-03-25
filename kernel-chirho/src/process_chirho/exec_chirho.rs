@@ -1305,7 +1305,7 @@ pub fn exec_init_chirho() {
     // Pass "sh" so it launches the ash shell.
     let argv_chirho = if elf_data_chirho.len() > 100_000 {
         // BusyBox — launch interactive login shell so /etc/profile runs.
-        // /etc/profile auto-starts dropbear SSH on port 2222.
+        // /etc/profile auto-starts dropbear SSH and Xorg.
         alloc::vec![
             alloc::string::String::from("/bin/sh"),
             alloc::string::String::from("-l"),
