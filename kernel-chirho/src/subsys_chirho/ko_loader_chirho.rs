@@ -3968,8 +3968,15 @@ pub fn sys_init_module_impl_chirho(
         let stored_511_chirho = crate::pagetable_chirho::module_arena_pml4_entry_chirho();
         if stored_511_chirho & 1 != 0 {
             unsafe {
+                // Write PML4[511]
                 *((cur_pml4_chirho + off_chirho) as *mut u64).add(511) = stored_511_chirho;
+                // Full TLB flush: reload CR3 + INVLPG on the target address
                 core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
+                core::arch::asm!(
+                    "invlpg [{}]",
+                    in(reg) MODULE_ARENA_HIGH_BASE_CHIRHO,
+                    options(nostack)
+                );
             }
         }
     }

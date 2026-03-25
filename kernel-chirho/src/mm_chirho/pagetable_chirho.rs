@@ -1283,17 +1283,11 @@ pub fn map_page_raw_chirho(
         if cached_chirho != 0 {
             cached_chirho
         } else {
-            // Allocate fresh PDPT + copy all 512 entries from bootloader's
-            let old_pdpt_chirho = addr_from_entry_chirho(pml4e_chirho);
+            // Allocate completely FRESH PDPT (already zeroed by new_frame).
+            // Do NOT copy bootloader entries — kernel text is at PML4[1],
+            // not PML4[511]. PML4[511] was the bootloader's UEFI mapping
+            // which may have reserved bits that cause RSVD page faults.
             let new_pdpt_chirho = new_frame_chirho()?;
-            // Copy all existing entries (preserves kernel text mapping)
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    (old_pdpt_chirho + phys_off_chirho) as *const u8,
-                    (new_pdpt_chirho + phys_off_chirho) as *mut u8,
-                    4096,
-                );
-            }
             MODULE_PDPT_PHYS_CHIRHO.store(new_pdpt_chirho, Ordering::Relaxed);
             MODULE_ARENA_PDPT_PHYS_CHIRHO.store(new_pdpt_chirho, Ordering::Relaxed);
             // Update PML4 to point to our writable PDPT
