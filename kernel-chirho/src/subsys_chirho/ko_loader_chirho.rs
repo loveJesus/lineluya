@@ -1205,7 +1205,12 @@ pub unsafe extern "C" fn kmalloc_cache_noprof_stub_chirho(
     flags_chirho: u32,
     size_chirho: usize,
 ) -> *mut u8 {
-    unsafe { kmalloc_stub_chirho(size_chirho, flags_chirho) }
+    let ptr_chirho = unsafe { kmalloc_stub_chirho(size_chirho, flags_chirho) };
+    crate::serial_println_chirho!(
+        "[KO] __kmalloc_cache_noprof: size={} flags={:#x} -> {:#x}",
+        size_chirho, flags_chirho, ptr_chirho as u64,
+    );
+    ptr_chirho
 }
 
 /// `krealloc` C ABI shim — resize a previous kmalloc allocation.
