@@ -589,12 +589,6 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         serial_println_chirho!("[INIT] Created /etc/profile (dropbear daemon + shell)");
     }
 
-    // Draw demo screen on framebuffer (visible via VNC)
-    {
-        let mut fb_chirho = crate::fbconsole_chirho::FB_CONSOLE_CHIRHO.lock();
-        fb_chirho.draw_demo_chirho();
-    }
-
     // Load and execute the hello world binary
     serial_println_chirho!();
     serial_println_chirho!("Loading hello world ELF into userspace...");
