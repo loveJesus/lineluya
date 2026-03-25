@@ -3175,27 +3175,51 @@ fn sys_brk_chirho(addr_chirho: u64) -> i64 {
         return old_brk_chirho as i64;
     }
 
-    // If expanding, map new pages
+    // If expanding, allocate frames directly (no VMA — avoids conflict
+    // with musl's mmap(brk, PROT_NONE, MAP_FIXED) reservation).
     if addr_chirho > old_brk_chirho {
-        let old_page_chirho = (old_brk_chirho + 0xFFF) & !0xFFF; // round up
+        let old_page_chirho = (old_brk_chirho + 0xFFF) & !0xFFF;
         let new_page_chirho = (addr_chirho + 0xFFF) & !0xFFF;
-        if new_page_chirho > old_page_chirho {
-            let size_chirho = new_page_chirho - old_page_chirho;
-            let mm_arc_chirho = crate::mm_chirho::get_current_mm_chirho();
-            let mut guard_chirho = mm_arc_chirho.lock();
-            let result_chirho = guard_chirho.mmap_chirho(
-                old_page_chirho,
-                size_chirho,
-                crate::mm_chirho::PROT_READ_CHIRHO | crate::mm_chirho::PROT_WRITE_CHIRHO,
-                crate::mm_chirho::MAP_PRIVATE_CHIRHO
-                    | crate::mm_chirho::MAP_ANONYMOUS_CHIRHO
-                    | crate::mm_chirho::MAP_FIXED_CHIRHO,
-                -1i32,
-                0,
-            );
-            if result_chirho.is_err() {
-                return old_brk_chirho as i64;
+        for page_addr_chirho in (old_page_chirho..new_page_chirho).step_by(0x1000) {
+            // Check if already mapped
+            let (cr3_brk_chirho, _) = x86_64::registers::control::Cr3::read();
+            let already_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                cr3_brk_chirho.start_address(),
+                x86_64::VirtAddr::new(page_addr_chirho),
+            ).map(|pte_ptr_chirho| unsafe {
+                (*pte_ptr_chirho).flags().contains(
+                    x86_64::structures::paging::PageTableFlags::PRESENT
+                )
+            }).unwrap_or(false);
+            if already_chirho { continue; }
+            // Allocate frame
+            let frame_chirho = {
+                let mut alloc_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+                match alloc_chirho.as_mut().and_then(|a| {
+                    use x86_64::structures::paging::FrameAllocator;
+                    a.allocate_frame()
+                }) {
+                    Some(f) => f,
+                    None => return old_brk_chirho as i64,
+                }
+            };
+            // Map in page table
+            let flags_chirho = x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+            let phys_chirho = frame_chirho.start_address().as_u64();
+            let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+            // Zero the frame
+            unsafe {
+                core::ptr::write_bytes((phys_chirho + phys_off_chirho) as *mut u8, 0, 0x1000);
             }
+            let (cr3_map_chirho, _) = x86_64::registers::control::Cr3::read();
+            crate::pagetable_chirho::map_page_in_pt_chirho(
+                cr3_map_chirho.start_address(),
+                page_addr_chirho,
+                phys_chirho,
+                flags_chirho,
+            );
         }
     }
 

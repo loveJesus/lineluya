@@ -1234,7 +1234,7 @@ pub fn sys_openat_chirho(
             "/etc/group" => Some(b"root:x:0:root\nnobody:x:65534:\n"),
             "/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n"),
             "/etc/shadow" => Some(b"root::0:0:99999:7:::\n"),
-            "/etc/ld-musl-x86_64.path" => Some(b"/lib\n/tmp/lib-chirho\n/usr/lib\n"),
+            "/etc/ld-musl-x86_64.path" => Some(b"/tmp/lib-chirho\n/lib\n/usr/lib\n"),
             _ => None,
         };
         if let Some(content_chirho) = auth_content_chirho {
