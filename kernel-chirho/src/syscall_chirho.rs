@@ -1652,7 +1652,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 if arg0_chirho <= 3 {
                     let wr_pid_chirho = crate::task_chirho::current_task_chirho()
                         .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                    if wr_pid_chirho >= 8 && arg2_chirho > 0 && arg2_chirho <= 200 {
+                    if wr_pid_chirho >= 5 && arg2_chirho > 0 && arg2_chirho <= 200 {
                         let mut buf_chirho = [0u8; 200];
                         let len_chirho = (arg2_chirho as usize).min(200);
                         for i_chirho in 0..len_chirho {
@@ -2645,7 +2645,7 @@ fn sys_writev_chirho(
         {
             let wv_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if wv_pid_chirho >= 8 && iov_len_chirho > 4 && iov_len_chirho <= 200 {
+            if wv_pid_chirho >= 5 && iov_len_chirho > 4 && iov_len_chirho <= 200 {
                 let mut buf_chirho = [0u8; 200];
                 let len_chirho = iov_len_chirho.min(200);
                 for j_chirho in 0..len_chirho {
