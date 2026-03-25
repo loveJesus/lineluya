@@ -33,6 +33,7 @@ use crate::elf_chirho::{
 use crate::dynlink_chirho::{
     AT_BASE_CHIRHO, find_interp_in_phdrs_chirho, load_elf_at_base_chirho,
     interp_load_base_chirho, parse_dynamic_section_chirho, apply_relative_relocs_chirho,
+    apply_relr_relocs_chirho,
     resolve_symbol_relocs_chirho,
 };
 use crate::gdt_chirho::{USER_CS_CHIRHO, USER_DS_CHIRHO};
@@ -429,6 +430,24 @@ pub fn load_elf_with_interp_chirho(
                 serial_debug_chirho!(
                     "[EXEC] R_X86_64_RELATIVE relocations applied to main binary"
                 );
+
+                // Apply RELR (compact relative relocations) if present.
+                // Modern binaries (Alpine 3.23+) use .relr.dyn instead of
+                // .rela.dyn for relative relocations — much smaller encoding.
+                if dyn_info_chirho.relr_addr_chirho != 0 && dyn_info_chirho.relr_size_chirho != 0 {
+                    crate::serial_println_chirho!(
+                        "[EXEC] RELR: addr={:#x} size={:#x} — applying compact relative relocs",
+                        dyn_info_chirho.relr_addr_chirho, dyn_info_chirho.relr_size_chirho,
+                    );
+                    unsafe {
+                        apply_relr_relocs_chirho(
+                            dyn_info_chirho.relr_addr_chirho,
+                            dyn_info_chirho.relr_size_chirho,
+                            dyn_info_chirho.relrent_size_chirho,
+                            exe_load_bias_chirho,
+                        );
+                    }
+                }
             }
             Err(err_chirho) => {
                 // Not all binaries have PT_DYNAMIC (static PIE). Log and continue.

@@ -247,6 +247,12 @@ pub struct DynamicInfoChirho {
     pub fini_addr_chirho: u64,
     /// List of needed library name offsets into the string table.
     pub needed_offsets_chirho: Vec<u64>,
+    /// Address of RELR (compact relative relocations) table.
+    pub relr_addr_chirho: u64,
+    /// Size of the RELR table in bytes.
+    pub relr_size_chirho: u64,
+    /// Size of each RELR entry (always 8 for 64-bit).
+    pub relrent_size_chirho: u64,
 }
 
 impl DynamicInfoChirho {
@@ -269,6 +275,9 @@ impl DynamicInfoChirho {
             init_addr_chirho: 0,
             fini_addr_chirho: 0,
             needed_offsets_chirho: Vec::new(),
+            relr_addr_chirho: 0,
+            relr_size_chirho: 0,
+            relrent_size_chirho: 0,
         }
     }
 }
@@ -442,6 +451,16 @@ pub fn parse_dynamic_section_chirho(
             }
             DT_RELAENT_CHIRHO => {
                 info_chirho.relaent_size_chirho = val_chirho;
+            }
+            // DT_RELR = 36, DT_RELRSZ = 35, DT_RELRENT = 37
+            36 => {
+                info_chirho.relr_addr_chirho = val_chirho.wrapping_add(load_bias_chirho);
+            }
+            35 => {
+                info_chirho.relr_size_chirho = val_chirho;
+            }
+            37 => {
+                info_chirho.relrent_size_chirho = val_chirho;
             }
             DT_JMPREL_CHIRHO => {
                 info_chirho.jmprel_addr_chirho = val_chirho.wrapping_add(load_bias_chirho);
@@ -727,6 +746,69 @@ pub unsafe fn apply_relative_relocs_chirho(
 /// For eager binding (no lazy binding), this resolves all PLT entries
 /// immediately. For lazy binding, it sets up the GOT entries to point
 /// back to the PLT stub (which will trigger the dynamic linker on first
+/// Apply RELR (compact relative relocations) from a `.relr.dyn` section.
+///
+/// RELR uses a bitmap encoding: even entries are addresses, odd entries
+/// are bitmaps. Each bitmap bit represents a consecutive 8-byte slot.
+/// For each set bit, the slot gets `*slot += load_bias`.
+///
+/// Reference: https://maskray.me/blog/2021-10-31-relative-relocations-and-relr
+///
+/// # Safety
+///
+/// The RELR data must be within mapped, readable memory.
+/// The relocation targets must be within mapped, writable memory.
+pub unsafe fn apply_relr_relocs_chirho(
+    relr_addr_chirho: u64,
+    relr_size_chirho: u64,
+    _relrent_size_chirho: u64,
+    load_bias_chirho: u64,
+) {
+    if relr_addr_chirho == 0 || relr_size_chirho == 0 || load_bias_chirho == 0 {
+        return;
+    }
+
+    let entry_size_chirho: u64 = 8; // Each RELR entry is 8 bytes (Elf64_Relr)
+    let num_entries_chirho = relr_size_chirho / entry_size_chirho;
+    let mut where_chirho: u64 = 0; // Current relocation address
+    let mut applied_chirho: u64 = 0;
+
+    for i_chirho in 0..num_entries_chirho {
+        let entry_chirho = core::ptr::read_unaligned(
+            (relr_addr_chirho + i_chirho * entry_size_chirho) as *const u64
+        );
+
+        if entry_chirho & 1 == 0 {
+            // Even entry: absolute address — apply one relocation here
+            where_chirho = entry_chirho + load_bias_chirho;
+            let target_chirho = where_chirho as *mut u64;
+            *target_chirho = (*target_chirho).wrapping_add(load_bias_chirho);
+            applied_chirho += 1;
+            where_chirho += 8; // advance past this slot
+        } else {
+            // Odd entry: bitmap — each bit (except bit 0) is a relocation
+            let mut bitmap_chirho = entry_chirho >> 1; // skip the marker bit
+            let mut offset_chirho = where_chirho;
+            while bitmap_chirho != 0 {
+                if bitmap_chirho & 1 != 0 {
+                    let target_chirho = offset_chirho as *mut u64;
+                    *target_chirho = (*target_chirho).wrapping_add(load_bias_chirho);
+                    applied_chirho += 1;
+                }
+                bitmap_chirho >>= 1;
+                offset_chirho += 8;
+            }
+            // Advance where past all 63 slots this bitmap covers
+            where_chirho += 63 * 8;
+        }
+    }
+
+    crate::serial_println_chirho!(
+        "[RELR] Applied {} RELR relocations (bias={:#x}, entries={})",
+        applied_chirho, load_bias_chirho, num_entries_chirho,
+    );
+}
+
 /// call).
 ///
 /// # Safety
