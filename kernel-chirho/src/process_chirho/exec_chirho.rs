@@ -436,35 +436,17 @@ pub fn load_elf_with_interp_chirho(
                 // linked binaries, the musl interpreter handles ALL relocations
                 // including RELR. Applying RELR in the kernel for dyn-linked
                 // binaries causes double-biasing (kernel + musl both add bias).
-                // Apply RELR to the main binary. musl also applies RELR,
-                // but musl reads the RELR data AFTER our kernel applies it.
-                // musl checks if relocations are already applied (value > base)
-                // and skips them. So double-application is safe IF the first
-                // application is correct.
+                // RELR: musl 1.2.4+ handles .relr.dyn for dynamically-linked
+                // binaries. The kernel must NOT apply RELR here — musl does it.
+                // Double-applying causes the shell to hang (bias added twice).
                 //
-                // WITHOUT kernel RELR: pointers in .data.rel.ro and .got have
-                // raw PIE offsets → musl reads them correctly via base+offset
-                // → musl applies RELR → pointers become base+offset (correct).
-                //
-                // WITH kernel RELR: same result but faster (musl skips already-done).
-                //
-                // The earlier crash at 0x2b33d was from MISSING RELR entirely.
-                // The shell hang was from applying RELR to BusyBox which musl
-                // also applied → double-biasing. But that was because the RELR
-                // was applied in the WRONG exec path (BusyBox shell, not Xorg).
-                if dyn_info_chirho.relr_addr_chirho != 0 && dyn_info_chirho.relr_size_chirho != 0 {
-                    crate::serial_println_chirho!(
-                        "[EXEC] RELR: addr={:#x} size={:#x}",
+                // The Xorg crash at 0x2b33d was NOT from missing RELR — musl
+                // applies RELR correctly. The crash has a different root cause.
+                if dyn_info_chirho.relr_addr_chirho != 0 {
+                    crate::serial_debug_chirho!(
+                        "[EXEC] RELR present (addr={:#x} size={:#x}) — musl handles it",
                         dyn_info_chirho.relr_addr_chirho, dyn_info_chirho.relr_size_chirho,
                     );
-                    unsafe {
-                        apply_relr_relocs_chirho(
-                            dyn_info_chirho.relr_addr_chirho,
-                            dyn_info_chirho.relr_size_chirho,
-                            dyn_info_chirho.relrent_size_chirho,
-                            exe_load_bias_chirho,
-                        );
-                    }
                 }
             }
             Err(err_chirho) => {
