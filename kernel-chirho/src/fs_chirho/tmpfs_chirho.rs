@@ -69,7 +69,7 @@ fn get_tmpfs_data_chirho(inode_chirho: &InodeChirho) -> Result<&Mutex<TmpfsDataC
 
 /// Convenience: create a new `Box<Mutex<TmpfsDataChirho>>` suitable for
 /// storing in `fs_data_chirho`.
-fn new_tmpfs_fs_data_chirho(data_chirho: TmpfsDataChirho) -> Option<Box<dyn core::any::Any + Send>> {
+pub fn new_tmpfs_fs_data_chirho(data_chirho: TmpfsDataChirho) -> Option<Box<dyn core::any::Any + Send>> {
     Some(Box::new(Mutex::new(data_chirho)))
 }
 

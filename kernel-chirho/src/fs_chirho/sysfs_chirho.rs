@@ -24,7 +24,7 @@ use spin::Mutex;
 
 use crate::vfs_chirho::{
     DentryChirho, FileChirho, FileOpsChirho, InodeChirho, InodeOpsChirho,
-    S_IFDIR_CHIRHO,
+    S_IFDIR_CHIRHO, S_IFREG_CHIRHO,
     StatfsChirho, SuperOpsChirho, SuperblockChirho,
 };
 use crate::syscall_chirho::{
@@ -231,6 +231,37 @@ fn make_dir_dentry_chirho(
     }))
 }
 
+/// Create a sysfs file dentry with static content (stored as tmpfs file).
+fn add_file_dentry_chirho(
+    parent_chirho: &Arc<Mutex<DentryChirho>>,
+    name_chirho: &str,
+    content_chirho: &[u8],
+) {
+    use crate::tmpfs_chirho::{TmpfsDataChirho, new_tmpfs_fs_data_chirho, TMPFS_INODE_OPS_CHIRHO};
+    let inode_chirho = Arc::new(Mutex::new(InodeChirho {
+        ino_chirho: alloc_ino_chirho(),
+        mode_chirho: S_IFREG_CHIRHO | 0o444,
+        uid_chirho: 0,
+        gid_chirho: 0,
+        size_chirho: content_chirho.len() as u64,
+        nlink_chirho: 1,
+        atime_chirho: 0,
+        mtime_chirho: 0,
+        ctime_chirho: 0,
+        ops_chirho: &TMPFS_INODE_OPS_CHIRHO,
+        fs_data_chirho: new_tmpfs_fs_data_chirho(
+            TmpfsDataChirho::FileChirho(Vec::from(content_chirho)),
+        ),
+    }));
+    let dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from(name_chirho),
+        inode_chirho: Some(inode_chirho),
+        parent_chirho: Some(Arc::clone(parent_chirho)),
+        children_chirho: Vec::new(),
+    }));
+    parent_chirho.lock().children_chirho.push(dentry_chirho);
+}
+
 // ---------------------------------------------------------------------------
 // Mount
 // ---------------------------------------------------------------------------
@@ -256,6 +287,38 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     {
         let pci_dentry_chirho = make_dir_dentry_chirho("pci", Some(Arc::clone(&bus_dentry_chirho)));
         let pci_devices_chirho = make_dir_dentry_chirho("devices", Some(Arc::clone(&pci_dentry_chirho)));
+        // Add a fake VGA PCI device (0000:00:02.0) for Xorg's PCI probe
+        {
+            let vga_dev_chirho = make_dir_dentry_chirho("0000:00:02.0", Some(Arc::clone(&pci_devices_chirho)));
+            // libpciaccess reads these files to enumerate PCI devices
+            add_file_dentry_chirho(&vga_dev_chirho, "vendor", b"0x1234\n"); // QEMU VGA
+            add_file_dentry_chirho(&vga_dev_chirho, "device", b"0x1111\n"); // stdvga
+            add_file_dentry_chirho(&vga_dev_chirho, "class", b"0x030000\n"); // VGA controller
+            add_file_dentry_chirho(&vga_dev_chirho, "subsystem_vendor", b"0x1af4\n");
+            add_file_dentry_chirho(&vga_dev_chirho, "subsystem_device", b"0x1100\n");
+            add_file_dentry_chirho(&vga_dev_chirho, "irq", b"0\n");
+            add_file_dentry_chirho(&vga_dev_chirho, "revision", b"0x05\n");
+            // PCI config space (256 bytes, all zeros except for vendor/device/class)
+            let mut config_chirho = [0u8; 256];
+            config_chirho[0] = 0x34; config_chirho[1] = 0x12; // vendor
+            config_chirho[2] = 0x11; config_chirho[3] = 0x11; // device
+            config_chirho[10] = 0x00; config_chirho[11] = 0x03; // class: VGA
+            add_file_dentry_chirho(&vga_dev_chirho, "config", &config_chirho);
+            // Resource file (6 BARs, each line: start end flags)
+            let fb_phys_chirho = crate::fb_device_chirho::fb_phys_addr_chirho();
+            let fb_size_chirho = crate::fb_device_chirho::fb_size_chirho();
+            let resource_str_chirho = alloc::format!(
+                "{:#018x} {:#018x} {:#018x}\n\
+                 0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+                 0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+                 0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+                 0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+                 0x0000000000000000 0x0000000000000000 0x0000000000000000\n",
+                fb_phys_chirho, fb_phys_chirho + fb_size_chirho as u64 - 1, 0x0200u64,
+            );
+            add_file_dentry_chirho(&vga_dev_chirho, "resource", resource_str_chirho.as_bytes());
+            pci_devices_chirho.lock().children_chirho.push(vga_dev_chirho);
+        }
         pci_dentry_chirho.lock().children_chirho.push(pci_devices_chirho);
         bus_dentry_chirho.lock().children_chirho.push(pci_dentry_chirho);
     }
