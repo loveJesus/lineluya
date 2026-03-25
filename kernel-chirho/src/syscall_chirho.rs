@@ -3574,7 +3574,19 @@ fn sys_ioctl_real_chirho(
 
     // A2-PROC-003: Use lookup_fd_chirho (per-process first, then global).
     {
-        if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) {
+        let lookup_result_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho);
+        // Log when Xorg fd lookup fails
+        if lookup_result_chirho.is_none() {
+            let lp_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if lp_chirho >= 10 && (cmd_chirho & 0xFF00) == 0x4600 {
+                crate::serial_println_chirho!(
+                    "[IOCTL-MISS] pid={} fd={} cmd={:#x} fd_not_found!",
+                    lp_chirho, fd_chirho, cmd_chirho,
+                );
+            }
+        }
+        if let Some(file_arc_chirho) = lookup_result_chirho {
             let file_guard_chirho = file_arc_chirho.lock();
             let result_chirho = file_guard_chirho.ops_chirho.ioctl_chirho(
                 &file_guard_chirho,
