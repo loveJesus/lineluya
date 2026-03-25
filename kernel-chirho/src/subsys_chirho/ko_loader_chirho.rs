@@ -454,8 +454,13 @@ fn get_or_create_thunk_chirho(kernel_addr_chirho: u64) -> u64 {
         }
     }
 
-    // Allocate 12 bytes in the thunk page
-    let offset_chirho = THUNK_NEXT_OFFSET_CHIRHO.fetch_add(12, core::sync::atomic::Ordering::SeqCst);
+    // Special case: if the kernel function is retpoline_stub (just `ret`),
+    // emit a direct `ret` instead of movabs+jmp (which clobbers RAX).
+    let is_ret_stub_chirho = kernel_addr_chirho == retpoline_stub_chirho as *const () as u64;
+    let thunk_size_chirho: u64 = if is_ret_stub_chirho { 1 } else { 12 };
+
+    // Allocate bytes in the thunk page
+    let offset_chirho = THUNK_NEXT_OFFSET_CHIRHO.fetch_add(thunk_size_chirho, core::sync::atomic::Ordering::SeqCst);
     if offset_chirho >= 4096 {
         // Thunk page full — return kernel addr as fallback
         return kernel_addr_chirho;
@@ -469,18 +474,22 @@ fn get_or_create_thunk_chirho(kernel_addr_chirho: u64) -> u64 {
     };
     let thunk_ptr_chirho = unsafe { bss_base_chirho.add(offset_chirho as usize) };
 
-    // movabs rax, <kernel_addr>  = 0x48 0xB8 <8 bytes LE>
-    // jmp rax                    = 0xFF 0xE0
     unsafe {
-        *thunk_ptr_chirho.add(0) = 0x48; // REX.W
-        *thunk_ptr_chirho.add(1) = 0xB8; // MOV RAX, imm64
-        core::ptr::copy_nonoverlapping(
-            &kernel_addr_chirho as *const u64 as *const u8,
-            thunk_ptr_chirho.add(2),
-            8,
-        );
-        *thunk_ptr_chirho.add(10) = 0xFF; // JMP
-        *thunk_ptr_chirho.add(11) = 0xE0; // RAX
+        if is_ret_stub_chirho {
+            // Direct ret — don't clobber RAX
+            *thunk_ptr_chirho = 0xC3; // RET
+        } else {
+            // movabs rax, <kernel_addr>; jmp rax
+            *thunk_ptr_chirho.add(0) = 0x48; // REX.W
+            *thunk_ptr_chirho.add(1) = 0xB8; // MOV RAX, imm64
+            core::ptr::copy_nonoverlapping(
+                &kernel_addr_chirho as *const u64 as *const u8,
+                thunk_ptr_chirho.add(2),
+                8,
+            );
+            *thunk_ptr_chirho.add(10) = 0xFF; // JMP
+            *thunk_ptr_chirho.add(11) = 0xE0; // RAX
+        }
     }
 
     // Cache it
