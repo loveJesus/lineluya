@@ -212,14 +212,8 @@ impl MmChirho {
                 return Err(-EINVAL_CHIRHO);
             }
             // Remove any existing overlapping mappings (Linux MAP_FIXED
-            // semantics) — but NOT for PROT_NONE reservations, which
-            // must not destroy existing page data (musl uses
-            // mmap(brk, PROT_NONE, MAP_FIXED) to reserve address space
-            // without unmapping brk heap pages). Library reservations
-            // use non-MAP_FIXED PROT_NONE and are unaffected.
-            if prot_chirho != PROT_NONE_CHIRHO {
-                self.remove_overlapping_vmas_chirho(addr_chirho, aligned_len_chirho);
-            }
+            // semantics). Always remove for proper segment overlay.
+            self.remove_overlapping_vmas_chirho(addr_chirho, aligned_len_chirho);
             addr_chirho
         } else if addr_chirho != 0 && addr_chirho % PAGE_SIZE_CHIRHO == 0 {
             // Hint address provided — use it if the region is free.
@@ -261,13 +255,6 @@ impl MmChirho {
                 // If we allocate real frames here, they waste memory and
                 // interfere with the subsequent MAP_FIXED file-backed mmaps.
                 if prot_chirho == PROT_NONE_CHIRHO {
-                    // For MAP_FIXED PROT_NONE that overlaps existing VMAs
-                    // (e.g. musl's brk reservation), just return success
-                    // without creating a VMA — don't overwrite existing
-                    // protection bits which would block demand-paging.
-                    if is_fixed_chirho && !self.is_region_free_chirho(map_addr_chirho, aligned_len_chirho) {
-                        return Ok(map_addr_chirho);
-                    }
                     let vma_chirho = VmaChirho {
                         start_chirho: map_addr_chirho,
                         end_chirho: map_addr_chirho + aligned_len_chirho,
@@ -584,22 +571,33 @@ impl MmChirho {
             return Err(-ENOMEM_CHIRHO);
         }
 
-        // Verify no overlap with existing VMAs
-        let overlaps_chirho = self.vmas_chirho.iter().any(|vma_chirho| {
-            addr_chirho < vma_chirho.end_chirho && (addr_chirho + len_chirho) > vma_chirho.start_chirho
-        });
-        if overlaps_chirho {
-            let pid_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if pid_chirho >= 5 {
-                crate::serial_println_chirho!(
-                    "[MMAP-OVERLAP] pid={} new={:#x}..{:#x} overlaps existing VMA!",
-                    pid_chirho, addr_chirho, addr_chirho + len_chirho,
-                );
+        // Verify no overlap with existing VMAs — if overlapping, skip
+        // downward past the conflicting VMA and retry.
+        let mut candidate_chirho = addr_chirho;
+        for _retry_chirho in 0..64 {
+            let overlapping_end_chirho = self.vmas_chirho.iter()
+                .filter(|vma_chirho| {
+                    candidate_chirho < vma_chirho.end_chirho
+                        && (candidate_chirho + len_chirho) > vma_chirho.start_chirho
+                })
+                .map(|vma_chirho| vma_chirho.start_chirho)
+                .min();
+            match overlapping_end_chirho {
+                Some(conflict_start_chirho) => {
+                    // Skip below the conflicting VMA
+                    if conflict_start_chirho < len_chirho {
+                        return Err(-crate::syscall_chirho::ENOMEM_CHIRHO);
+                    }
+                    candidate_chirho = (conflict_start_chirho - len_chirho) & !(PAGE_SIZE_CHIRHO - 1);
+                    if candidate_chirho == 0 {
+                        return Err(-crate::syscall_chirho::ENOMEM_CHIRHO);
+                    }
+                }
+                None => break, // No overlap — use this address
             }
         }
-        self.next_mmap_addr_chirho = addr_chirho;
-        Ok(addr_chirho)
+        self.next_mmap_addr_chirho = candidate_chirho;
+        Ok(candidate_chirho)
     }
 
     /// Update VMA protection flags for the range `[start, end)`.

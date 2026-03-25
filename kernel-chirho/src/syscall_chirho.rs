@@ -5546,7 +5546,72 @@ fn sys_readlink_chirho(
         return copy_len_chirho as i64;
     }
 
-    -ENOENT_CHIRHO
+    // Handle /proc/self/fd/N — return the path stored in the fd table
+    let proc_self_fd_chirho = unsafe {
+        user_str_eq_prefix_chirho(path_chirho, b"/proc/self/fd/")
+    };
+    if proc_self_fd_chirho {
+        let path_str_chirho = match crate::uaccess_chirho::read_user_string_chirho(
+            path_chirho as u64, 256,
+        ) {
+            Ok(s) => s,
+            Err(_) => return -EFAULT_CHIRHO,
+        };
+        let fd_num_str_chirho = &path_str_chirho["/proc/self/fd/".len()..];
+        if let Ok(fd_num_chirho) = fd_num_str_chirho.parse::<u64>() {
+            if let Some(fd_path_chirho) = crate::fs_chirho::get_fd_path_chirho(fd_num_chirho) {
+                let copy_len_chirho = core::cmp::min(bufsiz_chirho, fd_path_chirho.len());
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        fd_path_chirho.as_bytes().as_ptr(),
+                        buf_chirho,
+                        copy_len_chirho,
+                    );
+                }
+                return copy_len_chirho as i64;
+            }
+        }
+        return -ENOENT_CHIRHO;
+    }
+
+    // Try VFS resolve for symlinks in ext4/tmpfs
+    {
+        let path_str_chirho = match crate::uaccess_chirho::read_user_string_chirho(
+            path_chirho as u64, 4096,
+        ) {
+            Ok(s) => s,
+            Err(_) => return -EFAULT_CHIRHO,
+        };
+        if let Ok((inode_chirho, _)) = crate::fs_chirho::resolve_path_chirho(&path_str_chirho) {
+            let guard_chirho = inode_chirho.lock();
+            if crate::vfs_chirho::is_symlink_chirho(guard_chirho.mode_chirho) {
+                if let Ok(target_chirho) = guard_chirho.ops_chirho.readlink_chirho(&guard_chirho) {
+                    let copy_len_chirho = core::cmp::min(bufsiz_chirho, target_chirho.len());
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            target_chirho.as_bytes().as_ptr(),
+                            buf_chirho,
+                            copy_len_chirho,
+                        );
+                    }
+                    return copy_len_chirho as i64;
+                }
+            }
+        }
+    }
+
+    -EINVAL_CHIRHO
+}
+
+/// Check if a user-space C-string starts with a prefix.
+unsafe fn user_str_eq_prefix_chirho(s_chirho: *const u8, prefix_chirho: &[u8]) -> bool {
+    for (i_chirho, &b_chirho) in prefix_chirho.iter().enumerate() {
+        let c_chirho = core::ptr::read_volatile(s_chirho.add(i_chirho));
+        if c_chirho != b_chirho {
+            return false;
+        }
+    }
+    true
 }
 
 /// `readlinkat(2)` implementation.
@@ -5757,7 +5822,9 @@ fn fill_stat_from_inode_chirho(
     st_chirho: &mut StatChirho,
     inode_chirho: &crate::vfs_chirho::InodeChirho,
 ) {
-    st_chirho.st_dev_chirho = 0x0801; // major 8, minor 1 (sda1 equivalent)
+    // Use different st_dev for tmpfs (ino >= 0x10_0000) vs ext4 (low inos)
+    // to prevent (st_dev, st_ino) collision in musl's library dedup.
+    st_chirho.st_dev_chirho = if inode_chirho.ino_chirho >= 0x10_0000 { 0x0001 } else { 0x0801 };
     st_chirho.st_ino_chirho = inode_chirho.ino_chirho;
     st_chirho.st_mode_chirho = inode_chirho.mode_chirho;
     st_chirho.st_nlink_chirho = inode_chirho.nlink_chirho as u64;

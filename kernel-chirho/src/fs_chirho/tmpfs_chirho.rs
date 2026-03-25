@@ -35,7 +35,7 @@ use crate::syscall_chirho::{
 // ---------------------------------------------------------------------------
 
 /// Global inode counter shared across all tmpfs instances.
-static NEXT_INO_CHIRHO: AtomicU64 = AtomicU64::new(2);
+static NEXT_INO_CHIRHO: AtomicU64 = AtomicU64::new(0x10_0000);
 
 fn alloc_ino_chirho() -> u64 {
     NEXT_INO_CHIRHO.fetch_add(1, Ordering::Relaxed)

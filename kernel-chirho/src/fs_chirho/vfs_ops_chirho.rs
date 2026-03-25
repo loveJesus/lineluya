@@ -1234,7 +1234,7 @@ pub fn sys_openat_chirho(
             "/etc/group" => Some(b"root:x:0:root\nnobody:x:65534:\n"),
             "/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n"),
             "/etc/shadow" => Some(b"root::0:0:99999:7:::\n"),
-            "/etc/ld-musl-x86_64.path" => Some(b"/tmp/lib-chirho\n/lib\n/usr/lib\n"),
+            "/etc/ld-musl-x86_64.path" => Some(b"/lib\n/tmp/lib-chirho\n/usr/lib\n"),
             _ => None,
         };
         if let Some(content_chirho) = auth_content_chirho {
@@ -1820,6 +1820,20 @@ pub fn sys_read_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: 
                         n_chirho,
                     ) {
                         return -EFAULT_CHIRHO;
+                    }
+                }
+                // Log ELF header reads for library debugging
+                if n_chirho >= 64 && kernel_buf_chirho[0] == 0x7f && kernel_buf_chirho[1] == b'E' {
+                    let rd_pid_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if rd_pid_chirho >= 7 {
+                        let e_type_chirho = u16::from_le_bytes([kernel_buf_chirho[16], kernel_buf_chirho[17]]);
+                        let e_phnum_chirho = u16::from_le_bytes([kernel_buf_chirho[56], kernel_buf_chirho[57]]);
+                        let e_phoff_chirho = u64::from_le_bytes(kernel_buf_chirho[32..40].try_into().unwrap_or([0;8]));
+                        crate::serial_println_chirho!(
+                            "[READ-ELF] pid={} fd={} n={} e_type={} e_phoff={:#x} e_phnum={}",
+                            rd_pid_chirho, fd_chirho, n_chirho, e_type_chirho, e_phoff_chirho, e_phnum_chirho,
+                        );
                     }
                 }
                 return n_chirho as i64;
