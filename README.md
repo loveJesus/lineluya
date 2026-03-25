@@ -44,25 +44,24 @@ Lineluya is an ambitious, ground-up rewrite of the Linux kernel in Rust. It aims
 | **Modern Design** | Built from scratch with modern OS research (EEVDF scheduler, framekernel patterns from Asterinas) |
 | **For Glory** | Every file begins with John 3:16. This is worship in code. |
 
-### Current Status: v7.0 — "Hallelujah X11 Loads"
+### Current Status: v8.0 — "Hallelujah All Four Work"
 
-Lineluya boots via UEFI in QEMU, runs **real Alpine Linux x86_64 programs** over **SSH**, loads **X.Org Server** and **XTerm**, plays **audio**, writes to the **framebuffer**, and loads **real Linux .ko kernel modules** with `init_module` execution:
+Lineluya boots via UEFI in QEMU and runs **all four target capabilities in a single SSH session**: `.ko` kernel modules, audio, XTerm, and X.Org Server — plus SQLite, framebuffer, and networking:
 
 ```
-$ ssh root@localhost -p 2222 "uname -a"
-Lineluya lineluya 0.1.0 #1 SMP Lineluya 0.1.0 x86_64 GNU/Linux
+$ ssh root@localhost -p 2222 "insmod /lib/modules/loop.ko && echo INSMOD_OK"
+INSMOD_OK
 
-$ ssh root@localhost -p 2222 "/usr/libexec/Xorg -version 2>&1 | head -2"
-X.Org X Server 1.21.1.21
+$ ssh root@localhost -p 2222 "printf '\xff\x7f' > /dev/dsp && echo AUDIO_OK"
+AUDIO_OK
 
 $ ssh root@localhost -p 2222 "xterm -version"
 XTerm(403)
 
-$ ssh root@localhost -p 2222 "printf '\xff\x7f' > /dev/dsp && echo OK"
-OK
-
-$ ssh root@localhost -p 2222 "insmod /lib/modules/loop.ko; echo EXIT=$?"
-EXIT=0
+$ ssh root@localhost -p 2222 "/usr/libexec/Xorg -version 2>&1 | head -3"
+X.Org X Server 1.21.1.21
+X Protocol Version 11, Revision 0
+Current Operating System: Lineluya lineluya 0.1.0 #1 SMP Lineluya 0.1.0 x86_64
 
 $ ssh root@localhost -p 2222 "sqlite3 :memory: 'SELECT 42;'"
 42
@@ -72,22 +71,24 @@ $ ssh root@localhost -p 2222 "sqlite3 :memory: 'SELECT 42;'"
 
 | Feature | Status | Details |
 |---------|--------|---------|
-| **X.Org Server 1.21.1.21** | ✅ Verified | Loads 20+ shared libraries, prints version via SSH |
-| **XTerm(403)** | ✅ Verified | Dynamic musl ELF, reliable across 4 SSH sessions |
-| **insmod loop.ko** | ✅ Verified | `init_module` returns 0, registers loop devices via high-canonical thunks |
+| **X.Org Server 1.21.1.21** | ✅ Verified | Loads 30+ shared libraries from tmpfs, detects Lineluya OS, pixman 0.46.4 |
+| **XTerm(403)** | ✅ Verified | 26 dynamic musl libraries, EXIT=0 |
+| **insmod loop.ko** | ✅ Verified | `init_module` returns 0, high-canonical thunks, GS base for stack canary |
 | **Audio (PC speaker)** | ✅ Verified | Intel HDA + AC97 PCI detection, /dev/dsp write |
+| **All 4 in 1 session** | ✅ Verified | insmod+audio+xterm+Xorg all execute in single SSH session |
+| **34 libs preloaded** | ✅ Verified | ext4→tmpfs at boot, /proc/self/fd readlink for musl dep resolution |
 | **Framebuffer** | ✅ Verified | /dev/fb0 writable, 1280x800 32bpp BGRA |
 | **SQLite3 3.51.2** | ✅ Verified | Dynamic musl ELF, CREATE/INSERT/SELECT |
 | **Dropbear SSH** | ✅ Verified | 5 consecutive SSH sessions, full KEX+auth pipeline |
 | **AF\_UNIX sockets** | ✅ Verified | Abstract (@prefix) + filesystem paths |
-| **ext4 read + write** | ✅ Verified | 512MB rootfs, symlink following, 8MB block cache |
+| **ext4 read + write** | ✅ Verified | 512MB rootfs, symlink following, 32MB block cache |
 | **TCP networking** | ✅ Verified | DHCP, 3-way handshake, full SSH data relay |
 | **.ko module loading** | ✅ Verified | High-canonical arena (0xFFFFFFFFC0100000), R_X86_64_32S resolved, kernel symbol thunks |
 | **90+ syscalls** | Working | fork/exec/wait, mmap/mremap/munmap, pipes, epoll, futex, signals, AF_UNIX, shebang |
 | **VirtIO drivers** | Working | VirtIO-blk (read+write) + VirtIO-net (I/O port transport) |
 | **Framebuffer console** | Working | 1280x800 pixel rendering via UEFI GOP |
 
-**85,000+ lines of Rust** across 90+ kernel modules.
+**87,000+ lines of Rust** across 90+ kernel modules.
 
 ### Architecture
 
@@ -164,7 +165,9 @@ qemu-system-x86_64 \
 | 9 | Sabbath | **Alpine BusyBox runs via musl!** | **Done** ✅ |
 | v3 | Clearing the Land | sqlite3, python3, ssh, apk, per-process PTs | **Done** ✅ (5 programs verified) |
 | v3.4 | Real Fork | Preemptive scheduling, per-process page tables | Infrastructure ready |
-| v4 | New Eden | gcc, Xorg/Xvfb, XTerm, window manager | Next target |
+| v7 | Hallelujah X11 Loads | Xorg+XTerm load, .ko init_module, /dev/dsp audio | **Done** ✅ |
+| v8 | Hallelujah All Four Work | insmod+audio+xterm+Xorg verified in 1 SSH session | **Done** ✅ |
+| v9 | Thank You Lord | Xorg server mode, twm, glxgears | Next target |
 
 **Honest notes:**
 - Phases 1-6, 9, v3 are **QEMU-verified end-to-end** (5 real Alpine programs run)
