@@ -464,17 +464,30 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     // triggers (no $BB_ASH_VERSION set). These fork+exec's are too slow
     // during boot and stall the shell before dropbear starts.
     {
-        let etc_profile_chirho = "# Lineluya /etc/profile\nexport PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\nexport PS1='lineluya# '\nexport CHARSET=UTF-8\nexport LANG=C.UTF-8\nexport LC_COLLATE=C\nexport LD_LIBRARY_PATH=/lib:/usr/lib\nexport PYTHONDONTWRITEBYTECODE=1\nexport PYTHONHOME=/usr\nexport PYTHONPATH=/usr/lib/python3.12\nexport PYTHONIOENCODING=utf-8\n";
+        let etc_profile_chirho = concat!(
+            "# Lineluya /etc/profile\n",
+            "export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\n",
+            "export PS1='lineluya# '\n",
+            "export HOME=/root\n",
+            "export TERM=linux\n",
+            "export LD_LIBRARY_PATH=/lib:/usr/lib\n",
+            "# Start dropbear SSH daemon (once only, file-based guard)\n",
+            "if [ ! -f /tmp/.dropbear_started_chirho ]; then\n",
+            "  touch /tmp/.dropbear_started_chirho\n",
+            "  mkdir -p /var/run /var/log /tmp/.X11-unix\n",
+            "  /usr/sbin/dropbear -R -E -B -p 2222\n",
+            "  echo ''\n",
+            "  echo '  Lineluya v7.0 — For God so loved the world - John 3:16'\n",
+            "  echo '  SSH: ssh -p 2222 root@localhost'\n",
+            "  echo ''\n",
+            "fi\n",
+        );
         tmpfs_chirho::write_tmpfs_file_chirho(
             "/etc/profile",
             etc_profile_chirho.as_bytes(),
         );
-        let profile_content_chirho = "# Lineluya shell profile\n/usr/sbin/dropbear -R -F -E -p 2222\n";
-        tmpfs_chirho::write_tmpfs_file_chirho(
-            "/root/.profile",
-            profile_content_chirho.as_bytes(),
-        );
-        serial_println_chirho!("[INIT] Created /etc/profile + /root/.profile with dropbear auto-start");
+        // No /root/.profile needed — /etc/profile handles everything
+        serial_println_chirho!("[INIT] Created /etc/profile (dropbear daemon + shell)");
     }
 
     // Load and execute the hello world binary

@@ -3336,7 +3336,18 @@ fn sys_mmap_chirho(
         fd_chirho,
         offset_chirho,
     ) {
-        Ok(mapped_addr_chirho) => mapped_addr_chirho as i64,
+        Ok(mapped_addr_chirho) => {
+            // Debug: detect mmap returning in brk region
+            let pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if mapped_addr_chirho < 0x6000_0000_0000 && mapped_addr_chirho > 0x1000_0000 {
+                crate::serial_println_chirho!(
+                    "[MMAP-BRK-OVERLAP] pid={} addr_hint={:#x} len={:#x} prot={} flags={:#x} fd={} => {:#x}",
+                    pid_chirho, addr_chirho, length_chirho, prot_chirho, flags_chirho, fd_chirho, mapped_addr_chirho,
+                );
+            }
+            mapped_addr_chirho as i64
+        }
         Err(errno_chirho) => errno_chirho,
     }
 }

@@ -212,8 +212,13 @@ impl MmChirho {
                 return Err(-EINVAL_CHIRHO);
             }
             // Remove any existing overlapping mappings (Linux MAP_FIXED
-            // semantics).
-            self.remove_overlapping_vmas_chirho(addr_chirho, aligned_len_chirho);
+            // semantics) — but NOT for PROT_NONE reservations, which
+            // must not destroy existing page data (musl uses
+            // mmap(brk, PROT_NONE, MAP_FIXED) to reserve address space
+            // without unmapping brk heap pages).
+            if prot_chirho != PROT_NONE_CHIRHO {
+                self.remove_overlapping_vmas_chirho(addr_chirho, aligned_len_chirho);
+            }
             addr_chirho
         } else if addr_chirho != 0 && addr_chirho % PAGE_SIZE_CHIRHO == 0 {
             // Hint address provided — use it if the region is free.
