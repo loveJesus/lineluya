@@ -754,12 +754,22 @@ fn map_anonymous_pages_chirho(
             }).unwrap_or(false);
 
             if already_mapped_chirho {
+                // Page exists from a previous process (shared boot PML4).
+                // MUST zero it — stale data from xterm/shell libraries
+                // corrupts musl's mallocng metadata (Xorg 0x2b33d crash).
                 let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
                 if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
                     cr3_uf_chirho.start_address(),
                     VirtAddr::new(page_addr_chirho),
                 ) {
+                    let po_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
                     unsafe {
+                        let phys_chirho = (*pte_ptr_chirho).addr().as_u64();
+                        // Zero the frame via physical memory offset
+                        core::ptr::write_bytes(
+                            (phys_chirho + po_chirho) as *mut u8, 0,
+                            PAGE_SIZE_CHIRHO as usize,
+                        );
                         (*pte_ptr_chirho).set_addr(
                             (*pte_ptr_chirho).addr(), flags_chirho,
                         );
