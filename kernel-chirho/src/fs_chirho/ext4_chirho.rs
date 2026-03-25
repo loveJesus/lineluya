@@ -780,12 +780,12 @@ impl PageCacheChirho {
 
 /// Global page cache instance (protected by a spinlock).
 /// Bounded to 64 entries (~256KB with 4K blocks) to prevent OOM during
-/// Block cache for ext4 reads. 2048 entries × 4KB = 8MB of cached blocks.
+/// Block cache for ext4 reads. 8192 entries × 4KB = 32MB of cached blocks.
 /// Xorg loads 20+ shared libraries requiring repeated directory traversals.
 /// The old 512-entry cache caused evictions between SSH sessions, making
 /// library loading flaky ("not found" errors on 2nd+ SSH connection).
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
-    spin::Mutex::new(PageCacheChirho::new_chirho(2048));
+    spin::Mutex::new(PageCacheChirho::new_chirho(8192));
 
 // ===========================================================================
 // A4-009: ext4 read-only VFS integration
