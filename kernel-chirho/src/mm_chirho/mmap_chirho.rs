@@ -215,7 +215,8 @@ impl MmChirho {
             // semantics) — but NOT for PROT_NONE reservations, which
             // must not destroy existing page data (musl uses
             // mmap(brk, PROT_NONE, MAP_FIXED) to reserve address space
-            // without unmapping brk heap pages).
+            // without unmapping brk heap pages). Library reservations
+            // use non-MAP_FIXED PROT_NONE and are unaffected.
             if prot_chirho != PROT_NONE_CHIRHO {
                 self.remove_overlapping_vmas_chirho(addr_chirho, aligned_len_chirho);
             }
@@ -329,7 +330,7 @@ impl MmChirho {
                         use core::sync::atomic::{AtomicU64, Ordering as MmOrd};
                         static MMAP_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
                         let mc_chirho = MMAP_LOG_CHIRHO.fetch_add(1, MmOrd::Relaxed);
-                        if mc_chirho < 30 {
+                        if mc_chirho < 200 || first4_chirho[0] != 0x7f {
                             crate::serial_println_chirho!(
                                 "[MMAP-DATA] #{} pid={} addr={:#x} off={:#x} len={:#x} done={:#x} first=[{:#04x},{:#04x},{:#04x},{:#04x}] fixed={}",
                                 mc_chirho, pid_chirho, map_addr_chirho, _offset_chirho,

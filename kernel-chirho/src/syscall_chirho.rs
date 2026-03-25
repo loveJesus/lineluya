@@ -5767,6 +5767,19 @@ fn sys_fstat_chirho(
         let file_guard_chirho = file_arc_chirho.lock();
         let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
         fill_stat_from_inode_chirho(&mut st_chirho, &inode_guard_chirho);
+        // Debug: detect symlink inodes being fstat'd (size < 100 = likely symlink target string)
+        let pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if pid_chirho >= 7 && inode_guard_chirho.size_chirho < 100
+            && inode_guard_chirho.size_chirho > 0
+            && (inode_guard_chirho.mode_chirho & 0o170000) == 0o120000
+        {
+            crate::serial_println_chirho!(
+                "[FSTAT-SYMLINK] pid={} fd={} ino={} mode={:#o} size={} — SYMLINK INODE IN FD!",
+                pid_chirho, fd_chirho, inode_guard_chirho.ino_chirho,
+                inode_guard_chirho.mode_chirho, inode_guard_chirho.size_chirho,
+            );
+        }
     }
 
     // SAFETY: Caller guarantees statbuf_chirho is writable user-space pointer.
