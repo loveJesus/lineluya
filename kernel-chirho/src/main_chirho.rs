@@ -458,6 +458,82 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         serial_println_chirho!("[TEST] sys_getpid returned: {}", result_chirho);
     }
 
+    // Preload critical shared libraries from ext4 to tmpfs.
+    // musl's dynamic linker intermittently fails to load libraries
+    // from ext4 (transitive NEEDED deps fail with errno clobbered).
+    // By pre-copying to tmpfs, libraries are served from kernel memory.
+    {
+        let libs_chirho: &[&str] = &[
+            "libXft.so.2", "libfontconfig.so.1", "libfreetype.so.6",
+            "libXext.so.6", "libXaw.so.7", "libXmu.so.6", "libXpm.so.4",
+            "libXt.so.6", "libX11.so.6", "libICE.so.6", "libncursesw.so.6",
+            "libXrender.so.1", "libexpat.so.1", "libz.so.1", "libbz2.so.1",
+            "libpng16.so.16", "libbrotlidec.so.1", "libSM.so.6",
+            "libxcb.so.1", "libbrotlicommon.so.1", "libuuid.so.1",
+            "libXau.so.6", "libXdmcp.so.6", "libbsd.so.0", "libmd.so.0",
+            // Xorg deps
+            "libpixman-1.so.0", "libpciaccess.so.0", "libnettle.so.8",
+            "libXfont2.so.2", "libxshmfence.so.1", "libudev.so.1",
+            "libdrm.so.2", "libxcvt.so.0", "libfontenc.so.1",
+        ];
+        // Create /tmp/lib-chirho/ directory on tmpfs
+        if let Ok((tmp_inode_chirho, _)) = crate::fs_chirho::resolve_path_chirho("/tmp") {
+            let tmp_guard_chirho = tmp_inode_chirho.lock();
+            let _ = tmp_guard_chirho.ops_chirho.mkdir_chirho(&tmp_guard_chirho, "lib-chirho", 0o755);
+        }
+        let mut preloaded_chirho = 0usize;
+        for lib_name_chirho in libs_chirho {
+            let src_path_chirho = {
+                let mut p_chirho = alloc::string::String::from("/lib/");
+                p_chirho.push_str(lib_name_chirho);
+                p_chirho
+            };
+            if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho(&src_path_chirho) {
+                let size_chirho = {
+                    let ig_chirho = inode_chirho.lock();
+                    ig_chirho.size_chirho as usize
+                };
+                if size_chirho > 0 && size_chirho < 4 * 1024 * 1024 {
+                    // Read entire file via ext4
+                    let mut data_chirho = alloc::vec![0u8; size_chirho];
+                    let file_chirho = alloc::sync::Arc::new(spin::Mutex::new(vfs_chirho::FileChirho {
+                        inode_chirho: inode_chirho.clone(),
+                        pos_chirho: 0,
+                        flags_chirho: 0,
+                        ops_chirho: ops_chirho,
+                    }));
+                    let mut pos_chirho = 0usize;
+                    while pos_chirho < size_chirho {
+                        let chunk_chirho = core::cmp::min(4096, size_chirho - pos_chirho);
+                        let mut file_guard_chirho = file_chirho.lock();
+                        match file_guard_chirho.ops_chirho.read_chirho(
+                            &mut file_guard_chirho, &mut data_chirho[pos_chirho..pos_chirho + chunk_chirho],
+                        ) {
+                            Ok(n_chirho) if n_chirho > 0 => pos_chirho += n_chirho,
+                            _ => break,
+                        }
+                    }
+                    if pos_chirho >= 4 && data_chirho[0] == 0x7f && data_chirho[1] == b'E' {
+                        let dst_path_chirho = {
+                            let mut d_chirho = alloc::string::String::from("/tmp/lib-chirho/");
+                            d_chirho.push_str(lib_name_chirho);
+                            d_chirho
+                        };
+                        tmpfs_chirho::write_tmpfs_file_chirho(&dst_path_chirho, &data_chirho[..pos_chirho]);
+                        preloaded_chirho += 1;
+                    }
+                }
+            }
+        }
+        serial_println_chirho!("[INIT] Preloaded {} libraries to /tmp/lib-chirho/", preloaded_chirho);
+        // Write musl search path with tmpfs first
+        tmpfs_chirho::write_tmpfs_file_chirho(
+            "/etc/ld-musl-x86_64.path",
+            b"/tmp/lib-chirho\n/lib\n/usr/lib\n/usr/local/lib\n",
+        );
+        serial_println_chirho!("[INIT] Set /etc/ld-musl-x86_64.path: /tmp/lib-chirho first");
+    }
+
     // Create /etc/profile and /root/.profile on tmpfs.
     // /etc/profile is overridden because Alpine's default profile runs
     // `id -u` and `hostname` in a code path that our embedded BusyBox's ash
@@ -470,7 +546,7 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
             "export PS1='lineluya# '\n",
             "export HOME=/root\n",
             "export TERM=linux\n",
-            "export LD_LIBRARY_PATH=/lib:/usr/lib\n",
+            "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
             "# Start dropbear SSH daemon (once only, file-based guard)\n",
             "if [ ! -f /tmp/.dropbear_started_chirho ]; then\n",
             "  touch /tmp/.dropbear_started_chirho\n",
