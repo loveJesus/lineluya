@@ -1367,6 +1367,20 @@ pub fn sys_openat_chirho(
         }
     };
 
+    // Log fb0 open to verify correct ops
+    if pathname_chirho.contains("fb0") {
+        let open_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        let ig_chirho = final_inode_chirho.lock();
+        let has_devnode_chirho = ig_chirho.fs_data_chirho.as_ref()
+            .map(|d| d.downcast_ref::<DevNodeDataChirho>().is_some())
+            .unwrap_or(false);
+        crate::serial_println_chirho!(
+            "[OPEN-FB0] pid={} mode={:#o} has_devnode={} ino={}",
+            open_pid_chirho, ig_chirho.mode_chirho, has_devnode_chirho, ig_chirho.ino_chirho,
+        );
+        drop(ig_chirho);
+    }
     // Create the FileChirho
     let file_chirho = Arc::new(Mutex::new(FileChirho {
         inode_chirho: final_inode_chirho,

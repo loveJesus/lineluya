@@ -431,6 +431,9 @@ impl FileOpsChirho for FbDeviceOpsChirho {
         cmd_chirho: u64,
         arg_chirho: u64,
     ) -> Result<i64, i64> {
+        crate::serial_println_chirho!(
+            "[FB-IOCTL] cmd={:#x} arg={:#x}", cmd_chirho, arg_chirho
+        );
         match cmd_chirho {
             FBIOGET_VSCREENINFO_CHIRHO => {
                 if arg_chirho == 0 {

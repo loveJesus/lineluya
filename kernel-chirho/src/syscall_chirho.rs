@@ -1648,6 +1648,26 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             if fd_uses_console_stdio_chirho(write_fd_chirho) {
                 sys_write_chirho(write_fd_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
             } else {
+                // Capture Xorg stderr output (PID 8+, fd 1-2, small writes)
+                if arg0_chirho <= 2 {
+                    let wr_pid_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    if wr_pid_chirho >= 8 && arg2_chirho > 0 && arg2_chirho <= 200 {
+                        let mut buf_chirho = [0u8; 200];
+                        let len_chirho = (arg2_chirho as usize).min(200);
+                        for i_chirho in 0..len_chirho {
+                            buf_chirho[i_chirho] = unsafe {
+                                core::ptr::read_volatile((arg1_chirho as *const u8).add(i_chirho))
+                            };
+                        }
+                        if let Ok(s_chirho) = core::str::from_utf8(&buf_chirho[..len_chirho]) {
+                            crate::serial_println_chirho!(
+                                "[XOUT] pid={} fd={}: '{}'", wr_pid_chirho, arg0_chirho,
+                                s_chirho.trim_end(),
+                            );
+                        }
+                    }
+                }
                 sys_write_fd_dispatch_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
             }
         },
@@ -1745,11 +1765,21 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             // Return the saved RAX (the original syscall return value).
             sigframe_chirho.saved_rax_chirho as i64
         },
-        SYS_IOCTL_CHIRHO => sys_ioctl_real_chirho(
-            arg0_chirho,
-            arg1_chirho,
-            arg2_chirho,
-        ),
+        SYS_IOCTL_CHIRHO => {
+            let ioctl_result_chirho = sys_ioctl_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho);
+            // Log failing ioctls for Xorg debugging
+            if ioctl_result_chirho < 0 {
+                let ioctl_pid_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                if ioctl_pid_chirho >= 8 {
+                    crate::serial_println_chirho!(
+                        "[IOCTL-FAIL] pid={} fd={} cmd={:#x} => {}",
+                        ioctl_pid_chirho, arg0_chirho, arg1_chirho, ioctl_result_chirho,
+                    );
+                }
+            }
+            ioctl_result_chirho
+        },
         SYS_PREAD64_CHIRHO => sys_pread64_chirho(
             arg0_chirho,
             arg1_chirho,
