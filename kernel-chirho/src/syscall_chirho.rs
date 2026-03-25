@@ -3177,8 +3177,6 @@ fn sys_brk_chirho(addr_chirho: u64) -> i64 {
 
     // If expanding, allocate frames directly (no VMA — avoids conflict
     // with musl's mmap(brk, PROT_NONE, MAP_FIXED) reservation).
-    // Pre-expand by 1MB extra to give musl heap padding — prevents
-    // Xorg buffer overflow from corrupting critical malloc metadata.
     if addr_chirho > old_brk_chirho {
         let extra_chirho = if addr_chirho - old_brk_chirho <= 0x4000 { 0x100000u64 } else { 0u64 };
         let padded_addr_chirho = addr_chirho + extra_chirho;
