@@ -540,6 +540,22 @@ impl FileOpsChirho for TtyFileOpsChirho {
             }
             // KDSETMODE (0x4B3A) — set text/graphics mode
             0x4B3A => Ok(0),
+            // KDSKBMODE (0x4B45) — set keyboard mode
+            0x4B45 => Ok(0),
+            // KDGKBMODE (0x4B44) — get keyboard mode
+            0x4B44 => {
+                if arg_chirho != 0 {
+                    unsafe { core::ptr::write(arg_chirho as *mut i32, 0); } // K_XLATE
+                }
+                Ok(0)
+            }
+            // KDGKBTYPE (0x4B33) — get keyboard type
+            0x4B33 => {
+                if arg_chirho != 0 {
+                    unsafe { core::ptr::write(arg_chirho as *mut u8, 2); } // KB_101
+                }
+                Ok(0)
+            }
             // KDGETMODE (0x4B3B) — get text/graphics mode
             0x4B3B => {
                 if arg_chirho != 0 {

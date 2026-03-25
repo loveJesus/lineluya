@@ -1772,8 +1772,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 let ioctl_pid_chirho = crate::task_chirho::current_task_chirho()
                     .map(|t| t.lock().pid_chirho).unwrap_or(0);
                 if ioctl_pid_chirho >= 8 {
-                    // Log fb-related ioctls (0x46xx) and failures
-                    if (arg1_chirho & 0xFF00) == 0x4600 || ioctl_result_chirho < 0 {
+                    // Log fb/KD/VT ioctls and failures
+                    if (arg1_chirho & 0xFF00) == 0x4600
+                        || (arg1_chirho & 0xFF00) == 0x4B00
+                        || (arg1_chirho & 0xFF00) == 0x5600
+                        || ioctl_result_chirho < 0 {
                         crate::serial_println_chirho!(
                             "[IOCTL] pid={} fd={} cmd={:#x} => {}",
                             ioctl_pid_chirho, arg0_chirho, arg1_chirho, ioctl_result_chirho,
@@ -3646,7 +3649,10 @@ fn sys_ioctl_real_chirho(
             return 0;
         }
         // KDSKBMODE (0x4B45) — set keyboard mode (K_RAW, K_XLATE, etc.)
-        0x4B45 => return 0,
+        0x4B45 => {
+            crate::serial_println_chirho!("[KDSKBMODE] fd={} — returning 0", fd_chirho);
+            return 0;
+        }
         // KDGKBTYPE (0x4B33) — get keyboard type
         0x4B33 => {
             if arg_chirho != 0 {
