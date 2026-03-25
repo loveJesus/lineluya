@@ -402,9 +402,10 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
 
     // Initialize kernel symbol table for .ko module loading
     ko_loader_chirho::init_kernel_symbols_chirho();
-    // High-canonical arena disabled — PML4[511] propagation to per-process
-    // PTs doesn't work (entry reverts between boot and insmod). Module
-    // loading uses BSS arena with R_X86_64_32S init_module skip.
+    // Map module arena to high-canonical address (0xFFFFFFFFC0100000)
+    // so R_X86_64_32S relocations work. The high mapping aliases the
+    // same physical frames as the BSS arena.
+    ko_loader_chirho::init_module_arena_mapping_chirho();
 
     // Phase A4: VirtIO device discovery — scan PCI bus, probe any VirtIO-blk,
     // and attempt to read sector 0 as a smoke test (P2-001 / P2-002).

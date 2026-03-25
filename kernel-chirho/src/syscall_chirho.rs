@@ -1416,7 +1416,8 @@ pub unsafe fn init_syscalls_chirho() {
     use x86_64::registers::model_specific::Efer;
     let mut efer_flags_chirho = Efer::read();
     efer_flags_chirho |=
-        x86_64::registers::model_specific::EferFlags::SYSTEM_CALL_EXTENSIONS;
+        x86_64::registers::model_specific::EferFlags::SYSTEM_CALL_EXTENSIONS
+        | x86_64::registers::model_specific::EferFlags::NO_EXECUTE_ENABLE;
     Efer::write(efer_flags_chirho);
 
     crate::serial_debug_chirho!("[SYSCALL] MSRs configured (STAR, LSTAR, FMASK, EFER.SCE)");

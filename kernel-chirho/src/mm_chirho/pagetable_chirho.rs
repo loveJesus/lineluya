@@ -308,24 +308,40 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
         }
     }
 
-    // Force PML4[511] from the CURRENT CR3 (which has the module arena's
-    // fresh PDPT). Use raw read to avoid PhysAddr validation issues and
-    // ensure we get the up-to-date entry regardless of which PML4 is active.
+    // Copy PML4[511] for high-canonical module arena mapping.
+    // Use the STORED entry from init_module_arena_mapping_chirho (boot time)
+    // because the current CR3 might be a per-process PT created before
+    // the arena was mapped.
     {
-        let current_cr3_chirho: u64;
-        unsafe { core::arch::asm!("mov {}, cr3", out(reg) current_cr3_chirho, options(nostack)); }
-        let cr3_pml4_phys_chirho = current_cr3_chirho & 0x000F_FFFF_FFFF_F000;
-        let phys_off_chirho = PHYS_MEM_OFFSET_CHIRHO.load(Ordering::Acquire);
-        let boot_511_raw_chirho = unsafe {
-            *((cr3_pml4_phys_chirho + phys_off_chirho) as *const u64).add(511)
-        };
-        // Force PML4[511] into the new page table via raw write
-        // (This is the actual fix — the serial markers above were for debugging)
-        if boot_511_raw_chirho & 1 != 0 {
-            // Write raw u64 directly to new PML4[511] — bypass PageTableEntry methods
+        let stored_511_chirho = module_arena_pml4_entry_chirho();
+        if stored_511_chirho & 1 != 0 {
+            let phys_off_chirho = PHYS_MEM_OFFSET_CHIRHO.load(Ordering::Acquire);
             let new_pml4_ptr_chirho = pml4_phys_chirho.as_u64() + phys_off_chirho;
             unsafe {
-                *((new_pml4_ptr_chirho) as *mut u64).add(511) = boot_511_raw_chirho;
+                *((new_pml4_ptr_chirho) as *mut u64).add(511) = stored_511_chirho;
+            }
+            // Verify the write
+            let readback_chirho = unsafe {
+                *((new_pml4_ptr_chirho) as *const u64).add(511)
+            };
+            crate::serial_debug_chirho!(
+                "[PT] PML4[511] copied: stored={:#x} written={:#x} match={}",
+                stored_511_chirho, readback_chirho, stored_511_chirho == readback_chirho,
+            );
+        } else {
+            // Fallback: read from current CR3 (boot PT or parent PT)
+            let current_cr3_chirho: u64;
+            unsafe { core::arch::asm!("mov {}, cr3", out(reg) current_cr3_chirho, options(nostack)); }
+            let cr3_pml4_phys_chirho = current_cr3_chirho & 0x000F_FFFF_FFFF_F000;
+            let phys_off_chirho = PHYS_MEM_OFFSET_CHIRHO.load(Ordering::Acquire);
+            let boot_511_raw_chirho = unsafe {
+                *((cr3_pml4_phys_chirho + phys_off_chirho) as *const u64).add(511)
+            };
+            if boot_511_raw_chirho & 1 != 0 {
+                let new_pml4_ptr_chirho = pml4_phys_chirho.as_u64() + phys_off_chirho;
+                unsafe {
+                    *((new_pml4_ptr_chirho) as *mut u64).add(511) = boot_511_raw_chirho;
+                }
             }
         }
     }

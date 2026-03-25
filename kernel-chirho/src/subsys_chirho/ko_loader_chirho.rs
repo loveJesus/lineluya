@@ -422,7 +422,12 @@ static mut MODULE_IMAGE_ARENA_STORAGE_CHIRHO: ModuleImageArenaStorageChirho =
 /// High-canonical base for module arena. Uses PDPT[510] PD[1] (not PD[0]
 /// which is used by the bootloader's kernel text). The truncated 32-bit
 /// value 0x80200000 sign-extends correctly for R_X86_64_32S relocations.
-const MODULE_ARENA_HIGH_BASE_CHIRHO: u64 = 0xFFFF_FFFF_8020_0000;
+/// High-canonical virtual address for module arena. 0xFFFFFFFFC0100000
+/// is in the Linux kernel module range. The low 32 bits (0xC0100000)
+/// sign-extend correctly: 0xC0100000 as i32 = -0x3FF00000, which
+/// sign-extends to 0xFFFFFFFFC0100000. This allows R_X86_64_32S
+/// relocations to work (they truncate to 32 bits and sign-extend back).
+const MODULE_ARENA_HIGH_BASE_CHIRHO: u64 = 0xFFFF_FFFF_C010_0000;
 
 static MODULE_ARENA_HIGH_READY_CHIRHO: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -490,6 +495,10 @@ pub fn init_module_arena_mapping_chirho() {
         // Store full PML4[511] entry value (phys + flags) for direct write
         crate::pagetable_chirho::set_module_arena_pml4_entry_chirho(pml4e);
         MODULE_ARENA_HIGH_READY_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
+        crate::serial_println_chirho!(
+            "[KO] Stored PML4[511] = {:#x} for per-process PT propagation",
+            pml4e,
+        );
     }
     crate::serial_println_chirho!(
         "[KO] Module arena: {:#x} ({} pages)", MODULE_ARENA_HIGH_BASE_CHIRHO, ok_chirho,
@@ -497,9 +506,16 @@ pub fn init_module_arena_mapping_chirho() {
 }
 
 unsafe fn module_image_arena_slot_ptr_chirho(slot_index_chirho: usize) -> *mut u8 {
-    // Return BSS pointer (high-canonical mapping abandoned due to PML4[511]
-    // revert issue). The BSS address works for module loading — R_X86_64_32S
-    // relocations are handled by truncation (init_module is skipped on overflow).
+    // If high-canonical mapping is ready, return the high address.
+    // This makes R_X86_64_32S relocations work (0xC0xxxxxx fits in
+    // sign-extended 32 bits). The high mapping points to the SAME
+    // physical frames as the BSS, so reads/writes are equivalent.
+    if MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
+        let high_addr_chirho = MODULE_ARENA_HIGH_BASE_CHIRHO
+            + (slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO) as u64;
+        return high_addr_chirho as *mut u8;
+    }
+    // Fallback: BSS pointer (R_X86_64_32S overflows, init_module skipped)
     let base_chirho =
         core::ptr::addr_of_mut!(MODULE_IMAGE_ARENA_STORAGE_CHIRHO.bytes_chirho) as *mut u8;
     unsafe { base_chirho.add(slot_index_chirho * MODULE_IMAGE_ARENA_SLOT_BYTES_CHIRHO) }
@@ -3260,21 +3276,22 @@ unsafe fn call_init_module_chirho(addr_chirho: u64) -> i32 {
         addr_chirho
     );
 
-    // R_X86_64_32S overflows: module addresses at 0x8000xxxxxx don't
-    // fit in sign-extended 32-bit. This affects both kernel symbol refs
-    // AND intra-module refs (.data, .rodata within the module). The
-    // init_module path HAS 32S relocs (5 in loop.ko's .init.text).
-    // Calling init_module with truncated 32S values causes a hang.
-    //
-    // Root cause: our kernel loads at 0x8000000000 (PIE), not Linux's
-    // 0xFFFFFFFF80000000 (high-canonical). 32S requires addresses in
-    // the top 2GB of virtual space. Fix requires bootloader changes
-    // to use high-canonical kernel mapping.
-    if HAD_32S_OVERFLOW_CHIRHO.swap(false, core::sync::atomic::Ordering::SeqCst) {
+    // R_X86_64_32S overflows at BSS addresses (0x8000xxxxxx). But if
+    // the high-canonical mapping is active, the module was loaded at
+    // 0xFFFFFFFFC0xxxxxx where 32S works (sign-extends correctly).
+    // Check if overflows occurred and whether we can proceed.
+    let had_32s_chirho = HAD_32S_OVERFLOW_CHIRHO.swap(false, core::sync::atomic::Ordering::SeqCst);
+    let high_ready_chirho = MODULE_ARENA_HIGH_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire);
+    if had_32s_chirho && !high_ready_chirho {
         crate::serial_println_chirho!(
-            "[KO] init_module SKIPPED (R_X86_64_32S overflow — needs high-canonical kernel)"
+            "[KO] init_module SKIPPED (R_X86_64_32S overflow, no high-canonical mapping)"
         );
         return 0;
+    }
+    if had_32s_chirho && high_ready_chirho {
+        crate::serial_println_chirho!(
+            "[KO] R_X86_64_32S overflows resolved via high-canonical mapping"
+        );
     }
 
     let init_fn_chirho: InitModuleFnChirho =
@@ -3946,17 +3963,12 @@ pub fn sys_init_module_impl_chirho(
         unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_chirho, options(nostack)); }
         let cur_pml4_chirho = cr3_chirho & 0x000F_FFFF_FFFF_F000;
 
-        let boot_511_chirho = unsafe {
-            *((boot_pml4_chirho + off_chirho) as *const u64).add(511)
-        };
-        let cur_511_chirho = unsafe {
-            *((cur_pml4_chirho + off_chirho) as *const u64).add(511)
-        };
-
-        // Always overwrite current PML4[511] with boot PML4[511]
-        if cur_pml4_chirho != boot_pml4_chirho {
+        // Use the STORED PML4[511] from arena init (not boot PML4 which
+        // might not have the arena mapping yet)
+        let stored_511_chirho = crate::pagetable_chirho::module_arena_pml4_entry_chirho();
+        if stored_511_chirho & 1 != 0 {
             unsafe {
-                *((cur_pml4_chirho + off_chirho) as *mut u64).add(511) = boot_511_chirho;
+                *((cur_pml4_chirho + off_chirho) as *mut u64).add(511) = stored_511_chirho;
                 core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _, options(nostack));
             }
         }
