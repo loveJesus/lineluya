@@ -329,11 +329,22 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             add_file_dentry_chirho(&vga_dev_chirho, "subsystem_device", b"0x1100\n");
             add_file_dentry_chirho(&vga_dev_chirho, "irq", b"0\n");
             add_file_dentry_chirho(&vga_dev_chirho, "revision", b"0x05\n");
-            // PCI config space (256 bytes, all zeros except for vendor/device/class)
+            add_file_dentry_chirho(&vga_dev_chirho, "boot_vga", b"1\n");
+            add_file_dentry_chirho(&vga_dev_chirho, "enable", b"1\n");
+            add_file_dentry_chirho(&vga_dev_chirho, "numa_node", b"-1\n");
+            add_file_dentry_chirho(&vga_dev_chirho, "local_cpus", b"1\n");
+            add_file_dentry_chirho(&vga_dev_chirho, "local_cpulist", b"0\n");
+            // PCI config space (256 bytes)
             let mut config_chirho = [0u8; 256];
-            config_chirho[0] = 0x34; config_chirho[1] = 0x12; // vendor
-            config_chirho[2] = 0x11; config_chirho[3] = 0x11; // device
-            config_chirho[10] = 0x00; config_chirho[11] = 0x03; // class: VGA
+            config_chirho[0] = 0x34; config_chirho[1] = 0x12; // vendor: 0x1234
+            config_chirho[2] = 0x11; config_chirho[3] = 0x11; // device: 0x1111
+            config_chirho[4] = 0x03; config_chirho[5] = 0x00; // command: I/O+Mem
+            config_chirho[8] = 0x05; // revision: 5
+            config_chirho[9] = 0x00; // prog_if: VGA compatible
+            config_chirho[10] = 0x00; // subclass: VGA
+            config_chirho[11] = 0x03; // class: display
+            config_chirho[0x2c] = 0xf4; config_chirho[0x2d] = 0x1a; // subsystem vendor
+            config_chirho[0x2e] = 0x00; config_chirho[0x2f] = 0x11; // subsystem device
             add_file_dentry_chirho(&vga_dev_chirho, "config", &config_chirho);
             // Resource file (6 BARs, each line: start end flags)
             let fb_phys_chirho = crate::fb_device_chirho::fb_phys_addr_chirho();
@@ -345,7 +356,7 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
                  0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
                  0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
                  0x0000000000000000 0x0000000000000000 0x0000000000000000\n",
-                fb_phys_chirho, fb_phys_chirho + fb_size_chirho as u64 - 1, 0x0200u64,
+                fb_phys_chirho, fb_phys_chirho + fb_size_chirho as u64 - 1, 0x00042200u64,
             );
             add_file_dentry_chirho(&vga_dev_chirho, "resource", resource_str_chirho.as_bytes());
             register_sysfs_child_chirho(&pci_devices_chirho, &vga_dev_chirho);
