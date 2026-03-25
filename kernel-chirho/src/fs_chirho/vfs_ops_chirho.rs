@@ -1293,6 +1293,15 @@ pub fn sys_openat_chirho(
                     Err(e_chirho) => return e_chirho,
                 }
             } else {
+                // Log library open failures for debugging
+                if pathname_chirho.contains("/lib/") && pathname_chirho.contains(".so") {
+                    let fail_pid_chirho = crate::task_chirho::current_task_chirho()
+                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    crate::serial_println_chirho!(
+                        "[OPEN-FAIL] pid={} '{}' err={}",
+                        fail_pid_chirho, pathname_chirho, errno_chirho,
+                    );
+                }
                 return errno_chirho;
             }
         }

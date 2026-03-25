@@ -337,7 +337,25 @@ impl MmChirho {
                         use core::sync::atomic::{AtomicU64, Ordering as MmOrd};
                         static MMAP_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
                         let mc_chirho = MMAP_LOG_CHIRHO.fetch_add(1, MmOrd::Relaxed);
-                        if mc_chirho < 200 || first4_chirho[0] != 0x7f {
+                        // Log initial library loads (off=0) with ELF header details
+                        if _offset_chirho == 0 && first4_chirho[0] == 0x7f && done_chirho >= 64 {
+                            let e_type_chirho = unsafe {
+                                core::ptr::read_volatile((map_addr_chirho + 16) as *const u16)
+                            };
+                            let e_phnum_chirho = unsafe {
+                                core::ptr::read_volatile((map_addr_chirho + 56) as *const u16)
+                            };
+                            let e_phoff_chirho = unsafe {
+                                core::ptr::read_volatile((map_addr_chirho + 32) as *const u64)
+                            };
+                            crate::serial_println_chirho!(
+                                "[MMAP-ELF] #{} pid={} addr={:#x} len={:#x} done={:#x} e_type={} e_phoff={:#x} e_phnum={} fixed={}",
+                                mc_chirho, pid_chirho, map_addr_chirho,
+                                aligned_len_chirho, done_chirho,
+                                e_type_chirho, e_phoff_chirho, e_phnum_chirho,
+                                is_fixed_chirho,
+                            );
+                        } else if mc_chirho < 200 || first4_chirho[0] != 0x7f {
                             crate::serial_println_chirho!(
                                 "[MMAP-DATA] #{} pid={} addr={:#x} off={:#x} len={:#x} done={:#x} first=[{:#04x},{:#04x},{:#04x},{:#04x}] fixed={}",
                                 mc_chirho, pid_chirho, map_addr_chirho, _offset_chirho,
@@ -435,14 +453,11 @@ impl MmChirho {
         let aligned_len_chirho = align_up_page_chirho(len_chirho);
         let end_chirho = addr_chirho + aligned_len_chirho;
 
-        // Verify the entire region is covered by existing VMAs.
-        if !self.is_region_mapped_chirho(addr_chirho, aligned_len_chirho) {
-            return Err(-ENOMEM_CHIRHO);
-        }
-
-        // Skip actual page table protection updates — VMA metadata only.
-        // Real mprotect would change PTE flags, but our page fault handler
-        // doesn't distinguish permission faults from COW faults yet.
+        // Update VMA protection bits for any overlapping VMAs.
+        // Don't fail if the region isn't fully VMA-covered — musl's
+        // library loader sometimes mprotects regions that span gaps
+        // between MAP_FIXED segment mappings, and Linux allows this
+        // as long as page table entries exist.
         self.update_vma_prot_chirho(addr_chirho, end_chirho, prot_chirho);
 
 

@@ -3365,7 +3365,17 @@ fn sys_mmap_chirho(
             }
             mapped_addr_chirho as i64
         }
-        Err(errno_chirho) => errno_chirho,
+        Err(errno_chirho) => {
+            let pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if pid_chirho >= 7 {
+                crate::serial_println_chirho!(
+                    "[MMAP-FAIL] pid={} addr={:#x} len={:#x} prot={} flags={:#x} fd={} off={:#x} err={}",
+                    pid_chirho, addr_chirho, length_chirho, prot_chirho, flags_chirho, fd_chirho, offset_chirho, errno_chirho,
+                );
+            }
+            errno_chirho
+        }
     }
 }
 
