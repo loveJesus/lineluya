@@ -251,8 +251,21 @@ pub fn mount_sysfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     let kernel_dentry_chirho = make_dir_dentry_chirho("kernel", Some(Arc::clone(&root_dentry_chirho)));
     // A2: /sys/module directory — lists loaded kernel modules.
     let module_dentry_chirho = make_dir_dentry_chirho("module", Some(Arc::clone(&root_dentry_chirho)));
-    // A2: /sys/bus directory — bus subsystem.
+    // A2: /sys/bus directory with pci subdirectory for libpciaccess
     let bus_dentry_chirho = make_dir_dentry_chirho("bus", Some(Arc::clone(&root_dentry_chirho)));
+    {
+        let pci_dentry_chirho = make_dir_dentry_chirho("pci", Some(Arc::clone(&bus_dentry_chirho)));
+        let pci_devices_chirho = make_dir_dentry_chirho("devices", Some(Arc::clone(&pci_dentry_chirho)));
+        pci_dentry_chirho.lock().children_chirho.push(pci_devices_chirho);
+        bus_dentry_chirho.lock().children_chirho.push(pci_dentry_chirho);
+    }
+    // /sys/class/graphics/fb0 for fbdev driver detection
+    {
+        let graphics_chirho = make_dir_dentry_chirho("graphics", Some(Arc::clone(&class_dentry_chirho)));
+        let fb0_chirho = make_dir_dentry_chirho("fb0", Some(Arc::clone(&graphics_chirho)));
+        graphics_chirho.lock().children_chirho.push(fb0_chirho);
+        class_dentry_chirho.lock().children_chirho.push(graphics_chirho);
+    }
     // /sys/fs directory — filesystem parameters.
     let fs_dentry_chirho = make_dir_dentry_chirho("fs", Some(Arc::clone(&root_dentry_chirho)));
 

@@ -1648,8 +1648,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             if fd_uses_console_stdio_chirho(write_fd_chirho) {
                 sys_write_chirho(write_fd_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
             } else {
-                // Capture Xorg stderr output (PID 8+, fd 1-2, small writes)
-                if arg0_chirho <= 2 {
+                // Capture Xorg output (PID 8+, fd 1-3, small writes)
+                if arg0_chirho <= 3 {
                     let wr_pid_chirho = crate::task_chirho::current_task_chirho()
                         .map(|t| t.lock().pid_chirho).unwrap_or(0);
                     if wr_pid_chirho >= 8 && arg2_chirho > 0 && arg2_chirho <= 200 {
@@ -2638,6 +2638,28 @@ fn sys_writev_chirho(
         if iov_base_chirho == 0 || iov_len_chirho == 0 {
             continue;
         }
+        // Capture Xorg writev to log file (fd 3-7) for debugging
+        {
+            let wv_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if wv_pid_chirho >= 8 && iov_len_chirho > 4 && iov_len_chirho <= 200 {
+                let mut buf_chirho = [0u8; 200];
+                let len_chirho = iov_len_chirho.min(200);
+                for j_chirho in 0..len_chirho {
+                    buf_chirho[j_chirho] = unsafe {
+                        core::ptr::read_volatile((iov_base_chirho as *const u8).add(j_chirho))
+                    };
+                }
+                if let Ok(s_chirho) = core::str::from_utf8(&buf_chirho[..len_chirho]) {
+                    let trimmed_chirho = s_chirho.trim();
+                    if !trimmed_chirho.is_empty() {
+                        crate::serial_println_chirho!(
+                            "[XLOG] pid={} fd={}: '{}'", wv_pid_chirho, fd_chirho, trimmed_chirho,
+                        );
+                    }
+                }
+            }
+        }
         let result_chirho = if fd_uses_console_stdio_chirho(fd_chirho) {
             sys_write_chirho(
                 fd_chirho,
@@ -3556,21 +3578,91 @@ fn sys_ioctl_real_chirho(
                 cmd_chirho,
                 arg_chirho,
             );
+            let ioctl_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if ioctl_pid_chirho >= 8 && (cmd_chirho & 0xFF00) == 0x5600 {
+                crate::serial_println_chirho!(
+                    "[IOCTL-VFS] pid={} fd={} cmd={:#x} result={:?}",
+                    ioctl_pid_chirho, fd_chirho, cmd_chirho, result_chirho,
+                );
+            }
             match result_chirho {
                 Ok(val_chirho) => return val_chirho,
-                Err(e_chirho) if e_chirho != ENOSYS_CHIRHO && e_chirho != ENOTTY_CHIRHO => {
-                    // Device ioctls return Err(-errno) or Err(errno).
-                    // Normalize: if already negative, return as-is; if positive, negate.
-                    return if e_chirho < 0 { e_chirho } else { -e_chirho };
+                Err(e_chirho) => {
+                    let is_nosys_chirho = e_chirho == ENOSYS_CHIRHO || e_chirho == -ENOSYS_CHIRHO;
+                    let is_notty_chirho = e_chirho == ENOTTY_CHIRHO || e_chirho == -ENOTTY_CHIRHO;
+                    if !is_nosys_chirho && !is_notty_chirho {
+                        return if e_chirho < 0 { e_chirho } else { -e_chirho };
+                    }
                 }
-                _ => {} // Fall through to common handler
             }
         }
     }
 
-    // Fallback: handle common terminal ioctls for any fd
-    // (BusyBox dup's the TTY to fd 4+ and calls ioctl on it)
+    // Fallback: handle VT and terminal ioctls for any fd
     match cmd_chirho {
+        // VT_OPENQRY (0x5600) — find first available VT
+        0x5600 => {
+            crate::serial_println_chirho!("[VT-OPENQRY] fd={} returning VT 7", fd_chirho);
+            if arg_chirho != 0 {
+                let vt_chirho: i32 = 7;
+                unsafe { core::ptr::write(arg_chirho as *mut i32, vt_chirho); }
+            }
+            return 0;
+        }
+        // VT_GETSTATE (0x5603) — get VT state
+        0x5603 => {
+            if arg_chirho != 0 {
+                unsafe {
+                    core::ptr::write(arg_chirho as *mut u16, 7);     // v_active = VT 7
+                    core::ptr::write((arg_chirho + 2) as *mut u16, 0); // v_signal = 0
+                    core::ptr::write((arg_chirho + 4) as *mut u16, 0x80); // v_state = bit 7 set
+                }
+            }
+            return 0;
+        }
+        // VT_ACTIVATE (0x5606) — switch to VT N
+        0x5606 => return 0,
+        // VT_WAITACTIVE (0x5607) — wait for VT switch
+        0x5607 => return 0,
+        // VT_SETMODE (0x5602) — set VT switching mode
+        0x5602 => return 0,
+        // VT_RELDISP (0x5605) — release display
+        0x5605 => return 0,
+        // KDSETMODE (0x4B3A) — set text/graphics mode
+        0x4B3A => return 0,
+        // KDGETMODE (0x4B3B) — get text/graphics mode
+        0x4B3B => {
+            if arg_chirho != 0 {
+                unsafe { core::ptr::write(arg_chirho as *mut i32, 0); } // KD_TEXT
+            }
+            return 0;
+        }
+        // KDGKBMODE (0x4B44) — get keyboard mode
+        0x4B44 => {
+            if arg_chirho != 0 {
+                unsafe { core::ptr::write(arg_chirho as *mut i32, 0); } // K_XLATE
+            }
+            return 0;
+        }
+        // KDSKBMODE (0x4B45) — set keyboard mode (K_RAW, K_XLATE, etc.)
+        0x4B45 => return 0,
+        // KDGKBTYPE (0x4B33) — get keyboard type
+        0x4B33 => {
+            if arg_chirho != 0 {
+                unsafe { core::ptr::write(arg_chirho as *mut u8, 2); } // KB_101
+            }
+            return 0;
+        }
+        // TCGETS (0x5401) on non-TTY fds — return ENOTTY for consistency
+        0x5401 if fd_chirho > 2 => return -ENOTTY_CHIRHO,
+        // VT_GETMODE (0x5601) — get VT mode
+        0x5601 => {
+            if arg_chirho != 0 {
+                unsafe { core::ptr::write_bytes(arg_chirho as *mut u8, 0, 12); }
+            }
+            return 0;
+        }
         TCGETS_CHIRHO => {
             // For stdin/stdout/stderr (fds 0-2), return a basic termios
             // so isatty() returns true. Programs use this to decide whether
