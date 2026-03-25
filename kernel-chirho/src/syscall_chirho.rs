@@ -3384,19 +3384,6 @@ fn sys_mmap_chirho(
         Ok(mapped_addr_chirho) => {
             let pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            // Log ALL mmap calls for library-loading PIDs
-            if pid_chirho >= 7 {
-                use core::sync::atomic::{AtomicU64, Ordering as MmOrd};
-                static MMAP_CALL_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                let mc_chirho = MMAP_CALL_CHIRHO.fetch_add(1, MmOrd::Relaxed);
-                if mc_chirho < 120 {
-                    crate::serial_println_chirho!(
-                        "[MMAP] #{} pid={} a={:#x} l={:#x} p={} f={:#x} fd={} o={:#x} => {:#x}",
-                        mc_chirho, pid_chirho, addr_chirho, length_chirho, prot_chirho,
-                        flags_chirho, fd_chirho, offset_chirho, mapped_addr_chirho,
-                    );
-                }
-            }
             if mapped_addr_chirho < 0x6000_0000_0000 && mapped_addr_chirho > 0x1000_0000 {
                 crate::serial_println_chirho!(
                     "[MMAP-BRK-OVERLAP] pid={} addr_hint={:#x} len={:#x} prot={} flags={:#x} fd={} => {:#x}",

@@ -331,46 +331,8 @@ impl MmChirho {
                     if n_chirho <= 0 { break; }
                     done_chirho += n_chirho as usize;
                 }
-                // Verify mmap data integrity for file-backed mappings
-                {
-                    let pid_chirho = crate::task_chirho::current_task_chirho()
-                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                    if pid_chirho >= 5 && done_chirho > 0 {
-                        let first4_chirho = unsafe {
-                            core::ptr::read_volatile(map_addr_chirho as *const [u8; 4])
-                        };
-                        use core::sync::atomic::{AtomicU64, Ordering as MmOrd};
-                        static MMAP_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                        let mc_chirho = MMAP_LOG_CHIRHO.fetch_add(1, MmOrd::Relaxed);
-                        // Log initial library loads (off=0) with ELF header details
-                        if _offset_chirho == 0 && first4_chirho[0] == 0x7f && done_chirho >= 64 {
-                            let e_type_chirho = unsafe {
-                                core::ptr::read_volatile((map_addr_chirho + 16) as *const u16)
-                            };
-                            let e_phnum_chirho = unsafe {
-                                core::ptr::read_volatile((map_addr_chirho + 56) as *const u16)
-                            };
-                            let e_phoff_chirho = unsafe {
-                                core::ptr::read_volatile((map_addr_chirho + 32) as *const u64)
-                            };
-                            crate::serial_println_chirho!(
-                                "[MMAP-ELF] #{} pid={} addr={:#x} len={:#x} done={:#x} e_type={} e_phoff={:#x} e_phnum={} fixed={}",
-                                mc_chirho, pid_chirho, map_addr_chirho,
-                                aligned_len_chirho, done_chirho,
-                                e_type_chirho, e_phoff_chirho, e_phnum_chirho,
-                                is_fixed_chirho,
-                            );
-                        } else if mc_chirho < 200 || first4_chirho[0] != 0x7f {
-                            crate::serial_println_chirho!(
-                                "[MMAP-DATA] #{} pid={} addr={:#x} off={:#x} len={:#x} done={:#x} first=[{:#04x},{:#04x},{:#04x},{:#04x}] fixed={}",
-                                mc_chirho, pid_chirho, map_addr_chirho, _offset_chirho,
-                                aligned_len_chirho, done_chirho,
-                                first4_chirho[0], first4_chirho[1], first4_chirho[2], first4_chirho[3],
-                                is_fixed_chirho,
-                            );
-                        }
-                    }
-                }
+                // mmap data integrity logging removed — was causing kernel
+                // heap pressure during heavy library loading
                 if saved_pos_chirho >= 0 {
                     let _ = crate::fs_chirho::sys_lseek_chirho(
                         fd_chirho as u64, saved_pos_chirho, 0,

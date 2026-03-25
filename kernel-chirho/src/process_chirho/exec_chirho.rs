@@ -431,17 +431,9 @@ pub fn load_elf_with_interp_chirho(
                     "[EXEC] R_X86_64_RELATIVE relocations applied to main binary"
                 );
 
-                // Apply RELR (compact relative relocations) if present.
-                // ONLY for static-PIE binaries (no interpreter). For dynamically
-                // linked binaries, the musl interpreter handles ALL relocations
-                // including RELR. Applying RELR in the kernel for dyn-linked
-                // binaries causes double-biasing (kernel + musl both add bias).
-                // RELR: musl 1.2.4+ handles .relr.dyn for dynamically-linked
-                // binaries. The kernel must NOT apply RELR here — musl does it.
-                // Double-applying causes the shell to hang (bias added twice).
-                //
-                // The Xorg crash at 0x2b33d was NOT from missing RELR — musl
-                // applies RELR correctly. The crash has a different root cause.
+                // RELR: musl 1.2.5 applies RELR for the main binary in
+                // __dls3. The kernel must NOT apply it — double-biasing
+                // hangs the shell. Only static-PIE (no interp) needs kernel RELR.
                 if dyn_info_chirho.relr_addr_chirho != 0 {
                     crate::serial_debug_chirho!(
                         "[EXEC] RELR present (addr={:#x} size={:#x}) — musl handles it",
