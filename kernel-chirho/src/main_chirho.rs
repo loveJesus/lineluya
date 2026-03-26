@@ -570,6 +570,37 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         );
         serial_println_chirho!("[INIT] Set /etc/ld-musl-x86_64.path: /tmp/lib-chirho first");
 
+        // Preload X11 client binaries to tmpfs for fast exec.
+        // Loading from ext4/VirtIO-blk takes 15+ minutes per binary.
+        for bin_chirho in &[
+            ("/usr/bin/xterm", "/tmp/lib-chirho/xterm"),
+            ("/usr/bin/twm", "/tmp/lib-chirho/twm"),
+        ] {
+            if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho(bin_chirho.0) {
+                let size_chirho = { inode_chirho.lock().size_chirho as usize };
+                if size_chirho > 0 && size_chirho < 2 * 1024 * 1024 {
+                    let mut data_chirho = alloc::vec![0u8; size_chirho];
+                    let file_chirho = alloc::sync::Arc::new(spin::Mutex::new(vfs_chirho::FileChirho {
+                        inode_chirho: inode_chirho.clone(),
+                        pos_chirho: 0,
+                        flags_chirho: 0,
+                        ops_chirho: ops_chirho,
+                    }));
+                    let mut pos_chirho = 0usize;
+                    while pos_chirho < size_chirho {
+                        let chunk_chirho = core::cmp::min(4096, size_chirho - pos_chirho);
+                        let mut fg_chirho = file_chirho.lock();
+                        match fg_chirho.ops_chirho.read_chirho(&mut fg_chirho, &mut data_chirho[pos_chirho..pos_chirho + chunk_chirho]) {
+                            Ok(n_chirho) if n_chirho > 0 => pos_chirho += n_chirho,
+                            _ => break,
+                        }
+                    }
+                    tmpfs_chirho::write_tmpfs_file_chirho(bin_chirho.1, &data_chirho[..pos_chirho]);
+                    serial_println_chirho!("[INIT] Preloaded {} → {} ({} bytes)", bin_chirho.0, bin_chirho.1, pos_chirho);
+                }
+            }
+        }
+
         // Pre-compiled XKB keymap — xkbcomp takes 10+ minutes to load
         // libraries via VirtIO-blk. Write the pre-compiled keymap so Xorg
         // finds it immediately without needing to fork+exec xkbcomp.
