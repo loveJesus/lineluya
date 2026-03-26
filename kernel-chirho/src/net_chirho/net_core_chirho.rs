@@ -2735,7 +2735,8 @@ pub fn sys_accept_chirho(
             None => return -EAGAIN_CHIRHO,
         };
         // Allocate a new SocketChirho slot for the accepted connection.
-        let new_socket_chirho = SocketChirho::new_chirho(AF_UNIX_CHIRHO, 1, 0); // SOCK_STREAM
+        let mut new_socket_chirho = SocketChirho::new_chirho(AF_UNIX_CHIRHO, 1, 0); // SOCK_STREAM
+        new_socket_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
         let new_sock_idx_chirho = match alloc_socket_slot_chirho(new_socket_chirho) {
             Ok(idx_chirho) => idx_chirho,
             Err(e_chirho) => return e_chirho,
@@ -2854,6 +2855,13 @@ pub fn sys_connect_chirho(
                 None => return -EINVAL_CHIRHO,
             };
             let result_chirho = unix_socket_connect_chirho(unix_idx_chirho, &path_chirho);
+            if result_chirho == 0 {
+                // Set SOCKET_TABLE state to Connected so getpeername/epoll work.
+                let mut st_chirho = SOCKET_TABLE_CHIRHO.lock();
+                if let Some(Some(ref mut sk_chirho)) = st_chirho.get_mut(si_chirho) {
+                    sk_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
+                }
+            }
             crate::serial_println_chirho!(
                 "[NET] sys_connect(AF_UNIX) fd={} path='{}' unix_idx={} -> {}",
                 sockfd_chirho, path_chirho, unix_idx_chirho, result_chirho,

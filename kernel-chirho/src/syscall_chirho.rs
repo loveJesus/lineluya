@@ -1456,9 +1456,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         let trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
         if trace_pid_chirho == 13 || trace_pid_chirho == 14 {
             use core::sync::atomic::{AtomicU64, Ordering};
-            static XCLI_SC_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let c_chirho = XCLI_SC_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if c_chirho < 50 {
+            static XCLI13_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            static XCLI14_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let cnt_ref_chirho = if trace_pid_chirho == 13 { &XCLI13_CHIRHO } else { &XCLI14_CHIRHO };
+            let c_chirho = cnt_ref_chirho.fetch_add(1, Ordering::Relaxed);
+            if c_chirho < 500 || c_chirho % 1000 == 0 {
                 crate::serial_println_chirho!(
                     "[XCLI-SC] pid={} #{} nr={}({}) a0={:#x}",
                     trace_pid_chirho, c_chirho, syscall_nr_chirho,
