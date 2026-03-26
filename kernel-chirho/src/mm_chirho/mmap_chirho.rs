@@ -331,51 +331,75 @@ impl MmChirho {
                     map_addr_chirho, aligned_len_chirho, initial_prot_chirho,
                 )?;
 
-                // Read file data into the mapped region using pread semantics.
-                // CRITICAL: do NOT use lseek+read (pos_chirho is shared via
-                // Arc across fork — preemption can switch to a child that
-                // modifies the shared file position, corrupting the read).
-                // Instead, read directly from the inode at the given offset.
+                // Copy file data directly from inode fs_data into mapped pages.
+                // Disable interrupts to prevent preemptive timer from switching
+                // to another process mid-copy (which corrupts shared mmap state).
                 {
+                    x86_64::instructions::interrupts::disable();
                     let file_arc_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64);
                     if let Some(file_ref_chirho) = file_arc_chirho {
                         let total_chirho = aligned_len_chirho.min(8 * 1024 * 1024) as usize;
-                        let mut done_chirho: usize = 0;
                         let file_offset_chirho = _offset_chirho as usize;
-                        // Read directly from inode data at offset (pread)
                         let inode_arc_chirho = {
                             let fg_chirho = file_ref_chirho.lock();
                             fg_chirho.inode_chirho.clone()
                         };
-                        while done_chirho < total_chirho {
-                            let chunk_chirho = core::cmp::min(4096, total_chirho - done_chirho);
-                            let mut kbuf_chirho = [0u8; 4096];
-                            // Create a temporary FileChirho with pos at the right offset
-                            let n_chirho = {
-                                let fg_chirho = file_ref_chirho.lock();
-                                let mut tmp_file_chirho = crate::vfs_chirho::FileChirho {
-                                    inode_chirho: inode_arc_chirho.clone(),
-                                    pos_chirho: (file_offset_chirho + done_chirho) as u64,
-                                    flags_chirho: fg_chirho.flags_chirho,
-                                    ops_chirho: fg_chirho.ops_chirho,
-                                };
-                                match tmp_file_chirho.ops_chirho.read_chirho(
-                                    &mut tmp_file_chirho, &mut kbuf_chirho[..chunk_chirho],
-                                ) {
-                                    Ok(n) if n > 0 => n,
-                                    _ => break,
+                        // Try direct copy from tmpfs Vec<u8> first (zero-copy, no races)
+                        let mut direct_ok_chirho = false;
+                        {
+                            let ig_chirho = inode_arc_chirho.lock();
+                            if let Some(ref fsdata_chirho) = ig_chirho.fs_data_chirho {
+                                if let Some(tmpfs_lock_chirho) = fsdata_chirho.downcast_ref::<spin::Mutex<crate::tmpfs_chirho::TmpfsDataChirho>>() {
+                                    let td_chirho = tmpfs_lock_chirho.lock();
+                                    if let crate::tmpfs_chirho::TmpfsDataChirho::FileChirho(ref content_chirho) = *td_chirho {
+                                        // Direct memcpy from tmpfs content to user pages
+                                        let src_start_chirho = file_offset_chirho.min(content_chirho.len());
+                                        let src_end_chirho = (file_offset_chirho + total_chirho).min(content_chirho.len());
+                                        let src_len_chirho = src_end_chirho - src_start_chirho;
+                                        if src_len_chirho > 0 {
+                                            let _ = crate::uaccess_chirho::copy_to_user_chirho(
+                                                map_addr_chirho,
+                                                &content_chirho[src_start_chirho..src_end_chirho],
+                                                src_len_chirho,
+                                            );
+                                        }
+                                        direct_ok_chirho = true;
+                                    }
                                 }
-                            };
-                            // Copy to user space
-                            if crate::uaccess_chirho::copy_to_user_chirho(
-                                map_addr_chirho + done_chirho as u64,
-                                &kbuf_chirho[..n_chirho],
-                                n_chirho,
-                            ).is_err() { break; }
-                            done_chirho += n_chirho;
+                            }
+                        }
+                        // Fallback for ext4: read via file ops with independent position
+                        if !direct_ok_chirho {
+                            let mut done_chirho: usize = 0;
+                            while done_chirho < total_chirho {
+                                let chunk_chirho = core::cmp::min(4096, total_chirho - done_chirho);
+                                let mut kbuf_chirho = [0u8; 4096];
+                                let n_chirho = {
+                                    let fg_chirho = file_ref_chirho.lock();
+                                    let mut tmp_file_chirho = crate::vfs_chirho::FileChirho {
+                                        inode_chirho: inode_arc_chirho.clone(),
+                                        pos_chirho: (file_offset_chirho + done_chirho) as u64,
+                                        flags_chirho: fg_chirho.flags_chirho,
+                                        ops_chirho: fg_chirho.ops_chirho,
+                                    };
+                                    match tmp_file_chirho.ops_chirho.read_chirho(
+                                        &mut tmp_file_chirho, &mut kbuf_chirho[..chunk_chirho],
+                                    ) {
+                                        Ok(n) if n > 0 => n,
+                                        _ => break,
+                                    }
+                                };
+                                if crate::uaccess_chirho::copy_to_user_chirho(
+                                    map_addr_chirho + done_chirho as u64,
+                                    &kbuf_chirho[..n_chirho],
+                                    n_chirho,
+                                ).is_err() { break; }
+                                done_chirho += n_chirho;
+                            }
                         }
                     }
                 }
+                x86_64::instructions::interrupts::enable();
 
                 let vma_chirho = VmaChirho {
                     start_chirho: map_addr_chirho,

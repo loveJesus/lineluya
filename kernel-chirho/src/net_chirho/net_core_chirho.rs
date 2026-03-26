@@ -7688,7 +7688,58 @@ static UNIX_SOCKET_TABLE_CHIRHO: Mutex<[Option<UnixSocketChirho>; MAX_UNIX_SOCKE
 
 pub fn unix_socket_create_chirho(st_chirho: u32) -> Option<usize> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() { if s_chirho.is_none() { *s_chirho = Some(UnixSocketChirho { path_chirho: None, recv_buf_chirho: VecDeque::new(), peer_idx_chirho: None, sock_type_chirho: st_chirho, backlog_chirho: VecDeque::new(), listening_chirho: false }); return Some(i_chirho); } } None }
 pub fn unix_socket_bind_chirho(idx_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for s_chirho in t_chirho.iter() { if let Some(ref sk_chirho) = s_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { return -EADDRINUSE_CHIRHO; } } } } if let Some(ref mut sk_chirho) = t_chirho[idx_chirho] { sk_chirho.path_chirho = Some(alloc::string::String::from(p_chirho)); return 0; } -EBADF_CHIRHO }
-pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let mut si_chirho: Option<usize> = None; for (i_chirho, s_chirho) in t_chirho.iter().enumerate() { if let Some(ref sk_chirho) = s_chirho { if sk_chirho.listening_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { si_chirho = Some(i_chirho); break; } } } } } let sv_chirho = match si_chirho { Some(v_chirho) => v_chirho, None => return -ECONNREFUSED_CHIRHO }; if let Some(ref mut s_chirho) = t_chirho[sv_chirho] { s_chirho.backlog_chirho.push_back(ci_chirho); } if let Some(ref mut c_chirho) = t_chirho[ci_chirho] { c_chirho.peer_idx_chirho = Some(sv_chirho); } 0 }
+pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 {
+    let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    // Find the listening socket by path
+    let mut si_chirho: Option<usize> = None;
+    for (i_chirho, s_chirho) in t_chirho.iter().enumerate() {
+        if let Some(ref sk_chirho) = s_chirho {
+            if sk_chirho.listening_chirho {
+                if let Some(ref pp_chirho) = sk_chirho.path_chirho {
+                    if pp_chirho.as_str() == p_chirho {
+                        si_chirho = Some(i_chirho);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let sv_chirho = match si_chirho {
+        Some(v_chirho) => v_chirho,
+        None => return -ECONNREFUSED_CHIRHO,
+    };
+    // Create a server-side socket immediately (like Linux AF_UNIX).
+    // The client can send/recv right after connect without waiting for accept.
+    // accept() later retrieves this pre-created socket from the backlog.
+    let mut new_idx_chirho: Option<usize> = None;
+    for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() {
+        if s_chirho.is_none() {
+            *s_chirho = Some(UnixSocketChirho {
+                path_chirho: None,
+                recv_buf_chirho: VecDeque::new(),
+                peer_idx_chirho: Some(ci_chirho),
+                sock_type_chirho: 1,
+                backlog_chirho: VecDeque::new(),
+                listening_chirho: false,
+            });
+            new_idx_chirho = Some(i_chirho);
+            break;
+        }
+    }
+    let srv_idx_chirho = match new_idx_chirho {
+        Some(idx_chirho) => idx_chirho,
+        None => return -ECONNREFUSED_CHIRHO,
+    };
+    // Push the NEW server socket index (not client) to backlog for accept()
+    if let Some(ref mut s_chirho) = t_chirho[sv_chirho] {
+        s_chirho.backlog_chirho.push_back(srv_idx_chirho);
+    }
+    // Point client at the new server-side socket (bidirectional link)
+    if let Some(ref mut c_chirho) = t_chirho[ci_chirho] {
+        c_chirho.peer_idx_chirho = Some(srv_idx_chirho);
+    }
+    0
+}
 pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let pi_chirho = match t_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) { Some(sk_chirho) => match sk_chirho.peer_idx_chirho { Some(p_chirho) => p_chirho, None => return -ENOTCONN_CHIRHO }, None => return -EBADF_CHIRHO }; if let Some(ref mut peer_chirho) = t_chirho[pi_chirho] { peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec()); return d_chirho.len() as i64; } -EBADF_CHIRHO }
 pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()).and_then(|sk_chirho| sk_chirho.recv_buf_chirho.pop_front()) }
 
@@ -7707,34 +7758,15 @@ pub fn unix_socket_listen_chirho(idx_chirho: usize) -> i64 {
 /// Returns the unix socket index of the newly connected peer, or None if empty.
 pub fn unix_socket_accept_chirho(idx_chirho: usize) -> Option<usize> {
     let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
-    let client_idx_chirho = {
+    // The server-side socket was already created by connect().
+    // Just pop it from the backlog and return it.
+    let server_idx_chirho = {
         let sk_chirho = t_chirho.get_mut(idx_chirho)?.as_mut()?;
         if !sk_chirho.listening_chirho {
             return None;
         }
         sk_chirho.backlog_chirho.pop_front()?
     };
-    // Create a new server-side unix socket that is peered with the client.
-    let mut new_idx_chirho: Option<usize> = None;
-    for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() {
-        if s_chirho.is_none() {
-            *s_chirho = Some(UnixSocketChirho {
-                path_chirho: None,
-                recv_buf_chirho: VecDeque::new(),
-                peer_idx_chirho: Some(client_idx_chirho),
-                sock_type_chirho: 1, // SOCK_STREAM
-                backlog_chirho: VecDeque::new(),
-                listening_chirho: false,
-            });
-            new_idx_chirho = Some(i_chirho);
-            break;
-        }
-    }
-    let server_idx_chirho = new_idx_chirho?;
-    // Point the client at the newly created server-side socket (not the listener).
-    if let Some(ref mut client_sk_chirho) = t_chirho[client_idx_chirho] {
-        client_sk_chirho.peer_idx_chirho = Some(server_idx_chirho);
-    }
     Some(server_idx_chirho)
 }
 
