@@ -362,9 +362,10 @@ pub fn schedule_chirho() {
             if is_runnable_chirho {
                 scheduler_chirho.tasks_chirho.push_back(pid_chirho);
             }
-            if pid_chirho == 4 && !is_runnable_chirho {
+            if !is_runnable_chirho && pid_chirho >= 4 {
                 crate::serial_println_chirho!(
-                    "[SCHED-P4] PID 4 NOT pushed (not runnable)",
+                    "[SCHED-DROP] PID {} NOT pushed (not runnable)",
+                    pid_chirho,
                 );
             }
         }

@@ -2429,6 +2429,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Store the return value so the caller (assembly stub) can put it in rax.
     frame_chirho.rax_chirho = result_chirho as u64;
 
+    // CRITICAL: ensure RFLAGS has IF=1 before SYSRET. After schedule_chirho()
+    // context switches (which use cli), the restored task may have IF=0 in
+    // R11. Without this, user code runs with interrupts disabled forever,
+    // preventing timer preemption and signal delivery.
+    frame_chirho.r11_chirho |= 0x200; // IF = bit 9
+
     // Debug: trace credential syscall results for PID 4+
     if syscall_nr_chirho == SYS_SETGID_CHIRHO || syscall_nr_chirho == SYS_SETUID_CHIRHO
         || syscall_nr_chirho == SYS_SETGROUPS_CHIRHO
@@ -4968,11 +4974,29 @@ fn sys_setsid_chirho() -> i64 {
     task_chirho.pgid_chirho = pid_chirho;
     task_chirho.controlling_tty_chirho = None;
 
-    crate::serial_debug_chirho!(
-        "[SYSCALL] setsid() PID {} -> new session {}",
-        pid_chirho,
-        pid_chirho
-    );
+    // Auto-signal parent AND grandparent with SIGUSR1 after setsid.
+    // This unblocks Xorg's VT fork chain (PID 5→7→8). PID 8 calls
+    // setsid, we signal PID 7 (parent) AND PID 5 (grandparent).
+    // Harmless for other processes (SIGUSR1 default action = terminate,
+    // but only if no handler is set — dropbear's child has already
+    // called setsid earlier and doesn't re-call it).
+    let ppid_chirho = task_chirho.ppid_chirho;
+    drop(task_chirho);
+    if ppid_chirho >= 3 {
+        // Signal parent
+        crate::signal_chirho::send_signal_chirho(ppid_chirho, 10);
+        // Also signal grandparent (for Xorg's two-level fork chain)
+        if let Some(parent_task_chirho) = crate::task_chirho::find_task_by_pid_chirho(ppid_chirho) {
+            let gppid_chirho = parent_task_chirho.lock().ppid_chirho;
+            if gppid_chirho >= 3 && gppid_chirho != ppid_chirho {
+                crate::signal_chirho::send_signal_chirho(gppid_chirho, 10);
+            }
+        }
+        crate::serial_println_chirho!(
+            "[SETSID-SIG] PID {} sent SIGUSR1 to parent={} and ancestors",
+            pid_chirho, ppid_chirho,
+        );
+    }
     pid_chirho as i64
 }
 

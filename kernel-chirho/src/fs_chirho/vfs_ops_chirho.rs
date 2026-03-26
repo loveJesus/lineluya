@@ -1246,7 +1246,7 @@ pub fn sys_openat_chirho(
                 "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
                 "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
                 "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
-                "/usr/libexec/Xorg :0 vt7 -noreset 2>/dev/null &\n",
+                "/usr/libexec/Xorg :0 vt7 -noreset -novtswitch -keeptty 2>/dev/null &\n",
                 "if test -f /tmp/.X0-lock; then\n",
                 "  twm &\n",
                 "  xterm &\n",

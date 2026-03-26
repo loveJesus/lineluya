@@ -1168,13 +1168,28 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
     // Log PID 5 timer state for preemption debugging
+    {
+        let dbg_any_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if dbg_any_pid_chirho == 5 {
+            use core::sync::atomic::{AtomicU64, Ordering as KOrd};
+            static P5_ANY_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let acnt_chirho = P5_ANY_CNT_CHIRHO.fetch_add(1, KOrd::Relaxed);
+            if acnt_chirho % 200 == 0 {
+                crate::serial_println_chirho!(
+                    "[P5-ANY] tick={} user={} rip={:#x}",
+                    acnt_chirho, was_user_mode_chirho,
+                    _stack_frame_chirho.instruction_pointer.as_u64(),
+                );
+            }
+        }
+    }
     if was_user_mode_chirho {
         let dbg_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
         if dbg_pid_chirho == 5 {
             use core::sync::atomic::{AtomicU64, Ordering as DebugOrd};
             static P5_TIMER_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
             let tcnt_chirho = P5_TIMER_CNT_CHIRHO.fetch_add(1, DebugOrd::Relaxed);
-            if tcnt_chirho > 15000 && tcnt_chirho % 1000 == 0 {
+            if tcnt_chirho % 200 == 0 {
                 let nr_chirho = crate::scheduler_chirho::need_resched_chirho();
                 let pr_chirho = crate::task_chirho::current_task_chirho()
                     .map(|t| t.lock().preempted_rip_chirho).unwrap_or(0);
