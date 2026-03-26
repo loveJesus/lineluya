@@ -4081,6 +4081,25 @@ pub fn sys_getpeername_chirho(
         return -ENOTCONN_CHIRHO;
     }
 
+    // AF_UNIX: return sockaddr_un with the peer's path
+    if socket_chirho.family_chirho as u64 == AF_UNIX_CHIRHO {
+        if addr_chirho != 0 {
+            // Write a minimal sockaddr_un: family=AF_UNIX(1), empty path
+            let mut sa_buf_chirho = [0u8; 110]; // sockaddr_un
+            sa_buf_chirho[0] = 1; // AF_UNIX = 1
+            sa_buf_chirho[1] = 0;
+            let write_len_chirho = core::cmp::min(110, addrlen_chirho as usize);
+            let _ = crate::uaccess_chirho::copy_to_user_chirho(
+                addr_chirho, &sa_buf_chirho[..write_len_chirho], write_len_chirho,
+            );
+            if addrlen_chirho >= 4 {
+                let len_ptr_chirho = addrlen_chirho as *mut u32;
+                unsafe { core::ptr::write_volatile(len_ptr_chirho, 2) }; // sun_family only
+            }
+        }
+        return 0;
+    }
+
     if let Some(ref remote_chirho) = socket_chirho.remote_addr_chirho {
         if addr_chirho != 0 && addrlen_chirho >= 16 {
             let buf_chirho = remote_chirho.to_user_bytes_chirho(socket_chirho.family_chirho as u16);
