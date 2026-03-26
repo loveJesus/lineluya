@@ -1962,14 +1962,28 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             let fork_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
             if fork_pid_chirho >= 5 {
-                // Block ALL forks from Xorg and its descendants to prevent
-                // the VT helper fork chain. When fork returns EAGAIN, Xorg
-                // skips VT switching and proceeds directly to the event loop.
-                crate::serial_println_chirho!(
-                    "[FORK-BLOCK] PID {} fork blocked → EAGAIN (skip VT)",
-                    fork_pid_chirho,
-                );
-                -EAGAIN_CHIRHO
+                // Allow first 2 forks from PID 5 (Xorg) for xkbcomp.
+                // Block 3rd+ fork (VT helper chain) which causes infinite
+                // busy-wait stall due to scheduler restore bug.
+                use core::sync::atomic::{AtomicU64, Ordering as ForkOrd};
+                static XORG_FORK_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let fc_chirho = XORG_FORK_COUNT_CHIRHO.fetch_add(1, ForkOrd::Relaxed);
+                if fork_pid_chirho == 5 && fc_chirho < 2 {
+                    crate::serial_println_chirho!(
+                        "[FORK-ALLOW] PID {} fork #{} allowed (xkbcomp)",
+                        fork_pid_chirho, fc_chirho,
+                    );
+                    crate::process_chirho::sys_fork_chirho(frame_chirho)
+                } else if fork_pid_chirho == 5 {
+                    crate::serial_println_chirho!(
+                        "[FORK-BLOCK] PID {} fork #{} blocked (VT skip)",
+                        fork_pid_chirho, fc_chirho,
+                    );
+                    -EAGAIN_CHIRHO
+                } else {
+                    // Children of PID 5 can fork normally (xkbcomp children)
+                    crate::process_chirho::sys_fork_chirho(frame_chirho)
+                }
             } else {
                 crate::process_chirho::sys_fork_chirho(frame_chirho)
             }
