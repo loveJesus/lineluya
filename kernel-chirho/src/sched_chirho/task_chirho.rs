@@ -268,6 +268,11 @@ pub struct TaskChirho {
     /// is restored by the sched_yield handler before SYSRET.
     pub preempted_rip_chirho: u64,
 
+    /// Counter for stale preemption detection. Incremented each timer tick
+    /// while preempted_rip is non-zero. Reset to 0 when preempted_rip clears.
+    /// If exceeds 50 (~500ms), force-clears preempted_rip to prevent stall.
+    pub preempt_stale_chirho: u32,
+
     // -- Per-process page table ----------------------------------------------
 
     /// Physical address of this process's PML4 (top-level page table).
@@ -409,6 +414,7 @@ impl TaskChirho {
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: 0,
             preempted_rip_chirho: 0,
+            preempt_stale_chirho: 0,
             page_table_root_chirho: None, // kernel tasks share the kernel page tables
             mm_chirho: None, // kernel tasks share GLOBAL_MM
             next_fd_chirho: 0,
@@ -480,6 +486,7 @@ impl TaskChirho {
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: user_stack_chirho,
             preempted_rip_chirho: 0,
+            preempt_stale_chirho: 0,
             page_table_root_chirho: pt_root_chirho,
             mm_chirho: Some(alloc::sync::Arc::new(spin::Mutex::new(
                 crate::mm_chirho::MmChirho::new_chirho(),

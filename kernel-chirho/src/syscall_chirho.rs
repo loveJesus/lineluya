@@ -1451,6 +1451,24 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
 
+    // Log PID 5 (Xorg) syscalls to trace post-DRI2 stall
+    {
+        let trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if trace_pid_chirho == 5 {
+            static P5_CNT_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let cnt_chirho = P5_CNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            // Log last 20 syscalls (after the initial ~1500 init syscalls)
+            // Log every 100th syscall + all after 1400
+            if cnt_chirho % 100 == 0 || cnt_chirho > 1400 {
+                crate::serial_println_chirho!(
+                    "[P5-SC] #{} nr={}({}) a0={:#x}",
+                    cnt_chirho, syscall_nr_chirho,
+                    syscall_name_chirho(syscall_nr_chirho), arg0_chirho,
+                );
+            }
+        }
+    }
+
     // Log all syscalls from PID >= 2 (dropbear + children) to trace fork flow
     static POST_ACCEPT_ARMED_CHIRHO: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);

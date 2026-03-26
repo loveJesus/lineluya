@@ -391,6 +391,7 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: frame_chirho.rsp_chirho,
             preempted_rip_chirho: 0,
+            preempt_stale_chirho: 0,
             page_table_root_chirho: child_pt_root_chirho,
             // Deep-clone parent's MM for per-process VMA isolation
             mm_chirho: parent_chirho.mm_chirho.as_ref().map(|mm_arc_chirho| {
@@ -574,6 +575,7 @@ pub fn sys_clone_chirho(
             kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
             user_rsp_chirho: child_user_rsp_chirho,
             preempted_rip_chirho: 0,
+            preempt_stale_chirho: 0,
             page_table_root_chirho: child_pt_root_chirho,
             mm_chirho: parent_chirho.mm_chirho.as_ref().map(|mm_arc_chirho| {
                 let mm_clone_chirho = mm_arc_chirho.lock().clone();

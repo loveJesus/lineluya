@@ -1213,7 +1213,25 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
             // or post-trampoline address), causing GPF at non-canonical
             // addresses like 0x800000000000.
             let already_preempted_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().preempted_rip_chirho != 0)
+                .map(|t| {
+                    let mut tg_chirho = t.lock();
+                    if tg_chirho.preempted_rip_chirho != 0 {
+                        // Safety valve: if preempted_rip has been set for too
+                        // long (the trampoline/sched_yield never ran), force-clear
+                        // it to prevent permanent preemption stall.
+                        tg_chirho.preempt_stale_chirho += 1;
+                        if tg_chirho.preempt_stale_chirho > 50 {
+                            tg_chirho.preempted_rip_chirho = 0;
+                            tg_chirho.preempt_stale_chirho = 0;
+                            false // allow new preemption
+                        } else {
+                            true // still pending
+                        }
+                    } else {
+                        tg_chirho.preempt_stale_chirho = 0;
+                        false
+                    }
+                })
                 .unwrap_or(false);
             if already_preempted_chirho {
                 // Skip — let the pending preemption complete first
@@ -1234,6 +1252,40 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
                         USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO,
                         tramp_bytes_chirho,
                     );
+                }
+            }
+
+            // Verify trampoline page is mapped in current PT before redirecting.
+            // After fork/exec, the per-process PT might not have the trampoline.
+            {
+                let (cr3_tramp_chirho, _) = x86_64::registers::control::Cr3::read();
+                let tramp_present_chirho = crate::pagetable_chirho::walk_page_table_chirho(
+                    cr3_tramp_chirho.start_address(),
+                    VirtAddr::new(USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO),
+                ).map(|pte_chirho| unsafe {
+                    (*pte_chirho).flags().contains(
+                        x86_64::structures::paging::PageTableFlags::PRESENT
+                    )
+                }).unwrap_or(false);
+                if !tramp_present_chirho {
+                    // Re-map the trampoline into this process's page table
+                    let tramp_kernel_vaddr_chirho =
+                        &USER_PREEMPT_TRAMPOLINE_PAGE_CHIRHO as *const _ as u64;
+                    if let Some((tramp_phys_chirho, _)) =
+                        crate::pagetable_chirho::lookup_in_boot_pt_chirho(tramp_kernel_vaddr_chirho)
+                    {
+                        let user_flags_chirho = x86_64::structures::paging::PageTableFlags::PRESENT
+                            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+                        let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                            cr3_tramp_chirho.start_address(),
+                            USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO,
+                            tramp_phys_chirho & !0xFFF,
+                            user_flags_chirho,
+                        );
+                        x86_64::instructions::tlb::flush(
+                            VirtAddr::new(USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO)
+                        );
+                    }
                 }
             }
 
