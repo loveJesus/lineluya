@@ -1968,8 +1968,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 let fork_count_chirho = crate::task_chirho::current_task_chirho()
                     .map(|t| {
                         let mut tg = t.lock();
-                        let c = tg.preempt_stale_chirho; // reuse as fork counter
-                        tg.preempt_stale_chirho = c + 1;
+                        let c = tg.fork_count_chirho;
+                        tg.fork_count_chirho = c + 1;
                         c
                     })
                     .unwrap_or(0);

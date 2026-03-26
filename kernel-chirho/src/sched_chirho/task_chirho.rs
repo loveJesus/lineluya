@@ -270,8 +270,12 @@ pub struct TaskChirho {
 
     /// Counter for stale preemption detection. Incremented each timer tick
     /// while preempted_rip is non-zero. Reset to 0 when preempted_rip clears.
-    /// If exceeds 50 (~500ms), force-clears preempted_rip to prevent stall.
+    /// If exceeds 3 (~30ms), force-clears preempted_rip to prevent stall.
     pub preempt_stale_chirho: u32,
+
+    /// Per-PID fork counter for VT fork blocking. Counts how many times
+    /// this specific task called fork(). First 2 allowed (xkbcomp), 3rd blocked.
+    pub fork_count_chirho: u32,
 
     // -- Per-process page table ----------------------------------------------
 
@@ -415,6 +419,7 @@ impl TaskChirho {
             user_rsp_chirho: 0,
             preempted_rip_chirho: 0,
             preempt_stale_chirho: 0,
+            fork_count_chirho: 0,
             page_table_root_chirho: None, // kernel tasks share the kernel page tables
             mm_chirho: None, // kernel tasks share GLOBAL_MM
             next_fd_chirho: 0,
@@ -487,6 +492,7 @@ impl TaskChirho {
             user_rsp_chirho: user_stack_chirho,
             preempted_rip_chirho: 0,
             preempt_stale_chirho: 0,
+            fork_count_chirho: 0,
             page_table_root_chirho: pt_root_chirho,
             mm_chirho: Some(alloc::sync::Arc::new(spin::Mutex::new(
                 crate::mm_chirho::MmChirho::new_chirho(),
