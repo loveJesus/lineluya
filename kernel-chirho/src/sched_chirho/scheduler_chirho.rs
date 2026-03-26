@@ -45,7 +45,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// which is a reasonable starting point for interactive responsiveness vs.
 /// throughput.  Linux's CFS/EEVDF uses a more dynamic scheme, but round-robin
 /// with a fixed quantum is fine for the initial bring-up.
-pub const DEFAULT_TIME_SLICE_CHIRHO: u64 = 10;
+pub const DEFAULT_TIME_SLICE_CHIRHO: u64 = 50;
 
 /// Maximum number of tasks the scheduler supports concurrently.
 ///
