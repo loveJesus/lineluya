@@ -1734,6 +1734,10 @@ impl SocketChirho {
     /// preventing out-of-sync issues between `state_chirho` and
     /// `tcb_chirho.state_chirho` (audit typed-002).
     pub fn effective_state_chirho(&self) -> SocketStateChirho {
+        // AF_UNIX: use socket state directly (no TCP layer)
+        if self.family_chirho as u64 == AF_UNIX_CHIRHO {
+            return self.state_chirho;
+        }
         // TCP state takes precedence for stream sockets
         let base_type_chirho = self.sock_type_chirho & 0xF;
         if base_type_chirho == 1 { // SOCK_STREAM
@@ -1741,7 +1745,7 @@ impl SocketChirho {
                 TcpStateChirho::EstablishedChirho => SocketStateChirho::ConnectedChirho,
                 TcpStateChirho::ListenChirho => SocketStateChirho::ListeningChirho,
                 TcpStateChirho::ClosedChirho => SocketStateChirho::ClosedChirho,
-                _ => self.state_chirho, // use socket state for transitional TCP states
+                _ => self.state_chirho,
             }
         } else {
             self.state_chirho
