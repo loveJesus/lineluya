@@ -2854,9 +2854,9 @@ pub fn sys_connect_chirho(
                 None => return -EINVAL_CHIRHO,
             };
             let result_chirho = unix_socket_connect_chirho(unix_idx_chirho, &path_chirho);
-            crate::serial_debug_chirho!(
-                "[NET] sys_connect(AF_UNIX) fd={} path='{}' -> {}",
-                sockfd_chirho, path_chirho, result_chirho,
+            crate::serial_println_chirho!(
+                "[NET] sys_connect(AF_UNIX) fd={} path='{}' unix_idx={} -> {}",
+                sockfd_chirho, path_chirho, unix_idx_chirho, result_chirho,
             );
             return result_chirho;
         }
