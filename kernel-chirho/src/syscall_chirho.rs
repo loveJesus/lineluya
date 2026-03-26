@@ -1459,7 +1459,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             let cnt_chirho = P5_CNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             // Log last 20 syscalls (after the initial ~1500 init syscalls)
             // Log every 100th syscall + all after 1400
-            if cnt_chirho % 100 == 0 || cnt_chirho > 1400 {
+            if cnt_chirho % 10000 == 0 {
                 crate::serial_println_chirho!(
                     "[P5-SC] #{} nr={}({}) a0={:#x}",
                     cnt_chirho, syscall_nr_chirho,
@@ -2558,7 +2558,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             use core::sync::atomic::{AtomicU64, Ordering};
             static P5_RET_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
             let cnt_chirho = P5_RET_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho > 1530 {
+            if false && cnt_chirho > 1530 { // Disabled: serial flooding starves other PIDs
                 crate::serial_println_chirho!(
                     "[P5-RET] #{} nr={} r={} sig={} rcx={:#x} r11={:#x}",
                     cnt_chirho, syscall_nr_chirho, result_chirho,
@@ -4702,10 +4702,15 @@ fn sys_epoll_wait_chirho(
             .map(|t| t.lock().pid_chirho).unwrap_or(0);
         let ep_count_chirho = EPOLL_ENTRIES_CHIRHO.lock().len();
         if ep_pid_chirho >= 5 {
-            crate::serial_println_chirho!(
-                "[EPOLL-WAIT] pid={} maxev={} timeout={} entries={}",
-                ep_pid_chirho, maxevents_chirho, timeout_chirho, ep_count_chirho,
-            );
+            use core::sync::atomic::{AtomicU64, Ordering as EpOrd};
+            static EP_LOG_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let epc_chirho = EP_LOG_CNT_CHIRHO.fetch_add(1, EpOrd::Relaxed);
+            if epc_chirho < 20 || epc_chirho % 10000 == 0 {
+                crate::serial_println_chirho!(
+                    "[EPOLL-WAIT] pid={} maxev={} timeout={} entries={}",
+                    ep_pid_chirho, maxevents_chirho, timeout_chirho, ep_count_chirho,
+                );
+            }
         }
     }
 
