@@ -569,6 +569,16 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
             b"/tmp/lib-chirho\n/lib\n/usr/lib\n/usr/local/lib\n",
         );
         serial_println_chirho!("[INIT] Set /etc/ld-musl-x86_64.path: /tmp/lib-chirho first");
+
+        // Pre-compiled XKB keymap — xkbcomp takes 10+ minutes to load
+        // libraries via VirtIO-blk. Write the pre-compiled keymap so Xorg
+        // finds it immediately without needing to fork+exec xkbcomp.
+        static XKM_DEFAULT_CHIRHO: &[u8] = include_bytes!("xkm_default_chirho.bin");
+        tmpfs_chirho::write_tmpfs_file_chirho("/tmp/server-0.xkm", XKM_DEFAULT_CHIRHO);
+        serial_println_chirho!(
+            "[INIT] Pre-compiled XKB keymap written to /tmp/server-0.xkm ({} bytes)",
+            XKM_DEFAULT_CHIRHO.len(),
+        );
     }
 
     // Create /etc/profile and /root/.profile on tmpfs.

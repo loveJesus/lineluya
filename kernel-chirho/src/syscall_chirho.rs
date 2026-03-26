@@ -1979,9 +1979,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                             crate::signal_chirho::SignalActionChirho::HandlerChirho { .. })
                     })
                     .unwrap_or(false);
-                // Allow ALL forks from Xorg PID >= 5. xkbcomp children
-                // run slowly but are needed for XKB keymap compilation.
-                // Auto-SIGUSR1 unblocks VT wait pattern.
+                // Allow fork — xkbcomp child runs in background.
+                // Pre-compiled /tmp/server-0.xkm is already on tmpfs.
+                // wait4 fast-path returns immediately so Xorg reads the
+                // pre-compiled file without waiting for the slow child.
                 {
                     let result_chirho = crate::process_chirho::sys_fork_chirho(frame_chirho);
                     if result_chirho > 0 {
@@ -1989,6 +1990,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                             "[FORK-OK] PID {} fork #{} → child={}",
                             fork_pid_chirho, fork_count_chirho, result_chirho,
                         );
+                        // Auto-SIGUSR1 for VT wait pattern
                         if has_handler_chirho {
                             if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
                                 let mut tg_chirho = task_arc_chirho.lock();

@@ -1247,10 +1247,16 @@ pub fn sys_openat_chirho(
                 "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
                 "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
                 "/usr/libexec/Xorg :0 vt7 -noreset -novtswitch -keeptty 2>/dev/null &\n",
-                "if test -f /tmp/.X0-lock; then\n",
-                "  twm &\n",
-                "  xterm &\n",
-                "fi\n",
+                "# Wait for Xorg to create X11 socket, then start clients\n",
+                "i=0; while [ $i -lt 60 ]; do\n",
+                "  if test -f /tmp/.X0-lock; then\n",
+                "    DISPLAY=:0 xterm &\n",
+                "    DISPLAY=:0 twm &\n",
+                "    break\n",
+                "  fi\n",
+                "  sleep 1\n",
+                "  i=$((i+1))\n",
+                "done\n",
                 "echo '  Lineluya v8.0 — Hallelujah'\n",
                 "echo '  SSH: ssh -p 2222 root@localhost'\n",
                 "echo '  VNC: port 5901'\n",
@@ -1268,9 +1274,16 @@ Section \"Screen\"\n\
     Device \"fb0-chirho\"\n\
 EndSection\n\
 \n\
+Section \"InputDevice\"\n\
+    Identifier \"kbd-chirho\"\n\
+    Driver \"kbd\"\n\
+    Option \"XkbDisable\" \"true\"\n\
+EndSection\n\
+\n\
 Section \"ServerLayout\"\n\
     Identifier \"layout-chirho\"\n\
     Screen \"screen-chirho\"\n\
+    InputDevice \"kbd-chirho\" \"CoreKeyboard\"\n\
 EndSection\n\
 "),
             _ => None,
