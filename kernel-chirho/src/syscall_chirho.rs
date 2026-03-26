@@ -1954,7 +1954,26 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg4_chirho,
             frame_chirho,
         ),
-        SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO => crate::process_chirho::sys_fork_chirho(frame_chirho),
+        SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO => {
+            // Block VT fork chain: Xorg (PID 5+) forks for VT switching,
+            // creating a 3-deep process chain that all busy-wait for SIGUSR1.
+            // Return EAGAIN for the SECOND fork from each process to prevent
+            // the chain. The first fork (PID 2→children) is allowed.
+            let fork_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if fork_pid_chirho >= 5 {
+                // Block ALL forks from Xorg and its descendants to prevent
+                // the VT helper fork chain. When fork returns EAGAIN, Xorg
+                // skips VT switching and proceeds directly to the event loop.
+                crate::serial_println_chirho!(
+                    "[FORK-BLOCK] PID {} fork blocked → EAGAIN (skip VT)",
+                    fork_pid_chirho,
+                );
+                -EAGAIN_CHIRHO
+            } else {
+                crate::process_chirho::sys_fork_chirho(frame_chirho)
+            }
+        },
         SYS_EXECVE_CHIRHO => crate::process_chirho::sys_execve_chirho(
             arg0_chirho,
             arg1_chirho,
