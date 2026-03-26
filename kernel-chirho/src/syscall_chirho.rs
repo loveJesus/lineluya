@@ -4806,7 +4806,7 @@ fn sys_epoll_wait_chirho(
         if count_chirho > 0 {
             let ret_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if ret_pid_chirho >= 5 {
+            if false && ret_pid_chirho >= 5 { // Disabled: 490K lines in 25min
                 crate::serial_println_chirho!(
                     "[EPOLL-RET] pid={} events={}", ret_pid_chirho, count_chirho,
                 );
