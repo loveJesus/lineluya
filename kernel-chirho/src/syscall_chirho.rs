@@ -1962,27 +1962,25 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             let fork_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
             if fork_pid_chirho >= 5 {
-                // Allow first 2 forks from PID 5 (Xorg) for xkbcomp.
-                // Block 3rd+ fork (VT helper chain) which causes infinite
-                // busy-wait stall due to scheduler restore bug.
-                use core::sync::atomic::{AtomicU64, Ordering as ForkOrd};
-                static XORG_FORK_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                let fc_chirho = XORG_FORK_COUNT_CHIRHO.fetch_add(1, ForkOrd::Relaxed);
-                if fork_pid_chirho == 5 && fc_chirho < 2 {
-                    crate::serial_println_chirho!(
-                        "[FORK-ALLOW] PID {} fork #{} allowed (xkbcomp)",
-                        fork_pid_chirho, fc_chirho,
-                    );
+                // Per-PID fork counting: only the Xorg PID gets fork-limited.
+                // Allow first 2 forks (xkbcomp), block the 3rd (VT helper).
+                // Use a per-task fork counter instead of a global one.
+                let fork_count_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| {
+                        let mut tg = t.lock();
+                        let c = tg.preempt_stale_chirho; // reuse as fork counter
+                        tg.preempt_stale_chirho = c + 1;
+                        c
+                    })
+                    .unwrap_or(0);
+                if fork_count_chirho < 2 {
                     crate::process_chirho::sys_fork_chirho(frame_chirho)
-                } else if fork_pid_chirho == 5 {
+                } else {
                     crate::serial_println_chirho!(
                         "[FORK-BLOCK] PID {} fork #{} blocked (VT skip)",
-                        fork_pid_chirho, fc_chirho,
+                        fork_pid_chirho, fork_count_chirho,
                     );
                     -EAGAIN_CHIRHO
-                } else {
-                    // Children of PID 5 can fork normally (xkbcomp children)
-                    crate::process_chirho::sys_fork_chirho(frame_chirho)
                 }
             } else {
                 crate::process_chirho::sys_fork_chirho(frame_chirho)
@@ -5014,29 +5012,10 @@ fn sys_setsid_chirho() -> i64 {
     task_chirho.pgid_chirho = pid_chirho;
     task_chirho.controlling_tty_chirho = None;
 
-    // Auto-signal parent AND grandparent with SIGUSR1 after setsid.
-    // This unblocks Xorg's VT fork chain (PID 5→7→8). PID 8 calls
-    // setsid, we signal PID 7 (parent) AND PID 5 (grandparent).
-    // Harmless for other processes (SIGUSR1 default action = terminate,
-    // but only if no handler is set — dropbear's child has already
-    // called setsid earlier and doesn't re-call it).
-    let ppid_chirho = task_chirho.ppid_chirho;
+    // setsid auto-SIGUSR1 REMOVED — it killed processes (dropbear, Xorg)
+    // because SIGUSR1 default action is TERMINATE. The VT fork chain is
+    // handled by the fork block instead.
     drop(task_chirho);
-    if ppid_chirho >= 3 {
-        // Signal parent
-        crate::signal_chirho::send_signal_chirho(ppid_chirho, 10);
-        // Also signal grandparent (for Xorg's two-level fork chain)
-        if let Some(parent_task_chirho) = crate::task_chirho::find_task_by_pid_chirho(ppid_chirho) {
-            let gppid_chirho = parent_task_chirho.lock().ppid_chirho;
-            if gppid_chirho >= 3 && gppid_chirho != ppid_chirho {
-                crate::signal_chirho::send_signal_chirho(gppid_chirho, 10);
-            }
-        }
-        crate::serial_println_chirho!(
-            "[SETSID-SIG] PID {} sent SIGUSR1 to parent={} and ancestors",
-            pid_chirho, ppid_chirho,
-        );
-    }
     pid_chirho as i64
 }
 
