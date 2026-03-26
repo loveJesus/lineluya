@@ -7788,7 +7788,31 @@ pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 {
     }
     0
 }
-pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); let pi_chirho = match t_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) { Some(sk_chirho) => match sk_chirho.peer_idx_chirho { Some(p_chirho) => p_chirho, None => return -ENOTCONN_CHIRHO }, None => return -EBADF_CHIRHO }; if let Some(ref mut peer_chirho) = t_chirho[pi_chirho] { peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec()); return d_chirho.len() as i64; } -EBADF_CHIRHO }
+pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 {
+    let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    let pi_chirho = match t_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) {
+        Some(sk_chirho) => match sk_chirho.peer_idx_chirho {
+            Some(p_chirho) => p_chirho,
+            None => return -ENOTCONN_CHIRHO,
+        },
+        None => return -EBADF_CHIRHO,
+    };
+    if let Some(ref mut peer_chirho) = t_chirho[pi_chirho] {
+        // Log X11 protocol data arriving on the server side
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static UNIX_SEND_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let cnt_chirho = UNIX_SEND_LOG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if cnt_chirho < 20 {
+            crate::serial_println_chirho!(
+                "[UNIX-SEND] #{} from_idx={} to_peer={} len={}",
+                cnt_chirho, idx_chirho, pi_chirho, d_chirho.len(),
+            );
+        }
+        peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec());
+        return d_chirho.len() as i64;
+    }
+    -EBADF_CHIRHO
+}
 pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()).and_then(|sk_chirho| sk_chirho.recv_buf_chirho.pop_front()) }
 
 /// Mark a unix socket as listening for incoming connections.

@@ -1451,9 +1451,21 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
 
-    // Log PID 5 (Xorg) syscalls to trace post-DRI2 stall
+    // Log X11 client syscalls (first 50 per PID)
     {
         let trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if trace_pid_chirho == 13 || trace_pid_chirho == 14 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static XCLI_SC_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let c_chirho = XCLI_SC_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if c_chirho < 50 {
+                crate::serial_println_chirho!(
+                    "[XCLI-SC] pid={} #{} nr={}({}) a0={:#x}",
+                    trace_pid_chirho, c_chirho, syscall_nr_chirho,
+                    syscall_name_chirho(syscall_nr_chirho), arg0_chirho,
+                );
+            }
+        }
         if trace_pid_chirho == 5 {
             static P5_CNT_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
             let cnt_chirho = P5_CNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -1822,6 +1834,22 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho as i32,
         ),
         SYS_WRITEV_CHIRHO => {
+            // Diagnostic: log writev from X11 client PIDs
+            {
+                let wv_pid_chirho = crate::task_chirho::current_task_chirho()
+                    .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
+                if wv_pid_chirho >= 13 {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static XCLI_WV_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let c_chirho = XCLI_WV_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if c_chirho < 10 {
+                        crate::serial_println_chirho!(
+                            "[XCLI-WV] pid={} writev(fd={}, cnt={})",
+                            wv_pid_chirho, arg0_chirho, arg2_chirho,
+                        );
+                    }
+                }
+            }
             sys_writev_chirho(
                 arg0_chirho,
                 arg1_chirho as *const IoVecChirho,
