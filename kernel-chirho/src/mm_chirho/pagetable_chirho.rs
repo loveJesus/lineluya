@@ -505,14 +505,25 @@ fn clone_table_level_chirho(
             let is_cow_chirho = flags_chirho.contains(PageTableFlags::BIT_9);
 
             if is_user_chirho && (is_writable_chirho || is_cow_chirho) {
-                // COW: share the same physical frame. Both boot PML4 and
-                // child PT point to the same page, marked read-only + COW.
-                // When either process writes, handle_cow_fault_chirho copies.
-                let mut cow_flags_chirho = flags_chirho;
-                cow_flags_chirho.remove(PageTableFlags::WRITABLE);
-                cow_flags_chirho.insert(PageTableFlags::BIT_9);
-                source_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
-                new_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
+                // Skip device-mapped pages (framebuffer at 0x80000000).
+                // COW would redirect writes to a RAM copy, breaking display.
+                let page_pa_chirho = entry_addr_chirho.as_u64();
+                let fb_pa_chirho = crate::fb_device_chirho::fb_phys_addr_chirho();
+                let fb_sz_chirho = 1280u64 * 800 * 4;
+                if fb_pa_chirho != 0 && page_pa_chirho >= fb_pa_chirho
+                    && page_pa_chirho < fb_pa_chirho + fb_sz_chirho
+                {
+                    // Share directly — both parent and child see the real FB
+                    new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
+                } else {
+                    // COW: share the same physical frame. Both source and
+                    // child PT point to the same page, marked read-only + COW.
+                    let mut cow_flags_chirho = flags_chirho;
+                    cow_flags_chirho.remove(PageTableFlags::WRITABLE);
+                    cow_flags_chirho.insert(PageTableFlags::BIT_9);
+                    source_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
+                    new_table_chirho[i_chirho].set_addr(entry_addr_chirho, cow_flags_chirho);
+                }
             } else {
                 // Kernel or non-user page — share directly.
                 new_table_chirho[i_chirho].set_addr(entry_addr_chirho, flags_chirho);
@@ -763,6 +774,19 @@ pub fn mark_user_pages_cow_chirho(pml4_phys_chirho: PhysAddr) -> u64 {
                     let page_flags_chirho = pt_chirho[pt_idx_chirho].flags();
                     if !page_flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE) { continue; }
                     if !page_flags_chirho.contains(PageTableFlags::WRITABLE) { continue; }
+
+                    // Skip device-mapped pages (framebuffer at 0x80000000).
+                    // COW would redirect writes to a RAM copy, breaking the
+                    // display output — Xorg must write to the real HW address.
+                    let page_phys_chirho = pt_chirho[pt_idx_chirho].addr().as_u64();
+                    let fb_phys_chirho = crate::fb_device_chirho::fb_phys_addr_chirho();
+                    let fb_size_chirho = 1280u64 * 800 * 4; // 4MB framebuffer
+                    if fb_phys_chirho != 0
+                        && page_phys_chirho >= fb_phys_chirho
+                        && page_phys_chirho < fb_phys_chirho + fb_size_chirho
+                    {
+                        continue; // Never COW-mark framebuffer pages
+                    }
 
                     // Mark as COW: remove WRITABLE, add COW bit
                     let cow_flags_chirho = (page_flags_chirho & !PageTableFlags::WRITABLE)
