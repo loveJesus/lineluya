@@ -331,33 +331,50 @@ impl MmChirho {
                     map_addr_chirho, aligned_len_chirho, initial_prot_chirho,
                 )?;
 
-                // Read file data into the mapped region.
-                // Use sys_read_real in a loop — each read copies blocks
-                // directly into the mapped pages.
-                let saved_pos_chirho = crate::fs_chirho::sys_lseek_chirho(
-                    fd_chirho as u64, 0, 1,
-                );
-                let _ = crate::fs_chirho::sys_lseek_chirho(
-                    fd_chirho as u64, _offset_chirho as i64, 0,
-                );
-                let total_chirho = aligned_len_chirho.min(8 * 1024 * 1024) as usize;
-                let mut done_chirho: usize = 0;
-                while done_chirho < total_chirho {
-                    let chunk_chirho = core::cmp::min(65536, total_chirho - done_chirho);
-                    let n_chirho = crate::fs_chirho::sys_read_real_chirho(
-                        fd_chirho as u64,
-                        map_addr_chirho + done_chirho as u64,
-                        chunk_chirho,
-                    );
-                    if n_chirho <= 0 { break; }
-                    done_chirho += n_chirho as usize;
-                }
-                // mmap data integrity logging removed — was causing kernel
-                // heap pressure during heavy library loading
-                if saved_pos_chirho >= 0 {
-                    let _ = crate::fs_chirho::sys_lseek_chirho(
-                        fd_chirho as u64, saved_pos_chirho, 0,
-                    );
+                // Read file data into the mapped region using pread semantics.
+                // CRITICAL: do NOT use lseek+read (pos_chirho is shared via
+                // Arc across fork — preemption can switch to a child that
+                // modifies the shared file position, corrupting the read).
+                // Instead, read directly from the inode at the given offset.
+                {
+                    let file_arc_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64);
+                    if let Some(file_ref_chirho) = file_arc_chirho {
+                        let total_chirho = aligned_len_chirho.min(8 * 1024 * 1024) as usize;
+                        let mut done_chirho: usize = 0;
+                        let file_offset_chirho = _offset_chirho as usize;
+                        // Read directly from inode data at offset (pread)
+                        let inode_arc_chirho = {
+                            let fg_chirho = file_ref_chirho.lock();
+                            fg_chirho.inode_chirho.clone()
+                        };
+                        while done_chirho < total_chirho {
+                            let chunk_chirho = core::cmp::min(4096, total_chirho - done_chirho);
+                            let mut kbuf_chirho = [0u8; 4096];
+                            // Create a temporary FileChirho with pos at the right offset
+                            let n_chirho = {
+                                let fg_chirho = file_ref_chirho.lock();
+                                let mut tmp_file_chirho = crate::vfs_chirho::FileChirho {
+                                    inode_chirho: inode_arc_chirho.clone(),
+                                    pos_chirho: (file_offset_chirho + done_chirho) as u64,
+                                    flags_chirho: fg_chirho.flags_chirho,
+                                    ops_chirho: fg_chirho.ops_chirho,
+                                };
+                                match tmp_file_chirho.ops_chirho.read_chirho(
+                                    &mut tmp_file_chirho, &mut kbuf_chirho[..chunk_chirho],
+                                ) {
+                                    Ok(n) if n > 0 => n,
+                                    _ => break,
+                                }
+                            };
+                            // Copy to user space
+                            if crate::uaccess_chirho::copy_to_user_chirho(
+                                map_addr_chirho + done_chirho as u64,
+                                &kbuf_chirho[..n_chirho],
+                                n_chirho,
+                            ).is_err() { break; }
+                            done_chirho += n_chirho;
+                        }
+                    }
                 }
 
                 let vma_chirho = VmaChirho {
