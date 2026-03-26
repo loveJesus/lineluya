@@ -4533,17 +4533,32 @@ fn sys_epoll_ctl_chirho(
     const EPOLL_CTL_MOD_CHIRHO: i32 = 3;
 
     // Read epoll_event struct from userspace: { u32 events, u64 data } = 12 bytes packed
+    // MUST use copy_from_user — raw pointer reads fail on demand-paged user memory
     let (events_chirho, data_chirho) = if event_ptr_chirho != 0 {
-        let ev_chirho = unsafe { core::ptr::read(event_ptr_chirho as *const u32) };
-        let dt_chirho = unsafe { core::ptr::read((event_ptr_chirho + 4) as *const u64) };
-        (ev_chirho, dt_chirho)
+        let mut ev_buf_chirho = [0u8; 12];
+        if crate::uaccess_chirho::copy_from_user_chirho(
+            &mut ev_buf_chirho, event_ptr_chirho, 12,
+        ).is_ok() {
+            let ev_chirho = u32::from_ne_bytes([ev_buf_chirho[0], ev_buf_chirho[1], ev_buf_chirho[2], ev_buf_chirho[3]]);
+            let dt_chirho = u64::from_ne_bytes(ev_buf_chirho[4..12].try_into().unwrap_or([0u8; 8]));
+            (ev_chirho, dt_chirho)
+        } else {
+            (0, 0)
+        }
     } else {
         (0, 0)
     };
 
+    let ectl_pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|t| t.lock().pid_chirho).unwrap_or(0);
     let mut entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
     match op_chirho {
         EPOLL_CTL_ADD_CHIRHO => {
+            let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
+            crate::serial_println_chirho!(
+                "[EPOLL-CTL] pid={} ADD fd={} events={:#x} is_sock={}",
+                ectl_pid_chirho, fd_chirho, events_chirho, is_sock_chirho,
+            );
             entries_chirho.push((fd_chirho, events_chirho, data_chirho));
         }
         EPOLL_CTL_DEL_CHIRHO => {
@@ -4576,11 +4591,17 @@ fn sys_epoll_wait_chirho(
         return -EINVAL_CHIRHO;
     }
 
-    crate::serial_debug_chirho!(
-        "[EPOLL] wait: maxev={} timeout={} entries={}",
-        maxevents_chirho, timeout_chirho,
-        EPOLL_ENTRIES_CHIRHO.lock().len(),
-    );
+    {
+        let ep_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        let ep_count_chirho = EPOLL_ENTRIES_CHIRHO.lock().len();
+        if ep_pid_chirho >= 5 {
+            crate::serial_println_chirho!(
+                "[EPOLL-WAIT] pid={} maxev={} timeout={} entries={}",
+                ep_pid_chirho, maxevents_chirho, timeout_chirho, ep_count_chirho,
+            );
+        }
+    }
 
     // Try up to 1000 HLT cycles (~10s). If timeout is 0, don't block.
     let max_attempts_chirho = if timeout_chirho == 0 { 1u32 }
@@ -4631,9 +4652,13 @@ fn sys_epoll_wait_chirho(
         drop(entries_chirho);
 
         if count_chirho > 0 {
-            crate::serial_debug_chirho!(
-                "[EPOLL] returning {} events", count_chirho,
-            );
+            let ret_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            if ret_pid_chirho >= 5 {
+                crate::serial_println_chirho!(
+                    "[EPOLL-RET] pid={} events={}", ret_pid_chirho, count_chirho,
+                );
+            }
             return count_chirho as i64;
         }
 

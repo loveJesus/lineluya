@@ -332,10 +332,10 @@ impl MmChirho {
                 )?;
 
                 // Copy file data directly from inode fs_data into mapped pages.
-                // Disable interrupts to prevent preemptive timer from switching
-                // to another process mid-copy (which corrupts shared mmap state).
+                // Uses position-independent reads (pread semantics) to avoid
+                // shared file position corruption. Direct tmpfs memcpy for
+                // preloaded libraries, ext4 fallback with tmp FileChirho.
                 {
-                    x86_64::instructions::interrupts::disable();
                     let file_arc_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64);
                     if let Some(file_ref_chirho) = file_arc_chirho {
                         let total_chirho = aligned_len_chirho.min(8 * 1024 * 1024) as usize;
@@ -345,8 +345,12 @@ impl MmChirho {
                             fg_chirho.inode_chirho.clone()
                         };
                         // Try direct copy from tmpfs Vec<u8> first (zero-copy, no races)
+                        // MUST disable interrupts for tmpfs direct copy to prevent
+                        // preemption corrupting page table state during concurrent mmaps.
+                        // This is fast (~microseconds for typical .so segments).
                         let mut direct_ok_chirho = false;
                         {
+                            x86_64::instructions::interrupts::disable();
                             let ig_chirho = inode_arc_chirho.lock();
                             if let Some(ref fsdata_chirho) = ig_chirho.fs_data_chirho {
                                 if let Some(tmpfs_lock_chirho) = fsdata_chirho.downcast_ref::<spin::Mutex<crate::tmpfs_chirho::TmpfsDataChirho>>() {
@@ -367,6 +371,7 @@ impl MmChirho {
                                     }
                                 }
                             }
+                            x86_64::instructions::interrupts::enable();
                         }
                         // Fallback for ext4: read via file ops with independent position
                         if !direct_ok_chirho {
@@ -399,8 +404,6 @@ impl MmChirho {
                         }
                     }
                 }
-                x86_64::instructions::interrupts::enable();
-
                 let vma_chirho = VmaChirho {
                     start_chirho: map_addr_chirho,
                     end_chirho: map_addr_chirho + aligned_len_chirho,
