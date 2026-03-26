@@ -743,7 +743,7 @@ pub static GLOBAL_MM_CHIRHO: Mutex<Option<MmChirho>> = Mutex::new(None);
 pub fn get_or_init_mm_chirho() -> &'static Mutex<Option<MmChirho>> {
     // Guard: panic if called from a user task
     let caller_pid_chirho = crate::task_chirho::current_task_chirho()
-        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
     if caller_pid_chirho >= 2 {
         crate::serial_println_chirho!(
             "[MM] BUG: get_or_init_mm called from PID {} — use get_current_mm instead!",
@@ -861,7 +861,7 @@ fn map_anonymous_pages_chirho(
         // (no GLOBAL_MAPPER). For PID 0-2: use GLOBAL_MAPPER (boot PT).
         let frame_phys_chirho = frame_chirho.start_address().as_u64();
         let mapping_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
         if mapping_pid_chirho >= 2 {
             let (cr3_map_chirho, _) = x86_64::registers::control::Cr3::read();
             if crate::pagetable_chirho::map_page_in_pt_chirho(

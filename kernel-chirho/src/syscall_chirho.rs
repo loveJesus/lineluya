@@ -1955,16 +1955,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             frame_chirho,
         ),
         SYS_FORK_CHIRHO | SYS_VFORK_CHIRHO => {
-            // Block VT fork chain: Xorg (PID 5+) forks for VT switching,
-            // creating a 3-deep process chain that all busy-wait for SIGUSR1.
-            // Return EAGAIN for the SECOND fork from each process to prevent
-            // the chain. The first fork (PID 2→children) is allowed.
+            // For PID >= 5 (Xorg): allow first 2 forks (xkbcomp), block the
+            // 3rd+ with EAGAIN.  On ANY fork from a handler-equipped PID >= 5,
+            // auto-send SIGUSR1 so Xorg's VT wait unblocks immediately.
             let fork_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
             if fork_pid_chirho >= 5 {
-                // Per-PID fork counting: only the Xorg PID gets fork-limited.
-                // Allow first 2 forks (xkbcomp), block the 3rd (VT helper).
-                // Use a per-task fork counter instead of a global one.
                 let fork_count_chirho = crate::task_chirho::current_task_chirho()
                     .map(|t| {
                         let mut tg = t.lock();
@@ -1973,13 +1969,54 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                         c
                     })
                     .unwrap_or(0);
+                // Auto-SIGUSR1: if PID has a SIGUSR1 handler, send signal so
+                // the VT busy-wait resolves on next sigprocmask unblock.
+                let has_handler_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| {
+                        let tg = t.lock();
+                        let idx_chirho = 9; // SIGUSR1 = signal 10, index 9
+                        matches!(tg.signal_state_chirho.actions_chirho[idx_chirho],
+                            crate::signal_chirho::SignalActionChirho::HandlerChirho { .. })
+                    })
+                    .unwrap_or(false);
                 if fork_count_chirho < 2 {
-                    crate::process_chirho::sys_fork_chirho(frame_chirho)
+                    let result_chirho = crate::process_chirho::sys_fork_chirho(frame_chirho);
+                    // Auto-SIGUSR1: unblock the VT wait pattern. Set pending
+                    // directly on current task (avoid TASK_LIST lock deadlock).
+                    if result_chirho > 0 {
+                        crate::serial_println_chirho!(
+                            "[FORK-OK] PID {} fork #{} → child={}",
+                            fork_pid_chirho, fork_count_chirho, result_chirho,
+                        );
+                        if has_handler_chirho {
+                            if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                                let mut tg_chirho = task_arc_chirho.lock();
+                                tg_chirho.pending_signals_chirho |= 1u64 << 10;
+                                tg_chirho.signal_state_chirho.pending_chirho.add_chirho(
+                                    crate::signal_chirho::SignalInfoChirho {
+                                        signo_chirho: 10,
+                                        code_chirho: crate::signal_chirho::SI_USER_CHIRHO,
+                                        pid_chirho: fork_pid_chirho,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    result_chirho
                 } else {
-                    crate::serial_println_chirho!(
-                        "[FORK-BLOCK] PID {} fork #{} blocked (VT skip)",
-                        fork_pid_chirho, fork_count_chirho,
-                    );
+                    // Block 3rd+ fork to prevent VT helper child from hogging
+                    // CPU (child PIDs outside preemptable range never yield).
+                    if has_handler_chirho {
+                        crate::serial_println_chirho!(
+                            "[FORK-BLOCK] PID {} fork #{} → EAGAIN (has SIGUSR1 handler)",
+                            fork_pid_chirho, fork_count_chirho,
+                        );
+                    } else {
+                        crate::serial_println_chirho!(
+                            "[FORK-BLOCK] PID {} fork #{} → EAGAIN",
+                            fork_pid_chirho, fork_count_chirho,
+                        );
+                    }
                     -EAGAIN_CHIRHO
                 }
             } else {
@@ -2503,8 +2540,9 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     if syscall_nr_chirho == SYS_WAIT4_CHIRHO && result_chirho == 0 {
         crate::scheduler_chirho::schedule_chirho();
     }
-    // After fork from PID 3+: yield to let the exec'd child run.
-    // PID 2's fork of PID 3 doesn't need this (PID 3 is the connection handler).
+    // After fork from PID 3-4: yield to let the exec'd child run.
+    // Skip for PID >= 5 — yield_current_chirho loses the parent in
+    // the scheduler (never rescheduled after context switch).
     if (syscall_nr_chirho == SYS_FORK_CHIRHO || syscall_nr_chirho == SYS_VFORK_CHIRHO
         || syscall_nr_chirho == SYS_CLONE_CHIRHO)
         && result_chirho > 0
@@ -2512,7 +2550,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         let caller_pid_chirho = crate::task_chirho::current_task_chirho()
             .map(|t| t.lock().pid_chirho)
             .unwrap_or(0);
-        if caller_pid_chirho >= 3 {
+        if caller_pid_chirho >= 3 && caller_pid_chirho <= 4 {
             crate::scheduler_chirho::yield_current_chirho();
         }
     }
@@ -2522,7 +2560,25 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // signal must be delivered NOW (before SYSRET). Without this, the process
     // returns to a busy-wait loop and the signal is never delivered because
     // we only checked signals in select/poll, not on every syscall return.
-    crate::signal_chirho::deliver_one_signal_on_return_chirho(frame_chirho);
+    let delivered_chirho = crate::signal_chirho::deliver_one_signal_on_return_chirho(frame_chirho);
+
+    // Debug: trace PID 5 returning from syscall to catch freezes
+    {
+        let dbg_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        if dbg_pid_chirho == 5 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static P5_RET_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let cnt_chirho = P5_RET_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if cnt_chirho > 1530 {
+                crate::serial_println_chirho!(
+                    "[P5-RET] #{} nr={} r={} sig={} rcx={:#x} r11={:#x}",
+                    cnt_chirho, syscall_nr_chirho, result_chirho,
+                    delivered_chirho, frame_chirho.rcx_chirho, frame_chirho.r11_chirho,
+                );
+            }
+        }
+    }
 
     result_chirho
 }

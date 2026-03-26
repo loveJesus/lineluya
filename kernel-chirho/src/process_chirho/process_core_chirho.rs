@@ -415,7 +415,16 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             gs_base_chirho: parent_chirho.gs_base_chirho,
             signal_mask_chirho: parent_chirho.signal_mask_chirho,
             pending_signals_chirho: 0, // pending signals are not inherited
-            signal_state_chirho: crate::signal_chirho::SignalStateChirho::new_chirho(),
+            // POSIX: fork inherits signal dispositions (handlers) and blocked
+            // mask.  Only pending signals are cleared.  Without this, the
+            // child runs with all-default actions and can be killed by signals
+            // the parent intentionally blocked or handled.
+            signal_state_chirho: {
+                let mut ss_chirho = crate::signal_chirho::SignalStateChirho::new_chirho();
+                ss_chirho.blocked_chirho = parent_chirho.signal_state_chirho.blocked_chirho;
+                ss_chirho.actions_chirho = parent_chirho.signal_state_chirho.actions_chirho;
+                ss_chirho
+            },
             brk_chirho: parent_chirho.brk_chirho,
             brk_start_chirho: parent_chirho.brk_start_chirho,
             cwd_chirho: parent_chirho.cwd_chirho.clone(),

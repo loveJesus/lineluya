@@ -714,7 +714,7 @@ pub fn handle_cow_fault_chirho(faulting_addr_chirho: VirtAddr) -> bool {
     }
 
     let cow_pid_chirho = crate::task_chirho::current_task_chirho()
-        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+        .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
     crate::serial_println_chirho!(
         "[PAGETABLE] COW resolved: pid={} addr={:#x}, old_frame={:#x}, new_frame={:#x}",
         cow_pid_chirho,

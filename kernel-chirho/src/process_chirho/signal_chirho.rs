@@ -516,16 +516,16 @@ pub fn sys_rt_sigaction_chirho(
         None => return -3, // ESRCH
     };
 
-    let mut task_chirho = task_arc_chirho.lock();
     // Signal numbers are 1-based (1..=64), array indices are 0-based (0..63)
     let idx_chirho = (signum_chirho as usize).saturating_sub(1);
     if idx_chirho >= MAX_SIGNAL_CHIRHO as usize {
         return -22; // EINVAL — safety check
     }
 
-    // Write old action to userspace if oldact is non-null.
-    if oldact_chirho != 0 {
-        let old_sigaction_chirho = match &task_chirho.signal_state_chirho.actions_chirho[idx_chirho] {
+    // --- Phase 1: read old action under lock, release lock ---
+    let old_sigaction_chirho = if oldact_chirho != 0 {
+        let task_chirho = task_arc_chirho.lock();
+        Some(match &task_chirho.signal_state_chirho.actions_chirho[idx_chirho] {
             SignalActionChirho::DefaultChirho => SigactionChirho::default_chirho(),
             SignalActionChirho::IgnoreChirho => SigactionChirho {
                 sa_handler_chirho: 1, // SIG_IGN
@@ -544,11 +544,18 @@ pub fn sys_rt_sigaction_chirho(
                 sa_restorer_chirho: *restorer_chirho,
                 sa_mask_chirho: *mask_chirho,
             },
-        };
+        })
+    } else {
+        None
+    };
+
+    // --- Phase 2: user memory access WITHOUT task lock ---
+    // (COW page faults may re-lock the task in the page fault handler)
+    if let Some(ref sa_chirho) = old_sigaction_chirho {
         let size_chirho = core::mem::size_of::<SigactionChirho>();
         let src_chirho = unsafe {
             core::slice::from_raw_parts(
-                &old_sigaction_chirho as *const SigactionChirho as *const u8,
+                sa_chirho as *const SigactionChirho as *const u8,
                 size_chirho,
             )
         };
@@ -557,7 +564,7 @@ pub fn sys_rt_sigaction_chirho(
         }
     }
 
-    // Read new action from userspace if act is non-null.
+    // Read new action from userspace (no lock needed for reads either).
     if act_chirho != 0 {
         let size_chirho = core::mem::size_of::<SigactionChirho>();
         let mut buf_chirho = [0u8; 32]; // SigactionChirho is 32 bytes
@@ -583,7 +590,8 @@ pub fn sys_rt_sigaction_chirho(
                 restorer_chirho: new_sa_chirho.sa_restorer_chirho,
             },
         };
-        task_chirho.signal_state_chirho.actions_chirho[idx_chirho] = action_chirho;
+        // --- Phase 3: re-acquire lock, update action ---
+        task_arc_chirho.lock().signal_state_chirho.actions_chirho[idx_chirho] = action_chirho;
     }
 
     0
@@ -619,18 +627,20 @@ pub fn sys_rt_sigprocmask_chirho(
         None => return -3, // ESRCH
     };
 
-    let mut task_chirho = task_arc_chirho.lock();
+    // --- Phase 1: read task state under lock, release lock ---
+    let old_mask_chirho = task_arc_chirho.lock().signal_mask_chirho;
 
-    // Write old blocked mask to userspace if oldset is non-null.
+    // --- Phase 2: user memory access WITHOUT task lock ---
+    // (COW page faults may re-lock the task in the page fault handler)
     if oldset_chirho != 0 {
-        let old_mask_chirho = task_chirho.signal_mask_chirho;
         let bytes_chirho = old_mask_chirho.to_ne_bytes();
         if crate::uaccess_chirho::copy_to_user_chirho(oldset_chirho, &bytes_chirho, 8).is_err() {
             return -14; // EFAULT
         }
     }
 
-    // Read new set from userspace if set is non-null.
+    // Read new set from userspace (reads don't trigger COW, but keep
+    // pattern consistent — no lock during user access).
     if set_chirho != 0 {
         let mut buf_chirho = [0u8; 8];
         if crate::uaccess_chirho::copy_from_user_chirho(&mut buf_chirho, set_chirho, 8).is_err() {
@@ -638,7 +648,8 @@ pub fn sys_rt_sigprocmask_chirho(
         }
         let new_set_chirho = u64::from_ne_bytes(buf_chirho);
 
-        // Mask that prevents blocking SIGKILL (9) and SIGSTOP (19).
+        // --- Phase 3: re-acquire lock, update mask ---
+        let mut task_chirho = task_arc_chirho.lock();
         let unblockable_chirho: u64 =
             (1u64 << SIGKILL_CHIRHO) | (1u64 << SIGSTOP_CHIRHO);
 
@@ -1095,10 +1106,15 @@ pub fn deliver_one_signal_on_return_chirho(
                 task_chirho.signal_state_chirho.blocked_chirho |=
                     mask_chirho | (1u64 << signo_chirho);
 
+                let sig_pid_chirho = task_chirho.pid_chirho;
+
+                // --- DROP task lock BEFORE writing to user memory ---
+                // COW pages trigger page faults which may re-lock the task
+                // in the page fault handler → deadlock.
+                drop(task_chirho);
+
                 // Build the signal frame on the user stack.
                 let user_rsp_chirho = frame_chirho.rsp_chirho;
-
-                // Ensure 16-byte alignment for the sigframe.
                 let frame_size_chirho =
                     core::mem::size_of::<RtSigframeChirho>() as u64;
                 let new_rsp_chirho =
@@ -1118,31 +1134,24 @@ pub fn deliver_one_signal_on_return_chirho(
                     signo_chirho: signo_chirho as u64,
                 };
 
-                // Write the sigframe to the user stack.
+                // Write sigframe to user stack (task lock released).
                 let dst_chirho = new_rsp_chirho as *mut RtSigframeChirho;
                 unsafe {
                     core::ptr::write_volatile(dst_chirho, sigframe_chirho);
                 }
 
                 // Redirect execution to the signal handler.
-                // RDI = signo (first argument to handler)
-                // RCX = restorer address (SYSRET return target after handler RETs)
-                // RSP = sigframe on user stack
-                // The handler does: void handler(int signo) { ... }
-                // Then RETs to sa_restorer which does rt_sigreturn.
                 frame_chirho.rdi_chirho = signo_chirho as u64;
                 frame_chirho.rcx_chirho = handler_chirho;
                 frame_chirho.rsp_chirho = new_rsp_chirho;
-                // R11 should have user RFLAGS (IF set)
                 frame_chirho.r11_chirho = 0x200; // IF
 
                 crate::serial_println_chirho!(
                     "[SIGNAL] Delivering sig {} to PID {} handler={:#x} restorer={:#x} new_rsp={:#x}",
-                    signo_chirho, task_chirho.pid_chirho,
+                    signo_chirho, sig_pid_chirho,
                     handler_chirho, restorer_chirho, new_rsp_chirho,
                 );
 
-                drop(task_chirho);
                 return true;
             }
             SignalActionChirho::IgnoreChirho => {

@@ -519,7 +519,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 // pages into the clean fresh PT, causing cross-process memory
                 // aliasing and heap corruption (musl free() assert).
                 let lazy_pid_chirho = crate::task_chirho::current_task_chirho()
-                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
                 let allow_lazy_chirho = lazy_pid_chirho <= 1;
                 if allow_lazy_chirho {
                     if let Some((phys_chirho, _boot_flags_chirho)) =
@@ -562,10 +562,6 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 if let Some(alloc_chirho) = ag_chirho.as_mut() {
                     if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
                         let phys_chirho = frame_chirho.start_address().as_u64();
-                        // Use ONLY map_page_in_pt_chirho (via CR3).
-                        // The old GLOBAL_MAPPER.map_to created duplicate
-                        // intermediate PT pages that caused cross-process
-                        // PTE corruption (the sqlite3 channels GPF).
                         let (cr3_pf_chirho, _) = x86_64::registers::control::Cr3::read();
                         if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
                             cr3_pf_chirho.start_address(), page_vaddr_chirho, phys_chirho, rw_flags_chirho,
@@ -579,7 +575,17 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                         x86_64::instructions::tlb::flush(fault_addr_chirho);
                         unsafe { core::ptr::write_bytes(page_vaddr_chirho as *mut u8, 0, 4096); }
                         return;
+                    } else {
+                        crate::serial_println_chirho!(
+                            "[PF-OOM] kern page alloc failed for {:#x}",
+                            page_vaddr_chirho,
+                        );
                     }
+                } else {
+                    crate::serial_println_chirho!(
+                        "[PF-NOINIT] allocator not init for {:#x}",
+                        page_vaddr_chirho,
+                    );
                 }
             }
         }
@@ -597,7 +603,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
             // Trace page faults for PID >= 5 (Xorg)
             {
                 let pf_pid_chirho = crate::task_chirho::current_task_chirho()
-                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                    .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
                 if pf_pid_chirho >= 5 {
                     use core::sync::atomic::{AtomicU64, Ordering as PfOrd};
                     static PF5_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
@@ -617,7 +623,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
             // import boot PML4 mappings — they belong to PID 0's init shell.
             let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
             let user_fault_pid_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().pid_chirho).unwrap_or(0);
+                .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
             if user_fault_pid_chirho <= 1 {
                 if let Some((phys_chirho, boot_flags_chirho)) =
                     crate::pagetable_chirho::lookup_in_boot_pt_chirho(page_vaddr_chirho)
@@ -1207,7 +1213,7 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         && USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire)
     {
         let current_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if current_pid_chirho >= 4 { // Full preemption for all user processes
+        if current_pid_chirho >= 2 { // Full preemption for all user processes
             let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
             let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
 
