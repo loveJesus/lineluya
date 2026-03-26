@@ -1040,10 +1040,14 @@ pub fn sys_execve_chirho(
         }
     };
 
-    crate::serial_debug_chirho!(
-        "[PROCESS] execve: filename = \"{}\"",
-        filename_str_chirho
-    );
+    let exec_pid_chirho = crate::task_chirho::current_task_chirho()
+        .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
+    if exec_pid_chirho >= 10 {
+        crate::serial_println_chirho!(
+            "[EXEC] pid={} path=\"{}\"",
+            exec_pid_chirho, filename_str_chirho,
+        );
+    }
 
     sys_execve_with_filename_chirho(filename_str_chirho, argv_chirho, envp_chirho)
 }

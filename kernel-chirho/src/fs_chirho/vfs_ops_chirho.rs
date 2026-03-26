@@ -1249,7 +1249,7 @@ pub fn sys_openat_chirho(
                 "/usr/libexec/Xorg :0 vt7 -noreset -novtswitch -keeptty 2>/dev/null &\n",
                 "# Wait for Xorg to create X11 socket, then start clients\n",
                 "i=0; while [ $i -lt 60 ]; do\n",
-                "  if test -f /tmp/.X0-lock; then\n",
+                "  if cat /tmp/.X0-lock >/dev/null 2>&1; then\n",
                 "    DISPLAY=:0 xterm &\n",
                 "    DISPLAY=:0 twm &\n",
                 "    break\n",
