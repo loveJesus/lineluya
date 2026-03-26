@@ -4726,8 +4726,21 @@ fn sys_epoll_wait_chirho(
             let mut ready_events_chirho: u32 = 0;
 
             if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
-                if crate::net_chirho::socket_has_data_chirho(fd_chirho as u64) {
+                let has_data_chirho = crate::net_chirho::socket_has_data_chirho(fd_chirho as u64);
+                if has_data_chirho {
                     ready_events_chirho |= 0x001; // EPOLLIN
+                }
+                // One-shot diagnostic for accepted X11 client fds
+                if fd_chirho >= 13 && fd_chirho <= 16 {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static EPOLL_X11_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let c_chirho = EPOLL_X11_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if c_chirho < 5 {
+                        crate::serial_println_chirho!(
+                            "[EPOLL-X11] fd={} has_data={} mask={:#x}",
+                            fd_chirho, has_data_chirho, mask_chirho,
+                        );
+                    }
                 }
                 // Connected sockets: always writable.
                 // Check state via socket table.

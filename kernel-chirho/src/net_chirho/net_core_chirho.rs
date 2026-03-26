@@ -7415,7 +7415,7 @@ pub fn probe_virtio_net_io_chirho(io_base_chirho: u16) {
 #[allow(dead_code)] pub const EPOLL_CTL_MOD_CHIRHO: i32 = 3;
 
 #[derive(Clone)]
-pub struct EpollInterestChirho { pub fd_chirho: i32, pub events_chirho: u32, pub data_chirho: u64 }
+pub struct EpollInterestChirho { pub fd_chirho: i32, pub sock_idx_chirho: usize, pub events_chirho: u32, pub data_chirho: u64 }
 pub struct EpollInstanceChirho { pub interests_chirho: Vec<EpollInterestChirho> }
 
 const MAX_EPOLL_INSTANCES_CHIRHO: usize = 64;
@@ -7438,7 +7438,27 @@ pub fn epoll_ctl_impl_chirho(epfd_chirho: i32, op_chirho: i32, fd_chirho: i32, e
     let mut t_chirho = EPOLL_TABLE_CHIRHO.lock();
     let inst_chirho = match t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()) { Some(i_chirho) => i_chirho, None => return -EBADF_CHIRHO };
     match op_chirho {
-        EPOLL_CTL_ADD_CHIRHO => { inst_chirho.interests_chirho.push(EpollInterestChirho { fd_chirho, events_chirho: ev_chirho, data_chirho: dat_chirho }); 0 }
+        EPOLL_CTL_ADD_CHIRHO => {
+            // Resolve socket index NOW so epoll_wait doesn't need fd lookup.
+            let si_result_chirho = socket_idx_from_fd_chirho(fd_chirho as u64);
+            let si_chirho = si_result_chirho.unwrap_or(fd_chirho as usize);
+            let is_unix_chirho = if let Ok(idx_chirho) = si_result_chirho {
+                let st_chirho = SOCKET_TABLE_CHIRHO.lock();
+                st_chirho.get(idx_chirho).and_then(|s| s.as_ref()).map(|s| s.family_chirho as u64 == AF_UNIX_CHIRHO).unwrap_or(false)
+            } else { false };
+            let has_unix_data_chirho = if is_unix_chirho {
+                if let Some(ui_chirho) = lookup_unix_idx_chirho(si_chirho) {
+                    let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                    ut_chirho.get(ui_chirho).and_then(|s| s.as_ref()).map(|s| !s.recv_buf_chirho.is_empty()).unwrap_or(false)
+                } else { false }
+            } else { false };
+            crate::serial_println_chirho!(
+                "[EPOLL-ADD] fd={} sock_idx={} resolved={} unix={} has_data={}",
+                fd_chirho, si_chirho, si_result_chirho.is_ok(), is_unix_chirho, has_unix_data_chirho,
+            );
+            inst_chirho.interests_chirho.push(EpollInterestChirho { fd_chirho, sock_idx_chirho: si_chirho, events_chirho: ev_chirho, data_chirho: dat_chirho });
+            0
+        }
         EPOLL_CTL_DEL_CHIRHO => { inst_chirho.interests_chirho.retain(|e_chirho| e_chirho.fd_chirho != fd_chirho); 0 }
         EPOLL_CTL_MOD_CHIRHO => { for e_chirho in inst_chirho.interests_chirho.iter_mut() { if e_chirho.fd_chirho == fd_chirho { e_chirho.events_chirho = ev_chirho; e_chirho.data_chirho = dat_chirho; return 0; } } -ENOENT_NET_CHIRHO }
         _ => -EINVAL_CHIRHO,
@@ -7455,13 +7475,41 @@ pub fn epoll_wait_impl_chirho(epfd_chirho: i32, eo_chirho: u64, max_chirho: i32,
     for int_chirho in &inst_chirho.interests_chirho {
         if cnt_chirho >= max_chirho { break; }
         let mut re_chirho: u32 = 0;
-        let si_chirho = int_chirho.fd_chirho as usize;
+        // Use pre-resolved socket index (resolved at epoll_ctl ADD time).
+        let si_chirho = int_chirho.sock_idx_chirho;
         if si_chirho < st_chirho.len() { if let Some(ref sk_chirho) = st_chirho[si_chirho] {
-            if !sk_chirho.recv_buf_chirho.is_empty() { re_chirho |= EPOLLIN_CHIRHO; }
-            if sk_chirho.state_chirho == SocketStateChirho::ConnectedChirho || sk_chirho.state_chirho == SocketStateChirho::BoundChirho { re_chirho |= EPOLLOUT_CHIRHO; }
+            // For AF_UNIX: data lives in UNIX_SOCKET_TABLE, not SOCKET_TABLE.
+            if sk_chirho.family_chirho as u64 == AF_UNIX_CHIRHO {
+                if let Some(ui_chirho) = lookup_unix_idx_chirho(si_chirho) {
+                    let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                    if let Some(Some(ref us_chirho)) = ut_chirho.get(ui_chirho) {
+                        if !us_chirho.recv_buf_chirho.is_empty() { re_chirho |= EPOLLIN_CHIRHO; }
+                        if us_chirho.peer_idx_chirho.is_some() { re_chirho |= EPOLLOUT_CHIRHO; }
+                    }
+                }
+                // Listening socket: check backlog for pending connections
+                if sk_chirho.state_chirho == SocketStateChirho::ListeningChirho {
+                    if let Some(ui_chirho) = lookup_unix_idx_chirho(si_chirho) {
+                        let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                        if let Some(Some(ref us_chirho)) = ut_chirho.get(ui_chirho) {
+                            if !us_chirho.backlog_chirho.is_empty() { re_chirho |= EPOLLIN_CHIRHO; }
+                        }
+                    }
+                }
+            } else {
+                // AF_INET: use SOCKET_TABLE recv_buf
+                if !sk_chirho.recv_buf_chirho.is_empty() { re_chirho |= EPOLLIN_CHIRHO; }
+                if sk_chirho.state_chirho == SocketStateChirho::ConnectedChirho || sk_chirho.state_chirho == SocketStateChirho::BoundChirho { re_chirho |= EPOLLOUT_CHIRHO; }
+            }
             if sk_chirho.state_chirho == SocketStateChirho::ClosedChirho { re_chirho |= EPOLLHUP_CHIRHO; }
         }}
-        re_chirho &= int_chirho.events_chirho;
+        // Mask with requested events, stripping modifier flags (EPOLLET=bit31,
+        // EPOLLONESHOT=bit30). If no event bits requested (only modifiers),
+        // report all ready events — Xorg adds client fds with events=EPOLLET.
+        let event_mask_chirho = int_chirho.events_chirho & 0x0FFF_FFFF;
+        if event_mask_chirho != 0 {
+            re_chirho &= event_mask_chirho;
+        }
         if re_chirho != 0 && eo_chirho != 0 {
             let op_chirho = (eo_chirho + cnt_chirho as u64 * 12) as *mut u8;
             unsafe { core::ptr::write_unaligned(op_chirho as *mut u32, re_chirho); core::ptr::write_unaligned(op_chirho.add(4) as *mut u64, int_chirho.data_chirho); }

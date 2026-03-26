@@ -1267,6 +1267,7 @@ Section \"Device\"\n\
     Identifier \"fb0-chirho\"\n\
     Driver \"fbdev\"\n\
     Option \"fbdev\" \"/dev/fb0\"\n\
+    Option \"ShadowFB\" \"false\"\n\
 EndSection\n\
 \n\
 Section \"Screen\"\n\
