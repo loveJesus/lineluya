@@ -672,13 +672,15 @@ pub fn sys_wait4_chirho(
     };
 
     // Fast-path for Xorg (PID >= 5): don't block in wait4.
-    // Pre-compiled /tmp/server-0.xkm is on tmpfs. xkbcomp runs in background
-    // but Xorg reads the pre-compiled keymap immediately.
+    // Pre-compiled /tmp/server-0.xkm is on tmpfs. Kill the child
+    // (xkbcomp) to free CPU for xterm/twm loading.
     if parent_pid_chirho >= 5 && pid_chirho > 0 && (options_chirho & WNOHANG_CHIRHO) == 0 {
         crate::serial_println_chirho!(
-            "[WAIT4-FAST] PID {} wait4({}) → fake success",
+            "[WAIT4-FAST] PID {} wait4({}) → kill child + fake success",
             parent_pid_chirho, pid_chirho,
         );
+        // Kill the child to free CPU (xkbcomp isn't needed)
+        crate::signal_chirho::send_signal_chirho(pid_chirho as u64, 9); // SIGKILL
         if wstatus_chirho != 0 {
             let status_chirho: i32 = 0;
             let _ = crate::uaccess_chirho::copy_to_user_chirho(
