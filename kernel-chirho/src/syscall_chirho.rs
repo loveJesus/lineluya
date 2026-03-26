@@ -1979,10 +1979,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                             crate::signal_chirho::SignalActionChirho::HandlerChirho { .. })
                     })
                     .unwrap_or(false);
-                if fork_count_chirho < 2 {
+                // Allow ALL forks from Xorg PID >= 5. xkbcomp children
+                // run slowly but are needed for XKB keymap compilation.
+                // Auto-SIGUSR1 unblocks VT wait pattern.
+                {
                     let result_chirho = crate::process_chirho::sys_fork_chirho(frame_chirho);
-                    // Auto-SIGUSR1: unblock the VT wait pattern. Set pending
-                    // directly on current task (avoid TASK_LIST lock deadlock).
                     if result_chirho > 0 {
                         crate::serial_println_chirho!(
                             "[FORK-OK] PID {} fork #{} → child={}",
@@ -2003,21 +2004,6 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                         }
                     }
                     result_chirho
-                } else {
-                    // Block 3rd+ fork to prevent VT helper child from hogging
-                    // CPU (child PIDs outside preemptable range never yield).
-                    if has_handler_chirho {
-                        crate::serial_println_chirho!(
-                            "[FORK-BLOCK] PID {} fork #{} → EAGAIN (has SIGUSR1 handler)",
-                            fork_pid_chirho, fork_count_chirho,
-                        );
-                    } else {
-                        crate::serial_println_chirho!(
-                            "[FORK-BLOCK] PID {} fork #{} → EAGAIN",
-                            fork_pid_chirho, fork_count_chirho,
-                        );
-                    }
-                    -EAGAIN_CHIRHO
                 }
             } else {
                 crate::process_chirho::sys_fork_chirho(frame_chirho)

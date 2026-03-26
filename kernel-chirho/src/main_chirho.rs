@@ -501,6 +501,10 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
             "libpixman-1.so.0", "libpciaccess.so.0", "libnettle.so.8",
             "libXfont2.so.2", "libxshmfence.so.1", "libudev.so.1",
             "libdrm.so.2", "libxcvt.so.0", "libfontenc.so.1",
+            // Dynamic linker itself — preloading to tmpfs dramatically speeds
+            // up fork+exec children (xkbcomp) since PT_INTERP is read from
+            // tmpfs instead of slow ext4/VirtIO-blk.
+            "ld-musl-x86_64.so.1",
         ];
         // Create /tmp/lib-chirho/ directory on tmpfs
         if let Ok((tmp_inode_chirho, _)) = crate::fs_chirho::resolve_path_chirho("/tmp") {

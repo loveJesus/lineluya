@@ -671,6 +671,8 @@ pub fn sys_wait4_chirho(
         None => return -ECHILD_CHIRHO,
     };
 
+    // (wait4 fast-path removed — xkbcomp needs to produce /tmp/server-0.xkm)
+
     // -----------------------------------------------------------------------
     // Helper closure: scan the task list for a matching zombie child.
     // Returns (zombie_pid, exit_code) or None.  Also returns -ECHILD sentinel
