@@ -2486,6 +2486,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         }
     }
 
+    // Deliver pending signals before returning to user mode.
+    // CRITICAL for Xorg: after sigprocmask unblocks SIGUSR1, the pending
+    // signal must be delivered NOW (before SYSRET). Without this, the process
+    // returns to a busy-wait loop and the signal is never delivered because
+    // we only checked signals in select/poll, not on every syscall return.
+    crate::signal_chirho::deliver_one_signal_on_return_chirho(frame_chirho);
+
     result_chirho
 }
 
