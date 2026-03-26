@@ -1220,7 +1220,7 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
                         // long (the trampoline/sched_yield never ran), force-clear
                         // it to prevent permanent preemption stall.
                         tg_chirho.preempt_stale_chirho += 1;
-                        if tg_chirho.preempt_stale_chirho > 50 {
+                        if tg_chirho.preempt_stale_chirho > 3 {
                             tg_chirho.preempted_rip_chirho = 0;
                             tg_chirho.preempt_stale_chirho = 0;
                             false // allow new preemption

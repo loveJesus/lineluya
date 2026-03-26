@@ -278,6 +278,17 @@ impl FileOpsChirho for DevConsoleOpsChirho {
             return Ok(n_chirho);
         }
 
+        // Auto-inject X11 client launch commands when Xorg socket is ready.
+        // This bypasses the shell profile timing issue — commands are
+        // injected directly into the shell's stdin read.
+        if crate::net_chirho::should_launch_x11_clients_chirho() {
+            let cmd_chirho = b"xterm &\ntwm &\n";
+            let n_chirho = cmd_chirho.len().min(buf_chirho.len());
+            buf_chirho[..n_chirho].copy_from_slice(&cmd_chirho[..n_chirho]);
+            crate::serial_println_chirho!("[X11-INJECT] Injected xterm+twm into shell stdin");
+            return Ok(n_chirho);
+        }
+
         // Blocking read: poll PS/2 keyboard port directly.
         // Must enable interrupts during polling so timer ticks keep running.
         // The SYSCALL entry path masks IF, so we re-enable here.
