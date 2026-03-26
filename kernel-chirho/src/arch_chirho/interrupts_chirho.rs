@@ -1167,6 +1167,26 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     let interrupted_cs_chirho = _stack_frame_chirho.code_segment.0;
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
+    // Log PID 5 timer state for preemption debugging
+    if was_user_mode_chirho {
+        let dbg_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if dbg_pid_chirho == 5 {
+            use core::sync::atomic::{AtomicU64, Ordering as DebugOrd};
+            static P5_TIMER_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let tcnt_chirho = P5_TIMER_CNT_CHIRHO.fetch_add(1, DebugOrd::Relaxed);
+            if tcnt_chirho > 15000 && tcnt_chirho % 1000 == 0 {
+                let nr_chirho = crate::scheduler_chirho::need_resched_chirho();
+                let pr_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|t| t.lock().preempted_rip_chirho).unwrap_or(0);
+                let rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
+                crate::serial_println_chirho!(
+                    "[P5-TIMER] tick={} need_resched={} preempted_rip={:#x} rip={:#x}",
+                    tcnt_chirho, nr_chirho, pr_chirho, rip_chirho,
+                );
+            }
+        }
+    }
+
     if was_user_mode_chirho
         && crate::scheduler_chirho::need_resched_chirho()
         && USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire)
@@ -1304,6 +1324,55 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
             }
             } // close !already_preempted
             } // close !in_trampoline
+        }
+    }
+
+    // Deliver pending signals during timer IRET to user mode.
+    // Critical: without this, signals (like SIGUSR1 from Xorg's fork child)
+    // are never delivered to processes stuck in user-code busy-wait loops
+    // because signal delivery only happens at kernel→user transitions.
+    if was_user_mode_chirho {
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            let has_sig_chirho = {
+                let tg_chirho = task_arc_chirho.lock();
+                let deliverable_chirho = tg_chirho.pending_signals_chirho
+                    & !tg_chirho.signal_state_chirho.blocked_chirho;
+                deliverable_chirho != 0
+            };
+            if has_sig_chirho {
+                // Build a minimal SyscallFrame from the interrupt frame to
+                // reuse the existing signal delivery mechanism.
+                let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
+                let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
+                let mut fake_frame_chirho = crate::syscall_chirho::SyscallFrameChirho {
+                    rax_chirho: 0,
+                    rdi_chirho: 0, rsi_chirho: 0, rdx_chirho: 0,
+                    r10_chirho: 0, r8_chirho: 0, r9_chirho: 0,
+                    rcx_chirho: user_rip_chirho,  // return address
+                    r11_chirho: _stack_frame_chirho.cpu_flags.bits(),
+                    rsp_chirho: user_rsp_chirho,
+                    rbx_chirho: 0, rbp_chirho: 0,
+                    r12_chirho: 0, r13_chirho: 0, r14_chirho: 0, r15_chirho: 0,
+                };
+                if crate::signal_chirho::deliver_one_signal_on_return_chirho(&mut fake_frame_chirho) {
+                    // Signal was delivered — update the interrupt frame to jump
+                    // to the signal handler instead of the original user RIP.
+                    unsafe {
+                        let mut frame_mut_chirho = _stack_frame_chirho.as_mut();
+                        frame_mut_chirho.update(|f_chirho| {
+                            f_chirho.instruction_pointer =
+                                VirtAddr::new(fake_frame_chirho.rcx_chirho);
+                            f_chirho.stack_pointer =
+                                VirtAddr::new(fake_frame_chirho.rsp_chirho);
+                        });
+                    }
+                    let pid_chirho = task_arc_chirho.lock().pid_chirho;
+                    crate::serial_println_chirho!(
+                        "[TIMER-SIG] pid={} delivering signal, new_rip={:#x}",
+                        pid_chirho, fake_frame_chirho.rcx_chirho,
+                    );
+                }
+            }
         }
     }
 
