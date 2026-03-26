@@ -1342,11 +1342,10 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         }
     }
 
-    // Deliver pending signals during timer IRET to user mode.
-    // Critical: without this, signals (like SIGUSR1 from Xorg's fork child)
-    // are never delivered to processes stuck in user-code busy-wait loops
-    // because signal delivery only happens at kernel→user transitions.
-    if was_user_mode_chirho {
+    // Timer signal delivery DISABLED — corrupts processes by writing
+    // sigframes to user stacks during interrupt context. Signal delivery
+    // on syscall return (in syscall_dispatch) handles most cases.
+    if false && was_user_mode_chirho {
         if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
             let has_sig_chirho = {
                 let tg_chirho = task_arc_chirho.lock();
