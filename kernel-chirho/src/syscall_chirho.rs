@@ -4101,11 +4101,10 @@ fn sys_poll_chirho(
                 }
                 result_chirho
             };
-            // AF_UNIX: report POLLOUT when requested. But when POLLIN
-            // is also requested with no data, yield to server first.
-            if (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0
-                && (is_unix_poll_chirho || pfd_chirho.events_chirho == POLLOUT_CHIRHO)
-            {
+            // AF_UNIX: always report POLLOUT for connected sockets.
+            if is_unix_poll_chirho {
+                revents_chirho |= POLLOUT_CHIRHO;
+            } else if pfd_chirho.events_chirho == POLLOUT_CHIRHO {
                 revents_chirho |= POLLOUT_CHIRHO;
             }
         } else {
@@ -4172,27 +4171,32 @@ fn sys_poll_chirho(
         }
     }
 
-    // When ONLY POLLOUT is ready (no POLLIN) and caller wants POLLIN too,
-    // yield once to give the X11 server a chance to process requests.
-    // Then skip the blocking loop — return immediately so xcb retries.
-    // This prevents both: the POLLIN-only deadlock AND the spin starvation.
+    // Rate-limited POLLOUT yield: when POLLOUT-only (no POLLIN data)
+    // and caller wants POLLIN, yield every 50 calls to give the server
+    // CPU time. This balances: fast X11 request sending (no yield most
+    // of the time) vs server starvation prevention (yield occasionally).
     if ready_count_chirho > 0 && _timeout_chirho != 0 {
         let any_pollin_ready_chirho = pollfds_chirho.iter()
             .any(|p| (p.revents_chirho & POLLIN_CHIRHO) != 0);
         let any_pollin_wanted_chirho = pollfds_chirho.iter()
             .any(|p| (p.events_chirho & POLLIN_CHIRHO) != 0);
         if !any_pollin_ready_chirho && any_pollin_wanted_chirho {
-            // Yield to server, then re-check POLLIN
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
-            }
-            for pfd_chirho in pollfds_chirho.iter_mut() {
-                if pfd_chirho.fd_chirho >= 0 {
-                    let fv_chirho = pfd_chirho.fd_chirho as u64;
-                    if crate::net_chirho::is_socket_fd_chirho(fv_chirho)
-                        && crate::net_chirho::socket_has_data_chirho(fv_chirho) {
-                        pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static POLLOUT_ONLY_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let poc_chirho = POLLOUT_ONLY_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if poc_chirho % 50 == 0 {
+                if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                    crate::scheduler_chirho::schedule_chirho();
+                    crate::scheduler_chirho::reset_time_slice_chirho();
+                }
+                // Re-check POLLIN after yield
+                for pfd_chirho in pollfds_chirho.iter_mut() {
+                    if pfd_chirho.fd_chirho >= 0 {
+                        let fv_chirho = pfd_chirho.fd_chirho as u64;
+                        if crate::net_chirho::is_socket_fd_chirho(fv_chirho)
+                            && crate::net_chirho::socket_has_data_chirho(fv_chirho) {
+                            pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
+                        }
                     }
                 }
             }
