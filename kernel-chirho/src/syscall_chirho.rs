@@ -1460,7 +1460,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             static XCLI14_CHIRHO: AtomicU64 = AtomicU64::new(0);
             let cnt_ref_chirho = if trace_pid_chirho == 13 { &XCLI13_CHIRHO } else { &XCLI14_CHIRHO };
             let c_chirho = cnt_ref_chirho.fetch_add(1, Ordering::Relaxed);
-            if c_chirho < 500 || c_chirho % 1000 == 0 {
+            if c_chirho < 700 || c_chirho % 5000 == 0 {
                 crate::serial_println_chirho!(
                     "[XCLI-SC] pid={} #{} nr={}({}) a0={:#x}",
                     trace_pid_chirho, c_chirho, syscall_nr_chirho,
@@ -1703,11 +1703,35 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 sys_write_fd_dispatch_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
             }
         },
-        SYS_OPEN_CHIRHO => crate::fs_chirho::sys_open_chirho(
-            arg0_chirho,
-            arg1_chirho as u32,
-            arg2_chirho as u32,
-        ),
+        SYS_OPEN_CHIRHO => {
+            // Log open() paths for xterm/twm (PIDs 13-14) to debug stuck writev
+            let open_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            let result_chirho = crate::fs_chirho::sys_open_chirho(
+                arg0_chirho, arg1_chirho as u32, arg2_chirho as u32,
+            );
+            if open_pid_chirho == 13 || open_pid_chirho == 14 {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static XOPEN_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let c_chirho = XOPEN_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if c_chirho < 100 {
+                    // Read path from user memory
+                    let mut pathbuf_chirho = [0u8; 128];
+                    let plen_chirho = 128.min(
+                        (0..128).take_while(|&i| unsafe {
+                            let b = core::ptr::read_volatile((arg0_chirho as *const u8).add(i));
+                            pathbuf_chirho[i] = b;
+                            b != 0
+                        }).count()
+                    );
+                    if let Ok(p_chirho) = core::str::from_utf8(&pathbuf_chirho[..plen_chirho]) {
+                        crate::serial_println_chirho!(
+                            "[XOPEN] pid={} '{}' → fd={}", open_pid_chirho, p_chirho, result_chirho,
+                        );
+                    }
+                }
+            }
+            result_chirho
+        },
         SYS_CLOSE_CHIRHO => {
             let pid_dbg_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
@@ -2798,6 +2822,16 @@ fn sys_writev_chirho(
                     }
                 }
             }
+        }
+        // Diagnostic: trace writev dispatch for fd=4 from xterm
+        let wv_trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if wv_trace_pid_chirho == 13 && fd_chirho == 4 {
+            let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho);
+            let is_console_chirho = fd_uses_console_stdio_chirho(fd_chirho);
+            crate::serial_println_chirho!(
+                "[WV-TRACE] pid=13 fd=4 len={} is_sock={} is_console={}",
+                iov_len_chirho, is_sock_chirho, is_console_chirho,
+            );
         }
         let result_chirho = if fd_uses_console_stdio_chirho(fd_chirho) {
             sys_write_chirho(

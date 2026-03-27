@@ -1385,10 +1385,10 @@ EndSection\n\
     }
 
     // Special handling for /dev/ptmx: allocate a new PTY pair.
-    // The PTY master ops use the inode's ino_chirho field to identify
-    // which PTY pair they belong to.
+    // Check both inode DevNodeData AND path name (ext4 rootfs has
+    // /dev/ptmx as a regular file, so path-based detection is needed).
     let (final_inode_chirho, final_ops_chirho) = {
-        let is_ptmx_chirho = {
+        let is_ptmx_chirho = pathname_chirho == "/dev/ptmx" || {
             let ig_chirho = inode_chirho.lock();
             if let Some(ref data_chirho) = ig_chirho.fs_data_chirho {
                 if let Some(dev_data_chirho) = data_chirho.downcast_ref::<DevNodeDataChirho>() {
@@ -1969,6 +1969,18 @@ pub fn sys_write_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho:
     // Write through the file ops
     let bytes_written_chirho = {
         let mut file_guard_chirho = file_arc_chirho.lock();
+        // Diagnostic: trace write dispatch for PID 13 fd=4
+        {
+            let wr_pid_chirho = crate::task_chirho::current_task_chirho()
+                .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
+            if wr_pid_chirho == 13 && fd_chirho == 4 {
+                let inode_mode_chirho = file_guard_chirho.inode_chirho.lock().mode_chirho;
+                crate::serial_println_chirho!(
+                    "[WRITE-REAL] pid=13 fd=4 count={} inode_mode={:#o} flags={:#x}",
+                    capped_write_chirho, inode_mode_chirho, file_guard_chirho.flags_chirho,
+                );
+            }
+        }
 
         // O_APPEND: seek to end of file before writing
         if file_guard_chirho.flags_chirho & crate::vfs_chirho::O_APPEND_CHIRHO != 0 {

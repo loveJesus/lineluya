@@ -330,6 +330,17 @@ impl FileOpsChirho for PtyMasterOpsChirho {
     ) -> Result<usize, i64> {
         let pair_chirho = Self::get_pair_chirho(file_chirho).ok_or(-EIO_CHIRHO)?;
 
+        // One-shot diagnostic
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static PTY_WR_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let pwc_chirho = PTY_WR_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if pwc_chirho < 5 {
+            crate::serial_println_chirho!(
+                "[PTY-WRITE] #{} pty_nr={} len={}",
+                pwc_chirho, pair_chirho.pty_nr_chirho, buf_chirho.len(),
+            );
+        }
+
         // Write to master_to_slave buffer (slave will read it).
         let mut ring_chirho = pair_chirho.master_to_slave_chirho.lock();
         for &byte_chirho in buf_chirho {
