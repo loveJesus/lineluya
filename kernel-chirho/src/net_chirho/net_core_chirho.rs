@@ -3900,6 +3900,16 @@ pub fn sys_recvmsg_chirho(
         0,
     );
     if recv_count_chirho <= 0 {
+        // Log ALL non-positive recvmsg returns for X11 clients
+        let rm_pid_chirho = crate::task_chirho::current_task_chirho()
+            .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
+        if (rm_pid_chirho == 13 || rm_pid_chirho == 14) && recv_count_chirho != -11 {
+            // Log anything except EAGAIN (-11) which is normal
+            crate::serial_println_chirho!(
+                "[RECVMSG-ERR] pid={} fd={} cap={} → {} (NOT EAGAIN!)",
+                rm_pid_chirho, sockfd_chirho, total_capacity_chirho, recv_count_chirho,
+            );
+        }
         return recv_count_chirho;
     }
 

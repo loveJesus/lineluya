@@ -2843,6 +2843,14 @@ fn sys_writev_chirho(
             sys_write_fd_dispatch_chirho(fd_chirho, iov_base_chirho, iov_len_chirho)
         };
         if result_chirho < 0 {
+            // Log writev errors for X11 client PIDs
+            let wv_err_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            if wv_err_pid_chirho == 13 || wv_err_pid_chirho == 14 {
+                crate::serial_println_chirho!(
+                    "[WV-ERR] pid={} fd={} iov#{} len={} err={}",
+                    wv_err_pid_chirho, fd_chirho, i_chirho, iov_len_chirho, result_chirho,
+                );
+            }
             if total_written_chirho > 0 {
                 return total_written_chirho;
             }
