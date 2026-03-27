@@ -4199,10 +4199,36 @@ fn sys_poll_chirho(
         }
     }
 
-    // If nothing is ready, block — but for AF_UNIX POLLIN-only with no
-    // POLLOUT requested either, limit blocking to a few attempts to
-    // prevent deadlock when xcb alternates poll patterns.
+    // If nothing is ready AND an AF_UNIX socket was polled, don't block
+    // in the HLT loop — just yield and return 0 (timeout). xcb's event
+    // loop retries quickly with different poll patterns.
     if ready_count_chirho == 0 {
+        let has_unix_fd_chirho = pollfds_chirho.iter().any(|p| {
+            p.fd_chirho >= 0 && crate::net_chirho::is_socket_fd_chirho(p.fd_chirho as u64)
+        });
+        if has_unix_fd_chirho && _timeout_chirho != 0 {
+            // Yield once to give server CPU time, then return 0 (timeout)
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
+            }
+            // Re-check after yield
+            for pfd_chirho in pollfds_chirho.iter_mut() {
+                if pfd_chirho.fd_chirho >= 0 {
+                    let fv_chirho = pfd_chirho.fd_chirho as u64;
+                    if crate::net_chirho::is_socket_fd_chirho(fv_chirho)
+                        && crate::net_chirho::socket_has_data_chirho(fv_chirho) {
+                        pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
+                        ready_count_chirho = 1;
+                    }
+                }
+            }
+            // Write back and return regardless
+            if crate::uaccess_chirho::copy_to_user_chirho(
+                fds_ptr_chirho, &buf_chirho.0[..total_size_chirho], total_size_chirho,
+            ).is_err() { return -EFAULT_CHIRHO; }
+            return ready_count_chirho;
+        }
         for _attempt_chirho in 0..1000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
