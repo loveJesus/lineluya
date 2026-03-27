@@ -4200,15 +4200,36 @@ fn sys_poll_chirho(
         }
     }
 
-    // No POLLOUT yield — byte-stream AF_UNIX recv prevents protocol
-    // corruption so the spin doesn't cause "connection broken" anymore.
-    // Preemptive timer handles CPU fairness. For POLLIN-only polls with
-    // no data on AF_UNIX, use a very short block (2 iterations ≈ 20ms).
+    // For AF_UNIX: no HLT blocking. Yield once and return 0 (timeout).
+    // Byte-stream recv prevents protocol corruption, so the fast
+    // poll→recvfrom→poll cycle is safe. Preemptive timer handles fairness.
     if ready_count_chirho == 0 {
         let has_unix_fd_chirho = pollfds_chirho.iter().any(|p| {
             p.fd_chirho >= 0 && crate::net_chirho::is_socket_fd_chirho(p.fd_chirho as u64)
         });
-        let max_block_chirho: u32 = if has_unix_fd_chirho { 2 } else { 1000 };
+        if has_unix_fd_chirho && _timeout_chirho != 0 {
+            // Yield once to give server a chance, then return immediately
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
+            }
+            // Re-check after yield
+            for pfd_chirho in pollfds_chirho.iter_mut() {
+                if pfd_chirho.fd_chirho >= 0 {
+                    let fv_chirho = pfd_chirho.fd_chirho as u64;
+                    if crate::net_chirho::is_socket_fd_chirho(fv_chirho)
+                        && crate::net_chirho::socket_has_data_chirho(fv_chirho) {
+                        pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
+                        ready_count_chirho = 1;
+                    }
+                }
+            }
+            if crate::uaccess_chirho::copy_to_user_chirho(
+                fds_ptr_chirho, &buf_chirho.0[..total_size_chirho], total_size_chirho,
+            ).is_err() { return -EFAULT_CHIRHO; }
+            return ready_count_chirho;
+        }
+        let max_block_chirho: u32 = 1000;
         for _attempt_chirho in 0..max_block_chirho {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
