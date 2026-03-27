@@ -4141,38 +4141,9 @@ fn sys_poll_chirho(
         }
     }
 
-    // If we only have POLLOUT (no POLLIN) but caller also wants POLLIN,
-    // yield + HLT to give the server time to send a response.
-    // This prevents the tight poll→recvfrom spin while still allowing
-    // the initial POLLOUT-triggered writev for X11 setup.
-    if ready_count_chirho > 0 && _timeout_chirho != 0 {
-        let has_any_pollin_chirho = pollfds_chirho.iter().any(|p| (p.revents_chirho & POLLIN_CHIRHO) != 0);
-        let wants_pollin_chirho = pollfds_chirho.iter().any(|p| (p.events_chirho & POLLIN_CHIRHO) != 0);
-        if !has_any_pollin_chirho && wants_pollin_chirho {
-            // No POLLIN data — yield every 4th call to batch requests.
-            // This lets the client send multiple X11 requests before
-            // yielding to the server, dramatically reducing round-trips.
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static POLL_YIELD_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let pyc_chirho = POLL_YIELD_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if pyc_chirho % 4 == 0 {
-                if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                    crate::scheduler_chirho::schedule_chirho();
-                    crate::scheduler_chirho::reset_time_slice_chirho();
-                }
-            }
-            // Re-check: maybe POLLIN data arrived
-            for pfd_chirho in pollfds_chirho.iter_mut() {
-                if pfd_chirho.fd_chirho >= 0 {
-                    let fd_val_chirho = pfd_chirho.fd_chirho as u64;
-                    if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho)
-                        && crate::net_chirho::socket_has_data_chirho(fd_val_chirho) {
-                        pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
-                    }
-                }
-            }
-        }
-    }
+    // No POLLOUT yield — let the preemptive timer handle CPU fairness.
+    // Yielding on every POLLOUT was causing each X11 round-trip to take
+    // a full scheduling cycle (100ms+), making xterm init take 30+ min.
 
     // If nothing is ready, block until something arrives.
     if ready_count_chirho == 0 {
