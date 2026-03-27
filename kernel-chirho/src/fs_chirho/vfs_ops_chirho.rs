@@ -1245,11 +1245,8 @@ pub fn sys_openat_chirho(
                 "export DISPLAY=:0\n",
                 "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
                 "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
-                "if [ ! -f /tmp/.dropbear_started_chirho ]; then\n",
-                "  echo 1 > /tmp/.dropbear_started_chirho\n",
-                "  /usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
-                "  /usr/libexec/Xorg :0 vt7 -noreset -novtswitch -keeptty 2>/dev/null &\n",
-                "fi\n",
+                "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
+                "/usr/libexec/Xorg :0 vt7 -noreset -novtswitch -keeptty 2>/dev/null &\n",
                 "# Wait for Xorg to create X11 socket, then start clients\n",
                 "i=0; while [ $i -lt 60 ]; do\n",
                 "  if cat /tmp/.X0-lock; then\n",
@@ -1305,7 +1302,10 @@ EndSection\n\
     if pathname_chirho == "/tmp/.X0-lock"
         && crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
     {
-        return create_memory_backed_fd_chirho(&pathname_chirho, b"X11 ready\n", flags_chirho);
+        // Xorg lock file format: 11-byte PID string "     NNNNN\n"
+        // The second Xorg checks this PID — if alive, it exits gracefully.
+        // PID 5 is our Xorg process.
+        return create_memory_backed_fd_chirho(&pathname_chirho, b"         5\n", flags_chirho);
     }
 
     // Block protocol.txt to test if its parsing causes heap corruption
