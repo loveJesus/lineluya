@@ -4200,34 +4200,15 @@ fn sys_poll_chirho(
         }
     }
 
-    // When POLLOUT-only returned (no POLLIN) and caller wants POLLIN,
-    // yield to server every 10th call so it can process X11 requests.
-    if ready_count_chirho > 0 && _timeout_chirho != 0 {
-        let any_pollin_ready_chirho = pollfds_chirho.iter()
-            .any(|p| (p.revents_chirho & POLLIN_CHIRHO) != 0);
-        let any_pollin_wanted_chirho = pollfds_chirho.iter()
-            .any(|p| (p.events_chirho & POLLIN_CHIRHO) != 0);
-        if !any_pollin_ready_chirho && any_pollin_wanted_chirho {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static POLLOUT_ONLY_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let poc_chirho = POLLOUT_ONLY_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if poc_chirho % 10 == 0 {
-                if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                    crate::scheduler_chirho::schedule_chirho();
-                    crate::scheduler_chirho::reset_time_slice_chirho();
-                }
-            }
-        }
-    }
-
-    // If nothing is ready, block briefly. For AF_UNIX sockets, use
-    // a short block (10 iterations ≈ 100ms) instead of the full 1000
-    // to prevent the POLLIN-only deadlock — xcb retries quickly.
+    // No POLLOUT yield — byte-stream AF_UNIX recv prevents protocol
+    // corruption so the spin doesn't cause "connection broken" anymore.
+    // Preemptive timer handles CPU fairness. For POLLIN-only polls with
+    // no data on AF_UNIX, use a very short block (2 iterations ≈ 20ms).
     if ready_count_chirho == 0 {
         let has_unix_fd_chirho = pollfds_chirho.iter().any(|p| {
             p.fd_chirho >= 0 && crate::net_chirho::is_socket_fd_chirho(p.fd_chirho as u64)
         });
-        let max_block_chirho: u32 = if has_unix_fd_chirho { 10 } else { 1000 };
+        let max_block_chirho: u32 = if has_unix_fd_chirho { 2 } else { 1000 };
         for _attempt_chirho in 0..max_block_chirho {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
