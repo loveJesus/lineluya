@@ -590,7 +590,10 @@ fn pty_ioctl_chirho(
     cmd_chirho: u64,
     arg_chirho: u64,
 ) -> Result<i64, i64> {
-    match cmd_chirho {
+    // Mask to 32 bits — ioctl commands get sign-extended when passed
+    // through syscall args (bit 31 set → 0xFFFFFFFF80045430).
+    let cmd32_chirho = cmd_chirho & 0xFFFF_FFFF;
+    match cmd32_chirho {
         TIOCGPTN_CHIRHO => {
             // Return PTY number in the u32 at arg_chirho
             if arg_chirho == 0 {

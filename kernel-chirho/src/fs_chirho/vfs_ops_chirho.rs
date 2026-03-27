@@ -1402,6 +1402,7 @@ EndSection\n\
         };
 
         if is_ptmx_chirho {
+            crate::serial_println_chirho!("[PTMX-OPEN] detected ptmx, calling open_ptmx");
             // Allocate a new PTY pair
             match crate::pty_chirho::PtmxFileOpsChirho::open_ptmx_chirho() {
                 Ok((pair_chirho, master_ops_chirho)) => {
