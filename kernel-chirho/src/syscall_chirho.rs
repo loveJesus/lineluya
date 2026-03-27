@@ -4033,7 +4033,12 @@ fn sys_poll_chirho(
                     .map(|s| s.family_chirho as u64 == crate::net_chirho::AF_UNIX_CHIRHO)
                     .unwrap_or(false)
             };
-            if is_unix_poll_chirho || pfd_chirho.events_chirho == POLLOUT_CHIRHO {
+            // Report POLLOUT only when caller asks exclusively for POLLOUT
+            // (not POLLIN|POLLOUT). When both are requested, only POLLIN
+            // drives the wake — otherwise the poll→recv→poll loop spins.
+            let wants_only_out_chirho = (pfd_chirho.events_chirho & POLLIN_CHIRHO) == 0
+                && (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0;
+            if wants_only_out_chirho {
                 revents_chirho |= POLLOUT_CHIRHO;
             }
         } else {
