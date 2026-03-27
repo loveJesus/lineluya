@@ -4022,12 +4022,18 @@ fn sys_poll_chirho(
             {
                 revents_chirho |= POLLIN_CHIRHO;
             }
-            // POLLOUT: Don't report unconditionally — it causes dropbear
-            // to spin in its event loop (22K+ syscalls/sec) instead of
-            // processing received crypto data. Only set POLLOUT when the
-            // caller ONLY asked for POLLOUT (not POLLIN|POLLOUT together).
-            // When both are requested, let POLLIN drive the wake.
-            if pfd_chirho.events_chirho == POLLOUT_CHIRHO {
+            // POLLOUT: report for connected sockets. For AF_UNIX,
+            // always report writable. For TCP, only when caller asks
+            // exclusively for POLLOUT (prevents dropbear spin).
+            let is_unix_poll_chirho = {
+                let st_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
+                crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho)
+                    .ok()
+                    .and_then(|idx| st_chirho.get(idx).and_then(|s| s.as_ref()))
+                    .map(|s| s.family_chirho as u64 == crate::net_chirho::AF_UNIX_CHIRHO)
+                    .unwrap_or(false)
+            };
+            if is_unix_poll_chirho || pfd_chirho.events_chirho == POLLOUT_CHIRHO {
                 revents_chirho |= POLLOUT_CHIRHO;
             }
         } else {
