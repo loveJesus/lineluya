@@ -1245,8 +1245,11 @@ pub fn sys_openat_chirho(
                 "export DISPLAY=:0\n",
                 "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
                 "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
-                "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
-                "/usr/libexec/Xorg :0 vt7 -noreset -novtswitch -keeptty 2>/dev/null &\n",
+                "# Only start dropbear+Xorg from init shell (PID < 10), not SSH\n",
+                "if [ $$ -lt 10 ]; then\n",
+                "  /usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
+                "  /usr/libexec/Xorg :0 vt7 -noreset -novtswitch -keeptty 2>/dev/null &\n",
+                "fi\n",
                 "# Wait for Xorg to create X11 socket, then start clients\n",
                 "i=0; while [ $i -lt 60 ]; do\n",
                 "  if cat /tmp/.X0-lock; then\n",
@@ -1298,13 +1301,9 @@ EndSection\n\
     }
 
     // Dynamic synthetic file: /tmp/.X0-lock — appears after Xorg creates the X11 socket.
-    // The shell profile checks `test -f /tmp/.X0-lock` to decide whether to start xterm.
     if pathname_chirho == "/tmp/.X0-lock"
         && crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
     {
-        // Xorg lock file format: 11-byte PID string "     NNNNN\n"
-        // The second Xorg checks this PID — if alive, it exits gracefully.
-        // PID 5 is our Xorg process.
         return create_memory_backed_fd_chirho(&pathname_chirho, b"         5\n", flags_chirho);
     }
 
