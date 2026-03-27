@@ -4033,12 +4033,11 @@ fn sys_poll_chirho(
                     .map(|s| s.family_chirho as u64 == crate::net_chirho::AF_UNIX_CHIRHO)
                     .unwrap_or(false)
             };
-            // Report POLLOUT only when caller asks exclusively for POLLOUT
-            // (not POLLIN|POLLOUT). When both are requested, only POLLIN
-            // drives the wake — otherwise the poll→recv→poll loop spins.
-            let wants_only_out_chirho = (pfd_chirho.events_chirho & POLLIN_CHIRHO) == 0
-                && (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0;
-            if wants_only_out_chirho {
+            // Always report POLLOUT for connected AF_UNIX sockets.
+            // The blocking loop below handles the POLLIN wait.
+            if (is_unix_poll_chirho || pfd_chirho.events_chirho == POLLOUT_CHIRHO)
+                && (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0
+            {
                 revents_chirho |= POLLOUT_CHIRHO;
             }
         } else {
@@ -4102,6 +4101,19 @@ fn sys_poll_chirho(
         pfd_chirho.revents_chirho = revents_chirho;
         if revents_chirho != 0 {
             ready_count_chirho += 1;
+        }
+    }
+
+    // Check if we only have POLLOUT but caller also wants POLLIN —
+    // yield to let other processes run (prevents POLLOUT spin loop).
+    let only_pollout_chirho = ready_count_chirho > 0 && pollfds_chirho.iter().all(
+        |p| p.revents_chirho == 0 || (p.revents_chirho & POLLIN_CHIRHO) == 0
+    ) && pollfds_chirho.iter().any(|p| (p.events_chirho & POLLIN_CHIRHO) != 0);
+    if only_pollout_chirho && _timeout_chirho != 0 {
+        // Yield CPU once — don't spin, let server process our request
+        if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+            crate::scheduler_chirho::schedule_chirho();
+            crate::scheduler_chirho::reset_time_slice_chirho();
         }
     }
 
