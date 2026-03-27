@@ -2260,6 +2260,39 @@ pub fn socket_idx_from_fd_pub_chirho(fd_chirho: u64) -> Result<usize, i64> {
     socket_idx_from_fd_chirho(fd_chirho)
 }
 
+/// Public wrapper for is_unix_socket_idx (used by FIONREAD ioctl).
+pub fn is_unix_socket_idx_pub_chirho(sock_idx_chirho: usize) -> bool {
+    is_unix_socket_idx_chirho(sock_idx_chirho)
+}
+
+/// Public wrapper for lookup_unix_idx (used by FIONREAD ioctl).
+pub fn lookup_unix_idx_pub_chirho(sock_idx_chirho: usize) -> Option<usize> {
+    lookup_unix_idx_chirho(sock_idx_chirho)
+}
+
+/// FIONREAD for sockets: return bytes available in recv buffer.
+pub fn socket_fionread_chirho(fd_chirho: u64) -> i32 {
+    let si_chirho = match socket_idx_from_fd_chirho(fd_chirho) {
+        Ok(idx) => idx,
+        Err(_) => return 0,
+    };
+    if is_unix_socket_idx_chirho(si_chirho) {
+        if let Some(ui_chirho) = lookup_unix_idx_chirho(si_chirho) {
+            let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+            if let Some(Some(ref sk_chirho)) = ut_chirho.get(ui_chirho) {
+                return sk_chirho.recv_buf_chirho.iter()
+                    .map(|c| c.len() as i32).sum();
+            }
+        }
+    }
+    // TCP sockets
+    let st_chirho = SOCKET_TABLE_CHIRHO.lock();
+    if let Some(Some(ref sk_chirho)) = st_chirho.get(si_chirho) {
+        return sk_chirho.recv_buf_chirho.len() as i32;
+    }
+    0
+}
+
 /// Check if any established TCP socket on the given port has data.
 /// Used by poll() to report POLLIN on pipes that relay TCP SSH data.
 pub fn has_tcp_data_for_port_chirho(port_chirho: u16) -> bool {

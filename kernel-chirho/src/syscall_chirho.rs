@@ -3795,6 +3795,26 @@ fn sys_ioctl_real_chirho(
         }
     }
 
+    // FIONREAD (0x541b) — return bytes available to read.
+    // Critical for X11: xcb calls ioctl(FIONREAD) to check socket data.
+    // Returning -ENOTTY causes xcb to report "X connection broken".
+    let cmd32_ioctl_chirho = (cmd_chirho & 0xFFFF_FFFF) as u32;
+    if cmd32_ioctl_chirho == 0x541b {
+        let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho);
+        let avail_chirho = if is_sock_chirho {
+            crate::net_chirho::socket_fionread_chirho(fd_chirho)
+        } else {
+            0
+        };
+        crate::serial_println_chirho!(
+            "[FIONREAD] fd={} is_sock={} avail={}", fd_chirho, is_sock_chirho, avail_chirho,
+        );
+        if arg_chirho != 0 {
+            unsafe { core::ptr::write(arg_chirho as *mut i32, avail_chirho); }
+        }
+        return 0;
+    }
+
     // Fallback: handle VT and terminal ioctls for any fd
     match cmd_chirho {
         // VT_OPENQRY (0x5600) — find first available VT
