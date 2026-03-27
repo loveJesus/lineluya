@@ -4149,13 +4149,19 @@ fn sys_poll_chirho(
         let has_any_pollin_chirho = pollfds_chirho.iter().any(|p| (p.revents_chirho & POLLIN_CHIRHO) != 0);
         let wants_pollin_chirho = pollfds_chirho.iter().any(|p| (p.events_chirho & POLLIN_CHIRHO) != 0);
         if !has_any_pollin_chirho && wants_pollin_chirho {
-            // No POLLIN data yet — yield CPU so the server can process
-            // our request and send a response, then re-check immediately.
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
+            // No POLLIN data — yield every 4th call to batch requests.
+            // This lets the client send multiple X11 requests before
+            // yielding to the server, dramatically reducing round-trips.
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static POLL_YIELD_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let pyc_chirho = POLL_YIELD_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if pyc_chirho % 4 == 0 {
+                if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                    crate::scheduler_chirho::schedule_chirho();
+                    crate::scheduler_chirho::reset_time_slice_chirho();
+                }
             }
-            // Re-check after yield: maybe POLLIN data arrived
+            // Re-check: maybe POLLIN data arrived
             for pfd_chirho in pollfds_chirho.iter_mut() {
                 if pfd_chirho.fd_chirho >= 0 {
                     let fd_val_chirho = pfd_chirho.fd_chirho as u64;
