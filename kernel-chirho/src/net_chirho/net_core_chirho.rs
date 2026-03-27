@@ -7839,12 +7839,28 @@ pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 {
                 cnt_chirho, idx_chirho, pi_chirho, d_chirho.len(),
             );
         }
-        peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec());
+        // Don't push empty data — recvfrom returns 0 for empty, which
+        // xcb interprets as EOF/connection closed.
+        if !d_chirho.is_empty() {
+            peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec());
+        }
         return d_chirho.len() as i64;
     }
     -EBADF_CHIRHO
 }
-pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()).and_then(|sk_chirho| sk_chirho.recv_buf_chirho.pop_front()) }
+pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> {
+    let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    let sk_chirho = t_chirho.get_mut(idx_chirho)?.as_mut()?;
+    // Skip empty entries (would cause recvfrom to return 0 = EOF)
+    while let Some(front_chirho) = sk_chirho.recv_buf_chirho.front() {
+        if front_chirho.is_empty() {
+            sk_chirho.recv_buf_chirho.pop_front();
+        } else {
+            break;
+        }
+    }
+    sk_chirho.recv_buf_chirho.pop_front()
+}
 
 /// Mark a unix socket as listening for incoming connections.
 pub fn unix_socket_listen_chirho(idx_chirho: usize) -> i64 {
