@@ -671,10 +671,10 @@ pub fn sys_wait4_chirho(
         None => return -ECHILD_CHIRHO,
     };
 
-    // Fast-path for Xorg (PID >= 5): don't block in wait4.
-    // Pre-compiled /tmp/server-0.xkm is on tmpfs. Kill the child
-    // (xkbcomp) to free CPU for xterm/twm loading.
-    if parent_pid_chirho >= 5 && pid_chirho > 0 && (options_chirho & WNOHANG_CHIRHO) == 0 {
+    // Fast-path for Xorg (PID 5 ONLY): don't block in wait4.
+    // Pre-compiled /tmp/server-0.xkm is on tmpfs. Kill the xkbcomp child.
+    // Do NOT apply to xterm/twm (PID 13+) — they need wait4 for shells.
+    if parent_pid_chirho == 5 && pid_chirho > 0 && (options_chirho & WNOHANG_CHIRHO) == 0 {
         crate::serial_println_chirho!(
             "[WAIT4-FAST] PID {} wait4({}) → kill child + fake success",
             parent_pid_chirho, pid_chirho,
