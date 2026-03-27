@@ -7833,7 +7833,7 @@ pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 {
         use core::sync::atomic::{AtomicU64, Ordering};
         static UNIX_SEND_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
         let cnt_chirho = UNIX_SEND_LOG_CHIRHO.fetch_add(1, Ordering::Relaxed);
-        if cnt_chirho < 20 {
+        if cnt_chirho < 200 {
             crate::serial_println_chirho!(
                 "[UNIX-SEND] #{} from_idx={} to_peer={} len={}",
                 cnt_chirho, idx_chirho, pi_chirho, d_chirho.len(),
