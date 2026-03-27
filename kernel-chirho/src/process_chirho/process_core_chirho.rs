@@ -1050,6 +1050,16 @@ pub fn sys_execve_chirho(
             exec_pid_chirho, filename_str_chirho,
         );
     }
+    // Prevent second Xorg from starting when X11 is already active.
+    // The second Xorg (from SSH profile) kills existing client connections.
+    if (filename_str_chirho.ends_with("/Xorg") || filename_str_chirho == "Xorg")
+        && crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
+    {
+        crate::serial_println_chirho!(
+            "[EXEC-BLOCK] pid={} blocked duplicate Xorg exec", exec_pid_chirho,
+        );
+        return -16; // EBUSY
+    }
 
     sys_execve_with_filename_chirho(filename_str_chirho, argv_chirho, envp_chirho)
 }
