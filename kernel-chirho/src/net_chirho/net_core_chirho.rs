@@ -3559,14 +3559,20 @@ pub fn sys_recvfrom_chirho(
 
     let socket_idx_chirho = match socket_idx_from_fd_chirho(sockfd_chirho) {
         Ok(idx_chirho) => idx_chirho,
-        Err(_) => return 0, // Fallback for non-socket fds
+        Err(e_chirho) => return e_chirho, // Return the actual error, not 0 (EOF)
     };
 
     // ---- AF_UNIX branch for recvfrom ----
     if is_unix_socket_idx_chirho(socket_idx_chirho) {
         let unix_idx_chirho = match lookup_unix_idx_chirho(socket_idx_chirho) {
             Some(idx_chirho) => idx_chirho,
-            None => return 0,
+            None => {
+                crate::serial_println_chirho!(
+                    "[RECV-NOMAP] fd={} sock_idx={} — unix mapping lost!",
+                    sockfd_chirho, socket_idx_chirho,
+                );
+                return -EAGAIN_CHIRHO; // was returning 0 (EOF) = "connection broken"
+            }
         };
         match unix_socket_recv_chirho(unix_idx_chirho) {
             Some(data_chirho) => {
