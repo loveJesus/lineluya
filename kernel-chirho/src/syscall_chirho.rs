@@ -4149,13 +4149,12 @@ fn sys_poll_chirho(
         let has_any_pollin_chirho = pollfds_chirho.iter().any(|p| (p.revents_chirho & POLLIN_CHIRHO) != 0);
         let wants_pollin_chirho = pollfds_chirho.iter().any(|p| (p.events_chirho & POLLIN_CHIRHO) != 0);
         if !has_any_pollin_chirho && wants_pollin_chirho {
-            // No POLLIN data yet — yield + HLT for a full timer tick
-            // so the server can process our request and send a response
+            // No POLLIN data yet — yield CPU so the server can process
+            // our request and send a response, then re-check immediately.
             if crate::scheduler_chirho::has_runnable_tasks_chirho() {
                 crate::scheduler_chirho::schedule_chirho();
                 crate::scheduler_chirho::reset_time_slice_chirho();
             }
-            x86_64::instructions::interrupts::enable_and_hlt();
             // Re-check after yield: maybe POLLIN data arrived
             for pfd_chirho in pollfds_chirho.iter_mut() {
                 if pfd_chirho.fd_chirho >= 0 {
