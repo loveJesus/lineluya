@@ -4049,6 +4049,23 @@ fn sys_poll_chirho(
         let fd_val_chirho = pfd_chirho.fd_chirho as u64;
         let mut revents_chirho: i16 = 0;
 
+        // One-shot poll diagnostic for PID 13
+        {
+            let poll_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            if poll_pid_chirho == 13 {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static POLL13_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let pc_chirho = POLL13_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if pc_chirho < 5 || pc_chirho % 10000 == 0 {
+                    let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_val_chirho);
+                    let has_data_chirho = crate::net_chirho::socket_has_data_chirho(fd_val_chirho);
+                    crate::serial_println_chirho!(
+                        "[POLL13] #{} fd={} events={:#x} is_sock={} has_data={}",
+                        pc_chirho, pfd_chirho.fd_chirho, pfd_chirho.events_chirho, is_sock_chirho, has_data_chirho,
+                    );
+                }
+            }
+        }
         if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
             // Socket fd: only report POLLIN if data/connection pending.
             if pfd_chirho.events_chirho & POLLIN_CHIRHO != 0
@@ -4060,21 +4077,38 @@ fn sys_poll_chirho(
             // always report writable. For TCP, only when caller asks
             // exclusively for POLLOUT (prevents dropbear spin).
             let is_unix_poll_chirho = {
+                let si_result_chirho = crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho);
                 let st_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
-                crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho)
+                let result_chirho = si_result_chirho
                     .ok()
                     .and_then(|idx| st_chirho.get(idx).and_then(|s| s.as_ref()))
                     .map(|s| s.family_chirho as u64 == crate::net_chirho::AF_UNIX_CHIRHO)
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                // One-shot debug for PID 13
+                {
+                    let poll_pid2_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    if poll_pid2_chirho == 13 {
+                        use core::sync::atomic::{AtomicU64, Ordering};
+                        static POLLUX_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                        let c_chirho = POLLUX_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                        if c_chirho < 3 {
+                            crate::serial_println_chirho!(
+                                "[POLL-UNIX] fd={} sock_idx={:?} is_unix={}",
+                                fd_val_chirho, si_result_chirho, result_chirho,
+                            );
+                        }
+                    }
+                }
+                result_chirho
             };
-            // POLLOUT for AF_UNIX: always writable when connected.
-            // BUT: when POLLIN is also requested and no data available,
-            // report POLLOUT in revents but DON'T count as "ready" — this
-            // lets the blocking loop trigger so we yield/HLT instead of
-            // spinning in a tight poll→recvfrom→poll loop.
-            if (is_unix_poll_chirho || pfd_chirho.events_chirho == POLLOUT_CHIRHO)
-                && (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0
-            {
+            // AF_UNIX: ALWAYS report POLLOUT for connected sockets,
+            // even when only POLLIN is requested. This prevents deadlock
+            // where xcb alternates POLLIN|POLLOUT and POLLIN-only polls.
+            // The POLLIN-only poll would block forever without POLLOUT
+            // because data won't arrive until the client sends a request.
+            if is_unix_poll_chirho {
+                revents_chirho |= POLLOUT_CHIRHO;
+            } else if pfd_chirho.events_chirho == POLLOUT_CHIRHO {
                 revents_chirho |= POLLOUT_CHIRHO;
             }
         } else {
