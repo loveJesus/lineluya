@@ -4136,19 +4136,40 @@ fn sys_poll_chirho(
         }
 
         pfd_chirho.revents_chirho = revents_chirho;
-        // Don't count as "ready" if ONLY POLLOUT is set and caller also
-        // wanted POLLIN. This lets the blocking loop trigger properly
-        // instead of returning immediately and causing a spin.
-        let has_pollin_chirho = (revents_chirho & POLLIN_CHIRHO) != 0;
-        let only_pollout_fd_chirho = revents_chirho != 0 && !has_pollin_chirho
-            && (pfd_chirho.events_chirho & POLLIN_CHIRHO) != 0;
-        if revents_chirho != 0 && !only_pollout_fd_chirho {
+        if revents_chirho != 0 {
             ready_count_chirho += 1;
         }
     }
 
-    // If nothing is ready (POLLOUT-only doesn't count when POLLIN wanted),
-    // block until POLLIN data arrives.
+    // If we only have POLLOUT (no POLLIN) but caller also wants POLLIN,
+    // yield + HLT to give the server time to send a response.
+    // This prevents the tight poll→recvfrom spin while still allowing
+    // the initial POLLOUT-triggered writev for X11 setup.
+    if ready_count_chirho > 0 && _timeout_chirho != 0 {
+        let has_any_pollin_chirho = pollfds_chirho.iter().any(|p| (p.revents_chirho & POLLIN_CHIRHO) != 0);
+        let wants_pollin_chirho = pollfds_chirho.iter().any(|p| (p.events_chirho & POLLIN_CHIRHO) != 0);
+        if !has_any_pollin_chirho && wants_pollin_chirho {
+            // No POLLIN data yet — yield + HLT for a full timer tick
+            // so the server can process our request and send a response
+            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
+                crate::scheduler_chirho::schedule_chirho();
+                crate::scheduler_chirho::reset_time_slice_chirho();
+            }
+            x86_64::instructions::interrupts::enable_and_hlt();
+            // Re-check after yield: maybe POLLIN data arrived
+            for pfd_chirho in pollfds_chirho.iter_mut() {
+                if pfd_chirho.fd_chirho >= 0 {
+                    let fd_val_chirho = pfd_chirho.fd_chirho as u64;
+                    if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho)
+                        && crate::net_chirho::socket_has_data_chirho(fd_val_chirho) {
+                        pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
+                    }
+                }
+            }
+        }
+    }
+
+    // If nothing is ready, block until something arrives.
     if ready_count_chirho == 0 {
         for _attempt_chirho in 0..1000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
