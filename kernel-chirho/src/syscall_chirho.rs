@@ -4067,8 +4067,11 @@ fn sys_poll_chirho(
                     .map(|s| s.family_chirho as u64 == crate::net_chirho::AF_UNIX_CHIRHO)
                     .unwrap_or(false)
             };
-            // Always report POLLOUT for connected AF_UNIX sockets.
-            // The blocking loop below handles the POLLIN wait.
+            // POLLOUT for AF_UNIX: always writable when connected.
+            // BUT: when POLLIN is also requested and no data available,
+            // report POLLOUT in revents but DON'T count as "ready" — this
+            // lets the blocking loop trigger so we yield/HLT instead of
+            // spinning in a tight poll→recvfrom→poll loop.
             if (is_unix_poll_chirho || pfd_chirho.events_chirho == POLLOUT_CHIRHO)
                 && (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0
             {
@@ -4133,25 +4136,19 @@ fn sys_poll_chirho(
         }
 
         pfd_chirho.revents_chirho = revents_chirho;
-        if revents_chirho != 0 {
+        // Don't count as "ready" if ONLY POLLOUT is set and caller also
+        // wanted POLLIN. This lets the blocking loop trigger properly
+        // instead of returning immediately and causing a spin.
+        let has_pollin_chirho = (revents_chirho & POLLIN_CHIRHO) != 0;
+        let only_pollout_fd_chirho = revents_chirho != 0 && !has_pollin_chirho
+            && (pfd_chirho.events_chirho & POLLIN_CHIRHO) != 0;
+        if revents_chirho != 0 && !only_pollout_fd_chirho {
             ready_count_chirho += 1;
         }
     }
 
-    // Check if we only have POLLOUT but caller also wants POLLIN —
-    // yield to let other processes run (prevents POLLOUT spin loop).
-    let only_pollout_chirho = ready_count_chirho > 0 && pollfds_chirho.iter().all(
-        |p| p.revents_chirho == 0 || (p.revents_chirho & POLLIN_CHIRHO) == 0
-    ) && pollfds_chirho.iter().any(|p| (p.events_chirho & POLLIN_CHIRHO) != 0);
-    if only_pollout_chirho && _timeout_chirho != 0 {
-        // Yield CPU once — don't spin, let server process our request
-        if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-            crate::scheduler_chirho::schedule_chirho();
-            crate::scheduler_chirho::reset_time_slice_chirho();
-        }
-    }
-
-    // If nothing is ready, block until something arrives.
+    // If nothing is ready (POLLOUT-only doesn't count when POLLIN wanted),
+    // block until POLLIN data arrives.
     if ready_count_chirho == 0 {
         for _attempt_chirho in 0..1000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
@@ -4190,7 +4187,20 @@ fn sys_poll_chirho(
                     }
                 }
             }
-            if ready_count_chirho > 0 { break; }
+            if ready_count_chirho > 0 {
+                // Update revents for the fds that became ready
+                for pfd_chirho in pollfds_chirho.iter_mut() {
+                    if pfd_chirho.fd_chirho >= 0 {
+                        let fd_val_chirho = pfd_chirho.fd_chirho as u64;
+                        if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho)
+                            && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
+                        {
+                            pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
+                        }
+                    }
+                }
+                break;
+            }
         }
     }
 
