@@ -3607,9 +3607,9 @@ pub fn sys_recvfrom_chirho(
                 return -EAGAIN_CHIRHO; // was returning 0 (EOF) = "connection broken"
             }
         };
-        match unix_socket_recv_chirho(unix_idx_chirho) {
+        match unix_socket_recv_bytes_chirho(unix_idx_chirho, len_chirho as usize) {
             Some(data_chirho) => {
-                let copy_len_chirho = core::cmp::min(len_chirho as usize, data_chirho.len());
+                let copy_len_chirho = data_chirho.len();
                 if buf_chirho != 0 && copy_len_chirho > 0 {
                     if crate::uaccess_chirho::copy_to_user_chirho(
                         buf_chirho, &data_chirho[..copy_len_chirho], copy_len_chirho,
@@ -7897,18 +7897,43 @@ pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 {
     }
     -EBADF_CHIRHO
 }
-pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> {
+/// Read up to `max_len` bytes from the Unix socket recv buffer.
+/// Byte-stream semantics: reads across VecDeque entry boundaries.
+pub fn unix_socket_recv_bytes_chirho(idx_chirho: usize, max_len_chirho: usize) -> Option<Vec<u8>> {
     let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
     let sk_chirho = t_chirho.get_mut(idx_chirho)?.as_mut()?;
-    // Skip empty entries (would cause recvfrom to return 0 = EOF)
-    while let Some(front_chirho) = sk_chirho.recv_buf_chirho.front() {
-        if front_chirho.is_empty() {
-            sk_chirho.recv_buf_chirho.pop_front();
-        } else {
-            break;
+    // Skip empty entries
+    while sk_chirho.recv_buf_chirho.front().map_or(false, |e| e.is_empty()) {
+        sk_chirho.recv_buf_chirho.pop_front();
+    }
+    if sk_chirho.recv_buf_chirho.is_empty() {
+        return None;
+    }
+    // Read up to max_len bytes across entries (byte-stream semantics)
+    let mut result_chirho = Vec::new();
+    while result_chirho.len() < max_len_chirho {
+        let remaining_chirho = max_len_chirho - result_chirho.len();
+        match sk_chirho.recv_buf_chirho.front_mut() {
+            Some(front_chirho) if !front_chirho.is_empty() => {
+                if front_chirho.len() <= remaining_chirho {
+                    // Consume entire entry
+                    let entry_chirho = sk_chirho.recv_buf_chirho.pop_front().unwrap();
+                    result_chirho.extend_from_slice(&entry_chirho);
+                } else {
+                    // Partial read: take first `remaining` bytes, keep rest
+                    result_chirho.extend_from_slice(&front_chirho[..remaining_chirho]);
+                    *front_chirho = front_chirho[remaining_chirho..].to_vec();
+                }
+            }
+            _ => break, // No more data
         }
     }
-    sk_chirho.recv_buf_chirho.pop_front()
+    if result_chirho.is_empty() { None } else { Some(result_chirho) }
+}
+
+/// Legacy: pop one message (for backwards compat with non-stream code).
+pub fn unix_socket_recv_chirho(idx_chirho: usize) -> Option<Vec<u8>> {
+    unix_socket_recv_bytes_chirho(idx_chirho, 65536)
 }
 
 /// Mark a unix socket as listening for incoming connections.
