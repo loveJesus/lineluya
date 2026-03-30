@@ -1268,6 +1268,42 @@ pub fn route_packet_chirho(dst_ip_chirho: u32) -> Result<(u32, usize), i64> {
         .ok_or(-crate::syscall_chirho::ENETUNREACH_CHIRHO)
 }
 
+fn resolve_tcp_source_ip_chirho(
+    local_ip_hint_chirho: u32,
+    remote_ip_chirho: u32,
+) -> u32 {
+    if local_ip_hint_chirho != 0 {
+        return local_ip_hint_chirho;
+    }
+
+    if let Ok((_gateway_chirho, iface_idx_chirho)) = route_packet_chirho(remote_ip_chirho) {
+        let routed_ip_chirho = get_interface_ip_chirho(iface_idx_chirho);
+        if routed_ip_chirho != 0 {
+            return routed_ip_chirho;
+        }
+    }
+
+    let iface_count_chirho = {
+        let devs_chirho = NET_DEVICES_CHIRHO.lock();
+        devs_chirho.len()
+    };
+    for iface_idx_chirho in 0..iface_count_chirho {
+        let iface_ip_chirho = get_interface_ip_chirho(iface_idx_chirho);
+        if iface_ip_chirho != 0 && !is_loopback_addr_chirho(iface_ip_chirho) {
+            return iface_ip_chirho;
+        }
+    }
+
+    for iface_idx_chirho in 0..iface_count_chirho {
+        let iface_ip_chirho = get_interface_ip_chirho(iface_idx_chirho);
+        if iface_ip_chirho != 0 {
+            return iface_ip_chirho;
+        }
+    }
+
+    0
+}
+
 // ============================================================================
 // A3-006: ICMP Echo (ping)
 // ============================================================================
@@ -3906,14 +3942,10 @@ pub fn sys_sendto_chirho(
             let raw_local_ip_chirho = socket_chirho.local_addr_chirho
                 .map(|a_chirho| a_chirho.addr_chirho)
                 .unwrap_or(0);
-            let src_ip_chirho = if raw_local_ip_chirho == 0 {
-                // Try all interfaces to find a non-zero IP.
-                let mut ip_chirho = get_interface_ip_chirho(0);
-                if ip_chirho == 0 { ip_chirho = get_interface_ip_chirho(1); }
-                ip_chirho
-            } else {
-                raw_local_ip_chirho
-            };
+            let src_ip_chirho = resolve_tcp_source_ip_chirho(
+                raw_local_ip_chirho,
+                remote_ip_chirho,
+            );
 
             // Log outbound TCP data: size + seq + first/last bytes for corruption diagnosis
             {
@@ -3925,8 +3957,15 @@ pub fn sys_sendto_chirho(
                     u32::from_be_bytes([data_chirho[0], data_chirho[1], data_chirho[2], data_chirho[3]])
                 } else { 0 };
                 crate::serial_println_chirho!(
-                    "[TCP-TX] #{} seq={} len={} first4={:#010x} state={:?}",
-                    tx_cnt_chirho, snd_nxt_chirho, data_chirho.len(), first4_chirho,
+                    "[TCP-TX] #{} {}:{} -> {}:{} seq={} len={} first4={:#010x} state={:?}",
+                    tx_cnt_chirho,
+                    format_ip_chirho(src_ip_chirho),
+                    local_port_chirho,
+                    format_ip_chirho(remote_ip_chirho),
+                    remote_port_chirho,
+                    snd_nxt_chirho,
+                    data_chirho.len(),
+                    first4_chirho,
                     socket_chirho.tcb_chirho.state_chirho,
                 );
             }
@@ -6389,7 +6428,10 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
                     );
                     child_sock_chirho.local_addr_chirho = Some(SockAddrInChirho {
                         port_chirho: local_port_chirho,
-                        addr_chirho: 0, // INADDR_ANY
+                        // Preserve the actual local destination IP from the
+                        // SYN so subsequent data packets use the same source IP
+                        // that completed the handshake.
+                        addr_chirho: ip_hdr_chirho.dst_ip_chirho,
                     });
                     child_sock_chirho.remote_addr_chirho = Some(SockAddrInChirho {
                         port_chirho: remote_port_chirho,
