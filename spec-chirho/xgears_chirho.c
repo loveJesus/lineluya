@@ -263,8 +263,10 @@ static void draw_rotating_rectangle_chirho(XgearsStateChirho *state_chirho) {
 static void report_fps_if_needed_chirho(XgearsStateChirho *state_chirho) {
     uint64_t now_ns_chirho;
     uint64_t delta_ns_chirho;
-    double delta_seconds_chirho;
-    double fps_chirho;
+    uint64_t delta_ms_chirho;
+    uint64_t fps_x10_chirho;
+    char buf_chirho[128];
+    int len_chirho;
 
     now_ns_chirho = monotonic_ns_chirho();
     delta_ns_chirho = now_ns_chirho - state_chirho->last_report_ns_chirho;
@@ -272,22 +274,38 @@ static void report_fps_if_needed_chirho(XgearsStateChirho *state_chirho) {
         return;
     }
 
-    delta_seconds_chirho = (double) delta_ns_chirho / 1000000000.0;
-    fps_chirho = (delta_seconds_chirho > 0.0)
-        ? ((double) state_chirho->report_frames_chirho / delta_seconds_chirho)
-        : 0.0;
+    delta_ms_chirho = delta_ns_chirho / 1000000ULL;
+    /* FPS × 10 to get one decimal place without floating point */
+    fps_x10_chirho = (delta_ms_chirho > 0)
+        ? (state_chirho->report_frames_chirho * 10000ULL / delta_ms_chirho)
+        : 0;
 
-    fprintf(
-        stderr,
-        "xgears-chirho: %.2f FPS (%llu frames in %.2f seconds)\n",
-        fps_chirho,
-        (unsigned long long) state_chirho->report_frames_chirho,
-        delta_seconds_chirho
-    );
-    fflush(stderr);
+    /* Use snprintf + write(2,...) to bypass musl stdio buffering */
+    len_chirho = snprintf(buf_chirho, sizeof(buf_chirho),
+        "xgears-chirho: %llu.%llu FPS (%llu frames in %llu.%llus)\n",
+        (unsigned long long)(fps_x10_chirho / 10),
+        (unsigned long long)(fps_x10_chirho % 10),
+        (unsigned long long)state_chirho->report_frames_chirho,
+        (unsigned long long)(delta_ms_chirho / 1000),
+        (unsigned long long)((delta_ms_chirho % 1000) / 100));
+    if (len_chirho > 0) {
+        write(STDERR_FILENO, buf_chirho, (size_t)len_chirho);
+    }
 
     state_chirho->report_frames_chirho = 0;
     state_chirho->last_report_ns_chirho = now_ns_chirho;
+}
+
+/* Simple frame counter that prints every 500 frames regardless of clock */
+static void report_frame_count_chirho(XgearsStateChirho *state_chirho) {
+    char buf_chirho[64];
+    int len_chirho;
+    if (state_chirho->total_frames_chirho > 0 && state_chirho->total_frames_chirho % 500 == 0) {
+        len_chirho = snprintf(buf_chirho, sizeof(buf_chirho),
+            "xgears-chirho: %llu frames drawn\n",
+            (unsigned long long)state_chirho->total_frames_chirho);
+        if (len_chirho > 0) write(STDERR_FILENO, buf_chirho, (size_t)len_chirho);
+    }
 }
 
 static void sleep_for_next_frame_chirho(void) {
@@ -481,7 +499,7 @@ static void run_xgears_loop_chirho(XgearsStateChirho *state_chirho) {
         state_chirho->report_frames_chirho += 1;
         flush_if_needed_chirho(state_chirho);
         report_fps_if_needed_chirho(state_chirho);
-        /* No sleep — draw as fast as possible for maximum frame rate */
+        report_frame_count_chirho(state_chirho);
     }
 }
 
