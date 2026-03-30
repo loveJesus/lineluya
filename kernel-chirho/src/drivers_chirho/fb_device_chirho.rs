@@ -804,10 +804,16 @@ pub fn dump_framebuffer_chirho() {
         return;
     }
 
+    // Downsample to thumbnail for faster serial transfer
+    // 160x100 = 48KB PPM = 64KB base64 = ~6 seconds at 115200 baud
+    let thumb_w_chirho: u32 = 160;
+    let thumb_h_chirho: u32 = 100;
+    let scale_x_chirho = width_chirho / thumb_w_chirho;
+    let scale_y_chirho = height_chirho / thumb_h_chirho;
     let (ppm_header_chirho, ppm_header_len_chirho) =
-        build_ppm_header_chirho(width_chirho, height_chirho);
+        build_ppm_header_chirho(thumb_w_chirho, thumb_h_chirho);
     let ppm_payload_bytes_chirho =
-        ppm_header_len_chirho as u64 + width_chirho as u64 * height_chirho as u64 * 3;
+        ppm_header_len_chirho as u64 + thumb_w_chirho as u64 * thumb_h_chirho as u64 * 3;
     let ppm_base64_bytes_chirho = ((ppm_payload_bytes_chirho + 2) / 3) * 4;
 
     let mut begin_buf_chirho = [0u8; 192];
@@ -820,13 +826,13 @@ pub fn dump_framebuffer_chirho() {
     append_u64_decimal_chirho(
         &mut begin_buf_chirho,
         &mut begin_len_chirho,
-        width_chirho as u64,
+        thumb_w_chirho as u64,
     );
     append_bytes_chirho(&mut begin_buf_chirho, &mut begin_len_chirho, b" height=");
     append_u64_decimal_chirho(
         &mut begin_buf_chirho,
         &mut begin_len_chirho,
-        height_chirho as u64,
+        thumb_h_chirho as u64,
     );
     append_bytes_chirho(&mut begin_buf_chirho, &mut begin_len_chirho, b" bpp=");
     append_u64_decimal_chirho(
@@ -866,14 +872,20 @@ pub fn dump_framebuffer_chirho() {
     encoder_chirho.feed_bytes_chirho(&ppm_header_chirho[..ppm_header_len_chirho]);
 
     let mut rgb_chunk_chirho = [0u8; FB_RGB_CHUNK_PIXELS_CHIRHO * 3];
-    for y_chirho in 0..height_usize_chirho {
+    let thumb_w_usize_chirho = thumb_w_chirho as usize;
+    let thumb_h_usize_chirho = thumb_h_chirho as usize;
+    let scale_x_usize_chirho = scale_x_chirho as usize;
+    let scale_y_usize_chirho = scale_y_chirho as usize;
+    for ty_chirho in 0..thumb_h_usize_chirho {
+        let y_chirho = ty_chirho * scale_y_usize_chirho;
         let row_offset_chirho = y_chirho * stride_usize_chirho;
-        let mut x_chirho = 0usize;
-        while x_chirho < width_usize_chirho {
+        let mut tx_chirho = 0usize;
+        while tx_chirho < thumb_w_usize_chirho {
             let chunk_pixels_chirho =
-                core::cmp::min(FB_RGB_CHUNK_PIXELS_CHIRHO, width_usize_chirho - x_chirho);
+                core::cmp::min(FB_RGB_CHUNK_PIXELS_CHIRHO, thumb_w_usize_chirho - tx_chirho);
             for pixel_index_chirho in 0..chunk_pixels_chirho {
-                let pixel_offset_chirho = row_offset_chirho + (x_chirho + pixel_index_chirho) * 4;
+                let x_chirho = (tx_chirho + pixel_index_chirho) * scale_x_usize_chirho;
+                let pixel_offset_chirho = row_offset_chirho + x_chirho * 4;
                 let pixel_value_chirho = unsafe {
                     core::ptr::read_volatile(
                         base_ptr_chirho.add(pixel_offset_chirho) as *const u32
@@ -897,7 +909,7 @@ pub fn dump_framebuffer_chirho() {
             }
 
             encoder_chirho.feed_bytes_chirho(&rgb_chunk_chirho[..chunk_pixels_chirho * 3]);
-            x_chirho += chunk_pixels_chirho;
+            tx_chirho += chunk_pixels_chirho;
         }
     }
 
