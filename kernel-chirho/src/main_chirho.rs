@@ -283,8 +283,17 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     interrupts_chirho::init_pics_chirho();
     serial_println_chirho!("[OK] PICs initialized");
 
-    // PIT timer: use default frequency (~18.2 Hz from BIOS/UEFI).
-    // 1kHz caused TICK-SKIP lockups during boot init.
+    // PIT timer: 100 Hz (10ms tick). Default ~18 Hz is too slow for
+    // multitasking. 1kHz caused TICK-SKIP lockups. 100 Hz is the sweet spot.
+    unsafe {
+        let mut cmd_port_chirho = x86_64::instructions::port::Port::<u8>::new(0x43);
+        let mut ch0_port_chirho = x86_64::instructions::port::Port::<u8>::new(0x40);
+        cmd_port_chirho.write(0x36); // channel 0, lo/hi, mode 3
+        let divisor_chirho: u16 = 11932; // 1193182 / 100 = 11932 → 100 Hz
+        ch0_port_chirho.write((divisor_chirho & 0xFF) as u8);
+        ch0_port_chirho.write((divisor_chirho >> 8) as u8);
+    }
+    serial_println_chirho!("[OK] PIT timer: 100 Hz (10ms tick)");
 
     // Initialize memory management
     let physical_memory_offset_chirho = boot_info_chirho
