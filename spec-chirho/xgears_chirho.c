@@ -296,14 +296,17 @@ static void report_fps_if_needed_chirho(XgearsStateChirho *state_chirho) {
     state_chirho->last_report_ns_chirho = now_ns_chirho;
 }
 
-/* Simple frame counter that prints every 500 frames regardless of clock */
+/* Simple frame counter that prints every 500 frames with timing */
 static void report_frame_count_chirho(XgearsStateChirho *state_chirho) {
-    char buf_chirho[64];
+    char buf_chirho[128];
     int len_chirho;
     if (state_chirho->total_frames_chirho > 0 && state_chirho->total_frames_chirho % 500 == 0) {
+        uint64_t now_chirho = monotonic_ns_chirho();
+        uint64_t elapsed_ms_chirho = now_chirho / 1000000ULL;
         len_chirho = snprintf(buf_chirho, sizeof(buf_chirho),
-            "xgears-chirho: %llu frames drawn\n",
-            (unsigned long long)state_chirho->total_frames_chirho);
+            "xgears-chirho: %llu frames (clock=%llums)\n",
+            (unsigned long long)state_chirho->total_frames_chirho,
+            (unsigned long long)elapsed_ms_chirho);
         if (len_chirho > 0) write(STDERR_FILENO, buf_chirho, (size_t)len_chirho);
     }
 }
