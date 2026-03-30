@@ -15,7 +15,7 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::vfs_chirho::{FileChirho, FileOpsChirho};
 use crate::syscall_chirho::{
@@ -89,8 +89,13 @@ static FB_ACTUAL_STRIDE_CHIRHO: AtomicU32 = AtomicU32::new(FB_LINE_LENGTH_CHIRHO
 static FB_ACTUAL_BPP_CHIRHO: AtomicU32 = AtomicU32::new(FB_BPP_CHIRHO);
 
 /// Whether the format is BGR (true) or RGB (false).
-static FB_IS_BGR_CHIRHO: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(true);
+static FB_IS_BGR_CHIRHO: AtomicBool = AtomicBool::new(true);
+
+/// One-shot guard for the framebuffer serial screenshot dump.
+static FB_DUMP_DONE_CHIRHO: AtomicBool = AtomicBool::new(false);
+
+/// Dump trigger at 60 seconds on the 1 kHz timer.
+pub const FB_DUMP_TRIGGER_TICKS_CHIRHO: u64 = 1_500;
 
 /// Set the actual framebuffer parameters (called from boot init when
 /// the framebuffer info is available from the bootloader).
@@ -550,6 +555,373 @@ pub fn fb_size_chirho() -> u64 {
     let stride_chirho = FB_ACTUAL_STRIDE_CHIRHO.load(Ordering::Relaxed);
     let height_chirho = FB_ACTUAL_HEIGHT_CHIRHO.load(Ordering::Relaxed);
     (stride_chirho as u64) * (height_chirho as u64)
+}
+
+const BASE64_TABLE_CHIRHO: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+const BASE64_WRAP_COLUMNS_CHIRHO: usize = 256;
+const BASE64_OUTPUT_BUFFER_BYTES_CHIRHO: usize = 2048;
+const FB_RGB_CHUNK_PIXELS_CHIRHO: usize = 256;
+
+struct Base64StreamEncoderChirho {
+    carry_chirho: [u8; 3],
+    carry_len_chirho: usize,
+    output_buf_chirho: [u8; BASE64_OUTPUT_BUFFER_BYTES_CHIRHO],
+    output_len_chirho: usize,
+    line_col_chirho: usize,
+}
+
+impl Base64StreamEncoderChirho {
+    fn new_chirho() -> Self {
+        Self {
+            carry_chirho: [0; 3],
+            carry_len_chirho: 0,
+            output_buf_chirho: [0; BASE64_OUTPUT_BUFFER_BYTES_CHIRHO],
+            output_len_chirho: 0,
+            line_col_chirho: 0,
+        }
+    }
+
+    fn flush_output_chirho(&mut self) {
+        if self.output_len_chirho == 0 {
+            return;
+        }
+        crate::serial_chirho::serial_write_bytes_chirho(
+            &self.output_buf_chirho[..self.output_len_chirho],
+        );
+        self.output_len_chirho = 0;
+    }
+
+    fn push_raw_byte_chirho(&mut self, byte_chirho: u8) {
+        if self.output_len_chirho >= self.output_buf_chirho.len() {
+            self.flush_output_chirho();
+        }
+        self.output_buf_chirho[self.output_len_chirho] = byte_chirho;
+        self.output_len_chirho += 1;
+    }
+
+    fn push_base64_byte_chirho(&mut self, byte_chirho: u8) {
+        if self.line_col_chirho >= BASE64_WRAP_COLUMNS_CHIRHO {
+            self.push_raw_byte_chirho(b'\n');
+            self.line_col_chirho = 0;
+        }
+        self.push_raw_byte_chirho(byte_chirho);
+        self.line_col_chirho += 1;
+    }
+
+    fn emit_triplet_chirho(&mut self, b0_chirho: u8, b1_chirho: u8, b2_chirho: u8) {
+        let idx0_chirho = (b0_chirho >> 2) as usize;
+        let idx1_chirho = (((b0_chirho & 0x03) << 4) | (b1_chirho >> 4)) as usize;
+        let idx2_chirho = (((b1_chirho & 0x0f) << 2) | (b2_chirho >> 6)) as usize;
+        let idx3_chirho = (b2_chirho & 0x3f) as usize;
+
+        self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx0_chirho]);
+        self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx1_chirho]);
+        self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx2_chirho]);
+        self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx3_chirho]);
+    }
+
+    fn feed_bytes_chirho(&mut self, bytes_chirho: &[u8]) {
+        let mut offset_chirho = 0usize;
+
+        if self.carry_len_chirho > 0 {
+            while self.carry_len_chirho < 3 && offset_chirho < bytes_chirho.len() {
+                self.carry_chirho[self.carry_len_chirho] = bytes_chirho[offset_chirho];
+                self.carry_len_chirho += 1;
+                offset_chirho += 1;
+            }
+            if self.carry_len_chirho == 3 {
+                self.emit_triplet_chirho(
+                    self.carry_chirho[0],
+                    self.carry_chirho[1],
+                    self.carry_chirho[2],
+                );
+                self.carry_len_chirho = 0;
+            }
+        }
+
+        while offset_chirho + 3 <= bytes_chirho.len() {
+            self.emit_triplet_chirho(
+                bytes_chirho[offset_chirho],
+                bytes_chirho[offset_chirho + 1],
+                bytes_chirho[offset_chirho + 2],
+            );
+            offset_chirho += 3;
+        }
+
+        while offset_chirho < bytes_chirho.len() {
+            self.carry_chirho[self.carry_len_chirho] = bytes_chirho[offset_chirho];
+            self.carry_len_chirho += 1;
+            offset_chirho += 1;
+        }
+    }
+
+    fn finish_chirho(&mut self) {
+        match self.carry_len_chirho {
+            1 => {
+                let b0_chirho = self.carry_chirho[0];
+                let idx0_chirho = (b0_chirho >> 2) as usize;
+                let idx1_chirho = ((b0_chirho & 0x03) << 4) as usize;
+                self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx0_chirho]);
+                self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx1_chirho]);
+                self.push_base64_byte_chirho(b'=');
+                self.push_base64_byte_chirho(b'=');
+            }
+            2 => {
+                let b0_chirho = self.carry_chirho[0];
+                let b1_chirho = self.carry_chirho[1];
+                let idx0_chirho = (b0_chirho >> 2) as usize;
+                let idx1_chirho = (((b0_chirho & 0x03) << 4) | (b1_chirho >> 4)) as usize;
+                let idx2_chirho = ((b1_chirho & 0x0f) << 2) as usize;
+                self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx0_chirho]);
+                self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx1_chirho]);
+                self.push_base64_byte_chirho(BASE64_TABLE_CHIRHO[idx2_chirho]);
+                self.push_base64_byte_chirho(b'=');
+            }
+            _ => {}
+        }
+
+        self.carry_len_chirho = 0;
+        if self.line_col_chirho != 0 {
+            self.push_raw_byte_chirho(b'\n');
+            self.line_col_chirho = 0;
+        }
+        self.flush_output_chirho();
+    }
+}
+
+fn append_bytes_chirho(
+    output_chirho: &mut [u8],
+    output_len_chirho: &mut usize,
+    bytes_chirho: &[u8],
+) {
+    let remaining_chirho = output_chirho.len().saturating_sub(*output_len_chirho);
+    let copy_len_chirho = remaining_chirho.min(bytes_chirho.len());
+    output_chirho[*output_len_chirho..*output_len_chirho + copy_len_chirho]
+        .copy_from_slice(&bytes_chirho[..copy_len_chirho]);
+    *output_len_chirho += copy_len_chirho;
+}
+
+fn append_u64_decimal_chirho(
+    output_chirho: &mut [u8],
+    output_len_chirho: &mut usize,
+    value_chirho: u64,
+) {
+    let mut scratch_chirho = [0u8; 20];
+    let mut digits_len_chirho = 0usize;
+    let mut work_chirho = value_chirho;
+
+    if work_chirho == 0 {
+        scratch_chirho[0] = b'0';
+        digits_len_chirho = 1;
+    } else {
+        while work_chirho > 0 && digits_len_chirho < scratch_chirho.len() {
+            scratch_chirho[digits_len_chirho] = b'0' + (work_chirho % 10) as u8;
+            digits_len_chirho += 1;
+            work_chirho /= 10;
+        }
+        scratch_chirho[..digits_len_chirho].reverse();
+    }
+
+    append_bytes_chirho(
+        output_chirho,
+        output_len_chirho,
+        &scratch_chirho[..digits_len_chirho],
+    );
+}
+
+fn serial_write_line_chirho(bytes_chirho: &[u8]) {
+    crate::serial_chirho::serial_write_bytes_chirho(bytes_chirho);
+    crate::serial_chirho::serial_write_bytes_chirho(b"\r\n");
+}
+
+fn build_ppm_header_chirho(width_chirho: u32, height_chirho: u32) -> ([u8; 32], usize) {
+    let mut header_buf_chirho = [0u8; 32];
+    let mut header_len_chirho = 0usize;
+    append_bytes_chirho(&mut header_buf_chirho, &mut header_len_chirho, b"P6\n");
+    append_u64_decimal_chirho(
+        &mut header_buf_chirho,
+        &mut header_len_chirho,
+        width_chirho as u64,
+    );
+    append_bytes_chirho(&mut header_buf_chirho, &mut header_len_chirho, b" ");
+    append_u64_decimal_chirho(
+        &mut header_buf_chirho,
+        &mut header_len_chirho,
+        height_chirho as u64,
+    );
+    append_bytes_chirho(&mut header_buf_chirho, &mut header_len_chirho, b"\n255\n");
+    (header_buf_chirho, header_len_chirho)
+}
+
+/// One-shot timer-triggered framebuffer dump gate.
+pub fn maybe_dump_framebuffer_after_tick_chirho(tick_count_chirho: u64) {
+    if tick_count_chirho < FB_DUMP_TRIGGER_TICKS_CHIRHO {
+        return;
+    }
+    if FB_DUMP_DONE_CHIRHO
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    dump_framebuffer_chirho();
+}
+
+/// Dump the live framebuffer as a base64-encoded PPM image over serial.
+///
+/// This is intentionally a heavy, one-shot diagnostic path. It reads the
+/// QEMU-visible BGRA framebuffer, converts it to RGB PPM (`P6`), base64-encodes
+/// the stream without heap allocation, and emits it with begin/end markers.
+pub fn dump_framebuffer_chirho() {
+    let phys_chirho = FB_ACTUAL_PHYS_CHIRHO.load(Ordering::Relaxed);
+    let width_chirho = FB_ACTUAL_WIDTH_CHIRHO.load(Ordering::Relaxed);
+    let height_chirho = FB_ACTUAL_HEIGHT_CHIRHO.load(Ordering::Relaxed);
+    let stride_chirho = FB_ACTUAL_STRIDE_CHIRHO.load(Ordering::Relaxed);
+    let bpp_chirho = FB_ACTUAL_BPP_CHIRHO.load(Ordering::Relaxed);
+    let is_bgr_chirho = FB_IS_BGR_CHIRHO.load(Ordering::Relaxed);
+
+    if phys_chirho == 0 || width_chirho == 0 || height_chirho == 0 {
+        serial_write_line_chirho(b"[FB-DUMP-ERROR] framebuffer-not-configured");
+        return;
+    }
+
+    if bpp_chirho != 32 {
+        let mut error_buf_chirho = [0u8; 96];
+        let mut error_len_chirho = 0usize;
+        append_bytes_chirho(
+            &mut error_buf_chirho,
+            &mut error_len_chirho,
+            b"[FB-DUMP-ERROR] unsupported-bpp=",
+        );
+        append_u64_decimal_chirho(
+            &mut error_buf_chirho,
+            &mut error_len_chirho,
+            bpp_chirho as u64,
+        );
+        serial_write_line_chirho(&error_buf_chirho[..error_len_chirho]);
+        return;
+    }
+
+    let (ppm_header_chirho, ppm_header_len_chirho) =
+        build_ppm_header_chirho(width_chirho, height_chirho);
+    let ppm_payload_bytes_chirho =
+        ppm_header_len_chirho as u64 + width_chirho as u64 * height_chirho as u64 * 3;
+    let ppm_base64_bytes_chirho = ((ppm_payload_bytes_chirho + 2) / 3) * 4;
+
+    let mut begin_buf_chirho = [0u8; 192];
+    let mut begin_len_chirho = 0usize;
+    append_bytes_chirho(
+        &mut begin_buf_chirho,
+        &mut begin_len_chirho,
+        b"[FB-DUMP-BEGIN] format=ppm;base64 width=",
+    );
+    append_u64_decimal_chirho(
+        &mut begin_buf_chirho,
+        &mut begin_len_chirho,
+        width_chirho as u64,
+    );
+    append_bytes_chirho(&mut begin_buf_chirho, &mut begin_len_chirho, b" height=");
+    append_u64_decimal_chirho(
+        &mut begin_buf_chirho,
+        &mut begin_len_chirho,
+        height_chirho as u64,
+    );
+    append_bytes_chirho(&mut begin_buf_chirho, &mut begin_len_chirho, b" bpp=");
+    append_u64_decimal_chirho(
+        &mut begin_buf_chirho,
+        &mut begin_len_chirho,
+        bpp_chirho as u64,
+    );
+    append_bytes_chirho(
+        &mut begin_buf_chirho,
+        &mut begin_len_chirho,
+        b" ppm_bytes=",
+    );
+    append_u64_decimal_chirho(
+        &mut begin_buf_chirho,
+        &mut begin_len_chirho,
+        ppm_payload_bytes_chirho,
+    );
+    append_bytes_chirho(
+        &mut begin_buf_chirho,
+        &mut begin_len_chirho,
+        b" base64_bytes=",
+    );
+    append_u64_decimal_chirho(
+        &mut begin_buf_chirho,
+        &mut begin_len_chirho,
+        ppm_base64_bytes_chirho,
+    );
+    serial_write_line_chirho(&begin_buf_chirho[..begin_len_chirho]);
+
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let base_ptr_chirho = (phys_chirho + phys_offset_chirho) as *const u8;
+    let width_usize_chirho = width_chirho as usize;
+    let height_usize_chirho = height_chirho as usize;
+    let stride_usize_chirho = stride_chirho as usize;
+
+    let mut encoder_chirho = Base64StreamEncoderChirho::new_chirho();
+    encoder_chirho.feed_bytes_chirho(&ppm_header_chirho[..ppm_header_len_chirho]);
+
+    let mut rgb_chunk_chirho = [0u8; FB_RGB_CHUNK_PIXELS_CHIRHO * 3];
+    for y_chirho in 0..height_usize_chirho {
+        let row_offset_chirho = y_chirho * stride_usize_chirho;
+        let mut x_chirho = 0usize;
+        while x_chirho < width_usize_chirho {
+            let chunk_pixels_chirho =
+                core::cmp::min(FB_RGB_CHUNK_PIXELS_CHIRHO, width_usize_chirho - x_chirho);
+            for pixel_index_chirho in 0..chunk_pixels_chirho {
+                let pixel_offset_chirho = row_offset_chirho + (x_chirho + pixel_index_chirho) * 4;
+                let pixel_value_chirho = unsafe {
+                    core::ptr::read_volatile(
+                        base_ptr_chirho.add(pixel_offset_chirho) as *const u32
+                    )
+                };
+
+                let byte0_chirho = (pixel_value_chirho & 0xff) as u8;
+                let byte1_chirho = ((pixel_value_chirho >> 8) & 0xff) as u8;
+                let byte2_chirho = ((pixel_value_chirho >> 16) & 0xff) as u8;
+                let out_offset_chirho = pixel_index_chirho * 3;
+
+                if is_bgr_chirho {
+                    rgb_chunk_chirho[out_offset_chirho] = byte2_chirho;
+                    rgb_chunk_chirho[out_offset_chirho + 1] = byte1_chirho;
+                    rgb_chunk_chirho[out_offset_chirho + 2] = byte0_chirho;
+                } else {
+                    rgb_chunk_chirho[out_offset_chirho] = byte0_chirho;
+                    rgb_chunk_chirho[out_offset_chirho + 1] = byte1_chirho;
+                    rgb_chunk_chirho[out_offset_chirho + 2] = byte2_chirho;
+                }
+            }
+
+            encoder_chirho.feed_bytes_chirho(&rgb_chunk_chirho[..chunk_pixels_chirho * 3]);
+            x_chirho += chunk_pixels_chirho;
+        }
+    }
+
+    encoder_chirho.finish_chirho();
+
+    let mut end_buf_chirho = [0u8; 96];
+    let mut end_len_chirho = 0usize;
+    append_bytes_chirho(
+        &mut end_buf_chirho,
+        &mut end_len_chirho,
+        b"[FB-DUMP-END] width=",
+    );
+    append_u64_decimal_chirho(
+        &mut end_buf_chirho,
+        &mut end_len_chirho,
+        width_chirho as u64,
+    );
+    append_bytes_chirho(&mut end_buf_chirho, &mut end_len_chirho, b" height=");
+    append_u64_decimal_chirho(
+        &mut end_buf_chirho,
+        &mut end_len_chirho,
+        height_chirho as u64,
+    );
+    serial_write_line_chirho(&end_buf_chirho[..end_len_chirho]);
 }
 
 /// Sample the live framebuffer contents and log when the sparse signature changes.

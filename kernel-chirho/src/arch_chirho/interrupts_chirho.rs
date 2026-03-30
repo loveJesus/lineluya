@@ -1168,6 +1168,11 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     // Drive the polled network RX path from the periodic timer.
     crate::net_chirho::try_poll_network_chirho();
 
+    // One-shot framebuffer screenshot dump after 60 seconds of boot.
+    crate::fb_device_chirho::maybe_dump_framebuffer_after_tick_chirho(
+        crate::scheduler_chirho::tick_count_chirho(),
+    );
+
     // Deferred user-mode preemption:
     // Rewrite the IRETQ frame so the interrupted task returns to a small
     // user trampoline that performs `sched_yield` via the normal syscall
