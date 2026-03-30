@@ -10020,6 +10020,55 @@ fn maybe_inject_x11_single_protocol_reply_chirho(unix_idx_chirho: usize, data_ch
                 sequence_chirho,
             );
         }
+        // AllocNamedColor (opcode 85 = 0x55) — return white pixel
+        0x55 => {
+            // AllocNamedColor reply: 32 bytes
+            // byte[0] = 1 (Reply)
+            // bytes[2-3] = sequence
+            // bytes[4-7] = 0 (additional length)
+            // bytes[8-9] = exact red (0xFFFF)
+            // bytes[10-11] = exact green (0xFFFF)
+            // bytes[12-13] = exact blue (0xFFFF)
+            // bytes[14-15] = screen red
+            // bytes[16-17] = screen green
+            // bytes[18-19] = screen blue
+            // bytes[20-23] = pixel value (0x00FFFFFF = white)
+            let mut reply_chirho = [0u8; 32];
+            reply_chirho[0] = 1; // Reply
+            reply_chirho[2] = (sequence_chirho & 0xFF) as u8;
+            reply_chirho[3] = (sequence_chirho >> 8) as u8;
+            // exact RGB = 0xFFFF (white)
+            reply_chirho[8] = 0xFF; reply_chirho[9] = 0xFF; // exact red
+            reply_chirho[10] = 0xFF; reply_chirho[11] = 0xFF; // exact green
+            reply_chirho[12] = 0xFF; reply_chirho[13] = 0xFF; // exact blue
+            // screen RGB = same
+            reply_chirho[14] = 0xFF; reply_chirho[15] = 0xFF;
+            reply_chirho[16] = 0xFF; reply_chirho[17] = 0xFF;
+            reply_chirho[18] = 0xFF; reply_chirho[19] = 0xFF;
+            // pixel = white (0x00FFFFFF)
+            reply_chirho[20] = 0xFF; reply_chirho[21] = 0xFF;
+            reply_chirho[22] = 0xFF; reply_chirho[23] = 0x00;
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-ALLOC-COLOR] unix_idx={} seq={} pixel=white",
+                unix_idx_chirho, sequence_chirho,
+            );
+        }
+        // AllocColor (opcode 84 = 0x54) — same as AllocNamedColor
+        0x54 => {
+            let mut reply_chirho = [0u8; 32];
+            reply_chirho[0] = 1;
+            reply_chirho[2] = (sequence_chirho & 0xFF) as u8;
+            reply_chirho[3] = (sequence_chirho >> 8) as u8;
+            reply_chirho[8] = 0xFF; reply_chirho[9] = 0xFF;
+            reply_chirho[10] = 0xFF; reply_chirho[11] = 0xFF;
+            reply_chirho[12] = 0xFF; reply_chirho[13] = 0xFF;
+            reply_chirho[16] = 0xFF; reply_chirho[17] = 0xFF;
+            reply_chirho[18] = 0xFF; reply_chirho[19] = 0xFF;
+            reply_chirho[20] = 0xFF; reply_chirho[21] = 0xFF;
+            reply_chirho[22] = 0xFF; reply_chirho[23] = 0x00;
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+        }
         X11_CREATE_GC_OPCODE_CHIRHO => {
             crate::serial_println_chirho!(
                 "[X11-INJECT-CREATE-GC] unix_idx={} seq={} reply=none",
@@ -10180,9 +10229,9 @@ fn maybe_inject_x11_single_protocol_reply_chirho(unix_idx_chirho: usize, data_ch
                             0x02 => "ChangeWindowAttributes", 0x0C => "ConfigureWindow", _ => "WindowOp" },
                         data_chirho.len(),
                     );
-                    // After CreateWindow: inject MapNotify + Expose events
-                    // so xterm's event loop unblocks and proceeds to PTY setup
-                    if opcode_chirho == 0x01 && data_chirho.len() >= 8 {
+                    // After CreateWindow OR MapWindow: inject MapNotify + Expose events
+                    // so X11 clients (xterm, xgears) unblock their event loops
+                    if (opcode_chirho == 0x01 || opcode_chirho == 0x08) && data_chirho.len() >= 8 {
                         let win_id_chirho = u32::from_le_bytes([
                             data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7],
                         ]);
