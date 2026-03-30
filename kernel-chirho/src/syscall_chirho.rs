@@ -1706,7 +1706,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     static X11_INJECT_ACTIVE_CHIRHO: AtomicBool = AtomicBool::new(false);
                     static X11_INJECT_POS_CHIRHO: AtomicUsize = AtomicUsize::new(0);
                     static X11_INJECT_CMD_CHIRHO: &[u8] =
-                        b"/tmp/lib-chirho/twm &\n/tmp/lib-chirho/xterm -e sh &\n";
+                        b"DISPLAY=:0 /usr/bin/twm &\nDISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\n";
                     let inject_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
                     // One-shot debug: log read(0) from PID 0
                     if inject_pid_chirho <= 2 {

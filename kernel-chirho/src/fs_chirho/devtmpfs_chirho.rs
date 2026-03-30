@@ -293,7 +293,7 @@ impl FileOpsChirho for DevConsoleOpsChirho {
             }
         }
         if crate::net_chirho::should_launch_x11_clients_chirho() {
-            let cmd_chirho = b"DISPLAY=:0 /tmp/lib-chirho/xterm -fn fixed -e sh &\nDISPLAY=:0 /tmp/lib-chirho/twm &\n";
+            let cmd_chirho = b"DISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\nDISPLAY=:0 /usr/bin/twm &\n";
             let n_chirho = cmd_chirho.len().min(buf_chirho.len());
             buf_chirho[..n_chirho].copy_from_slice(&cmd_chirho[..n_chirho]);
             crate::serial_println_chirho!("[X11-INJECT] Injected xterm+twm into shell stdin");
@@ -309,7 +309,7 @@ impl FileOpsChirho for DevConsoleOpsChirho {
             // Check for X11 client injection INSIDE the loop so it fires
             // even when the shell entered the read before X11_READY was set.
             if crate::net_chirho::should_launch_x11_clients_chirho() {
-                let cmd_chirho = b"DISPLAY=:0 /tmp/lib-chirho/xterm -fn fixed -e sh &\nDISPLAY=:0 /tmp/lib-chirho/twm &\n";
+                let cmd_chirho = b"DISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\nDISPLAY=:0 /usr/bin/twm &\n";
                 let n_chirho = cmd_chirho.len().min(buf_chirho.len());
                 buf_chirho[..n_chirho].copy_from_slice(&cmd_chirho[..n_chirho]);
                 crate::serial_println_chirho!("[X11-INJECT] Injected xterm+twm into shell stdin (from loop)");
