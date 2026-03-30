@@ -3959,32 +3959,11 @@ pub fn sys_sendto_chirho(
                 remote_ip_chirho,
             );
 
-            // Log outbound TCP data: size + seq + first/last bytes for corruption diagnosis
-            {
-                use core::sync::atomic::{AtomicU64, Ordering as TxOrd};
-                static TX_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                let tx_cnt_chirho = TX_CNT_CHIRHO.fetch_add(1, TxOrd::Relaxed);
-                let snd_nxt_chirho = socket_chirho.tcb_chirho.snd_nxt_chirho;
-                let first4_chirho = if data_chirho.len() >= 4 {
-                    u32::from_be_bytes([data_chirho[0], data_chirho[1], data_chirho[2], data_chirho[3]])
-                } else { 0 };
-                crate::serial_println_chirho!(
-                    "[TCP-TX] #{} {}:{} -> {}:{} seq={} len={} first4={:#010x} state={:?}",
-                    tx_cnt_chirho,
-                    format_ip_chirho(src_ip_chirho),
-                    local_port_chirho,
-                    format_ip_chirho(remote_ip_chirho),
-                    remote_port_chirho,
-                    snd_nxt_chirho,
-                    data_chirho.len(),
-                    first4_chirho,
-                    socket_chirho.tcb_chirho.state_chirho,
-                );
-            }
-            crate::serial_println_chirho!(
-                "[TCP-SEND-PATH] about to make_data_segment state={:?}",
-                socket_chirho.tcb_chirho.state_chirho,
-            );
+            // Capture trace data under lock, print AFTER dropping lock
+            // to avoid deadlock with timer ISR's deliver_tcp_from_frame.
+            let tx_trace_seq_chirho = socket_chirho.tcb_chirho.snd_nxt_chirho;
+            let tx_trace_len_chirho = data_chirho.len();
+            let tx_trace_state_chirho = socket_chirho.tcb_chirho.state_chirho;
             if let Some(seg_chirho) = socket_chirho.tcb_chirho.make_data_segment_chirho(
                 local_port_chirho, remote_port_chirho, &data_chirho,
             ) {
@@ -4002,22 +3981,24 @@ pub fn sys_sendto_chirho(
                 };
                 let mut pkt_chirho = ip_hdr_chirho.build_chirho();
                 pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
-                // Debug: dump checksums for SSH debugging
-                if pkt_chirho.len() >= 40 {
-                    crate::serial_println_chirho!(
-                        "[TCP-PKT] len={} ip_cksum={:02x}{:02x} tcp_cksum={:02x}{:02x}",
-                        pkt_chirho.len(),
-                        pkt_chirho[10], pkt_chirho[11],
-                        pkt_chirho[36], pkt_chirho[37],
-                    );
-                }
-                drop(table_chirho); // Release lock before sending
-                let send_result_chirho = send_ip_packet_chirho(&pkt_chirho);
-                if send_result_chirho.is_err() {
-                    crate::serial_println_chirho!(
-                        "[TCP-SEND-FAIL] pkt_len={} err={:?}",
-                        pkt_chirho.len(), send_result_chirho,
-                    );
+                let pkt_len_chirho = pkt_chirho.len();
+                // Drop socket table lock BEFORE serial I/O and packet send.
+                // Printing while holding SOCKET_TABLE causes deadlock:
+                // timer ISR → try_poll_network → deliver_tcp → lock() spins forever.
+                drop(table_chirho);
+                let _ = send_ip_packet_chirho(&pkt_chirho);
+                // Print trace AFTER lock released (safe from deadlock)
+                {
+                    use core::sync::atomic::{AtomicU64, Ordering as TxOrd2};
+                    static TX_POST_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let tx_cnt2_chirho = TX_POST_CHIRHO.fetch_add(1, TxOrd2::Relaxed);
+                    if tx_cnt2_chirho < 20 {
+                        crate::serial_println_chirho!(
+                            "[TCP-TX] #{} seq={} len={} pkt={} state={:?}",
+                            tx_cnt2_chirho, tx_trace_seq_chirho, tx_trace_len_chirho,
+                            pkt_len_chirho, tx_trace_state_chirho,
+                        );
+                    }
                 }
                 return count_chirho as i64;
             } else {
