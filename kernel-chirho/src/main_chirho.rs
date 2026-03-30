@@ -283,6 +283,17 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     interrupts_chirho::init_pics_chirho();
     serial_println_chirho!("[OK] PICs initialized");
 
+    // Initialize PIT channel 0 to 1000 Hz (1ms tick) for preemptive scheduling
+    unsafe {
+        let mut cmd_port_chirho = x86_64::instructions::port::Port::<u8>::new(0x43);
+        let mut ch0_port_chirho = x86_64::instructions::port::Port::<u8>::new(0x40);
+        cmd_port_chirho.write(0x36); // channel 0, lo/hi, mode 3 (square wave)
+        let divisor_chirho: u16 = 1193; // 1193182 / 1000 ≈ 1193 → 1000 Hz
+        ch0_port_chirho.write((divisor_chirho & 0xFF) as u8);
+        ch0_port_chirho.write((divisor_chirho >> 8) as u8);
+    }
+    serial_println_chirho!("[OK] PIT timer: 1000 Hz (1ms preemption tick)");
+
     // Initialize memory management
     let physical_memory_offset_chirho = boot_info_chirho
         .physical_memory_offset
@@ -713,6 +724,50 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
                     }
                 }
             }
+        }
+
+        // Warm up ext4 page cache by reading all files that processes will need.
+        // This populates the block cache so later reads hit cache (no VirtIO I/O).
+        {
+            let warmup_paths_chirho: &[&str] = &[
+                "/usr/share/fonts/misc/fonts.dir",
+                "/usr/share/fonts/misc/fonts.alias",
+                "/usr/share/fonts/100dpi/fonts.dir",
+                "/usr/share/fonts/100dpi/fonts.alias",
+                "/usr/share/fonts/75dpi/fonts.dir",
+                "/usr/share/fonts/75dpi/fonts.alias",
+                "/usr/share/X11/locale/locale.alias",
+                "/usr/share/X11/locale/locale.dir",
+                "/usr/share/X11/locale/en_US.UTF-8/XLC_LOCALE",
+                "/usr/share/X11/xkb/rules/evdev",
+                "/usr/share/X11/xorg.conf.d/10-quirks.conf",
+                "/usr/lib/xorg/protocol.txt",
+                "/usr/lib/mpg123/output_oss.so",
+                "/root/test-tone-chirho.mp3",
+                "/etc/localtime",
+            ];
+            let mut warmed_chirho = 0u32;
+            for path_chirho in warmup_paths_chirho {
+                if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho(path_chirho) {
+                    let size_chirho = inode_chirho.lock().size_chirho as usize;
+                    if size_chirho > 0 && size_chirho < 256 * 1024 {
+                        let file_chirho = alloc::sync::Arc::new(spin::Mutex::new(vfs_chirho::FileChirho {
+                            inode_chirho: inode_chirho.clone(), pos_chirho: 0, flags_chirho: 0, ops_chirho,
+                        }));
+                        let mut buf_chirho = [0u8; 4096];
+                        let mut total_chirho = 0usize;
+                        loop {
+                            let mut fg_chirho = file_chirho.lock();
+                            match fg_chirho.ops_chirho.read_chirho(&mut fg_chirho, &mut buf_chirho) {
+                                Ok(n) if n > 0 => total_chirho += n,
+                                _ => break,
+                            }
+                        }
+                        warmed_chirho += 1;
+                    }
+                }
+            }
+            serial_println_chirho!("[INIT] Warmed ext4 page cache: {} files", warmed_chirho);
         }
 
         // Pre-compiled XKB keymap — xkbcomp takes 10+ minutes to load

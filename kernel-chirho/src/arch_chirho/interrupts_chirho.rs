@@ -1576,6 +1576,18 @@ pub fn init_ioapic_keyboard_chirho() {
         core::ptr::write_volatile(ioregsel_chirho, redir_low_reg_chirho);
         core::ptr::write_volatile(iowin_chirho, low_chirho);
 
+        // Initialize PIT channel 0 to 1000 Hz (1ms tick)
+        // PIT oscillator: 1,193,182 Hz. Divisor for 1000 Hz = 1193.
+        {
+            let divisor_chirho: u16 = 1193; // 1193182 / 1000 ≈ 1193
+            let mut cmd_port_chirho = x86_64::instructions::port::Port::<u8>::new(0x43);
+            let mut ch0_port_chirho = x86_64::instructions::port::Port::<u8>::new(0x40);
+            cmd_port_chirho.write(0x36); // channel 0, lo/hi, mode 3 (square wave)
+            ch0_port_chirho.write((divisor_chirho & 0xFF) as u8); // low byte
+            ch0_port_chirho.write((divisor_chirho >> 8) as u8);   // high byte
+            crate::serial_println_chirho!("[PIT] Timer initialized: 1000 Hz (1ms tick)");
+        }
+
         // Also route IRQ0 (timer) to vector 32 via IOAPIC
         let timer_low_reg_chirho = 0x10; // Entry 0, low
         let timer_high_reg_chirho = 0x11; // Entry 0, high
