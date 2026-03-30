@@ -467,7 +467,7 @@ static void run_xgears_loop_chirho(XgearsStateChirho *state_chirho) {
         state_chirho->total_frames_chirho += 1;
         state_chirho->report_frames_chirho += 1;
         report_fps_if_needed_chirho(state_chirho);
-        sleep_for_next_frame_chirho();
+        /* No sleep — draw as fast as possible for maximum frame rate */
     }
 }
 
