@@ -1168,7 +1168,7 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     // Drive the polled network RX path from the periodic timer.
     crate::net_chirho::try_poll_network_chirho();
 
-    // One-shot framebuffer screenshot dump after 60 seconds of boot.
+    // One-shot framebuffer screenshot dump request after 60 seconds of boot.
     crate::fb_device_chirho::maybe_dump_framebuffer_after_tick_chirho(
         crate::scheduler_chirho::tick_count_chirho(),
     );

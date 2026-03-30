@@ -477,6 +477,8 @@ fn arch_prepare_switch_chirho(old_pid_chirho: Option<u64>, next_pid_chirho: u64)
 ///   involved PIDs.
 #[inline(never)]
 pub fn schedule_chirho() {
+    crate::fb_device_chirho::service_framebuffer_dump_request_chirho();
+
     // Disable interrupts manually (CLI/STI) instead of using without_interrupts.
     // The without_interrupts closure saves RFLAGS on the stack before calling
     // the closure.  After switch_context returns (to a DIFFERENT invocation of

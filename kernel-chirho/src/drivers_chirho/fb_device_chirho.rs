@@ -94,8 +94,14 @@ static FB_IS_BGR_CHIRHO: AtomicBool = AtomicBool::new(true);
 /// One-shot guard for the framebuffer serial screenshot dump.
 static FB_DUMP_DONE_CHIRHO: AtomicBool = AtomicBool::new(false);
 
+/// Timer/renderer request bit for deferred framebuffer dumping.
+static FB_DUMP_REQUESTED_CHIRHO: AtomicBool = AtomicBool::new(false);
+
+/// Reentrancy guard while the dump is actively streaming.
+static FB_DUMP_IN_PROGRESS_CHIRHO: AtomicBool = AtomicBool::new(false);
+
 /// Dump trigger at 60 seconds on the 1 kHz timer.
-pub const FB_DUMP_TRIGGER_TICKS_CHIRHO: u64 = 1_500;
+pub const FB_DUMP_TRIGGER_TICKS_CHIRHO: u64 = 60_000;
 
 /// Set the actual framebuffer parameters (called from boot init when
 /// the framebuffer info is available from the bootloader).
@@ -563,6 +569,7 @@ const BASE64_TABLE_CHIRHO: &[u8; 64] =
 const BASE64_WRAP_COLUMNS_CHIRHO: usize = 256;
 const BASE64_OUTPUT_BUFFER_BYTES_CHIRHO: usize = 2048;
 const FB_RGB_CHUNK_PIXELS_CHIRHO: usize = 256;
+const FB_DUMP_COOPERATE_BYTES_CHIRHO: usize = 4096;
 
 struct Base64StreamEncoderChirho {
     carry_chirho: [u8; 3],
@@ -570,6 +577,7 @@ struct Base64StreamEncoderChirho {
     output_buf_chirho: [u8; BASE64_OUTPUT_BUFFER_BYTES_CHIRHO],
     output_len_chirho: usize,
     line_col_chirho: usize,
+    emitted_since_cooperate_chirho: usize,
 }
 
 impl Base64StreamEncoderChirho {
@@ -580,6 +588,7 @@ impl Base64StreamEncoderChirho {
             output_buf_chirho: [0; BASE64_OUTPUT_BUFFER_BYTES_CHIRHO],
             output_len_chirho: 0,
             line_col_chirho: 0,
+            emitted_since_cooperate_chirho: 0,
         }
     }
 
@@ -590,7 +599,14 @@ impl Base64StreamEncoderChirho {
         crate::serial_chirho::serial_write_bytes_chirho(
             &self.output_buf_chirho[..self.output_len_chirho],
         );
+        self.emitted_since_cooperate_chirho = self
+            .emitted_since_cooperate_chirho
+            .saturating_add(self.output_len_chirho);
         self.output_len_chirho = 0;
+        if self.emitted_since_cooperate_chirho >= FB_DUMP_COOPERATE_BYTES_CHIRHO {
+            cooperate_framebuffer_dump_chirho();
+            self.emitted_since_cooperate_chirho = 0;
+        }
     }
 
     fn push_raw_byte_chirho(&mut self, byte_chirho: u8) {
@@ -736,6 +752,12 @@ fn serial_write_line_chirho(bytes_chirho: &[u8]) {
     crate::serial_chirho::serial_write_bytes_chirho(b"\r\n");
 }
 
+fn cooperate_framebuffer_dump_chirho() {
+    crate::scheduler_chirho::set_need_resched_chirho();
+    crate::scheduler_chirho::yield_current_chirho();
+    x86_64::instructions::interrupts::enable_and_hlt();
+}
+
 fn build_ppm_header_chirho(width_chirho: u32, height_chirho: u32) -> ([u8; 32], usize) {
     let mut header_buf_chirho = [0u8; 32];
     let mut header_len_chirho = 0usize;
@@ -760,13 +782,38 @@ pub fn maybe_dump_framebuffer_after_tick_chirho(tick_count_chirho: u64) {
     if tick_count_chirho < FB_DUMP_TRIGGER_TICKS_CHIRHO {
         return;
     }
-    if FB_DUMP_DONE_CHIRHO
+    if FB_DUMP_DONE_CHIRHO.load(Ordering::Acquire)
+        || FB_DUMP_IN_PROGRESS_CHIRHO.load(Ordering::Acquire)
+    {
+        return;
+    }
+    FB_DUMP_REQUESTED_CHIRHO.store(true, Ordering::Release);
+}
+
+/// Service a pending framebuffer dump request from normal task context.
+pub fn service_framebuffer_dump_request_chirho() {
+    if FB_DUMP_DONE_CHIRHO.load(Ordering::Acquire)
+        || FB_DUMP_IN_PROGRESS_CHIRHO.load(Ordering::Acquire)
+    {
+        return;
+    }
+    if FB_DUMP_REQUESTED_CHIRHO
+        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    if FB_DUMP_IN_PROGRESS_CHIRHO
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return;
     }
+
     dump_framebuffer_chirho();
+    FB_DUMP_DONE_CHIRHO.store(true, Ordering::Release);
+    FB_DUMP_IN_PROGRESS_CHIRHO.store(false, Ordering::Release);
 }
 
 /// Dump the live framebuffer as a base64-encoded PPM image over serial.
