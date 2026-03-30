@@ -2324,6 +2324,53 @@ pub fn lookup_unix_idx_pub_chirho(sock_idx_chirho: usize) -> Option<usize> {
     lookup_unix_idx_chirho(sock_idx_chirho)
 }
 
+/// Return true when a socket-table entry refers to a connected AF_UNIX socket
+/// participating in the X11 transport.
+///
+/// This is used by the scheduler to identify GUI/rendering tasks so they can
+/// receive a slightly larger time slice without hard-coding process names.
+pub fn is_x11_connected_unix_socket_idx_chirho(sock_idx_chirho: usize) -> bool {
+    if !is_unix_socket_idx_chirho(sock_idx_chirho) {
+        return false;
+    }
+
+    let Some(unix_idx_chirho) = lookup_unix_idx_chirho(sock_idx_chirho) else {
+        return false;
+    };
+
+    let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    let Some(socket_chirho) = unix_table_chirho
+        .get(unix_idx_chirho)
+        .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+    else {
+        return false;
+    };
+
+    if socket_chirho.listening_chirho {
+        return false;
+    }
+
+    let path_matches_x11_chirho = |path_option_chirho: Option<&alloc::string::String>| -> bool {
+        path_option_chirho
+            .map(|path_chirho| path_chirho.contains(".X11-unix/X"))
+            .unwrap_or(false)
+    };
+
+    if path_matches_x11_chirho(socket_chirho.path_chirho.as_ref()) {
+        return true;
+    }
+
+    socket_chirho
+        .peer_idx_chirho
+        .and_then(|peer_idx_chirho| {
+            unix_table_chirho
+                .get(peer_idx_chirho)
+                .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+        })
+        .map(|peer_socket_chirho| path_matches_x11_chirho(peer_socket_chirho.path_chirho.as_ref()))
+        .unwrap_or(false)
+}
+
 fn unix_socket_recv_stats_chirho(socket_chirho: &UnixSocketChirho) -> (usize, usize) {
     let mut recv_entries_chirho = 0usize;
     let mut recv_bytes_chirho = 0usize;

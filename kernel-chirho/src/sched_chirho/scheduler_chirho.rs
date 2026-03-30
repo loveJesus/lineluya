@@ -47,6 +47,13 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// with a fixed quantum is fine for the initial bring-up.
 pub const DEFAULT_TIME_SLICE_CHIRHO: u64 = 50;
 
+/// Boosted time slice for active X11 client/render tasks.
+///
+/// These tasks tend to alternate short AF_UNIX request bursts with immediate
+/// follow-up drawing work. Giving them a few consecutive ticks improves frame
+/// rate substantially without changing the rest of the run-queue policy.
+pub const X11_RENDER_TIME_SLICE_CHIRHO: u64 = DEFAULT_TIME_SLICE_CHIRHO * 3;
+
 /// Maximum number of tasks the scheduler supports concurrently.
 ///
 /// This is a soft limit used for sanity checks.  The `VecDeque`-backed run
@@ -183,6 +190,49 @@ fn task_state_name_for_pid_chirho(pid_chirho: u64) -> &'static str {
         crate::task_chirho::TaskStateChirho::StoppedChirho => "Stopped",
         crate::task_chirho::TaskStateChirho::ZombieChirho => "Zombie",
         crate::task_chirho::TaskStateChirho::DeadChirho => "Dead",
+    }
+}
+
+fn task_has_x11_render_socket_chirho(pid_chirho: u64) -> bool {
+    let Some(task_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) else {
+        return false;
+    };
+
+    let task_guard_chirho = task_arc_chirho.lock();
+    let Some(fd_table_chirho) = task_guard_chirho.fd_table_chirho.as_ref() else {
+        return false;
+    };
+
+    for file_option_chirho in fd_table_chirho.fds_chirho.iter() {
+        let Some(file_arc_chirho) = file_option_chirho.as_ref() else {
+            continue;
+        };
+
+        let (inode_mode_chirho, inode_number_chirho) = {
+            let file_guard_chirho = file_arc_chirho.lock();
+            let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+            (inode_guard_chirho.mode_chirho, inode_guard_chirho.ino_chirho)
+        };
+
+        if (inode_mode_chirho & 0o170000) != 0o140000 {
+            continue;
+        }
+
+        if crate::net_chirho::is_x11_connected_unix_socket_idx_chirho(
+            inode_number_chirho as usize,
+        ) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn time_slice_for_pid_chirho(pid_chirho: u64) -> u64 {
+    if task_has_x11_render_socket_chirho(pid_chirho) {
+        X11_RENDER_TIME_SLICE_CHIRHO
+    } else {
+        DEFAULT_TIME_SLICE_CHIRHO
     }
 }
 
@@ -544,7 +594,8 @@ pub fn schedule_chirho() {
                     if let Some(sched_chirho) = guard_chirho.as_mut() {
                         if let Some(pid_chirho) = sched_chirho.tasks_chirho.pop_front() {
                             sched_chirho.current_pid_chirho = Some(pid_chirho);
-                            sched_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
+                            sched_chirho.remaining_ticks_chirho =
+                                time_slice_for_pid_chirho(pid_chirho);
                             drop(guard_chirho);
                             // Switch to the newly runnable task
                             arch_prepare_switch_chirho(None, pid_chirho);
@@ -605,14 +656,16 @@ pub fn schedule_chirho() {
                 //    switch is necessary — just reset the time slice.
             if old_pid_chirho == Some(next_chirho) {
                 scheduler_chirho.current_pid_chirho = Some(next_chirho);
-                scheduler_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
+                scheduler_chirho.remaining_ticks_chirho =
+                    time_slice_for_pid_chirho(next_chirho);
                 unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
                 return;
             }
 
                 // 5. Different task — perform a context switch.
                 scheduler_chirho.current_pid_chirho = Some(next_chirho);
-                scheduler_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
+            scheduler_chirho.remaining_ticks_chirho =
+                time_slice_for_pid_chirho(next_chirho);
 
                 // Obtain raw pointers to the CPU contexts *before* dropping the
                 // scheduler lock.  The task table is expected to provide stable
@@ -839,7 +892,10 @@ pub fn reset_time_slice_chirho() {
     NEED_RESCHED_ATOMIC_CHIRHO.store(false, Ordering::Release);
     if let Some(mut guard_chirho) = SCHEDULER_CHIRHO.try_lock() {
         if let Some(ref mut sched_chirho) = *guard_chirho {
-            sched_chirho.remaining_ticks_chirho = DEFAULT_TIME_SLICE_CHIRHO;
+            sched_chirho.remaining_ticks_chirho = sched_chirho
+                .current_pid_chirho
+                .map(time_slice_for_pid_chirho)
+                .unwrap_or(DEFAULT_TIME_SLICE_CHIRHO);
             sched_chirho.need_resched_chirho = false;
         }
     }
