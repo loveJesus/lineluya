@@ -1252,6 +1252,7 @@ pub fn sys_openat_chirho(
                         "export DISPLAY=:0\n",
                         "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
                         "insmod /lib/modules/loop.ko &\n",
+                        "losetup /dev/loop0 /root/test-tone-chirho.mp3 && echo LOOP_TEST_OK &\n",
                         "echo -ne '\\xff\\x7f' > /dev/dsp &\n",
                         "/usr/sbin/dropbear -R -E -B -p 2222 &\n",
                         "/tmp/lib-chirho/Xorg :0 -ac -noreset -novtswitch -keeptty -sharevts &\n",
