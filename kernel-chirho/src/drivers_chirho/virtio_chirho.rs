@@ -1119,9 +1119,6 @@ impl VirtioBlkDeviceChirho {
             }
         }
 
-        // Busy-wait for the device to process the request.
-        // In real hardware we'd WFI/HLT + interrupt; for now just spin briefly.
-        // The device writes `status_byte_chirho` when done.
         let mut spins_chirho: u32 = 0;
         while status_byte_chirho == 0xFF {
             core::hint::spin_loop();
