@@ -4733,19 +4733,11 @@ fn sys_poll_chirho(
         }
     }
 
-    // Yield for daemon PIDs (>= 6) on EVERY poll return.
+    // Yield only when no fds are ready — prevents busy-loop but doesn't
+    // penalize GUI clients that poll with events available.
     {
         let poll_ret_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if poll_ret_pid_chirho >= 6 {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static PY6_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let pyc_chirho = PY6_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if pyc_chirho < 3 {
-                crate::serial_println_chirho!(
-                    "[POLL-YIELD6] #{} pid={} ready={} timeout={}",
-                    pyc_chirho, poll_ret_pid_chirho, ready_count_chirho, _timeout_chirho,
-                );
-            }
+        if poll_ret_pid_chirho >= 6 && ready_count_chirho == 0 {
             crate::scheduler_chirho::yield_current_chirho();
         }
     }
