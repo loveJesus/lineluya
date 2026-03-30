@@ -1231,30 +1231,38 @@ pub const fn ip4_chirho(a_chirho: u8, b_chirho: u8, c_chirho: u8, d_chirho: u8) 
 /// Called by `init_networking_chirho`. Adds:
 /// - 127.0.0.0/8 via lo (interface 0)
 /// - 0.0.0.0/0 default route via 10.0.2.2 (QEMU default gateway), interface 1
-fn init_routing_table_chirho() {
+fn init_routing_table_chirho(
+    loopback_iface_idx_chirho: usize,
+    default_iface_idx_chirho: Option<usize>,
+) {
     let mut rt_chirho = ROUTING_TABLE_CHIRHO.lock();
+    rt_chirho.entries_chirho.clear();
 
-    // Loopback route: 127.0.0.0/8 -> lo (device 0)
+    // Loopback route: 127.0.0.0/8 -> actual loopback device.
     rt_chirho.add_route_chirho(RouteEntryChirho {
         dest_chirho: ip4_chirho(127, 0, 0, 0),
         mask_chirho: ip4_chirho(255, 0, 0, 0),
         gateway_chirho: 0, // on-link
-        iface_idx_chirho: 0,
+        iface_idx_chirho: loopback_iface_idx_chirho,
         metric_chirho: 0,
     });
 
-    // Default route: 0.0.0.0/0 -> 10.0.2.2 (QEMU user-mode default gw)
-    rt_chirho.add_route_chirho(RouteEntryChirho {
-        dest_chirho: 0,
-        mask_chirho: 0,
-        gateway_chirho: ip4_chirho(10, 0, 2, 2),
-        iface_idx_chirho: 1, // first real NIC (when available)
-        metric_chirho: 100,
-    });
+    // Default route: 0.0.0.0/0 -> 10.0.2.2 on the actual first real NIC.
+    if let Some(default_idx_chirho) = default_iface_idx_chirho {
+        rt_chirho.add_route_chirho(RouteEntryChirho {
+            dest_chirho: 0,
+            mask_chirho: 0,
+            gateway_chirho: ip4_chirho(10, 0, 2, 2),
+            iface_idx_chirho: default_idx_chirho,
+            metric_chirho: 100,
+        });
+    }
 
     crate::serial_debug_chirho!(
-        "[NET] Routing table initialized ({} routes)",
-        rt_chirho.len_chirho()
+        "[NET] Routing table initialized ({} routes, loopback_if={}, default_if={:?})",
+        rt_chirho.len_chirho(),
+        loopback_iface_idx_chirho,
+        default_iface_idx_chirho,
     );
 }
 
@@ -1692,9 +1700,6 @@ pub fn init_networking_chirho() {
     drop(devices_chirho);
     crate::serial_println_chirho!("[OK] Networking initialized — loopback device registered (lo, MTU={})", LOOPBACK_MTU_CHIRHO);
 
-    // A3-005: set up default routing table.
-    init_routing_table_chirho();
-
     // P3-002: VirtIO-net I/O port devices are probed during init_virtio_chirho
     // (which runs before init_networking_chirho). Any VirtIO-net NIC found
     // via I/O BAR is already registered in NET_DEVICES_CHIRHO at this point.
@@ -1705,7 +1710,14 @@ pub fn init_networking_chirho() {
     };
 
     // Loopback is always the LAST device (just pushed above).
-    set_interface_ip_chirho(nic_count_chirho - 1, LOOPBACK_IP_CHIRHO);
+    let loopback_iface_idx_chirho = nic_count_chirho - 1;
+    set_interface_ip_chirho(loopback_iface_idx_chirho, LOOPBACK_IP_CHIRHO);
+    let default_iface_idx_chirho =
+        if nic_count_chirho > 1 { Some(0usize) } else { None };
+    init_routing_table_chirho(
+        loopback_iface_idx_chirho,
+        default_iface_idx_chirho,
+    );
 
     if nic_count_chirho > 1 {
         // VirtIO-net was registered BEFORE loopback (during init_virtio),
@@ -7626,18 +7638,29 @@ pub fn probe_virtio_net_chirho() {
         }
     }
 
-    // Set loopback IP.
-    set_interface_ip_chirho(0, LOOPBACK_IP_CHIRHO);
-
-    // Run DHCP on the first real NIC (interface 1, if present).
+    // Treat loopback as the last interface if present; the first real NIC is
+    // interface 0 in the usual boot sequence where NICs are registered before
+    // loopback initialization.
     let nic_count_chirho = {
         let devs_chirho = NET_DEVICES_CHIRHO.lock();
         devs_chirho.len()
     };
+    if nic_count_chirho == 0 {
+        crate::serial_debug_chirho!("[VNET] No interfaces present after probe");
+        return;
+    }
+    let loopback_iface_idx_chirho = nic_count_chirho - 1;
+    set_interface_ip_chirho(loopback_iface_idx_chirho, LOOPBACK_IP_CHIRHO);
+    let default_iface_idx_chirho =
+        if nic_count_chirho > 1 { Some(0usize) } else { None };
+    init_routing_table_chirho(
+        loopback_iface_idx_chirho,
+        default_iface_idx_chirho,
+    );
 
     if nic_count_chirho > 1 {
-        crate::serial_debug_chirho!("[VNET] Running DHCP on interface 1...");
-        let _dhcp_result_chirho = dhcp_discover_chirho(1);
+        crate::serial_debug_chirho!("[VNET] Running DHCP on interface 0...");
+        let _dhcp_result_chirho = dhcp_discover_chirho(0);
     } else {
         crate::serial_debug_chirho!("[VNET] No NIC found, skipping DHCP");
     }
@@ -8195,6 +8218,21 @@ impl NetDeviceChirho for VirtioNetIoDeviceChirho {
         if !self.initialized_chirho {
             return;
         }
+        let first4_chirho = if data_chirho.len() >= 4 {
+            u32::from_be_bytes([
+                data_chirho[0],
+                data_chirho[1],
+                data_chirho[2],
+                data_chirho[3],
+            ])
+        } else {
+            0
+        };
+        crate::serial_println_chirho!(
+            "[VNET-IO-TX] len={} first4={:#010x}",
+            data_chirho.len(),
+            first4_chirho,
+        );
         crate::log_net_chirho!("[VNET-IO] TX: {} bytes", data_chirho.len());
         self.transmit_frame_io_chirho(data_chirho);
     }
