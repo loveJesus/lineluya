@@ -1,8 +1,7 @@
 // For God so loved the world that he gave his only begotten Son,
 // that whoever believes in him should not perish but have eternal life. - John 3:16
 
-#include <X11/Xatom.h>
-#include <X11/Xlib.h>
+#include <xcb/xcb.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -17,6 +16,8 @@
 #define FPS_REPORT_NS_CHIRHO 5000000000ULL
 #define ROTATION_SAMPLES_CHIRHO 64
 #define FIXED_SCALE_CHIRHO 1024
+#define CONNECT_RETRIES_CHIRHO 30
+#define CONNECT_RETRY_US_CHIRHO 100000U
 
 typedef struct RotationSampleChirho {
     int cos_fixed_chirho;
@@ -24,17 +25,16 @@ typedef struct RotationSampleChirho {
 } RotationSampleChirho;
 
 typedef struct XgearsStateChirho {
-    Display *display_chirho;
-    int screen_chirho;
-    Window window_chirho;
-    GC gc_chirho;
-    Atom wm_delete_atom_chirho;
-    unsigned int width_chirho;
-    unsigned int height_chirho;
-    unsigned long background_pixel_chirho;
-    unsigned long outline_pixel_chirho;
-    unsigned long accent_pixel_chirho;
-    unsigned long axis_pixel_chirho;
+    xcb_connection_t *connection_chirho;
+    xcb_screen_t *screen_chirho;
+    xcb_window_t window_chirho;
+    xcb_gcontext_t gc_chirho;
+    uint16_t width_chirho;
+    uint16_t height_chirho;
+    uint32_t background_pixel_chirho;
+    uint32_t outline_pixel_chirho;
+    uint32_t accent_pixel_chirho;
+    uint32_t axis_pixel_chirho;
     uint64_t total_frames_chirho;
     uint64_t report_frames_chirho;
     uint64_t last_report_ns_chirho;
@@ -120,35 +120,19 @@ static uint64_t monotonic_ns_chirho(void) {
         + (uint64_t) timestamp_chirho.tv_nsec;
 }
 
-static unsigned long alloc_named_color_chirho(
-    Display *display_chirho,
-    int screen_chirho,
-    const char *name_chirho,
-    unsigned long fallback_pixel_chirho
+static void set_gc_foreground_chirho(
+    XgearsStateChirho *state_chirho,
+    uint32_t pixel_chirho
 ) {
-    /* Skip XAllocNamedColor — it triggers CCC/Xcms atom lookups that
-       block on our kernel's X11 injection. Use WhitePixel directly. */
-    (void)display_chirho;
-    (void)screen_chirho;
-    (void)name_chirho;
-    return fallback_pixel_chirho;
-#if 0
-    Colormap colormap_chirho;
-    XColor exact_color_chirho;
-    XColor screen_color_chirho;
+    uint32_t values_chirho[1];
 
-    colormap_chirho = DefaultColormap(display_chirho, screen_chirho);
-    if (XAllocNamedColor(
-            display_chirho,
-            colormap_chirho,
-            name_chirho,
-            &screen_color_chirho,
-            &exact_color_chirho
-        ) == 0) {
-        return fallback_pixel_chirho;
-    }
-    return fallback_pixel_chirho; /* unreachable but keeps compiler happy */
-#endif
+    values_chirho[0] = pixel_chirho;
+    xcb_change_gc(
+        state_chirho->connection_chirho,
+        state_chirho->gc_chirho,
+        XCB_GC_FOREGROUND,
+        values_chirho
+    );
 }
 
 static void rotate_point_chirho(
@@ -157,7 +141,7 @@ static void rotate_point_chirho(
     const RotationSampleChirho *sample_chirho,
     int center_x_chirho,
     int center_y_chirho,
-    XPoint *point_chirho
+    xcb_point_t *point_chirho
 ) {
     int rotated_x_chirho;
     int rotated_y_chirho;
@@ -169,13 +153,16 @@ static void rotate_point_chirho(
         + (local_y_chirho * sample_chirho->cos_fixed_chirho))
         / FIXED_SCALE_CHIRHO;
 
-    point_chirho->x = (short) (center_x_chirho + rotated_x_chirho);
-    point_chirho->y = (short) (center_y_chirho + rotated_y_chirho);
+    point_chirho->x = (int16_t) (center_x_chirho + rotated_x_chirho);
+    point_chirho->y = (int16_t) (center_y_chirho + rotated_y_chirho);
 }
 
 static void draw_rotating_rectangle_chirho(XgearsStateChirho *state_chirho) {
     const RotationSampleChirho *sample_chirho;
-    XPoint corners_chirho[5];
+    xcb_point_t corners_chirho[5];
+    xcb_segment_t axes_chirho[2];
+    xcb_segment_t spokes_chirho[2];
+    xcb_rectangle_t fill_rectangles_chirho[2];
     int center_x_chirho;
     int center_y_chirho;
     int half_width_chirho;
@@ -195,77 +182,79 @@ static void draw_rotating_rectangle_chirho(XgearsStateChirho *state_chirho) {
     rotate_point_chirho(-half_width_chirho,  half_height_chirho, sample_chirho, center_x_chirho, center_y_chirho, &corners_chirho[3]);
     corners_chirho[4] = corners_chirho[0];
 
-    XSetForeground(state_chirho->display_chirho, state_chirho->gc_chirho, state_chirho->background_pixel_chirho);
-    XFillRectangle(
-        state_chirho->display_chirho,
+    fill_rectangles_chirho[0].x = 0;
+    fill_rectangles_chirho[0].y = 0;
+    fill_rectangles_chirho[0].width = state_chirho->width_chirho;
+    fill_rectangles_chirho[0].height = state_chirho->height_chirho;
+
+    fill_rectangles_chirho[1].x = (int16_t) (center_x_chirho - 6);
+    fill_rectangles_chirho[1].y = (int16_t) (center_y_chirho - 6);
+    fill_rectangles_chirho[1].width = 12;
+    fill_rectangles_chirho[1].height = 12;
+
+    axes_chirho[0].x1 = 0;
+    axes_chirho[0].y1 = (int16_t) center_y_chirho;
+    axes_chirho[0].x2 = (int16_t) state_chirho->width_chirho;
+    axes_chirho[0].y2 = (int16_t) center_y_chirho;
+    axes_chirho[1].x1 = (int16_t) center_x_chirho;
+    axes_chirho[1].y1 = 0;
+    axes_chirho[1].x2 = (int16_t) center_x_chirho;
+    axes_chirho[1].y2 = (int16_t) state_chirho->height_chirho;
+
+    spokes_chirho[0].x1 = (int16_t) center_x_chirho;
+    spokes_chirho[0].y1 = (int16_t) center_y_chirho;
+    spokes_chirho[0].x2 = (int16_t) (center_x_chirho + ((sample_chirho->cos_fixed_chirho * spoke_length_chirho) / FIXED_SCALE_CHIRHO));
+    spokes_chirho[0].y2 = (int16_t) (center_y_chirho + ((sample_chirho->sin_fixed_chirho * spoke_length_chirho) / FIXED_SCALE_CHIRHO));
+    spokes_chirho[1].x1 = (int16_t) center_x_chirho;
+    spokes_chirho[1].y1 = (int16_t) center_y_chirho;
+    spokes_chirho[1].x2 = (int16_t) (center_x_chirho - ((sample_chirho->sin_fixed_chirho * spoke_length_chirho) / FIXED_SCALE_CHIRHO));
+    spokes_chirho[1].y2 = (int16_t) (center_y_chirho + ((sample_chirho->cos_fixed_chirho * spoke_length_chirho) / FIXED_SCALE_CHIRHO));
+
+    set_gc_foreground_chirho(state_chirho, state_chirho->background_pixel_chirho);
+    xcb_poly_fill_rectangle(
+        state_chirho->connection_chirho,
         state_chirho->window_chirho,
         state_chirho->gc_chirho,
-        0,
-        0,
-        state_chirho->width_chirho,
-        state_chirho->height_chirho
+        1,
+        &fill_rectangles_chirho[0]
     );
 
-    XSetForeground(state_chirho->display_chirho, state_chirho->gc_chirho, state_chirho->axis_pixel_chirho);
-    XDrawLine(
-        state_chirho->display_chirho,
+    set_gc_foreground_chirho(state_chirho, state_chirho->axis_pixel_chirho);
+    xcb_poly_segment(
+        state_chirho->connection_chirho,
         state_chirho->window_chirho,
         state_chirho->gc_chirho,
-        0,
-        center_y_chirho,
-        (int) state_chirho->width_chirho,
-        center_y_chirho
-    );
-    XDrawLine(
-        state_chirho->display_chirho,
-        state_chirho->window_chirho,
-        state_chirho->gc_chirho,
-        center_x_chirho,
-        0,
-        center_x_chirho,
-        (int) state_chirho->height_chirho
+        2,
+        axes_chirho
     );
 
-    XSetForeground(state_chirho->display_chirho, state_chirho->gc_chirho, state_chirho->outline_pixel_chirho);
-    XDrawLines(
-        state_chirho->display_chirho,
+    set_gc_foreground_chirho(state_chirho, state_chirho->outline_pixel_chirho);
+    xcb_poly_line(
+        state_chirho->connection_chirho,
+        XCB_COORD_MODE_ORIGIN,
         state_chirho->window_chirho,
         state_chirho->gc_chirho,
-        corners_chirho,
         5,
-        CoordModeOrigin
+        corners_chirho
     );
 
-    XSetForeground(state_chirho->display_chirho, state_chirho->gc_chirho, state_chirho->accent_pixel_chirho);
-    XDrawLine(
-        state_chirho->display_chirho,
+    set_gc_foreground_chirho(state_chirho, state_chirho->accent_pixel_chirho);
+    xcb_poly_segment(
+        state_chirho->connection_chirho,
         state_chirho->window_chirho,
         state_chirho->gc_chirho,
-        center_x_chirho,
-        center_y_chirho,
-        center_x_chirho + ((sample_chirho->cos_fixed_chirho * spoke_length_chirho) / FIXED_SCALE_CHIRHO),
-        center_y_chirho + ((sample_chirho->sin_fixed_chirho * spoke_length_chirho) / FIXED_SCALE_CHIRHO)
+        2,
+        spokes_chirho
     );
-    XDrawLine(
-        state_chirho->display_chirho,
+    xcb_poly_fill_rectangle(
+        state_chirho->connection_chirho,
         state_chirho->window_chirho,
         state_chirho->gc_chirho,
-        center_x_chirho,
-        center_y_chirho,
-        center_x_chirho - ((sample_chirho->sin_fixed_chirho * spoke_length_chirho) / FIXED_SCALE_CHIRHO),
-        center_y_chirho + ((sample_chirho->cos_fixed_chirho * spoke_length_chirho) / FIXED_SCALE_CHIRHO)
-    );
-    XFillRectangle(
-        state_chirho->display_chirho,
-        state_chirho->window_chirho,
-        state_chirho->gc_chirho,
-        center_x_chirho - 6,
-        center_y_chirho - 6,
-        12,
-        12
+        1,
+        &fill_rectangles_chirho[1]
     );
 
-    XFlush(state_chirho->display_chirho);
+    xcb_flush(state_chirho->connection_chirho);
 }
 
 static void report_fps_if_needed_chirho(XgearsStateChirho *state_chirho) {
@@ -306,119 +295,152 @@ static void sleep_for_next_frame_chirho(void) {
     nanosleep(&sleep_time_chirho, NULL);
 }
 
+static xcb_screen_t *find_screen_chirho(
+    xcb_connection_t *connection_chirho,
+    int preferred_screen_chirho
+) {
+    const xcb_setup_t *setup_chirho;
+    xcb_screen_iterator_t iterator_chirho;
+    int index_chirho;
+
+    setup_chirho = xcb_get_setup(connection_chirho);
+    if (setup_chirho == NULL) {
+        return NULL;
+    }
+
+    iterator_chirho = xcb_setup_roots_iterator(setup_chirho);
+    for (index_chirho = 0; iterator_chirho.rem != 0; ++index_chirho, xcb_screen_next(&iterator_chirho)) {
+        if (index_chirho == preferred_screen_chirho) {
+            return iterator_chirho.data;
+        }
+    }
+
+    iterator_chirho = xcb_setup_roots_iterator(setup_chirho);
+    return iterator_chirho.data;
+}
+
 static int init_xgears_state_chirho(XgearsStateChirho *state_chirho) {
+    int retry_chirho;
+
     memset(state_chirho, 0, sizeof(*state_chirho));
 
-    /* Retry XOpenDisplay up to 30 times (Xorg might not be ready yet) */
-    for (int retry_chirho = 0; retry_chirho < 30; retry_chirho++) {
-        state_chirho->display_chirho = XOpenDisplay(NULL);
-        if (state_chirho->display_chirho != NULL) break;
-        usleep(100000); /* 100ms */
+    for (retry_chirho = 0; retry_chirho < CONNECT_RETRIES_CHIRHO; ++retry_chirho) {
+        int preferred_screen_chirho = 0;
+
+        state_chirho->connection_chirho = xcb_connect(NULL, &preferred_screen_chirho);
+        if (state_chirho->connection_chirho != NULL
+            && xcb_connection_has_error(state_chirho->connection_chirho) == 0) {
+            state_chirho->screen_chirho = find_screen_chirho(
+                state_chirho->connection_chirho,
+                preferred_screen_chirho
+            );
+            if (state_chirho->screen_chirho != NULL) {
+                break;
+            }
+        }
+
+        if (state_chirho->connection_chirho != NULL) {
+            xcb_disconnect(state_chirho->connection_chirho);
+            state_chirho->connection_chirho = NULL;
+        }
+        usleep(CONNECT_RETRY_US_CHIRHO);
     }
-    if (state_chirho->display_chirho == NULL) {
-        fprintf(stderr, "xgears-chirho: failed to open X display after retries\n");
+
+    if (state_chirho->connection_chirho == NULL || state_chirho->screen_chirho == NULL) {
+        fprintf(stderr, "xgears-chirho: failed to connect to X server after retries\n");
         return 0;
     }
-    /* Avoid Xlib buffer desync by flushing after each batch */
 
-    state_chirho->screen_chirho = DefaultScreen(state_chirho->display_chirho);
     state_chirho->width_chirho = WINDOW_WIDTH_CHIRHO;
     state_chirho->height_chirho = WINDOW_HEIGHT_CHIRHO;
-    state_chirho->background_pixel_chirho = BlackPixel(state_chirho->display_chirho, state_chirho->screen_chirho);
-    state_chirho->outline_pixel_chirho = alloc_named_color_chirho(
-        state_chirho->display_chirho,
-        state_chirho->screen_chirho,
-        "cyan",
-        WhitePixel(state_chirho->display_chirho, state_chirho->screen_chirho)
-    );
-    state_chirho->accent_pixel_chirho = alloc_named_color_chirho(
-        state_chirho->display_chirho,
-        state_chirho->screen_chirho,
-        "orange",
-        WhitePixel(state_chirho->display_chirho, state_chirho->screen_chirho)
-    );
-    state_chirho->axis_pixel_chirho = alloc_named_color_chirho(
-        state_chirho->display_chirho,
-        state_chirho->screen_chirho,
-        "gray50",
-        WhitePixel(state_chirho->display_chirho, state_chirho->screen_chirho)
-    );
-
-    state_chirho->window_chirho = XCreateSimpleWindow(
-        state_chirho->display_chirho,
-        RootWindow(state_chirho->display_chirho, state_chirho->screen_chirho),
-        40,
-        40,
-        state_chirho->width_chirho,
-        state_chirho->height_chirho,
-        1,
-        state_chirho->outline_pixel_chirho,
-        state_chirho->background_pixel_chirho
-    );
-    if (state_chirho->window_chirho == 0) {
-        fprintf(stderr, "xgears-chirho: failed to create X window\n");
-        XCloseDisplay(state_chirho->display_chirho);
-        state_chirho->display_chirho = NULL;
-        return 0;
+    state_chirho->background_pixel_chirho = state_chirho->screen_chirho->black_pixel;
+    if (state_chirho->screen_chirho->root_depth >= 24) {
+        state_chirho->outline_pixel_chirho = 0x0000ffffU;
+        state_chirho->accent_pixel_chirho = 0x00ffa500U;
+        state_chirho->axis_pixel_chirho = 0x00303030U;
+    } else {
+        state_chirho->outline_pixel_chirho = state_chirho->screen_chirho->white_pixel;
+        state_chirho->accent_pixel_chirho = state_chirho->screen_chirho->white_pixel;
+        state_chirho->axis_pixel_chirho = state_chirho->screen_chirho->white_pixel;
     }
 
-    XStoreName(state_chirho->display_chirho, state_chirho->window_chirho, "xgears-chirho");
-    XSelectInput(
-        state_chirho->display_chirho,
-        state_chirho->window_chirho,
-        ExposureMask | KeyPressMask | StructureNotifyMask
-    );
-
-    state_chirho->wm_delete_atom_chirho = XInternAtom(
-        state_chirho->display_chirho,
-        "WM_DELETE_WINDOW",
-        False
-    );
-    if (state_chirho->wm_delete_atom_chirho != None) {
-        XSetWMProtocols(
-            state_chirho->display_chirho,
+    state_chirho->window_chirho = xcb_generate_id(state_chirho->connection_chirho);
+    {
+        uint32_t values_chirho[2];
+        values_chirho[0] = state_chirho->background_pixel_chirho;
+        values_chirho[1] = XCB_EVENT_MASK_EXPOSURE
+            | XCB_EVENT_MASK_KEY_PRESS
+            | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+        xcb_create_window(
+            state_chirho->connection_chirho,
+            XCB_COPY_FROM_PARENT,
             state_chirho->window_chirho,
-            &state_chirho->wm_delete_atom_chirho,
-            1
+            state_chirho->screen_chirho->root,
+            40,
+            40,
+            state_chirho->width_chirho,
+            state_chirho->height_chirho,
+            1,
+            XCB_WINDOW_CLASS_INPUT_OUTPUT,
+            state_chirho->screen_chirho->root_visual,
+            XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK,
+            values_chirho
         );
     }
 
-    state_chirho->gc_chirho = XCreateGC(
-        state_chirho->display_chirho,
-        state_chirho->window_chirho,
-        0,
-        NULL
-    );
-    if (state_chirho->gc_chirho == NULL) {
-        fprintf(stderr, "xgears-chirho: failed to create graphics context\n");
-        XDestroyWindow(state_chirho->display_chirho, state_chirho->window_chirho);
-        XCloseDisplay(state_chirho->display_chirho);
-        state_chirho->display_chirho = NULL;
-        return 0;
+    state_chirho->gc_chirho = xcb_generate_id(state_chirho->connection_chirho);
+    {
+        uint32_t gc_values_chirho[2];
+        gc_values_chirho[0] = state_chirho->outline_pixel_chirho;
+        gc_values_chirho[1] = state_chirho->background_pixel_chirho;
+        xcb_create_gc(
+            state_chirho->connection_chirho,
+            state_chirho->gc_chirho,
+            state_chirho->window_chirho,
+            XCB_GC_FOREGROUND | XCB_GC_BACKGROUND,
+            gc_values_chirho
+        );
     }
 
-    /* Force Xlib to process all pending replies before mapping */
-    XSync(state_chirho->display_chirho, False);
-    XMapWindow(state_chirho->display_chirho, state_chirho->window_chirho);
-    XSync(state_chirho->display_chirho, False);
+    {
+        static const char title_chirho[] = "xgears-chirho";
+        xcb_change_property(
+            state_chirho->connection_chirho,
+            XCB_PROP_MODE_REPLACE,
+            state_chirho->window_chirho,
+            XCB_ATOM_WM_NAME,
+            XCB_ATOM_STRING,
+            8,
+            sizeof(title_chirho) - 1,
+            title_chirho
+        );
+    }
+
+    xcb_map_window(state_chirho->connection_chirho, state_chirho->window_chirho);
+    xcb_flush(state_chirho->connection_chirho);
 
     state_chirho->last_report_ns_chirho = monotonic_ns_chirho();
     state_chirho->running_chirho = 1;
     return 1;
 }
 
-static void handle_event_chirho(XgearsStateChirho *state_chirho, const XEvent *event_chirho) {
-    switch (event_chirho->type) {
-        case ConfigureNotify:
-            state_chirho->width_chirho = (unsigned int) event_chirho->xconfigure.width;
-            state_chirho->height_chirho = (unsigned int) event_chirho->xconfigure.height;
+static void handle_event_chirho(
+    XgearsStateChirho *state_chirho,
+    xcb_generic_event_t *event_chirho
+) {
+    uint8_t response_type_chirho;
+
+    response_type_chirho = (uint8_t) (event_chirho->response_type & 0x7f);
+    switch (response_type_chirho) {
+        case XCB_CONFIGURE_NOTIFY: {
+            xcb_configure_notify_event_t *configure_event_chirho;
+            configure_event_chirho = (xcb_configure_notify_event_t *) event_chirho;
+            state_chirho->width_chirho = configure_event_chirho->width;
+            state_chirho->height_chirho = configure_event_chirho->height;
             break;
-        case ClientMessage:
-            if ((Atom) event_chirho->xclient.data.l[0] == state_chirho->wm_delete_atom_chirho) {
-                state_chirho->running_chirho = 0;
-            }
-            break;
-        case KeyPress:
+        }
+        case XCB_KEY_PRESS:
+        case XCB_DESTROY_NOTIFY:
             state_chirho->running_chirho = 0;
             break;
         default:
@@ -428,10 +450,16 @@ static void handle_event_chirho(XgearsStateChirho *state_chirho, const XEvent *e
 
 static void run_xgears_loop_chirho(XgearsStateChirho *state_chirho) {
     while (state_chirho->running_chirho) {
-        while (XPending(state_chirho->display_chirho) > 0) {
-            XEvent event_chirho;
-            XNextEvent(state_chirho->display_chirho, &event_chirho);
-            handle_event_chirho(state_chirho, &event_chirho);
+        xcb_generic_event_t *event_chirho;
+
+        while ((event_chirho = xcb_poll_for_event(state_chirho->connection_chirho)) != NULL) {
+            handle_event_chirho(state_chirho, event_chirho);
+            free(event_chirho);
+        }
+
+        if (xcb_connection_has_error(state_chirho->connection_chirho) != 0) {
+            fprintf(stderr, "xgears-chirho: XCB connection error\n");
+            break;
         }
 
         draw_rotating_rectangle_chirho(state_chirho);
@@ -444,22 +472,23 @@ static void run_xgears_loop_chirho(XgearsStateChirho *state_chirho) {
 }
 
 static void destroy_xgears_state_chirho(XgearsStateChirho *state_chirho) {
-    if (state_chirho->display_chirho == NULL) {
+    if (state_chirho->connection_chirho == NULL) {
         return;
     }
 
-    if (state_chirho->gc_chirho != NULL) {
-        XFreeGC(state_chirho->display_chirho, state_chirho->gc_chirho);
-        state_chirho->gc_chirho = NULL;
+    if (state_chirho->gc_chirho != 0) {
+        xcb_free_gc(state_chirho->connection_chirho, state_chirho->gc_chirho);
+        state_chirho->gc_chirho = 0;
     }
 
     if (state_chirho->window_chirho != 0) {
-        XDestroyWindow(state_chirho->display_chirho, state_chirho->window_chirho);
+        xcb_destroy_window(state_chirho->connection_chirho, state_chirho->window_chirho);
         state_chirho->window_chirho = 0;
     }
 
-    XCloseDisplay(state_chirho->display_chirho);
-    state_chirho->display_chirho = NULL;
+    xcb_disconnect(state_chirho->connection_chirho);
+    state_chirho->connection_chirho = NULL;
+    state_chirho->screen_chirho = NULL;
 }
 
 int main(void) {
