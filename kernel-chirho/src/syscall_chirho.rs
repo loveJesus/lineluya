@@ -1303,16 +1303,13 @@ pub fn maybe_yield_to_runnable_child_chirho() {
     }
 }
 
-/// Global tick counter for clock_gettime monotonic approximation.
-static TICK_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
-
 /// Approximate boot timestamp (seconds since Unix epoch).
 /// March 17, 2026 00:00:00 UTC = 1773878400.
 /// CLOCK_REALTIME = BOOT_EPOCH_CHIRHO + monotonic offset from tick counter.
 const BOOT_EPOCH_CHIRHO: i64 = 1773878400;
 
-/// Tick period in nanoseconds.  The timer IRQ fires every ~10 ms.
-const TICK_PERIOD_NS_CHIRHO: i64 = 10_000_000; // 10 ms
+/// Tick period in nanoseconds. The timer IRQ currently fires at ~1 kHz.
+const TICK_PERIOD_NS_CHIRHO: i64 = 1_000_000; // 1 ms
 
 // ============================================================================
 // Program break tracking (for brk)
@@ -2481,12 +2478,12 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg1_chirho as *mut TimespecChirho,
         ),
         // clock_getres(2): musl calls this during __libc_start_main
-        // A2-AUDIT-002: report real 10ms tick resolution
+        // A2-AUDIT-002: report the real 1ms scheduler tick resolution
         SYS_CLOCK_GETRES_CHIRHO => {
             if arg1_chirho != 0 {
                 let res_chirho = TimespecChirho {
                     tv_sec_chirho: 0,
-                    tv_nsec_chirho: TICK_PERIOD_NS_CHIRHO, // 10ms real resolution
+                    tv_nsec_chirho: TICK_PERIOD_NS_CHIRHO, // 1ms real resolution
                 };
                 unsafe { core::ptr::write(arg1_chirho as *mut TimespecChirho, res_chirho); }
             }
@@ -4763,7 +4760,11 @@ fn sys_poll_chirho(
             // CRITICAL — without it, yield returns instantly and the loop
             // spins without giving other tasks real CPU time. The HLT
             // halts for 1ms (timer tick), ensuring interleaved execution.
-            let max_retries_chirho: u32 = if _timeout_chirho < 0 { 5000 } else {
+            // For timeout=-1, do not sit in-kernel for thousands of
+            // yield+HLT cycles. A shorter retry window keeps X11 clients
+            // responsive while still giving the peer several scheduler turns
+            // to produce data before userspace re-polls.
+            let max_retries_chirho: u32 = if _timeout_chirho < 0 { 128 } else {
                 (_timeout_chirho as u32).min(30000)
             };
             for _retry_chirho in 0..max_retries_chirho {
@@ -6904,13 +6905,13 @@ fn sys_gettid_chirho() -> i64 {
     if pid_chirho < 1 { 1 } else { pid_chirho }
 }
 
-/// Compute monotonic seconds and nanoseconds from the tick counter.
-///
-/// Reads (without incrementing) the global tick counter and converts to
-/// `(seconds, nanoseconds)` using `TICK_PERIOD_NS_CHIRHO`.
+/// Compute monotonic seconds and nanoseconds from the real scheduler tick
+/// counter maintained by the timer interrupt.
 #[inline]
 fn monotonic_from_ticks_chirho() -> (i64, i64) {
-    let ticks_chirho = TICK_COUNTER_CHIRHO.load(Ordering::Relaxed);
+    // Use the scheduler's global tick counter (incremented by timer ISR at
+    // ~1kHz), not the old local syscall-only counter that was never updated.
+    let ticks_chirho = crate::scheduler_chirho::tick_count_chirho();
     let mono_ns_chirho = ticks_chirho as i64 * TICK_PERIOD_NS_CHIRHO;
     let mono_sec_chirho = mono_ns_chirho / 1_000_000_000;
     let mono_nsec_chirho = mono_ns_chirho % 1_000_000_000;
@@ -6943,7 +6944,7 @@ fn clock_gettime_value_chirho(clock_id_chirho: u64) -> TimespecChirho {
 
 /// `clock_gettime(2)` implementation (A2-AUDIT-002).
 ///
-/// For CLOCK_MONOTONIC, uses the tick counter * 10ms per tick.
+/// For CLOCK_MONOTONIC, uses the scheduler tick counter * 1ms per tick.
 /// For CLOCK_REALTIME, returns BOOT_EPOCH_CHIRHO + monotonic offset.
 fn sys_clock_gettime_chirho(
     clock_id_chirho: u64,
@@ -8213,8 +8214,9 @@ fn sys_sysinfo_chirho(info_chirho: *mut SysinfoChirho) -> i64 {
 
     use crate::allocator_chirho::{HeapConfigChirho, LARGE_ALLOC_COUNT_CHIRHO};
 
-    let ticks_chirho = TICK_COUNTER_CHIRHO.load(Ordering::Relaxed);
-    let uptime_secs_chirho = (ticks_chirho as i64 * 10) / 1000; // ~10ms per tick
+    let ticks_chirho = crate::scheduler_chirho::tick_count_chirho();
+    let uptime_secs_chirho =
+        (ticks_chirho as i64 * TICK_PERIOD_NS_CHIRHO) / 1_000_000_000;
 
     // Real total from allocator constants.
     let total_ram_chirho = HeapConfigChirho::TOTAL_SIZE_CHIRHO as u64;
