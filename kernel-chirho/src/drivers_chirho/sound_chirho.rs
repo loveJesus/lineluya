@@ -169,14 +169,34 @@ impl FileOpsChirho for DevDspOpsChirho {
         _file_chirho: &mut FileChirho,
         buf_chirho: &[u8],
     ) -> Result<usize, i64> {
-        // Drive PC speaker with PCM data for audible output.
-        // Interpret as signed 16-bit LE samples, extract amplitude for beep.
-        if buf_chirho.len() >= 2 {
-            // Take the first sample's amplitude as a frequency hint
-            let sample_chirho = i16::from_le_bytes([buf_chirho[0], buf_chirho[1]]);
-            let freq_chirho = if sample_chirho.unsigned_abs() > 100 { 440 } else { 0 };
-            if freq_chirho > 0 {
-                pc_speaker_beep_chirho(freq_chirho, 10); // 10ms beep
+        // Drive PC speaker with PCM data for pitch-modulated audio.
+        // Sample the PCM buffer at intervals and map amplitude → frequency.
+        // This produces recognizable pitch contours from music.
+        if buf_chirho.len() >= 4 {
+            // Average several samples for a stable frequency estimate.
+            // PCM is signed 16-bit LE stereo (4 bytes/frame at 44100Hz).
+            let num_samples_chirho = buf_chirho.len() / 2;
+            let step_chirho = if num_samples_chirho > 16 { num_samples_chirho / 16 } else { 1 };
+            let mut sum_chirho: i64 = 0;
+            let mut count_chirho: u32 = 0;
+            let mut i_chirho = 0usize;
+            while i_chirho + 1 < buf_chirho.len() && count_chirho < 32 {
+                let s_chirho = i16::from_le_bytes([buf_chirho[i_chirho], buf_chirho[i_chirho + 1]]);
+                sum_chirho += s_chirho.unsigned_abs() as i64;
+                count_chirho += 1;
+                i_chirho += step_chirho * 2;
+            }
+            if count_chirho > 0 {
+                let avg_amp_chirho = (sum_chirho / count_chirho as i64) as u32;
+                // Map amplitude (0–32767) to frequency (100–2000Hz).
+                // Silent (<500 amplitude) → no beep.
+                // Low amplitude → low pitch, high amplitude → high pitch.
+                if avg_amp_chirho > 500 {
+                    let freq_chirho = 100 + (avg_amp_chirho * 1900 / 32767).min(1900);
+                    // Duration proportional to buffer size (~1ms per 88 bytes at 44100Hz stereo)
+                    let duration_chirho = ((buf_chirho.len() as u32) / 176).max(1).min(50);
+                    pc_speaker_beep_chirho(freq_chirho, duration_chirho);
+                }
             }
         }
         Ok(buf_chirho.len())
