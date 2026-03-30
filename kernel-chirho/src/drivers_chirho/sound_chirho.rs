@@ -172,7 +172,7 @@ impl FileOpsChirho for DevDspOpsChirho {
         // Drive PC speaker with PCM data for pitch-modulated audio.
         // Sample the PCM buffer at intervals and map amplitude → frequency.
         // This produces recognizable pitch contours from music.
-        if buf_chirho.len() >= 4 {
+        if buf_chirho.len() >= 2 {
             // Average several samples for a stable frequency estimate.
             // PCM is signed 16-bit LE stereo (4 bytes/frame at 44100Hz).
             let num_samples_chirho = buf_chirho.len() / 2;
