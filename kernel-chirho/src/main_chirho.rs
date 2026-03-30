@@ -514,6 +514,10 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
             "libxcb-dri2.so.0", "libxcb-dri3.so.0", "libxcb-present.so.0",
             "libxcb-xfixes.so.0", "libxcb-shm.so.0", "libxcb-randr.so.0",
             "libXfixes.so.3", "libxshmfence.so.1", "libdrm.so.2",
+            // Xorg server deps
+            "libpixman-1.so.0", "libpciaccess.so.0", "libnettle.so.8",
+            "libXfont2.so.2", "libudev.so.1", "libxcvt.so.0",
+            "libfontenc.so.1", "libxkbfile.so.1",
             // mpg123 deps
             "libmpg123.so.0", "libout123.so.0", "libsyn123.so.0",
             // Dynamic linker itself
