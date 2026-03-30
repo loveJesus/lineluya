@@ -152,6 +152,28 @@ fn gen_osrelease_chirho() -> String {
     String::from("0.2.0-lineluya-chirho\n")
 }
 
+/// Generate `/proc/sys/kernel/random/entropy_avail` — available entropy bits.
+/// Dropbear checks this before doing crypto. Return high value to indicate
+/// sufficient randomness.
+fn gen_entropy_avail_chirho() -> String {
+    String::from("4096\n")
+}
+
+/// Generate `/proc/net/netstat` — network statistics (stub for Dropbear entropy).
+fn gen_net_netstat_chirho() -> String {
+    String::from("TcpExt: SyncookiesSent SyncookiesRecv SyncookiesFailed\nTcpExt: 0 0 0\nIpExt: InNoRoutes InTruncatedPkts\nIpExt: 0 0\n")
+}
+
+/// Generate `/proc/net/dev` — network device statistics (stub for Dropbear entropy).
+fn gen_net_dev_chirho() -> String {
+    String::from("Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n  eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n")
+}
+
+/// Generate `/proc/net/rt_cache` — routing cache (stub).
+fn gen_net_rt_cache_chirho() -> String {
+    String::from("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tSource\tMTU\tWindow\tIRTT\n")
+}
+
 /// Generate `/proc/net/tcp` — delegates to the networking subsystem.
 fn gen_net_tcp_chirho() -> String {
     crate::net_chirho::gen_proc_net_tcp_chirho()
@@ -781,9 +803,85 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
     let kmsg_inode_chirho = make_proc_file_chirho(gen_kmsg_chirho);
     let self_inode_chirho = make_proc_symlink_chirho("/proc/1");
 
+    // -- /proc/sys/kernel/random/ directory for Dropbear entropy --
+    let entropy_avail_inode_chirho = make_proc_file_chirho(gen_entropy_avail_chirho);
+    let hostname_inode_chirho = make_proc_file_chirho(gen_hostname_chirho);
+    let osrelease_inode_chirho = make_proc_file_chirho(gen_osrelease_chirho);
+
+    // /proc/sys/kernel/random/ directory
+    let random_dir_ino_chirho = alloc_ino_chirho();
+    let random_dir_inode_chirho = InodeChirho {
+        ino_chirho: random_dir_ino_chirho,
+        mode_chirho: S_IFDIR_CHIRHO | 0o555,
+        uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 2,
+        atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+        ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(ProcDirEntriesChirho {
+            entries_chirho: alloc::vec![ProcEntryChirho {
+                name_chirho: String::from("entropy_avail"),
+                ino_chirho: entropy_avail_inode_chirho.ino_chirho,
+                mode_chirho: entropy_avail_inode_chirho.mode_chirho,
+                inode_chirho: entropy_avail_inode_chirho.clone(),
+            }],
+        })),
+    };
+
+    // /proc/sys/kernel/ directory
+    let kernel_dir_ino_chirho = alloc_ino_chirho();
+    let kernel_dir_inode_chirho = InodeChirho {
+        ino_chirho: kernel_dir_ino_chirho,
+        mode_chirho: S_IFDIR_CHIRHO | 0o555,
+        uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 2,
+        atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+        ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(ProcDirEntriesChirho {
+            entries_chirho: alloc::vec![
+                ProcEntryChirho {
+                    name_chirho: String::from("hostname"),
+                    ino_chirho: hostname_inode_chirho.ino_chirho,
+                    mode_chirho: hostname_inode_chirho.mode_chirho,
+                    inode_chirho: hostname_inode_chirho.clone(),
+                },
+                ProcEntryChirho {
+                    name_chirho: String::from("osrelease"),
+                    ino_chirho: osrelease_inode_chirho.ino_chirho,
+                    mode_chirho: osrelease_inode_chirho.mode_chirho,
+                    inode_chirho: osrelease_inode_chirho.clone(),
+                },
+                ProcEntryChirho {
+                    name_chirho: String::from("random"),
+                    ino_chirho: random_dir_ino_chirho,
+                    mode_chirho: S_IFDIR_CHIRHO | 0o555,
+                    inode_chirho: Arc::new(random_dir_inode_chirho),
+                },
+            ],
+        })),
+    };
+
+    // /proc/sys/ directory
+    let sys_dir_ino_chirho = alloc_ino_chirho();
+    let sys_dir_inode_chirho = InodeChirho {
+        ino_chirho: sys_dir_ino_chirho,
+        mode_chirho: S_IFDIR_CHIRHO | 0o555,
+        uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 2,
+        atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+        ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO,
+        fs_data_chirho: Some(Box::new(ProcDirEntriesChirho {
+            entries_chirho: alloc::vec![ProcEntryChirho {
+                name_chirho: String::from("kernel"),
+                ino_chirho: kernel_dir_ino_chirho,
+                mode_chirho: S_IFDIR_CHIRHO | 0o555,
+                inode_chirho: Arc::new(kernel_dir_inode_chirho),
+            }],
+        })),
+    };
+
     // -- /proc/net/ directory (A3-015) --
     let net_tcp_inode_chirho = make_proc_file_chirho(gen_net_tcp_chirho);
     let net_udp_inode_chirho = make_proc_file_chirho(gen_net_udp_chirho);
+    let net_netstat_inode_chirho = make_proc_file_chirho(gen_net_netstat_chirho);
+    let net_dev_inode_chirho = make_proc_file_chirho(gen_net_dev_chirho);
+    let net_rt_cache_inode_chirho = make_proc_file_chirho(gen_net_rt_cache_chirho);
 
     let net_entries_chirho = alloc::vec![
         ProcEntryChirho {
@@ -797,6 +895,24 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             ino_chirho: net_udp_inode_chirho.ino_chirho,
             mode_chirho: net_udp_inode_chirho.mode_chirho,
             inode_chirho: net_udp_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("netstat"),
+            ino_chirho: net_netstat_inode_chirho.ino_chirho,
+            mode_chirho: net_netstat_inode_chirho.mode_chirho,
+            inode_chirho: net_netstat_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("dev"),
+            ino_chirho: net_dev_inode_chirho.ino_chirho,
+            mode_chirho: net_dev_inode_chirho.mode_chirho,
+            inode_chirho: net_dev_inode_chirho.clone(),
+        },
+        ProcEntryChirho {
+            name_chirho: String::from("rt_cache"),
+            ino_chirho: net_rt_cache_inode_chirho.ino_chirho,
+            mode_chirho: net_rt_cache_inode_chirho.mode_chirho,
+            inode_chirho: net_rt_cache_inode_chirho.clone(),
         },
     ];
 
@@ -952,6 +1068,12 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             inode_chirho: net_dir_inode_chirho.clone(),
         },
         ProcEntryChirho {
+            name_chirho: String::from("sys"),
+            ino_chirho: sys_dir_ino_chirho,
+            mode_chirho: S_IFDIR_CHIRHO | 0o555,
+            inode_chirho: Arc::new(sys_dir_inode_chirho),
+        },
+        ProcEntryChirho {
             name_chirho: String::from("1"),
             ino_chirho: pid1_dir_inode_chirho.ino_chirho,
             mode_chirho: pid1_dir_inode_chirho.mode_chirho,
@@ -1091,9 +1213,115 @@ pub fn mount_procfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
             ops_chirho: net_dir_inode_chirho.ops_chirho, fs_data_chirho: None,
         }))),
         parent_chirho: None,
-        children_chirho: alloc::vec![net_tcp_dentry_chirho, net_udp_dentry_chirho],
+        children_chirho: alloc::vec![net_tcp_dentry_chirho, net_udp_dentry_chirho,
+            Arc::new(Mutex::new(DentryChirho {
+                name_chirho: String::from("netstat"),
+                inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+                    ino_chirho: net_netstat_inode_chirho.ino_chirho,
+                    mode_chirho: net_netstat_inode_chirho.mode_chirho,
+                    uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 1,
+                    atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+                    ops_chirho: net_netstat_inode_chirho.ops_chirho, fs_data_chirho: None,
+                }))),
+                parent_chirho: None, children_chirho: Vec::new(),
+            })),
+            Arc::new(Mutex::new(DentryChirho {
+                name_chirho: String::from("dev"),
+                inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+                    ino_chirho: net_dev_inode_chirho.ino_chirho,
+                    mode_chirho: net_dev_inode_chirho.mode_chirho,
+                    uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 1,
+                    atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+                    ops_chirho: net_dev_inode_chirho.ops_chirho, fs_data_chirho: None,
+                }))),
+                parent_chirho: None, children_chirho: Vec::new(),
+            })),
+            Arc::new(Mutex::new(DentryChirho {
+                name_chirho: String::from("rt_cache"),
+                inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+                    ino_chirho: net_rt_cache_inode_chirho.ino_chirho,
+                    mode_chirho: net_rt_cache_inode_chirho.mode_chirho,
+                    uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 1,
+                    atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+                    ops_chirho: net_rt_cache_inode_chirho.ops_chirho, fs_data_chirho: None,
+                }))),
+                parent_chirho: None, children_chirho: Vec::new(),
+            })),
+        ],
     }));
     children_chirho.push(net_dentry_chirho);
+
+    // Add /proc/sys/ directory tree (for Dropbear entropy_avail, hostname, etc.)
+    let sys_entropy_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("entropy_avail"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: entropy_avail_inode_chirho.ino_chirho,
+            mode_chirho: entropy_avail_inode_chirho.mode_chirho,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 1,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: entropy_avail_inode_chirho.ops_chirho, fs_data_chirho: None,
+        }))),
+        parent_chirho: None, children_chirho: Vec::new(),
+    }));
+    let sys_random_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("random"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: random_dir_ino_chirho,
+            mode_chirho: S_IFDIR_CHIRHO | 0o555,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 2,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO, fs_data_chirho: None,
+        }))),
+        parent_chirho: None,
+        children_chirho: alloc::vec![sys_entropy_dentry_chirho],
+    }));
+    let sys_hostname_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("hostname"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: hostname_inode_chirho.ino_chirho,
+            mode_chirho: hostname_inode_chirho.mode_chirho,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 1,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: hostname_inode_chirho.ops_chirho, fs_data_chirho: None,
+        }))),
+        parent_chirho: None, children_chirho: Vec::new(),
+    }));
+    let sys_osrelease_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("osrelease"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: osrelease_inode_chirho.ino_chirho,
+            mode_chirho: osrelease_inode_chirho.mode_chirho,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 1,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: osrelease_inode_chirho.ops_chirho, fs_data_chirho: None,
+        }))),
+        parent_chirho: None, children_chirho: Vec::new(),
+    }));
+    let sys_kernel_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("kernel"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: kernel_dir_ino_chirho,
+            mode_chirho: S_IFDIR_CHIRHO | 0o555,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 2,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO, fs_data_chirho: None,
+        }))),
+        parent_chirho: None,
+        children_chirho: alloc::vec![sys_hostname_dentry_chirho, sys_osrelease_dentry_chirho, sys_random_dentry_chirho],
+    }));
+    let sys_dentry_chirho = Arc::new(Mutex::new(DentryChirho {
+        name_chirho: String::from("sys"),
+        inode_chirho: Some(Arc::new(Mutex::new(InodeChirho {
+            ino_chirho: sys_dir_ino_chirho,
+            mode_chirho: S_IFDIR_CHIRHO | 0o555,
+            uid_chirho: 0, gid_chirho: 0, size_chirho: 0, nlink_chirho: 2,
+            atime_chirho: 0, mtime_chirho: 0, ctime_chirho: 0,
+            ops_chirho: &PROC_DIR_INODE_OPS_CHIRHO, fs_data_chirho: None,
+        }))),
+        parent_chirho: None,
+        children_chirho: alloc::vec![sys_kernel_dentry_chirho],
+    }));
+    children_chirho.push(sys_dentry_chirho);
 
     // Add the /proc/1/ dentry to root children.
     children_chirho.push(pid1_dentry_chirho);

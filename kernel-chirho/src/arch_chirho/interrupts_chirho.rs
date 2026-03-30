@@ -237,9 +237,9 @@ static IDT_CHIRHO: spin::Lazy<InterruptDescriptorTable> = spin::Lazy::new(|| {
     idt_chirho[(PIC_1_OFFSET_CHIRHO + 11)]
         .set_handler_fn(virtio_interrupt_handler_chirho);
 
-    // IRQ 5 (vector 37) — common PCI audio IRQ (AC97/HDA). ACK and ignore.
+    // IRQ 5 (vector 37) — SB16 ISA audio IRQ. Refill DMA buffer and ACK.
     idt_chirho[(PIC_1_OFFSET_CHIRHO + 5)]
-        .set_handler_fn(pci_audio_irq_handler_chirho);
+        .set_handler_fn(sb16_audio_irq_handler_chirho);
 
     // IRQ 9 (vector 41) — ACPI / PCI steering. ACK and ignore.
     idt_chirho[(PIC_2_OFFSET_CHIRHO + 1)]
@@ -1743,6 +1743,21 @@ extern "x86-interrupt" fn pci_audio_irq_handler_chirho(
         PICS_CHIRHO
             .lock()
             .notify_end_of_interrupt(PIC_2_OFFSET_CHIRHO + 2);
+        let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        write_lapic_eoi_chirho(phys_offset_chirho);
+    }
+}
+
+/// SB16 ISA audio interrupt handler (IRQ 5, vector 37).
+/// Acknowledges the DSP interrupt, refills the DMA buffer, then sends EOI.
+extern "x86-interrupt" fn sb16_audio_irq_handler_chirho(
+    _stack_frame_chirho: InterruptStackFrame,
+) {
+    crate::sound_chirho::sb16_irq_handler_chirho();
+    unsafe {
+        PICS_CHIRHO
+            .lock()
+            .notify_end_of_interrupt((PIC_1_OFFSET_CHIRHO + 5) as u8);
         let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
         write_lapic_eoi_chirho(phys_offset_chirho);
     }

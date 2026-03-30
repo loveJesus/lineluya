@@ -1818,14 +1818,23 @@ pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 
         };
 
     if let Some(Ok((fd_chirho, file_chirho))) = task_dup_result_chirho {
-        // Mirror into global table (task lock already released).
-        let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
-        if let Some(ref mut global_table_chirho) = *global_guard_chirho {
-            if fd_chirho < global_table_chirho.fds_chirho.len() {
-                global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
-            }
-            if fd_chirho < global_table_chirho.cloexec_chirho.len() {
-                global_table_chirho.cloexec_chirho[fd_chirho] = false;
+        // Mirror into global table ONLY for PID 0/1 (init/shell).
+        // For PID >= 2, the per-process table is authoritative.
+        // Mirroring dup2 to global for non-init PIDs overwrites fd entries
+        // that other processes rely on (e.g., dup2(sock, 0) corrupts global
+        // fd=0, making the boot shell read from the TCP socket instead of
+        // the console — this caused the SSH banner leak bug).
+        let dup2_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|t_chirho| t_chirho.lock().pid_chirho).unwrap_or(0);
+        if dup2_pid_chirho <= 1 {
+            let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+            if let Some(ref mut global_table_chirho) = *global_guard_chirho {
+                if fd_chirho < global_table_chirho.fds_chirho.len() {
+                    global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
+                }
+                if fd_chirho < global_table_chirho.cloexec_chirho.len() {
+                    global_table_chirho.cloexec_chirho[fd_chirho] = false;
+                }
             }
         }
         return fd_chirho as i64;

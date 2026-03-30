@@ -3981,6 +3981,10 @@ pub fn sys_sendto_chirho(
                     socket_chirho.tcb_chirho.state_chirho,
                 );
             }
+            crate::serial_println_chirho!(
+                "[TCP-SEND-PATH] about to make_data_segment state={:?}",
+                socket_chirho.tcb_chirho.state_chirho,
+            );
             if let Some(seg_chirho) = socket_chirho.tcb_chirho.make_data_segment_chirho(
                 local_port_chirho, remote_port_chirho, &data_chirho,
             ) {
@@ -3998,6 +4002,15 @@ pub fn sys_sendto_chirho(
                 };
                 let mut pkt_chirho = ip_hdr_chirho.build_chirho();
                 pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
+                // Debug: dump checksums for SSH debugging
+                if pkt_chirho.len() >= 40 {
+                    crate::serial_println_chirho!(
+                        "[TCP-PKT] len={} ip_cksum={:02x}{:02x} tcp_cksum={:02x}{:02x}",
+                        pkt_chirho.len(),
+                        pkt_chirho[10], pkt_chirho[11],
+                        pkt_chirho[36], pkt_chirho[37],
+                    );
+                }
                 drop(table_chirho); // Release lock before sending
                 let _ = send_ip_packet_chirho(&pkt_chirho);
                 return count_chirho as i64;
@@ -7425,6 +7438,16 @@ pub fn tcp_send_real_chirho(socket_idx_chirho: usize, data_chirho: &[u8]) -> Res
     pkt_chirho.extend_from_slice(&tcp_bytes_chirho);
 
     drop(table_chirho);
+    // Debug: dump IP+TCP header bytes for checksum verification
+    if pkt_chirho.len() >= 40 {
+        crate::serial_println_chirho!(
+            "[TCP-PKT] ip_cksum={:02x}{:02x} tcp_cksum={:02x}{:02x} ip_src={}.{}.{}.{} ip_dst={}.{}.{}.{}",
+            pkt_chirho[10], pkt_chirho[11], // IP checksum
+            pkt_chirho[36], pkt_chirho[37], // TCP checksum (at IP[20]+TCP[16])
+            pkt_chirho[12], pkt_chirho[13], pkt_chirho[14], pkt_chirho[15], // src IP
+            pkt_chirho[16], pkt_chirho[17], pkt_chirho[18], pkt_chirho[19], // dst IP
+        );
+    }
     send_ip_packet_chirho(&pkt_chirho)?;
     Ok(data_chirho.len())
 }

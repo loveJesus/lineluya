@@ -18,7 +18,7 @@
 //! that probe for `/dev/dsp` do not fail immediately.
 
 use crate::vfs_chirho::{FileChirho, FileOpsChirho};
-use crate::syscall_chirho::{EINVAL_CHIRHO, ENOSYS_CHIRHO};
+use crate::syscall_chirho::{EINVAL_CHIRHO, ENOSYS_CHIRHO, ENOTTY_CHIRHO};
 use crate::pci_chirho::{PciDeviceChirho, scan_bus_chirho};
 
 // ============================================================================
@@ -58,6 +58,12 @@ const SNDCTL_DSP_GETFMTS_CHIRHO: u64 = 0x8004500B;
 
 /// SNDCTL_DSP_GETCAPS — query device capabilities.
 const SNDCTL_DSP_GETCAPS_CHIRHO: u64 = 0x8004500F;
+
+/// TIOCGPGRP — get foreground process group of a terminal.
+const TIOCGPGRP_CHIRHO: u64 = 0x5413;
+
+/// TIOCSPGRP — set foreground process group of a terminal.
+const TIOCSPGRP_CHIRHO: u64 = 0x5414;
 
 /// AFMT_S16_LE — signed 16-bit little-endian PCM.
 const AFMT_S16_LE_CHIRHO: i64 = 0x10;
@@ -169,7 +175,24 @@ impl FileOpsChirho for DevDspOpsChirho {
         _file_chirho: &mut FileChirho,
         buf_chirho: &[u8],
     ) -> Result<usize, i64> {
-        // Drive PC speaker with PCM data for pitch-modulated audio.
+        // If SB16 is available, send PCM data to it for real playback.
+        if sb16_detected_chirho() {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static DSP_WRITE_BYTES_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            static DSP_WRITE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let total_chirho = DSP_WRITE_BYTES_CHIRHO.fetch_add(buf_chirho.len() as u64, Ordering::Relaxed);
+            let count_chirho = DSP_WRITE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if count_chirho < 5 || (count_chirho % 100 == 0) {
+                crate::serial_println_chirho!(
+                    "[DSP-WRITE] #{} len={} total={}",
+                    count_chirho, buf_chirho.len(), total_chirho + buf_chirho.len() as u64,
+                );
+            }
+            sb16_write_pcm_chirho(buf_chirho);
+            return Ok(buf_chirho.len());
+        }
+
+        // Fallback: drive PC speaker with PCM data for pitch-modulated audio.
         // Sample the PCM buffer at intervals and map amplitude → frequency.
         // This produces recognizable pitch contours from music.
         if buf_chirho.len() >= 2 {
@@ -280,6 +303,11 @@ impl FileOpsChirho for DevDspOpsChirho {
             }
             // SNDCTL_DSP_SETFRAGMENT (0xC004500A) — set buffer fragments
             0xC004500A => Ok(0),
+            // TIOCGPGRP (0x5413) / TIOCSPGRP (0x5414) — terminal ioctls.
+            // /dev/dsp is not a terminal; return ENOTTY.
+            TIOCGPGRP_CHIRHO | TIOCSPGRP_CHIRHO => Err(-ENOTTY_CHIRHO),
+            // TCGETS (0x5401) — also not a terminal
+            0x5401 => Err(-ENOTTY_CHIRHO),
             // SNDCTL_DSP_GETOSPACE (0x800C500C) — get output space
             0x800C500C => {
                 if arg_chirho != 0 {
@@ -487,4 +515,291 @@ pub fn init_ac97_chirho() {
 #[allow(dead_code)]
 pub fn ac97_detected_chirho() -> bool {
     AC97_CONTROLLER_CHIRHO.lock().is_some()
+}
+
+// ============================================================================
+// Sound Blaster 16 ISA driver (SB16)
+// ============================================================================
+
+/// SB16 standard I/O port base.
+const SB16_BASE_CHIRHO: u16 = 0x220;
+/// SB16 DSP reset port (base + 0x06).
+const SB16_RESET_CHIRHO: u16 = SB16_BASE_CHIRHO + 0x06;
+/// SB16 DSP read data port (base + 0x0A).
+const SB16_READ_CHIRHO: u16 = SB16_BASE_CHIRHO + 0x0A;
+/// SB16 DSP write data/command port (base + 0x0C).
+const SB16_WRITE_CHIRHO: u16 = SB16_BASE_CHIRHO + 0x0C;
+/// SB16 DSP read-buffer status port (base + 0x0E).
+const SB16_READ_STATUS_CHIRHO: u16 = SB16_BASE_CHIRHO + 0x0E;
+/// SB16 mixer address port (base + 0x04).
+const SB16_MIXER_ADDR_CHIRHO: u16 = SB16_BASE_CHIRHO + 0x04;
+/// SB16 mixer data port (base + 0x05).
+const SB16_MIXER_DATA_CHIRHO: u16 = SB16_BASE_CHIRHO + 0x05;
+/// SB16 16-bit IRQ ack port (base + 0x0F).
+const SB16_IRQ_ACK_16_CHIRHO: u16 = SB16_BASE_CHIRHO + 0x0F;
+
+/// DMA buffer physical address — must be below 16 MB for ISA DMA.
+/// We reserve 64 KB at physical address 0x100000 (1 MB mark).
+const SB16_DMA_PHYS_CHIRHO: u32 = 0x0010_0000;
+/// DMA buffer size: 32 KB (half-buffer = 16 KB).
+const SB16_DMA_SIZE_CHIRHO: usize = 32768;
+/// Half-buffer size for double-buffering.
+const SB16_HALF_SIZE_CHIRHO: usize = SB16_DMA_SIZE_CHIRHO / 2;
+
+/// Whether SB16 was detected and initialized.
+static SB16_DETECTED_CHIRHO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Ring buffer for PCM data from userspace writes.
+static SB16_PCM_BUF_CHIRHO: spin::Mutex<PcmRingChirho> =
+    spin::Mutex::new(PcmRingChirho::new_const_chirho());
+
+/// Simple ring buffer for PCM data.
+struct PcmRingChirho {
+    buf_chirho: [u8; 65536],
+    head_chirho: usize,
+    tail_chirho: usize,
+}
+
+impl PcmRingChirho {
+    const fn new_const_chirho() -> Self {
+        Self {
+            buf_chirho: [0u8; 65536],
+            head_chirho: 0,
+            tail_chirho: 0,
+        }
+    }
+
+    fn len_chirho(&self) -> usize {
+        self.head_chirho.wrapping_sub(self.tail_chirho) % 65536
+    }
+
+    fn push_chirho(&mut self, data_chirho: &[u8]) {
+        for &b_chirho in data_chirho {
+            let next_chirho = (self.head_chirho + 1) % 65536;
+            if next_chirho == self.tail_chirho {
+                // Buffer full — drop oldest
+                self.tail_chirho = (self.tail_chirho + 1) % 65536;
+            }
+            self.buf_chirho[self.head_chirho] = b_chirho;
+            self.head_chirho = next_chirho;
+        }
+    }
+
+    fn pop_chirho(&mut self, out_chirho: &mut [u8]) -> usize {
+        let mut count_chirho = 0;
+        for byte_chirho in out_chirho.iter_mut() {
+            if self.tail_chirho == self.head_chirho {
+                break;
+            }
+            *byte_chirho = self.buf_chirho[self.tail_chirho];
+            self.tail_chirho = (self.tail_chirho + 1) % 65536;
+            count_chirho += 1;
+        }
+        count_chirho
+    }
+}
+
+/// Write a command byte to the SB16 DSP.
+unsafe fn sb16_dsp_write_chirho(val_chirho: u8) {
+    use x86_64::instructions::port::Port;
+    let mut status_port_chirho = Port::<u8>::new(SB16_WRITE_CHIRHO);
+    // Wait for DSP to be ready (bit 7 clear)
+    for _ in 0..10000u32 {
+        if (status_port_chirho.read() & 0x80) == 0 {
+            break;
+        }
+    }
+    status_port_chirho.write(val_chirho);
+}
+
+/// Read a byte from the SB16 DSP.
+unsafe fn sb16_dsp_read_chirho() -> u8 {
+    use x86_64::instructions::port::Port;
+    let mut status_port_chirho = Port::<u8>::new(SB16_READ_STATUS_CHIRHO);
+    // Wait for data to be available (bit 7 set)
+    for _ in 0..10000u32 {
+        if (status_port_chirho.read() & 0x80) != 0 {
+            break;
+        }
+    }
+    Port::<u8>::new(SB16_READ_CHIRHO).read()
+}
+
+/// Probe for SB16 at ISA port 0x220, reset DSP, and configure for playback.
+pub fn init_sb16_chirho() {
+    use x86_64::instructions::port::Port;
+
+    crate::serial_println_chirho!("[SB16] Probing ISA port {:#x}...", SB16_BASE_CHIRHO);
+
+    // Step 1: Reset DSP
+    unsafe {
+        let mut reset_port_chirho = Port::<u8>::new(SB16_RESET_CHIRHO);
+        reset_port_chirho.write(1);
+        // Wait ~3 microseconds (busy loop)
+        for _ in 0..1000u32 { core::arch::asm!("pause", options(nomem, nostack)); }
+        reset_port_chirho.write(0);
+    }
+
+    // Wait for DSP ready (should return 0xAA)
+    let mut detected_chirho = false;
+    for _ in 0..100u32 {
+        let status_chirho = unsafe { Port::<u8>::new(SB16_READ_STATUS_CHIRHO).read() };
+        if (status_chirho & 0x80) != 0 {
+            let val_chirho = unsafe { Port::<u8>::new(SB16_READ_CHIRHO).read() };
+            if val_chirho == 0xAA {
+                detected_chirho = true;
+                break;
+            }
+        }
+        for _ in 0..100u32 { unsafe { core::arch::asm!("pause", options(nomem, nostack)); } }
+    }
+
+    if !detected_chirho {
+        crate::serial_println_chirho!("[SB16] DSP not detected at {:#x}", SB16_BASE_CHIRHO);
+        return;
+    }
+
+    // Step 2: Get DSP version
+    unsafe {
+        sb16_dsp_write_chirho(0xE1); // Get DSP version
+    }
+    let major_chirho = unsafe { sb16_dsp_read_chirho() };
+    let minor_chirho = unsafe { sb16_dsp_read_chirho() };
+    crate::serial_println_chirho!(
+        "[SB16] DSP version {}.{} detected at {:#x}",
+        major_chirho, minor_chirho, SB16_BASE_CHIRHO,
+    );
+
+    // Step 3: Set master volume via mixer
+    unsafe {
+        Port::<u8>::new(SB16_MIXER_ADDR_CHIRHO).write(0x22); // Master volume
+        Port::<u8>::new(SB16_MIXER_DATA_CHIRHO).write(0xCC); // ~80% left+right
+        Port::<u8>::new(SB16_MIXER_ADDR_CHIRHO).write(0x04); // Voice (DAC) volume
+        Port::<u8>::new(SB16_MIXER_DATA_CHIRHO).write(0xCC); // ~80%
+    }
+
+    // Step 4: Enable speaker output
+    unsafe { sb16_dsp_write_chirho(0xD1); } // Turn on speaker
+
+    // Step 5: Set sample rate (44100 Hz for output)
+    unsafe {
+        sb16_dsp_write_chirho(0x41); // Set output sample rate
+        sb16_dsp_write_chirho((44100 >> 8) as u8);   // High byte
+        sb16_dsp_write_chirho((44100 & 0xFF) as u8);  // Low byte
+    }
+
+    // Step 6: Set up ISA DMA channel 5 (16-bit) for auto-init playback
+    // DMA channel 5 is the 16-bit counterpart of channel 1
+    unsafe {
+        // Mask DMA channel 5 (16-bit DMA uses ports 0xD4-0xDB)
+        Port::<u8>::new(0xD4).write(0x05); // mask channel 5 (bit 0=channel, bit 2=mask)
+
+        // Clear byte pointer flip-flop
+        Port::<u8>::new(0xD8).write(0x00);
+
+        // Set DMA mode: channel 5, auto-init, single mode, read (memory→device)
+        // Mode byte: bits 1:0=channel(01), bit 4=auto-init(1), bits 7:6=single(01)
+        Port::<u8>::new(0xD6).write(0x59); // channel 1 of 16-bit DMA, auto-init, read
+
+        // Set DMA address (16-bit DMA uses word addresses, divided by 2)
+        let word_addr_chirho = (SB16_DMA_PHYS_CHIRHO / 2) as u16;
+        Port::<u8>::new(0xC4).write((word_addr_chirho & 0xFF) as u8);     // Low byte
+        Port::<u8>::new(0xC4).write(((word_addr_chirho >> 8) & 0xFF) as u8); // High byte
+
+        // Set page register for DMA channel 5 (port 0x8B)
+        let page_chirho = ((SB16_DMA_PHYS_CHIRHO >> 16) & 0xFF) as u8;
+        Port::<u8>::new(0x8B).write(page_chirho);
+
+        // Set transfer count (in words, minus 1)
+        let word_count_chirho = ((SB16_DMA_SIZE_CHIRHO / 2) - 1) as u16;
+        Port::<u8>::new(0xC6).write((word_count_chirho & 0xFF) as u8);
+        Port::<u8>::new(0xC6).write(((word_count_chirho >> 8) & 0xFF) as u8);
+
+        // Unmask DMA channel 5
+        Port::<u8>::new(0xD4).write(0x01); // unmask channel 5
+    }
+
+    // Step 7: Fill DMA buffer with silence (signed 16-bit = 0x0000)
+    unsafe {
+        let dma_ptr_chirho = (SB16_DMA_PHYS_CHIRHO as u64 + 0x18000000000u64) as *mut u8;
+        core::ptr::write_bytes(dma_ptr_chirho, 0, SB16_DMA_SIZE_CHIRHO);
+    }
+
+    // Step 8: Start 16-bit auto-init DMA playback
+    unsafe {
+        sb16_dsp_write_chirho(0xB6); // 16-bit output, auto-init, signed stereo
+        sb16_dsp_write_chirho(0x30); // signed stereo (bits: 5=signed, 4=stereo)
+        // Transfer count per half-buffer (in samples, minus 1)
+        let samples_chirho = ((SB16_HALF_SIZE_CHIRHO / 4) - 1) as u16; // /4 for stereo 16-bit
+        sb16_dsp_write_chirho((samples_chirho & 0xFF) as u8);
+        sb16_dsp_write_chirho(((samples_chirho >> 8) & 0xFF) as u8);
+    }
+
+    SB16_DETECTED_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
+    crate::serial_println_chirho!(
+        "[SB16] Initialized: 44100Hz stereo 16-bit, DMA@{:#x} size={}",
+        SB16_DMA_PHYS_CHIRHO, SB16_DMA_SIZE_CHIRHO,
+    );
+}
+
+/// Returns true if SB16 was detected.
+pub fn sb16_detected_chirho() -> bool {
+    SB16_DETECTED_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Queue PCM data from userspace for SB16 playback.
+/// Called from /dev/dsp write handler.
+pub fn sb16_write_pcm_chirho(data_chirho: &[u8]) {
+    if !sb16_detected_chirho() {
+        return;
+    }
+
+    // Push data into the ring buffer
+    let mut ring_chirho = SB16_PCM_BUF_CHIRHO.lock();
+    ring_chirho.push_chirho(data_chirho);
+
+    // Copy available data into the DMA buffer (simple memcpy approach).
+    // In a proper driver we'd use double-buffering with IRQ-driven refill,
+    // but for QEMU this direct approach produces audible output.
+    let mut tmp_chirho = [0u8; SB16_DMA_SIZE_CHIRHO];
+    let filled_chirho = ring_chirho.pop_chirho(&mut tmp_chirho);
+    if filled_chirho > 0 {
+        unsafe {
+            let dma_ptr_chirho = (SB16_DMA_PHYS_CHIRHO as u64 + 0x18000000000u64) as *mut u8;
+            core::ptr::copy_nonoverlapping(
+                tmp_chirho.as_ptr(),
+                dma_ptr_chirho,
+                filled_chirho,
+            );
+        }
+    }
+}
+
+/// Handle SB16 IRQ (IRQ 5). Acknowledge the interrupt and refill DMA buffer.
+pub fn sb16_irq_handler_chirho() {
+    if !sb16_detected_chirho() {
+        return;
+    }
+
+    // Acknowledge 16-bit DSP interrupt
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let _ = Port::<u8>::new(SB16_IRQ_ACK_16_CHIRHO).read();
+    }
+
+    // Refill DMA buffer from ring
+    let mut ring_chirho = SB16_PCM_BUF_CHIRHO.lock();
+    let mut tmp_chirho = [0u8; SB16_HALF_SIZE_CHIRHO];
+    let filled_chirho = ring_chirho.pop_chirho(&mut tmp_chirho);
+    if filled_chirho > 0 {
+        unsafe {
+            let dma_ptr_chirho = (SB16_DMA_PHYS_CHIRHO as u64 + 0x18000000000u64) as *mut u8;
+            core::ptr::copy_nonoverlapping(
+                tmp_chirho.as_ptr(),
+                dma_ptr_chirho,
+                filled_chirho,
+            );
+        }
+    }
 }

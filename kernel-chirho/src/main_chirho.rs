@@ -453,6 +453,8 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     // Phase A2: Sound card PCI detection (A2-SOUND-001).
     sound_chirho::detect_sound_cards_chirho();
     hda_chirho::init_hda_chirho();
+    // Probe for Sound Blaster 16 on ISA bus (QEMU -device sb16)
+    sound_chirho::init_sb16_chirho();
     fb_println_chirho!("[OK] Sound subsystem initialized");
     // Boot beep — audible confirmation that audio works (440Hz for 100ms)
     sound_chirho::pc_speaker_beep_chirho(440, 100);
