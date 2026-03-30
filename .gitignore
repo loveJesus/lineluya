@@ -26,3 +26,7 @@ spec-chirho/progress-chirho.sqlite
 spec-chirho/linux-reference-chirho/linux-6.19.8.tar.xz
 *.tar.xz
 tmp-chirho/
+spec-chirho/xgears_chirho
+spec-chirho/__pycache__/
+spec-chirho/screenshot-chirho.ppm
+spec-chirho/screenshot-chirho.png
