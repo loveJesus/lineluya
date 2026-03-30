@@ -4002,10 +4002,15 @@ pub fn sys_sendto_chirho(
                 }
                 return count_chirho as i64;
             } else {
+                // Capture under lock, print after drop to avoid deadlock
+                let noseg_state_chirho = socket_chirho.tcb_chirho.state_chirho;
+                let noseg_len_chirho = data_chirho.len();
+                drop(table_chirho);
                 crate::serial_println_chirho!(
                     "[TCP-SEND-NOSEG] make_data_segment returned None, state={:?} len={}",
-                    socket_chirho.tcb_chirho.state_chirho, data_chirho.len(),
+                    noseg_state_chirho, noseg_len_chirho,
                 );
+                return -(crate::syscall_chirho::EAGAIN_CHIRHO);
             }
         }
 
