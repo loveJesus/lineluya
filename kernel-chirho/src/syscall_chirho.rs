@@ -3075,6 +3075,11 @@ fn fd_uses_console_stdio_chirho(fd_chirho: u64) -> bool {
     if fd_chirho != 1 && fd_chirho != 2 {
         return false;
     }
+    // fd=2 (stderr) always goes to serial for all PIDs — ensures
+    // error messages and FPS reports from xgears/xterm are visible.
+    if fd_chirho == 2 {
+        return true;
+    }
 
     let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_chirho) else {
         return true;
