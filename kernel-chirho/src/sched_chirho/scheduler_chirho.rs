@@ -231,6 +231,12 @@ fn task_has_x11_render_socket_chirho(pid_chirho: u64) -> bool {
 fn time_slice_for_pid_chirho(pid_chirho: u64) -> u64 {
     if task_has_x11_render_socket_chirho(pid_chirho) {
         X11_RENDER_TIME_SLICE_CHIRHO
+    } else if pid_chirho >= 12 {
+        // Boost SSH/Dropbear and late-spawned children (pid ≥ 12).
+        // Dropbear needs sustained CPU for curve25519 KEX + chacha20 crypto.
+        // Without this boost, SB16 DMA + xgears starve Dropbear of scheduler
+        // time, causing SSH timeouts.
+        DEFAULT_TIME_SLICE_CHIRHO * 2
     } else {
         DEFAULT_TIME_SLICE_CHIRHO
     }
