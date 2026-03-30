@@ -8964,19 +8964,25 @@ fn sys_clock_nanosleep_chirho(
         + (nsec_chirho as u64) / 1_000_000;
 
     if total_ms_chirho > 0 {
-        let sleep_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        // Remove from run queue so other tasks can run during sleep
-        crate::scheduler_chirho::remove_task_chirho(sleep_pid_chirho);
-        let hlt_count_chirho = total_ms_chirho.min(30_000) as u32;
-        for i_chirho in 0..hlt_count_chirho {
-            x86_64::instructions::interrupts::enable_and_hlt();
-            if i_chirho % 100 == 0 && crate::signal_chirho::current_has_deliverable_signal_chirho() {
-                crate::scheduler_chirho::add_task_chirho(sleep_pid_chirho);
-                return -EINTR_CHIRHO;
+        if total_ms_chirho <= 50 {
+            // Short sleep (≤50ms): just yield once. Avoids HLT loop overhead
+            // that kills animation frame rate in xgears-chirho.
+            crate::scheduler_chirho::yield_current_chirho();
+        } else {
+            let sleep_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            // Remove from run queue so other tasks can run during sleep
+            crate::scheduler_chirho::remove_task_chirho(sleep_pid_chirho);
+            let hlt_count_chirho = total_ms_chirho.min(30_000) as u32;
+            for i_chirho in 0..hlt_count_chirho {
+                x86_64::instructions::interrupts::enable_and_hlt();
+                if i_chirho % 100 == 0 && crate::signal_chirho::current_has_deliverable_signal_chirho() {
+                    crate::scheduler_chirho::add_task_chirho(sleep_pid_chirho);
+                    return -EINTR_CHIRHO;
+                }
             }
+            // Re-add to run queue
+            crate::scheduler_chirho::add_task_chirho(sleep_pid_chirho);
         }
-        // Re-add to run queue
-        crate::scheduler_chirho::add_task_chirho(sleep_pid_chirho);
     }
 
     0 // success
