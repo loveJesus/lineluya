@@ -126,6 +126,13 @@ static unsigned long alloc_named_color_chirho(
     const char *name_chirho,
     unsigned long fallback_pixel_chirho
 ) {
+    /* Skip XAllocNamedColor — it triggers CCC/Xcms atom lookups that
+       block on our kernel's X11 injection. Use WhitePixel directly. */
+    (void)display_chirho;
+    (void)screen_chirho;
+    (void)name_chirho;
+    return fallback_pixel_chirho;
+#if 0
     Colormap colormap_chirho;
     XColor exact_color_chirho;
     XColor screen_color_chirho;
@@ -140,8 +147,8 @@ static unsigned long alloc_named_color_chirho(
         ) == 0) {
         return fallback_pixel_chirho;
     }
-
-    return screen_color_chirho.pixel;
+    return fallback_pixel_chirho; /* unreachable but keeps compiler happy */
+#endif
 }
 
 static void rotate_point_chirho(
@@ -312,6 +319,7 @@ static int init_xgears_state_chirho(XgearsStateChirho *state_chirho) {
         fprintf(stderr, "xgears-chirho: failed to open X display after retries\n");
         return 0;
     }
+    /* Avoid Xlib buffer desync by flushing after each batch */
 
     state_chirho->screen_chirho = DefaultScreen(state_chirho->display_chirho);
     state_chirho->width_chirho = WINDOW_WIDTH_CHIRHO;
@@ -389,8 +397,10 @@ static int init_xgears_state_chirho(XgearsStateChirho *state_chirho) {
         return 0;
     }
 
+    /* Force Xlib to process all pending replies before mapping */
+    XSync(state_chirho->display_chirho, False);
     XMapWindow(state_chirho->display_chirho, state_chirho->window_chirho);
-    XFlush(state_chirho->display_chirho);
+    XSync(state_chirho->display_chirho, False);
 
     state_chirho->last_report_ns_chirho = monotonic_ns_chirho();
     state_chirho->running_chirho = 1;
