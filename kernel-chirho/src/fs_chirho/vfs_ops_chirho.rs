@@ -1258,7 +1258,7 @@ pub fn sys_openat_chirho(
                         "/tmp/lib-chirho/Xorg :0 -ac -noreset -novtswitch -keeptty -sharevts &\n",
                         "/usr/bin/xgears-chirho &\n",
                         "DISPLAY=:0 /usr/bin/twm &\n",
-                        "/tmp/lib-chirho/mpg123 -a /dev/dsp /root/test-tone-chirho.mp3 &\n",
+                        "/tmp/lib-chirho/mpg123 -q -a /dev/dsp /root/test-tone-chirho.mp3 &\n",
                         "DISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\n",
                     ).as_bytes())
                 }
