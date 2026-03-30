@@ -283,16 +283,8 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
     interrupts_chirho::init_pics_chirho();
     serial_println_chirho!("[OK] PICs initialized");
 
-    // Initialize PIT channel 0 to 1000 Hz (1ms tick) for preemptive scheduling
-    unsafe {
-        let mut cmd_port_chirho = x86_64::instructions::port::Port::<u8>::new(0x43);
-        let mut ch0_port_chirho = x86_64::instructions::port::Port::<u8>::new(0x40);
-        cmd_port_chirho.write(0x36); // channel 0, lo/hi, mode 3 (square wave)
-        let divisor_chirho: u16 = 1193; // 1193182 / 1000 ≈ 1193 → 1000 Hz
-        ch0_port_chirho.write((divisor_chirho & 0xFF) as u8);
-        ch0_port_chirho.write((divisor_chirho >> 8) as u8);
-    }
-    serial_println_chirho!("[OK] PIT timer: 1000 Hz (1ms preemption tick)");
+    // PIT timer: use default frequency (~18.2 Hz from BIOS/UEFI).
+    // 1kHz caused TICK-SKIP lockups during boot init.
 
     // Initialize memory management
     let physical_memory_offset_chirho = boot_info_chirho
