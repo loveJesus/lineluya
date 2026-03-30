@@ -4012,8 +4012,19 @@ pub fn sys_sendto_chirho(
                     );
                 }
                 drop(table_chirho); // Release lock before sending
-                let _ = send_ip_packet_chirho(&pkt_chirho);
+                let send_result_chirho = send_ip_packet_chirho(&pkt_chirho);
+                if send_result_chirho.is_err() {
+                    crate::serial_println_chirho!(
+                        "[TCP-SEND-FAIL] pkt_len={} err={:?}",
+                        pkt_chirho.len(), send_result_chirho,
+                    );
+                }
                 return count_chirho as i64;
+            } else {
+                crate::serial_println_chirho!(
+                    "[TCP-SEND-NOSEG] make_data_segment returned None, state={:?} len={}",
+                    socket_chirho.tcb_chirho.state_chirho, data_chirho.len(),
+                );
             }
         }
 
