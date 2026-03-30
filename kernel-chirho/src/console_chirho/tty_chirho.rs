@@ -538,6 +538,34 @@ impl FileOpsChirho for TtyFileOpsChirho {
                 }
                 Ok(0)
             }
+            // KDENABIO (0x4605) — enable I/O port access.
+            // Set IOPL=3 in the task's saved RFLAGS (r11_chirho in syscall frame)
+            // so that when IRETQ returns to user space, the user has IOPL=3.
+            0x4605 => {
+                // Set the global IOPL flag — the syscall return path will
+                // OR IOPL=3 into the user's RFLAGS.
+                crate::syscall_chirho::USER_IOPL3_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
+                Ok(0)
+            }
+            // KDDISABIO (0x4606) — disable I/O port access
+            0x4606 => Ok(0),
+            // KDMAPDISP (0x4611) — map display into user memory
+            0x4611 => Ok(0),
+            // KDUNMAPDISP (0x4612) — unmap display
+            0x4612 => Ok(0),
+            // KDGETLED (0x4600) — get LED state
+            0x4600 => {
+                if arg_chirho != 0 {
+                    unsafe { core::ptr::write(arg_chirho as *mut u8, 0); }
+                }
+                Ok(0)
+            }
+            // KDSETLED (0x4601) — set LED state
+            0x4601 => Ok(0),
+            // KDADDIO (0x4603) — add I/O port
+            0x4603 => Ok(0),
+            // KDDELIO (0x4604) — remove I/O port
+            0x4604 => Ok(0),
             // KDSETMODE (0x4B3A) — set text/graphics mode
             0x4B3A => Ok(0),
             // KDSKBMODE (0x4B45) — set keyboard mode
@@ -567,6 +595,11 @@ impl FileOpsChirho for TtyFileOpsChirho {
                 Ok(0)
             }
 
+            // Catch-all for KD/VT ioctls (0x46xx, 0x4Bxx, 0x56xx):
+            // return Ok(0) to prevent Xorg from looping on unhandled ioctls.
+            cmd_chirho if (cmd_chirho & 0xFF00) == 0x4600
+                || (cmd_chirho & 0xFF00) == 0x4B00
+                || (cmd_chirho & 0xFF00) == 0x5600 => Ok(0),
             _ => Err(25), // ENOTTY (positive errno)
         }
     }

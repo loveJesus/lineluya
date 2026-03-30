@@ -237,6 +237,10 @@ pub struct TaskChirho {
     pub tgid_chirho: u64,
     /// Parent process ID.
     pub ppid_chirho: u64,
+    /// Executable path (for /proc/self/exe readlink). Per-process.
+    pub exe_path_chirho: [u8; 128],
+    /// Length of exe_path_chirho.
+    pub exe_path_len_chirho: usize,
 
     // -- State & exit -------------------------------------------------------
 
@@ -411,6 +415,8 @@ impl TaskChirho {
             pid_chirho,
             tgid_chirho: pid_chirho,
             ppid_chirho: 0,
+            exe_path_chirho: [0u8; 128],
+            exe_path_len_chirho: 0,
             state_chirho: TaskStateChirho::ReadyChirho,
             exit_code_chirho: 0,
             context_chirho,
@@ -484,6 +490,8 @@ impl TaskChirho {
             pid_chirho,
             tgid_chirho: pid_chirho,
             ppid_chirho: 0,
+            exe_path_chirho: [0u8; 128],
+            exe_path_len_chirho: 0,
             state_chirho: TaskStateChirho::ReadyChirho,
             exit_code_chirho: 0,
             context_chirho,
@@ -560,11 +568,14 @@ impl TaskChirho {
         self.state_chirho = TaskStateChirho::BlockedChirho;
     }
 
-    /// Wake this task, moving it from Blocked to Ready.
+    /// Wake this task, moving it from a sleep/block state to Ready.
     ///
-    /// No-op if the task is not currently blocked.
+    /// No-op if the task is not currently sleeping or blocked.
     pub fn wake_chirho(&mut self) {
-        if self.state_chirho == TaskStateChirho::BlockedChirho {
+        if matches!(
+            self.state_chirho,
+            TaskStateChirho::BlockedChirho | TaskStateChirho::SleepingChirho
+        ) {
             self.state_chirho = TaskStateChirho::ReadyChirho;
         }
     }
@@ -661,7 +672,7 @@ pub fn register_task_chirho(task_chirho: Arc<Mutex<TaskChirho>>) {
     TASK_LIST_CHIRHO.lock().push(task_chirho);
 }
 
-/// Check if a task is still runnable (not zombie/dead).
+/// Check if a task is in a runnable state (Running or Ready).
 /// Used by the scheduler to decide whether to re-queue a task.
 pub fn is_task_runnable_chirho(pid_chirho: u64) -> bool {
     let list_chirho = TASK_LIST_CHIRHO.lock();
@@ -669,8 +680,36 @@ pub fn is_task_runnable_chirho(pid_chirho: u64) -> bool {
         .iter()
         .find(|t_chirho| t_chirho.lock().pid_chirho == pid_chirho)
     {
-        !task_arc_chirho.lock().is_exited_chirho()
+        let state_chirho = task_arc_chirho.lock().state_chirho;
+        let runnable_chirho = matches!(
+            state_chirho,
+            TaskStateChirho::ReadyChirho | TaskStateChirho::RunningChirho
+        );
+        if pid_chirho >= 8 && !runnable_chirho {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static ITR_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let c_chirho = ITR_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if c_chirho < 5 {
+                crate::serial_println_chirho!(
+                    "[ITR] pid={} state={:?} runnable={}",
+                    pid_chirho, state_chirho, runnable_chirho,
+                );
+            }
+        }
+        runnable_chirho
     } else {
+        // PID not found in TASK_LIST!
+        if pid_chirho >= 8 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static NF_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let nf_chirho = NF_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if nf_chirho < 10 {
+                crate::serial_println_chirho!(
+                    "[ITR-NOTFOUND] pid={} NOT in TASK_LIST (list_len={})",
+                    pid_chirho, list_chirho.len(),
+                );
+            }
+        }
         false
     }
 }
@@ -692,7 +731,7 @@ pub fn task_count_chirho() -> usize {
 }
 
 /// Maximum PIDs for the static context array.
-const MAX_PIDS_CHIRHO: usize = 64;
+const MAX_PIDS_CHIRHO: usize = 128;
 
 /// Static array of CPU contexts — one per PID slot.
 ///

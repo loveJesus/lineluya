@@ -551,3 +551,61 @@ pub fn fb_size_chirho() -> u64 {
     let height_chirho = FB_ACTUAL_HEIGHT_CHIRHO.load(Ordering::Relaxed);
     (stride_chirho as u64) * (height_chirho as u64)
 }
+
+/// Sample the live framebuffer contents and log when the sparse signature changes.
+///
+/// This is a low-overhead probe for proving that Xorg/ShadowFB eventually
+/// pushes pixels into the QEMU-visible framebuffer, which in turn is what VNC
+/// displays.
+pub fn sample_fb_signature_chirho(reason_chirho: &str) {
+    use core::sync::atomic::{AtomicU64, Ordering as FbOrderingChirho};
+
+    static LAST_HASH_CHIRHO: AtomicU64 = AtomicU64::new(0);
+    static LAST_NONZERO_CHIRHO: AtomicU64 = AtomicU64::new(0);
+    static TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+    let phys_chirho = FB_ACTUAL_PHYS_CHIRHO.load(Ordering::Relaxed);
+    let total_size_chirho = fb_size_chirho() as usize;
+    if phys_chirho == 0 || total_size_chirho == 0 {
+        return;
+    }
+
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let base_ptr_chirho = (phys_chirho + phys_offset_chirho) as *const u8;
+    let sample_slots_chirho = 1024usize;
+    let sample_step_chirho = core::cmp::max(1usize, total_size_chirho / sample_slots_chirho);
+
+    let mut hash_chirho: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut nonzero_samples_chirho: u64 = 0;
+    let mut sample_count_chirho: u64 = 0;
+    let mut offset_chirho: usize = 0;
+    while offset_chirho < total_size_chirho {
+        let byte_chirho = unsafe { core::ptr::read_volatile(base_ptr_chirho.add(offset_chirho)) };
+        hash_chirho ^= byte_chirho as u64;
+        hash_chirho = hash_chirho.wrapping_mul(0x1000_0000_01b3);
+        if byte_chirho != 0 {
+            nonzero_samples_chirho = nonzero_samples_chirho.saturating_add(1);
+        }
+        sample_count_chirho = sample_count_chirho.saturating_add(1);
+        offset_chirho = offset_chirho.saturating_add(sample_step_chirho);
+    }
+
+    let last_hash_chirho = LAST_HASH_CHIRHO.swap(hash_chirho, FbOrderingChirho::Relaxed);
+    let last_nonzero_chirho =
+        LAST_NONZERO_CHIRHO.swap(nonzero_samples_chirho, FbOrderingChirho::Relaxed);
+    if last_hash_chirho != hash_chirho || last_nonzero_chirho != nonzero_samples_chirho {
+        let trace_index_chirho = TRACE_COUNT_CHIRHO.fetch_add(1, FbOrderingChirho::Relaxed);
+        if trace_index_chirho < 256 {
+            crate::serial_println_chirho!(
+                "[FB-SIG] #{} reason='{}' hash={:#x} nonzero_samples={} sampled={} fb_size={} phys={:#x}",
+                trace_index_chirho,
+                reason_chirho,
+                hash_chirho,
+                nonzero_samples_chirho,
+                sample_count_chirho,
+                total_size_chirho,
+                phys_chirho,
+            );
+        }
+    }
+}

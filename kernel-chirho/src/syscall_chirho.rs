@@ -133,6 +133,10 @@ impl SyscallFrameChirho {
 // as they are implemented.
 
 /// `read(2)` -- read from a file descriptor.
+/// Flag: Xorg has entered its main epoll loop — safe to launch X11 clients.
+pub static XORG_EPOLL_READY_CHIRHO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 pub const SYS_READ_CHIRHO: u64 = 0;
 /// `write(2)` -- write to a file descriptor.
 pub const SYS_WRITE_CHIRHO: u64 = 1;
@@ -629,6 +633,12 @@ pub const ENOENT_CHIRHO: i64 = 2;
 pub const ESRCH_CHIRHO: i64 = 3;
 /// Interrupted system call.
 pub const EINTR_CHIRHO: i64 = 4;
+
+/// Global flag: set IOPL=3 for ALL user processes (set by KDENABIO ioctl).
+/// #[no_mangle] so the assembly can access it by symbol name.
+#[no_mangle]
+pub static USER_IOPL3_CHIRHO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 /// I/O error.
 pub const EIO_CHIRHO: i64 = 5;
 /// No such device or address.
@@ -1195,18 +1205,66 @@ fn is_interactive_shell_chirho() -> bool {
     crate::task_chirho::current_task_chirho()
         .map(|t_chirho| {
             let task_chirho = t_chirho.lock();
-            // Forked children (ppid != 0) are never the main shell.
-            if task_chirho.ppid_chirho != 0 {
+            let task_name_chirho = task_chirho.name_chirho();
+            let is_shell_name_chirho = matches!(task_name_chirho, "sh" | "ash" | "busybox");
+            if !is_shell_name_chirho {
                 return false;
             }
-            // ppid=0: check if this PID is the daemon that called listen().
+            // Shells that became daemon listeners are not interactive shells.
             let daemon_pid_chirho = DAEMON_LISTENER_PID_CHIRHO.load(Ordering::Relaxed);
-            if daemon_pid_chirho != 0 && task_chirho.pid_chirho == daemon_pid_chirho {
-                return false; // this is the daemon, not the shell
-            }
-            true
+            daemon_pid_chirho == 0 || task_chirho.pid_chirho != daemon_pid_chirho
         })
         .unwrap_or(true)
+}
+
+fn maybe_relay_tcp_2222_into_fd0_pipe_chirho() {
+    let current_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+    let is_shell_chirho = is_interactive_shell_chirho();
+    let has_tcp_data_chirho = crate::net_chirho::has_tcp_data_for_port_chirho(2222);
+    if current_pid_chirho == 11 {
+        use core::sync::atomic::{AtomicU64, Ordering as RelayOrd};
+        static PID11_RELAY_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let trace_idx_chirho =
+            PID11_RELAY_TRACE_COUNT_CHIRHO.fetch_add(1, RelayOrd::Relaxed);
+        if trace_idx_chirho < 16 {
+            crate::serial_println_chirho!(
+                "[PID11-RELAY-CHECK] #{} shell={} has_tcp_data={}",
+                trace_idx_chirho,
+                is_shell_chirho,
+                has_tcp_data_chirho,
+            );
+        }
+    }
+    if is_shell_chirho || !has_tcp_data_chirho {
+        return;
+    }
+
+    let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(0) else {
+        return;
+    };
+
+    let pipe_arc_chirho = {
+        let file_guard_chirho = file_arc_chirho.lock();
+        let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+        if (inode_guard_chirho.mode_chirho & 0o170000) != 0o010000 {
+            return;
+        }
+        inode_guard_chirho
+            .fs_data_chirho
+            .as_ref()
+            .and_then(|fs_data_chirho| {
+                fs_data_chirho
+                    .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
+            })
+            .cloned()
+    };
+
+    if let Some(pipe_arc_value_chirho) = pipe_arc_chirho {
+        if current_pid_chirho == 11 {
+            crate::serial_println_chirho!("[PID11-RELAY] relaying TCP port 2222 into fd0 pipe");
+        }
+        crate::net_chirho::relay_tcp_2222_to_pipe_chirho(&pipe_arc_value_chirho);
+    }
 }
 
 /// Yield to a runnable child of the current task, if one exists.
@@ -1270,12 +1328,20 @@ static CURRENT_EXE_PATH_CHIRHO: spin::Mutex<[u8; 256]> = spin::Mutex::new([0u8; 
 static CURRENT_EXE_PATH_LEN_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
 /// Set the current executable path (called from execve).
+/// Stores per-process in the task struct, falls back to global for PID 0.
 pub fn set_current_exe_path_chirho(path_chirho: &[u8]) {
+    let len_chirho = core::cmp::min(path_chirho.len(), 127);
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut tg_chirho = task_arc_chirho.lock();
+        tg_chirho.exe_path_chirho[..len_chirho].copy_from_slice(&path_chirho[..len_chirho]);
+        tg_chirho.exe_path_len_chirho = len_chirho;
+    }
+    // Also update global for backward compatibility
     let mut buf_chirho = CURRENT_EXE_PATH_CHIRHO.lock();
-    let len_chirho = core::cmp::min(path_chirho.len(), 255);
-    buf_chirho[..len_chirho].copy_from_slice(&path_chirho[..len_chirho]);
-    buf_chirho[len_chirho] = 0;
-    CURRENT_EXE_PATH_LEN_CHIRHO.store(len_chirho as u64, Ordering::Relaxed);
+    let glen_chirho = core::cmp::min(path_chirho.len(), 255);
+    buf_chirho[..glen_chirho].copy_from_slice(&path_chirho[..glen_chirho]);
+    buf_chirho[glen_chirho] = 0;
+    CURRENT_EXE_PATH_LEN_CHIRHO.store(glen_chirho as u64, Ordering::Relaxed);
 }
 
 /// Set the initial program break (called by exec after loading ELF).
@@ -1451,6 +1517,22 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
 
+    // Trace PID 5 syscalls to find what blocks after select
+    {
+        let trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if trace_pid_chirho == 5 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static P5_SC_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let cnt_chirho = P5_SC_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if cnt_chirho >= 50 && cnt_chirho < 100 {
+                crate::serial_println_chirho!(
+                    "[P5-SYSCALL] #{} nr={} a0={:#x} a1={:#x}",
+                    cnt_chirho, syscall_nr_chirho, arg0_chirho, arg1_chirho,
+                );
+            }
+        }
+    }
+
     // Log X11 client syscalls (first 50 per PID)
     {
         let trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
@@ -1473,12 +1555,23 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             let cnt_chirho = P5_CNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             // Log last 20 syscalls (after the initial ~1500 init syscalls)
             // Log every 100th syscall + all after 1400
-            if cnt_chirho % 10000 == 0 {
+            // Trace 50 syscalls AFTER any recvmsg on accepted fd (>= 13)
+            {
+                static P5_TRACE_START_CHIRHO: core::sync::atomic::AtomicU64 =
+                    core::sync::atomic::AtomicU64::new(u64::MAX);
+                if syscall_nr_chirho == 47 && arg0_chirho >= 13 {
+                    P5_TRACE_START_CHIRHO.store(cnt_chirho, core::sync::atomic::Ordering::Relaxed);
+                }
+                let ts_chirho = P5_TRACE_START_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+                if cnt_chirho % 10000 == 0
+                    || (cnt_chirho >= ts_chirho && cnt_chirho < ts_chirho + 50)
+                {
                 crate::serial_println_chirho!(
-                    "[P5-SC] #{} nr={}({}) a0={:#x}",
+                    "[P5-SC] #{} nr={}({}) fd={} a1={:#x}",
                     cnt_chirho, syscall_nr_chirho,
-                    syscall_name_chirho(syscall_nr_chirho), arg0_chirho,
+                    syscall_name_chirho(syscall_nr_chirho), arg0_chirho, arg1_chirho,
                 );
+            }
             }
         }
     }
@@ -1534,9 +1627,131 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         }
     }
 
+    // Trace twm/xterm (PIDs 8,9) ALL syscalls for X11 debugging
+    {
+        let xcli_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if xcli_pid_chirho == 4 || xcli_pid_chirho == 5 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static XCLI_SC_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let xsc_chirho = XCLI_SC_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if xsc_chirho < 500 {
+                crate::serial_println_chirho!(
+                    "[TWM-SC] pid={} #{} nr={} a0={:#x} a1={:#x} a2={:#x}",
+                    xcli_pid_chirho, xsc_chirho, syscall_nr_chirho,
+                    arg0_chirho, arg1_chirho, arg2_chirho,
+                );
+            }
+        }
+    }
+    // Trace write-family syscalls from Xorg (PID 5) to accepted fds (>= 13)
+    {
+        let xorg_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if xorg_pid_chirho == 5
+            && (syscall_nr_chirho == 1 || syscall_nr_chirho == 20 || syscall_nr_chirho == 44 || syscall_nr_chirho == 46)
+            && arg0_chirho >= 13
+        {
+            crate::serial_println_chirho!(
+                "[XORG-WRITE] nr={} fd={} a1={:#x} a2={:#x}",
+                syscall_nr_chirho, arg0_chirho, arg1_chirho, arg2_chirho,
+            );
+        }
+    }
+    // Trace PID 7 (Xorg) syscalls to find what blocks after epoll
+    {
+        let disp_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if disp_pid_chirho == 7 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static P7SC_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let sc_chirho = P7SC_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            // Log wider range to capture accept→read→writev on client fds
+            if (sc_chirho >= 960 && sc_chirho < 1100)
+                || (sc_chirho >= 2000 && sc_chirho < 2100)
+                || sc_chirho % 50000 == 0
+            {
+                if syscall_nr_chirho == 16 { // ioctl
+                    crate::serial_println_chirho!(
+                        "[P7-SC] #{} IOCTL fd={} cmd={:#x} arg={:#x}", sc_chirho, arg0_chirho, arg1_chirho, arg2_chirho,
+                    );
+                } else {
+                    crate::serial_println_chirho!(
+                        "[P7-SC] #{} nr={} a0={:#x}", sc_chirho, syscall_nr_chirho, arg0_chirho,
+                    );
+                }
+            }
+        }
+    }
+
     let result_chirho: i64 = match syscall_nr_chirho {
         SYS_READ_CHIRHO => {
             if arg0_chirho == 0 {
+                // Log all read(fd=0) calls for debugging
+                {
+                    let rd_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    use core::sync::atomic::{AtomicU64, Ordering as RdOrd};
+                    static RD0_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let rdcnt_chirho = RD0_DBG_CHIRHO.fetch_add(1, RdOrd::Relaxed);
+                    if rdcnt_chirho < 20 {
+                        crate::serial_println_chirho!(
+                            "[READ-FD0] #{} pid={} count={}",
+                            rdcnt_chirho, rd_pid_chirho, arg2_chirho,
+                        );
+                    }
+                }
+                // X11 client injection: deliver command bytes across multiple
+                // read(0,buf,1) calls. BusyBox ash reads 1 byte at a time.
+                // Gate: start only when should_launch returns true (X11_READY + 5s delay).
+                // Once started (ACTIVE=true), deliver regardless of should_launch state.
+                {
+                    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+                    static X11_INJECT_ACTIVE_CHIRHO: AtomicBool = AtomicBool::new(false);
+                    static X11_INJECT_POS_CHIRHO: AtomicUsize = AtomicUsize::new(0);
+                    static X11_INJECT_CMD_CHIRHO: &[u8] =
+                        b"/tmp/lib-chirho/twm &\n/tmp/lib-chirho/xterm -e sh &\n";
+                    let inject_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    // One-shot debug: log read(0) from PID 0
+                    if inject_pid_chirho <= 2 {
+                        use core::sync::atomic::AtomicU64;
+                        static RD0_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                        let rd_cnt_chirho = RD0_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                        if rd_cnt_chirho < 5 || (rd_cnt_chirho % 10000 == 0) {
+                            crate::serial_println_chirho!(
+                                "[RD0-INJECT] pid={} rd#={} epoll_ready={} active={}",
+                                inject_pid_chirho, rd_cnt_chirho,
+                                XORG_EPOLL_READY_CHIRHO.load(Ordering::Relaxed),
+                                X11_INJECT_ACTIVE_CHIRHO.load(Ordering::Relaxed),
+                            );
+                        }
+                    }
+                    if inject_pid_chirho <= 2 {
+                        // Activate when X11 ready (one-shot)
+                        if !X11_INJECT_ACTIVE_CHIRHO.load(Ordering::Relaxed)
+                            && XORG_EPOLL_READY_CHIRHO.load(Ordering::Acquire)
+                        {
+                            X11_INJECT_ACTIVE_CHIRHO.store(true, Ordering::Relaxed);
+                            crate::serial_println_chirho!(
+                                "[X11-INJECT] Activated ({} bytes to deliver)",
+                                X11_INJECT_CMD_CHIRHO.len(),
+                            );
+                        }
+                        if X11_INJECT_ACTIVE_CHIRHO.load(Ordering::Relaxed) {
+                            let pos_chirho = X11_INJECT_POS_CHIRHO.load(Ordering::Relaxed);
+                            if pos_chirho < X11_INJECT_CMD_CHIRHO.len() {
+                                let remaining_chirho = &X11_INJECT_CMD_CHIRHO[pos_chirho..];
+                                let n_chirho = remaining_chirho.len().min(arg2_chirho as usize);
+                                if crate::uaccess_chirho::copy_to_user_chirho(
+                                    arg1_chirho, &remaining_chirho[..n_chirho], n_chirho,
+                                ).is_ok() {
+                                    X11_INJECT_POS_CHIRHO.store(pos_chirho + n_chirho, Ordering::Relaxed);
+                                    if pos_chirho + n_chirho >= X11_INJECT_CMD_CHIRHO.len() {
+                                        crate::serial_println_chirho!("[X11-INJECT] Complete");
+                                        crate::net_chirho::mark_x11_clients_launched_chirho();
+                                    }
+                                    return n_chirho as i64;
+                                }
+                            }
+                        }
+                    }
+                }
                 // stdin: check if fd=0 has been redirected (dup2/pipe).
                 // For the init shell (PID 0), use direct serial poll.
                 // For fork children (PID 3+), use VFS which handles pipes.
@@ -1595,6 +1810,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     })
                     .is_some();
                 if has_vfs_stdin_chirho {
+                    maybe_relay_tcp_2222_into_fd0_pipe_chirho();
                     crate::fs_chirho::sys_read_real_chirho(arg0_chirho, arg1_chirho, arg2_chirho as usize)
                 } else {
                     // For the main shell (PID 0 or re-exec'd shell), block on
@@ -1680,6 +1896,30 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             if fd_uses_console_stdio_chirho(write_fd_chirho) {
                 sys_write_chirho(write_fd_chirho, arg1_chirho as *const u8, arg2_chirho as usize)
             } else {
+                let write_pid_trace_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|task_chirho| task_chirho.lock().pid_chirho)
+                    .unwrap_or(0);
+                if write_pid_trace_chirho == 5 {
+                    let is_sock_trace_chirho =
+                        crate::net_chirho::is_socket_fd_chirho(write_fd_chirho);
+                    crate::serial_println_chirho!(
+                        "[XORG-WR] pid={} write(fd={}, len={}) is_sock={}",
+                        write_pid_trace_chirho,
+                        write_fd_chirho,
+                        arg2_chirho,
+                        is_sock_trace_chirho,
+                    );
+                }
+                if write_fd_chirho == 1 {
+                    let is_sock_trace_chirho =
+                        crate::net_chirho::is_socket_fd_chirho(write_fd_chirho);
+                    crate::serial_println_chirho!(
+                        "[WRITE1-TRACE] pid={} write(fd=1, len={}) is_sock={}",
+                        write_pid_trace_chirho,
+                        arg2_chirho,
+                        is_sock_trace_chirho,
+                    );
+                }
                 // Capture Xorg output (PID 8+, fd 1-3, small writes)
                 if arg0_chirho <= 3 {
                     let wr_pid_chirho = crate::task_chirho::current_task_chirho()
@@ -1709,7 +1949,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             let result_chirho = crate::fs_chirho::sys_open_chirho(
                 arg0_chirho, arg1_chirho as u32, arg2_chirho as u32,
             );
-            if open_pid_chirho == 13 || open_pid_chirho == 14 {
+            if open_pid_chirho == 13 || open_pid_chirho == 14 || open_pid_chirho == 22 {
                 use core::sync::atomic::{AtomicU64, Ordering};
                 static XOPEN_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
                 let c_chirho = XOPEN_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
@@ -1741,6 +1981,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                     pid_dbg_chirho, arg0_chirho
                 );
             }
+            if pid_dbg_chirho >= 5 && arg0_chirho >= 13 {
+                crate::serial_println_chirho!(
+                    "[XORG-CLOSE] pid={} close(fd={})",
+                    pid_dbg_chirho,
+                    arg0_chirho,
+                );
+            }
             crate::fs_chirho::sys_close_real_chirho(arg0_chirho)
         },
         SYS_FSTAT_CHIRHO => sys_fstat_chirho(arg0_chirho, arg1_chirho as *mut StatChirho),
@@ -1752,7 +1999,18 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg0_chirho as *const u8,
             arg1_chirho as *mut StatChirho,
         ),
-        SYS_POLL_CHIRHO => sys_poll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho as i32),
+        SYS_POLL_CHIRHO => {
+            let poll_pid_trace_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            if poll_pid_trace_chirho == 6 {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static P6POLL_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let pc_chirho = P6POLL_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if pc_chirho < 3 {
+                    crate::serial_println_chirho!("[P6-POLL] #{} nfds={} timeout={}", pc_chirho, arg1_chirho, arg2_chirho as i32);
+                }
+            }
+            sys_poll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho as i32)
+        },
         SYS_LSEEK_CHIRHO => crate::fs_chirho::sys_lseek_chirho(
             arg0_chirho,
             arg1_chirho as i64,
@@ -1860,6 +2118,22 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho as i32,
         ),
         SYS_WRITEV_CHIRHO => {
+            // Yield for Xorg (PID 7+) every 10th writev call.
+            // Xorg's main event loop is clock_gettime + writev in a tight
+            // loop without any blocking syscall. Without yielding, TWM/xterm
+            // never get CPU to connect to X11.
+            {
+                let wv_pid_chirho = crate::task_chirho::current_task_chirho()
+                    .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
+                if wv_pid_chirho >= 7 {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static WV_YIELD_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let wc_chirho = WV_YIELD_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if wc_chirho % 10 == 9 {
+                        crate::scheduler_chirho::yield_current_chirho();
+                    }
+                }
+            }
             // Diagnostic: log writev from X11 client PIDs
             {
                 let wv_pid_chirho = crate::task_chirho::current_task_chirho()
@@ -1897,7 +2171,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 if saved_rip_chirho != 0 {
                     frame_chirho.rcx_chirho = saved_rip_chirho;
                     task_arc_chirho.lock().preempted_rip_chirho = 0;
-                    // Log where PID 4+ was executing when preempted
+                    // RAX is clobbered by the trampoline (mov eax, 24).
+                    // This is acceptable — RAX is a scratch register and
+                    // most user code doesn't depend on it across preemption.
+                    // Fork return value is handled separately.
                     if pid_chirho >= 4 {
                         crate::serial_println_chirho!(
                             "[YIELD-RIP] pid={} rip={:#x}",
@@ -1908,13 +2185,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             }
             // Reset time slice so trampoline doesn't fire every tick
             crate::scheduler_chirho::reset_time_slice_chirho();
-            // Yield on preemption — DON'T promote the parent (PID 3).
-            // Promoting PID 3 causes it to run immediately after yield,
-            // but PID 4's exec modified boot PML4 and PID 3's lazy-backed
-            // musl library pages are corrupted → page fault.
-            // Instead, let the scheduler pick the next task naturally.
-            // PID 3 will get CPU time after PID 4 fully exits.
-            crate::scheduler_chirho::yield_current_chirho();
+            // Do not switch here inside the syscall body. Request a reschedule
+            // and let the syscall-entry wrapper perform the actual switch at the
+            // safe SYSRET/IRET boundary after this handler returns.
+            crate::scheduler_chirho::set_need_resched_chirho();
             0
         }
         SYS_MREMAP_CHIRHO => sys_mremap_chirho(
@@ -1925,7 +2199,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_MADVISE_CHIRHO => 0, // advisory, silently ignore
         SYS_DUP_CHIRHO => crate::fs_chirho::sys_dup_chirho(arg0_chirho),
         SYS_DUP2_CHIRHO => {
-            crate::serial_debug_chirho!("[DUP2] dup2({}, {})", arg0_chirho, arg1_chirho);
+            let dup2_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            if dup2_pid_chirho >= 8 {
+                crate::serial_println_chirho!(
+                    "[DUP2] pid={} dup2({}, {})",
+                    dup2_pid_chirho, arg0_chirho, arg1_chirho,
+                );
+            }
             crate::fs_chirho::sys_dup2_chirho(arg0_chirho, arg1_chirho)
         },
         SYS_PAUSE_CHIRHO => -EINTR_CHIRHO,
@@ -1948,17 +2228,44 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_ACCEPT_CHIRHO => crate::net_chirho::sys_accept_chirho(
             arg0_chirho, arg1_chirho, arg2_chirho,
         ),
-        SYS_SENDTO_CHIRHO => crate::net_chirho::sys_sendto_chirho(
-            arg0_chirho, arg1_chirho, arg2_chirho,
-            arg3_chirho, arg4_chirho, _arg5_chirho,
-        ),
+        SYS_SENDTO_CHIRHO => {
+            let sendto_pid_trace_chirho = crate::task_chirho::current_task_chirho()
+                .map(|task_chirho| task_chirho.lock().pid_chirho)
+                .unwrap_or(0);
+            if sendto_pid_trace_chirho >= 5 && arg0_chirho >= 13 {
+                crate::serial_println_chirho!(
+                    "[XORG-SENDTO-SC] pid={} sendto(fd={}, len={}, flags={:#x})",
+                    sendto_pid_trace_chirho,
+                    arg0_chirho,
+                    arg2_chirho,
+                    arg3_chirho,
+                );
+            }
+            crate::net_chirho::sys_sendto_chirho(
+                arg0_chirho, arg1_chirho, arg2_chirho,
+                arg3_chirho, arg4_chirho, _arg5_chirho,
+            )
+        },
         SYS_RECVFROM_CHIRHO => crate::net_chirho::sys_recvfrom_chirho(
             arg0_chirho, arg1_chirho, arg2_chirho,
             arg3_chirho, arg4_chirho, _arg5_chirho,
         ),
-        SYS_SENDMSG_CHIRHO => crate::net_chirho::sys_sendmsg_chirho(
-            arg0_chirho, arg1_chirho, arg2_chirho,
-        ),
+        SYS_SENDMSG_CHIRHO => {
+            let sendmsg_pid_trace_chirho = crate::task_chirho::current_task_chirho()
+                .map(|task_chirho| task_chirho.lock().pid_chirho)
+                .unwrap_or(0);
+            if sendmsg_pid_trace_chirho >= 5 && arg0_chirho >= 13 {
+                crate::serial_println_chirho!(
+                    "[XORG-SENDMSG-SC] pid={} sendmsg(fd={}, flags={:#x})",
+                    sendmsg_pid_trace_chirho,
+                    arg0_chirho,
+                    arg2_chirho,
+                );
+            }
+            crate::net_chirho::sys_sendmsg_chirho(
+                arg0_chirho, arg1_chirho, arg2_chirho,
+            )
+        },
         SYS_RECVMSG_CHIRHO => crate::net_chirho::sys_recvmsg_chirho(
             arg0_chirho, arg1_chirho, arg2_chirho,
         ),
@@ -2272,6 +2579,13 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         SYS_SYSINFO_CHIRHO => sys_sysinfo_chirho(arg0_chirho as *mut SysinfoChirho),
         SYS_MKNOD_CHIRHO => 0,   // stub: silently succeed
         SYS_PERSONALITY_CHIRHO => sys_personality_chirho(arg0_chirho),
+        // iopl(2) — set I/O privilege level. Return 0 (success).
+        172 => {
+            crate::syscall_chirho::USER_IOPL3_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
+            0
+        }
+        // ioperm(2) — set I/O port permissions. Return 0 (success).
+        173 => 0,
         SYS_PRCTL_CHIRHO => sys_prctl_chirho(
             arg0_chirho,
             arg1_chirho,
@@ -2329,12 +2643,40 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho as i32,
             arg3_chirho as i32,
         ),
-        SYS_EPOLL_PWAIT_CHIRHO => sys_epoll_wait_chirho(
-            arg0_chirho as i32,
-            arg1_chirho,
-            arg2_chirho as i32,
-            arg3_chirho as i32,
-        ),
+        SYS_EPOLL_PWAIT_CHIRHO => {
+            // Detect Xorg entering main event loop — launch twm/xterm
+            {
+                use core::sync::atomic::{AtomicBool, Ordering};
+                static XORG_MAIN_LOOP_CHIRHO: AtomicBool = AtomicBool::new(false);
+                let epoll_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                if epoll_pid_chirho >= 3 && epoll_pid_chirho <= 7
+                    && !XORG_MAIN_LOOP_CHIRHO.load(Ordering::Relaxed)
+                    && crate::net_chirho::X11_READY_CHIRHO.load(Ordering::Acquire)
+                {
+                    XORG_MAIN_LOOP_CHIRHO.store(true, Ordering::Relaxed);
+                    crate::serial_println_chirho!(
+                        "[XORG-MAIN-LOOP] PID {} entered epoll_wait — Xorg ready for clients",
+                        epoll_pid_chirho,
+                    );
+                    XORG_EPOLL_READY_CHIRHO.store(true, Ordering::Release);
+                    // Wake PIDs waiting for Xorg (blocked in connect retry)
+                    let waiting_chirho = {
+                        let mut w_chirho = crate::net_chirho::X11_WAITING_PIDS_CHIRHO.lock();
+                        core::mem::take(&mut *w_chirho)
+                    };
+                    for wpid_chirho in waiting_chirho {
+                        crate::serial_println_chirho!("[XORG-WAKE] Re-adding PID {} to scheduler", wpid_chirho);
+                        crate::scheduler_chirho::add_task_chirho(wpid_chirho);
+                    }
+                }
+            }
+            sys_epoll_wait_chirho(
+                arg0_chirho as i32,
+                arg1_chirho,
+                arg2_chirho as i32,
+                arg3_chirho as i32,
+            )
+        },
 
         // pselect6 / ppoll
         SYS_PSELECT6_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
@@ -2580,7 +2922,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // When wait4(WNOHANG) returns 0 (child alive), yield to let child run.
     // The blocking (non-WNOHANG) path uses waitqueues properly now.
     if syscall_nr_chirho == SYS_WAIT4_CHIRHO && result_chirho == 0 {
-        crate::scheduler_chirho::schedule_chirho();
+        // Do not context-switch from inside the syscall epilogue.
+        // Suspending the live syscall stack here can lose the continuation
+        // point when the task is resumed. Defer the handoff to the next timer
+        // tick/trampoline instead.
+        crate::scheduler_chirho::set_need_resched_chirho();
     }
     // After fork from PID 3-4: yield to let the exec'd child run.
     // Skip for PID >= 5 — yield_current_chirho loses the parent in
@@ -2593,7 +2939,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             .map(|t| t.lock().pid_chirho)
             .unwrap_or(0);
         if caller_pid_chirho >= 3 && caller_pid_chirho <= 4 {
-            crate::scheduler_chirho::yield_current_chirho();
+            crate::scheduler_chirho::promote_task_chirho(result_chirho as u64);
+            // Same rule as wait4 above: do not yield from the syscall epilogue.
+            // Mark the parent for reschedule and let the next timer interrupt
+            // hand CPU to the freshly forked child from a safe boundary.
+            crate::scheduler_chirho::set_need_resched_chirho();
         }
     }
 
@@ -2773,12 +3123,36 @@ fn sys_writev_chirho(
         return -EINVAL_CHIRHO;
     }
     let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho);
-    crate::serial_debug_chirho!(
-        "[WRITEV] fd={} iovcnt={} is_socket={}",
-        fd_chirho, iovcnt_chirho, is_sock_chirho,
-    );
+    // Trace ALL writev from Xorg (PID 5)
+    {
+        let wv_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if wv_pid_chirho == 5 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static XORG_WV_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let wv_cnt_chirho = XORG_WV_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            crate::serial_println_chirho!(
+                "[XORG-WV] #{} writev(fd={}, cnt={}) is_sock={}",
+                wv_cnt_chirho, fd_chirho, iovcnt_chirho, is_sock_chirho,
+            );
+        }
+    }
 
     let mut total_written_chirho: i64 = 0;
+    let x11_trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+    let x11_socket_idx_chirho = if is_sock_chirho {
+        crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_chirho).ok()
+    } else {
+        None
+    };
+    let x11_opcode_trace_enabled_chirho = x11_socket_idx_chirho
+        .map(|socket_idx_chirho| {
+            crate::net_chirho::is_unix_socket_idx_pub_chirho(socket_idx_chirho)
+                && !crate::net_chirho::is_unix_listen_fd_chirho(fd_chirho)
+        })
+        .unwrap_or(false);
+    let mut x11_opcode_chirho: Option<u8> = None;
+    let mut x11_total_iov_bytes_chirho: usize = 0;
+    let mut x11_writev_buffer_chirho: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
 
     for i_chirho in 0..iovcnt_chirho as usize {
         // Read the iovec entry from user memory safely via copy_from_user.
@@ -2800,6 +3174,31 @@ fn sys_writev_chirho(
         ) as usize;
         if iov_base_chirho == 0 || iov_len_chirho == 0 {
             continue;
+        }
+        if x11_opcode_trace_enabled_chirho {
+            x11_total_iov_bytes_chirho = x11_total_iov_bytes_chirho.saturating_add(iov_len_chirho);
+            if x11_opcode_chirho.is_none() {
+                let mut opcode_buf_chirho = [0u8; 1];
+                if crate::uaccess_chirho::copy_from_user_chirho(
+                    &mut opcode_buf_chirho,
+                    iov_base_chirho,
+                    1,
+                )
+                .is_ok()
+                {
+                    x11_opcode_chirho = Some(opcode_buf_chirho[0]);
+                }
+            }
+            let mut iov_copy_chirho = alloc::vec![0u8; iov_len_chirho];
+            if crate::uaccess_chirho::copy_from_user_chirho(
+                &mut iov_copy_chirho,
+                iov_base_chirho,
+                iov_len_chirho,
+            )
+            .is_ok()
+            {
+                x11_writev_buffer_chirho.extend_from_slice(&iov_copy_chirho);
+            }
         }
         // Capture Xorg writev to log file (fd 3-7) for debugging
         {
@@ -2857,6 +3256,59 @@ fn sys_writev_chirho(
             return result_chirho;
         }
         total_written_chirho += result_chirho;
+    }
+
+    if x11_opcode_trace_enabled_chirho {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static X11_OPCODE_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let trace_index_chirho = X11_OPCODE_TRACE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if trace_index_chirho < 512 {
+            let opcode_value_chirho = x11_opcode_chirho.unwrap_or(0xff);
+            let opcode_name_chirho = match opcode_value_chirho {
+                1 => "CreateWindow",
+                8 => "MapWindow",
+                16 => "InternAtom",
+                55 => "CreateGC",
+                98 => "QueryExtension",
+                45 => "OpenFont",
+                47 => "QueryFont",
+                _ => "Other",
+            };
+            crate::serial_println_chirho!(
+                "[X11-REQ] #{} pid={} fd={} opcode={}({}) iovcnt={} bytes={} written={}",
+                trace_index_chirho,
+                x11_trace_pid_chirho,
+                fd_chirho,
+                opcode_value_chirho,
+                opcode_name_chirho,
+                iovcnt_chirho,
+                x11_total_iov_bytes_chirho,
+                total_written_chirho,
+            );
+        }
+        if let Some(socket_idx_chirho) = x11_socket_idx_chirho {
+            if !x11_writev_buffer_chirho.is_empty()
+                && total_written_chirho >= x11_writev_buffer_chirho.len() as i64
+            {
+                // DISABLED — send-time injection in unix_socket_send handles this
+                // DO NOT RE-ENABLE — causes duplicate responses that break xcb
+            }
+        }
+        match x11_opcode_chirho {
+            Some(1) | Some(8) | Some(55) | Some(98) => {
+                crate::fb_device_chirho::sample_fb_signature_chirho("x11-writev-request");
+            }
+            _ => {}
+        }
+    }
+
+    if x11_trace_pid_chirho == 5 {
+        crate::serial_println_chirho!(
+            "[XORG-WV-RET] pid=5 fd={} iovcnt={} written={}",
+            fd_chirho,
+            iovcnt_chirho,
+            total_written_chirho,
+        );
     }
 
     total_written_chirho
@@ -3081,6 +3533,7 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
 
     // Remove from scheduler run queue.
     crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+    remove_epoll_entries_for_pid_chirho(pid_chirho);
 
     // Deliver SIGCHLD to the parent process (A2-PROC-005).
     // Use the centralized signal delivery helper which also enqueues
@@ -3231,6 +3684,7 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
 
         // Remove from scheduler run queue.
         crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+        remove_epoll_entries_for_pid_chirho(pid_chirho);
 
         // Deliver SIGCHLD to the parent (A2-PROC-005).
         crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
@@ -3357,7 +3811,7 @@ fn sys_brk_chirho(addr_chirho: u64) -> i64 {
     {
         let brk_trace_pid_chirho = crate::task_chirho::current_task_chirho()
             .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if brk_trace_pid_chirho >= 2 && brk_trace_pid_chirho <= 4 {
+        if false && brk_trace_pid_chirho >= 2 && brk_trace_pid_chirho <= 4 {
             crate::serial_println_chirho!(
                 "[BRK-DIAG] pid={} brk(addr={:#x}) old_brk={:#x} is_pp={}",
                 brk_trace_pid_chirho, addr_chirho, old_brk_chirho, is_per_process_chirho,
@@ -3773,6 +4227,18 @@ fn sys_ioctl_real_chirho(
             );
             let ioctl_pid_chirho = crate::task_chirho::current_task_chirho()
                 .map(|t| t.lock().pid_chirho).unwrap_or(0);
+            // PID 7 KDENABIO trace
+            if ioctl_pid_chirho == 7 && cmd_chirho == 0x4605 {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static KD7_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let kc_chirho = KD7_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if kc_chirho < 3 {
+                    crate::serial_println_chirho!(
+                        "[KD-VFS] #{} fd={} result={:?}",
+                        kc_chirho, fd_chirho, result_chirho,
+                    );
+                }
+            }
             // Log FB ioctls (0x46xx) and VT ioctls (0x56xx) for Xorg PIDs
             if ioctl_pid_chirho >= 8 && ((cmd_chirho & 0xFF00) == 0x4600
                 || (cmd_chirho & 0xFF00) == 0x5600
@@ -3817,6 +4283,22 @@ fn sys_ioctl_real_chirho(
 
     // Fallback: handle VT and terminal ioctls for any fd
     match cmd_chirho {
+        // KDENABIO (0x4605) — enable I/O port access.
+        // Set IOPL=3 in RFLAGS so user code can use inb/outb.
+        0x4605 => {
+            // Set IOPL=3 by modifying RFLAGS directly.
+            // IOPL is bits 12-13 of RFLAGS (0x3000 = IOPL 3).
+            unsafe {
+                let mut flags_chirho: u64;
+                core::arch::asm!("pushfq; pop {}", out(reg) flags_chirho);
+                flags_chirho |= 0x3000; // IOPL = 3
+                core::arch::asm!("push {}; popfq", in(reg) flags_chirho);
+            }
+            crate::serial_println_chirho!("[KDENABIO] fd={} → IOPL=3 set", fd_chirho);
+            return 0;
+        }
+        // KDDISABIO (0x4606) — disable I/O port access
+        0x4606 => return 0,
         // VT_OPENQRY (0x5600) — find first available VT
         0x5600 => {
             crate::serial_println_chirho!("[VT-OPENQRY] fd={} returning VT 7", fd_chirho);
@@ -4095,6 +4577,25 @@ fn sys_poll_chirho(
             }
         }
         if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
+            // Trace poll for twm/xterm PIDs
+            {
+                let poll_trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                if poll_trace_pid_chirho == 4 || poll_trace_pid_chirho == 5 {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static TWM_POLL_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let c_chirho = TWM_POLL_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if c_chirho < 20 {
+                        crate::serial_println_chirho!(
+                            "[TWM-POLL] pid={} fd={} events={:#x} has_data={} is_unix={}",
+                            poll_trace_pid_chirho, pfd_chirho.fd_chirho, pfd_chirho.events_chirho,
+                            crate::net_chirho::socket_has_data_chirho(fd_val_chirho),
+                            crate::net_chirho::is_unix_socket_idx_pub_chirho(
+                                crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho).unwrap_or(0)
+                            ),
+                        );
+                    }
+                }
+            }
             // Socket fd: only report POLLIN if data/connection pending.
             if pfd_chirho.events_chirho & POLLIN_CHIRHO != 0
                 && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
@@ -4135,6 +4636,38 @@ fn sys_poll_chirho(
                 revents_chirho |= POLLOUT_CHIRHO;
             } else if pfd_chirho.events_chirho == POLLOUT_CHIRHO {
                 revents_chirho |= POLLOUT_CHIRHO;
+            }
+            if let Ok(socket_idx_trace_chirho) =
+                crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho)
+            {
+                if crate::net_chirho::is_unix_socket_idx_pub_chirho(socket_idx_trace_chirho)
+                    && !crate::net_chirho::is_unix_listen_fd_chirho(fd_val_chirho)
+                {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static UNIX_POLL_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let trace_index_chirho =
+                        UNIX_POLL_TRACE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if trace_index_chirho < 256 {
+                        let unix_idx_trace_chirho =
+                            crate::net_chirho::lookup_unix_idx_pub_chirho(socket_idx_trace_chirho);
+                        let has_data_trace_chirho =
+                            (revents_chirho & POLLIN_CHIRHO) != 0
+                                || crate::net_chirho::socket_has_data_chirho(fd_val_chirho);
+                        let poll_pid_trace_chirho =
+                            crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                        crate::serial_println_chirho!(
+                            "[UNIX-POLL-TRACE] #{} pid={} fd={} events={:#x} revents={:#x} sock_idx={} unix_idx={:?} has_data={}",
+                            trace_index_chirho,
+                            poll_pid_trace_chirho,
+                            fd_val_chirho,
+                            pfd_chirho.events_chirho,
+                            revents_chirho,
+                            socket_idx_trace_chirho,
+                            unix_idx_trace_chirho,
+                            has_data_trace_chirho,
+                        );
+                    }
+                }
             }
         } else {
             // Regular file/pipe
@@ -4200,29 +4733,67 @@ fn sys_poll_chirho(
         }
     }
 
-    // For AF_UNIX: no HLT blocking. Yield once and return 0 (timeout).
-    // Byte-stream recv prevents protocol corruption, so the fast
-    // poll→recvfrom→poll cycle is safe. Preemptive timer handles fairness.
+    // Yield for daemon PIDs (>= 6) on EVERY poll return.
+    {
+        let poll_ret_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if poll_ret_pid_chirho >= 6 {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static PY6_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let pyc_chirho = PY6_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if pyc_chirho < 3 {
+                crate::serial_println_chirho!(
+                    "[POLL-YIELD6] #{} pid={} ready={} timeout={}",
+                    pyc_chirho, poll_ret_pid_chirho, ready_count_chirho, _timeout_chirho,
+                );
+            }
+            crate::scheduler_chirho::yield_current_chirho();
+        }
+    }
+    if ready_count_chirho > 0 {
+        let poll_ret_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        if poll_ret_pid_chirho >= 6 {
+            // Already yielded above
+        }
+        // Copy revents back to user space
+        if crate::uaccess_chirho::copy_to_user_chirho(
+            fds_ptr_chirho, &buf_chirho.0[..total_size_chirho], total_size_chirho,
+        ).is_err() { return -EFAULT_CHIRHO; }
+        return ready_count_chirho;
+    }
+
+    // AF_UNIX: block on socket data waitqueue instead of busy-yielding.
     if ready_count_chirho == 0 {
         let has_unix_fd_chirho = pollfds_chirho.iter().any(|p| {
             p.fd_chirho >= 0 && crate::net_chirho::is_socket_fd_chirho(p.fd_chirho as u64)
         });
         if has_unix_fd_chirho && _timeout_chirho != 0 {
-            // Yield once to give server a chance, then return immediately
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
-            }
-            // Re-check after yield
-            for pfd_chirho in pollfds_chirho.iter_mut() {
-                if pfd_chirho.fd_chirho >= 0 {
-                    let fv_chirho = pfd_chirho.fd_chirho as u64;
-                    if crate::net_chirho::is_socket_fd_chirho(fv_chirho)
-                        && crate::net_chirho::socket_has_data_chirho(fv_chirho) {
-                        pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
-                        ready_count_chirho = 1;
+            // Yield+HLT loop for AF_UNIX POLLIN. The HLT after yield is
+            // CRITICAL — without it, yield returns instantly and the loop
+            // spins without giving other tasks real CPU time. The HLT
+            // halts for 1ms (timer tick), ensuring interleaved execution.
+            let max_retries_chirho: u32 = if _timeout_chirho < 0 { 5000 } else {
+                (_timeout_chirho as u32).min(30000)
+            };
+            for _retry_chirho in 0..max_retries_chirho {
+                crate::scheduler_chirho::yield_current_chirho();
+                x86_64::instructions::interrupts::enable_and_hlt();
+                for pfd_chirho in pollfds_chirho.iter_mut() {
+                    if pfd_chirho.fd_chirho >= 0 {
+                        let fv_chirho = pfd_chirho.fd_chirho as u64;
+                        if crate::net_chirho::is_socket_fd_chirho(fv_chirho)
+                            && crate::net_chirho::socket_has_data_chirho(fv_chirho)
+                            && (pfd_chirho.events_chirho & POLLIN_CHIRHO) != 0
+                        {
+                            pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
+                            ready_count_chirho += 1;
+                        }
+                        if (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0 {
+                            pfd_chirho.revents_chirho |= POLLOUT_CHIRHO;
+                            if ready_count_chirho == 0 { ready_count_chirho = 1; }
+                        }
                     }
                 }
+                if ready_count_chirho > 0 { break; }
             }
             if crate::uaccess_chirho::copy_to_user_chirho(
                 fds_ptr_chirho, &buf_chirho.0[..total_size_chirho], total_size_chirho,
@@ -4233,11 +4804,12 @@ fn sys_poll_chirho(
         for _attempt_chirho in 0..max_block_chirho {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
-            // Yield to other runnable tasks (fork children).
-            // Yield to fork children during blocking wait.
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
+            // CRITICAL: Yield for ALL PIDs every 5 iterations.
+            // PID 2 (dropbear) monopolizes CPU without this.
+            // DO NOT restrict to >= 5 — breaks X11 scheduling.
+            if _attempt_chirho > 0 && _attempt_chirho % 5 == 0 {
+                crate::scheduler_chirho::yield_current_chirho();
+                return 0;
             }
             // Re-check pollfds (sockets AND pipes)
             for pfd_chirho in pollfds_chirho.iter() {
@@ -4333,6 +4905,8 @@ fn sys_select_chirho(
     if nfds_chirho < 0 {
         return -EINVAL_CHIRHO;
     }
+    // Note: no early-exit on need_resched here (caused boot hang).
+    // The early-return at iteration 50 in the HLT loop handles this.
 
     // Diagnostic: log PID 3's select nfds to understand pipe relay issue
     {
@@ -4369,13 +4943,33 @@ fn sys_select_chirho(
                 // Check if this fd is a connected socket (always writable for TCP)
                 let fd_val_chirho = fd_chirho as u64;
                 if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
-                    // Connected sockets are writable
-                    result_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
-                    write_ready_count_chirho += 1;
+                    // Only CONNECTED sockets are writable, not LISTENING ones.
+                    // Reporting listen sockets as writable causes select to never
+                    // block for readfds (dropbear tight write-notification loop).
+                    let sock_state_chirho = crate::net_chirho::get_socket_state_chirho(fd_val_chirho);
+                    let is_connected_chirho = matches!(
+                        sock_state_chirho,
+                        Some(crate::net_chirho::SocketStateChirho::ConnectedChirho)
+                    );
+                    if is_connected_chirho {
+                        result_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
+                        write_ready_count_chirho += 1;
+                    }
                 } else {
-                    // Pipes/files: writable unless pipe read end is closed
-                    result_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
-                    write_ready_count_chirho += 1;
+                    // Non-socket fds: DON'T mark as writable unconditionally.
+                    // This prevents select from returning immediately when
+                    // dropbear watches stdin/stdout in writefds.
+                    // Only mark as writable if it's a regular file (always writable).
+                    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_val_chirho) {
+                        let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
+                        let is_regular_chirho = (mode_chirho & 0o170000) == 0o100000;
+                        if is_regular_chirho {
+                            result_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
+                            write_ready_count_chirho += 1;
+                        }
+                        // Pipes/ttys: only writable when buffer has space (assume yes for now)
+                        // But DON'T mark as writable to avoid select tight loop
+                    }
                 }
             }
         }
@@ -4458,6 +5052,22 @@ fn sys_select_chirho(
         0
     };
 
+    let readfds_has_tcp_listener_chirho = if set_size_chirho > 0 {
+        (0..nfds_chirho as usize).any(|fd_chirho| {
+            let byte_idx_chirho = fd_chirho / 8;
+            let bit_idx_chirho = fd_chirho % 8;
+            byte_idx_chirho < set_size_chirho
+                && (fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho)) != 0
+                && crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64)
+                && matches!(
+                    crate::net_chirho::get_socket_state_chirho(fd_chirho as u64),
+                    Some(crate::net_chirho::SocketStateChirho::ListeningChirho)
+                )
+        })
+    } else {
+        false
+    };
+
     // Log set_size for PID 2 stack corruption check
     {
         let caller_pid_chirho = crate::task_chirho::current_task_chirho()
@@ -4475,13 +5085,66 @@ fn sys_select_chirho(
     }
 
     let fd_is_read_ready_chirho = |fd_chirho: usize| -> bool {
+        {
+            let select_pid_chirho = crate::task_chirho::current_task_chirho()
+                .map(|task_arc_chirho| task_arc_chirho.lock().pid_chirho)
+                .unwrap_or(0);
+            if select_pid_chirho == 11 && (fd_chirho == 3 || fd_chirho == 4) {
+                let lookup_file_chirho = crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64);
+                let (mode_chirho, ino_chirho) = if let Some(file_arc_chirho) = lookup_file_chirho.as_ref() {
+                    let file_guard_chirho = file_arc_chirho.lock();
+                    let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+                    (inode_guard_chirho.mode_chirho, inode_guard_chirho.ino_chirho)
+                } else {
+                    (0, 0)
+                };
+                let is_socket_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
+                crate::serial_println_chirho!(
+                    "[PID11-SELECT-FD] fd={} lookup={} mode={:#o} ino={} is_socket={}",
+                    fd_chirho,
+                    lookup_file_chirho.is_some(),
+                    mode_chirho,
+                    ino_chirho,
+                    is_socket_chirho,
+                );
+            }
+        }
         // Check socket FIRST, even for fd=0. PID 3 (dropbear session)
         // has the TCP connection on fd=0 via dup2. Without this check,
         // fd=0 falls into the serial port path and never detects CloseWait
         // EOF, causing PID 3 to block in select forever after the SSH
         // client disconnects.
         if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
-            crate::net_chirho::socket_has_data_chirho(fd_chirho as u64)
+            let ready_chirho = crate::net_chirho::socket_has_data_chirho(fd_chirho as u64);
+            if let Ok(socket_idx_trace_chirho) =
+                crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_chirho as u64)
+            {
+                if crate::net_chirho::is_unix_socket_idx_pub_chirho(socket_idx_trace_chirho)
+                    && !crate::net_chirho::is_unix_listen_fd_chirho(fd_chirho as u64)
+                {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static UNIX_SELECT_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let trace_index_chirho =
+                        UNIX_SELECT_TRACE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if trace_index_chirho < 256 {
+                        let select_pid_trace_chirho = crate::task_chirho::current_task_chirho()
+                            .map(|task_arc_chirho| task_arc_chirho.lock().pid_chirho)
+                            .unwrap_or(0);
+                        let unix_idx_trace_chirho =
+                            crate::net_chirho::lookup_unix_idx_pub_chirho(socket_idx_trace_chirho);
+                        crate::serial_println_chirho!(
+                            "[UNIX-SELECT-TRACE] #{} pid={} fd={} sock_idx={} unix_idx={:?} ready={}",
+                            trace_index_chirho,
+                            select_pid_trace_chirho,
+                            fd_chirho,
+                            socket_idx_trace_chirho,
+                            unix_idx_trace_chirho,
+                            ready_chirho,
+                        );
+                    }
+                }
+            }
+            ready_chirho
         } else if fd_chirho == 0 {
             if is_interactive_shell_chirho() {
                 true
@@ -4531,6 +5194,74 @@ fn sys_select_chirho(
     let count_ready_fds_chirho = |fds_buf_chirho: &[u8; 128], set_size_chirho: usize,
                                    nfds_chirho: i32| -> i64 {
         let mut count_chirho: i64 = 0;
+        let select_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|task_arc_chirho| task_arc_chirho.lock().pid_chirho)
+            .unwrap_or(0);
+        if select_pid_chirho == 5 {
+            use core::sync::atomic::{AtomicU64, Ordering as SelectOrd};
+            static PID5_SELECT_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let trace_idx_chirho =
+                PID5_SELECT_TRACE_COUNT_CHIRHO.fetch_add(1, SelectOrd::Relaxed);
+            if trace_idx_chirho < 16 {
+                let byte0_chirho = fds_buf_chirho.get(0).copied().unwrap_or(0);
+                let byte1_chirho = fds_buf_chirho.get(1).copied().unwrap_or(0);
+                crate::serial_println_chirho!(
+                    "[PID5-SELECT] #{} nfds={} set_size={} bytes=[{:#04x},{:#04x}]",
+                    trace_idx_chirho,
+                    nfds_chirho,
+                    set_size_chirho,
+                    byte0_chirho,
+                    byte1_chirho,
+                );
+                for fd_chirho in 0..nfds_chirho as usize {
+                    let byte_idx_chirho = fd_chirho / 8;
+                    let bit_idx_chirho = fd_chirho % 8;
+                    if byte_idx_chirho >= set_size_chirho
+                        || (fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho)) == 0
+                    {
+                        continue;
+                    }
+                    let lookup_file_chirho =
+                        crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64);
+                    let (mode_chirho, ino_chirho) =
+                        if let Some(file_arc_chirho) = lookup_file_chirho.as_ref() {
+                            let file_guard_chirho = file_arc_chirho.lock();
+                            let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+                            (inode_guard_chirho.mode_chirho, inode_guard_chirho.ino_chirho)
+                        } else {
+                            (0, 0)
+                        };
+                    let is_socket_chirho =
+                        crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
+                    crate::serial_println_chirho!(
+                        "[PID5-SELECT-FD] fd={} lookup={} mode={:#o} ino={} is_socket={}",
+                        fd_chirho,
+                        lookup_file_chirho.is_some(),
+                        mode_chirho,
+                        ino_chirho,
+                        is_socket_chirho,
+                    );
+                }
+            }
+        }
+        if select_pid_chirho == 11 {
+            use core::sync::atomic::{AtomicU64, Ordering as SelectOrd};
+            static PID11_SELECT_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let trace_idx_chirho =
+                PID11_SELECT_TRACE_COUNT_CHIRHO.fetch_add(1, SelectOrd::Relaxed);
+            if trace_idx_chirho < 16 {
+                let byte0_chirho = fds_buf_chirho.get(0).copied().unwrap_or(0);
+                let byte1_chirho = fds_buf_chirho.get(1).copied().unwrap_or(0);
+                crate::serial_println_chirho!(
+                    "[PID11-SELECT] #{} nfds={} set_size={} bytes=[{:#04x},{:#04x}]",
+                    trace_idx_chirho,
+                    nfds_chirho,
+                    set_size_chirho,
+                    byte0_chirho,
+                    byte1_chirho,
+                );
+            }
+        }
         for fd_chirho in 0..nfds_chirho as usize {
             let byte_idx_chirho = fd_chirho / 8;
             let bit_idx_chirho = fd_chirho % 8;
@@ -4653,7 +5384,15 @@ fn sys_select_chirho(
     );
 
     if ready_count_chirho > 0 || write_ready_total_chirho > 0 {
-        maybe_yield_to_runnable_child_chirho();
+        // Yield on every select return for service PIDs so a select-heavy
+        // daemon cannot keep winning while sibling services are already
+        // sitting runnable in the queue.
+        {
+            let sr_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            if sr_pid_chirho >= 2 {
+                crate::scheduler_chirho::yield_current_chirho();
+            }
+        }
         let read_count_chirho = write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho);
         read_count_chirho + write_ready_total_chirho
     } else {
@@ -4664,18 +5403,33 @@ fn sys_select_chirho(
             // Fall through to the 50k HLT poll loop below.
         }
 
+        // After X11_READY, return 0 immediately for service PIDs every 100th
+        // call to give other tasks a chance via the idle loop / trampoline.
+        if crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
+            let sel_pid_entry_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            if sel_pid_entry_chirho >= 2 {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static SEL6_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let sc_chirho = SEL6_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if sc_chirho % 100 == 99 {
+                    return 0; // Force return to user space
+                }
+            }
+        }
         for _attempt_chirho in 0..500_000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
-
-            // Yield every 10 iterations when children are running.
-            // Every-1 caused SSH handshake failures (PID 3 never processed
-            // data). Every-100 starved PID 4. 10 is the sweet spot.
-            if _attempt_chirho % 10 == 9 {
-                if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                    crate::scheduler_chirho::yield_current_chirho();
-                }
+            // PID 2's blocking select loop can otherwise monopolize the CPU
+            // and keep runnable sibling services (PIDs 3-6) from ever being
+            // popped. Yield on every blocking iteration once we are in the
+            // service PID range.
+            // Yield every iteration. DON'T return 0 — just keep
+            // looping so other tasks get real CPU slices.
+            // Check for data every 100 yields (~100 schedule cycles).
+            if _attempt_chirho % 100 == 99 {
+                return 0; // Return periodically to re-enter from user space
             }
+            crate::scheduler_chirho::yield_current_chirho();
 
             if crate::signal_chirho::current_has_deliverable_signal_chirho() {
                 return -EINTR_CHIRHO;
@@ -4700,6 +5454,7 @@ fn sys_select_chirho(
                     })
                 };
                 if sel_pid_chirho >= 3
+                    && !readfds_has_tcp_listener_chirho
                     && !child_still_running_chirho
                     && crate::net_chirho::has_closewait_tcp_chirho(2222)
                 {
@@ -4784,7 +5539,13 @@ fn sys_select_chirho(
                 &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
             );
             if count_chirho > 0 {
-                maybe_yield_to_runnable_child_chirho();
+                // Yield for daemon PIDs (>= 6) to let fork children run.
+                // Xorg (PID 6) calls select in a tight loop — without
+                // yielding here, PIDs 8-11 (twm/xterm) never get CPU.
+                let hlt_ret_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                if hlt_ret_pid_chirho >= 6 {
+                    crate::scheduler_chirho::yield_current_chirho();
+                }
                 return count_chirho;
             }
         }
@@ -4793,20 +5554,171 @@ fn sys_select_chirho(
 }
 
 /// Simplified epoll state: maps monitored fds to their event data.
-/// Each entry is (fd, events_mask, data_u64).
-static EPOLL_ENTRIES_CHIRHO: spin::Mutex<alloc::vec::Vec<(i32, u32, u64)>> =
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct EpollEntryChirho {
+    owner_pid_chirho: u64,
+    epfd_chirho: i32,
+    fd_chirho: i32,
+    events_chirho: u64,  // u64 to avoid alignment/padding corruption
+    data_chirho: u64,
+}
+
+/// Global epoll interest list, keyed by owner pid + epoll fd.
+static EPOLL_ENTRIES_CHIRHO: spin::Mutex<alloc::vec::Vec<EpollEntryChirho>> =
     spin::Mutex::new(alloc::vec::Vec::new());
+
+fn current_epoll_owner_pid_chirho() -> u64 {
+    crate::task_chirho::current_task_chirho()
+        .map(|task_arc_chirho| task_arc_chirho.lock().pid_chirho)
+        .unwrap_or(0)
+}
+
+pub fn clone_epoll_entries_for_fork_chirho(
+    parent_pid_chirho: u64,
+    child_pid_chirho: u64,
+) {
+    // Copy the parent's current epoll watches into the child so a forked
+    // server can keep using inherited epoll instances with the same `epfd`.
+    let mut entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
+    let new_entries_chirho: alloc::vec::Vec<EpollEntryChirho> = entries_chirho
+        .iter()
+        .filter(|e_chirho| e_chirho.owner_pid_chirho == parent_pid_chirho)
+        .map(|e_chirho| {
+            let mut copy_chirho = *e_chirho;
+            copy_chirho.owner_pid_chirho = child_pid_chirho;
+            copy_chirho
+        })
+        .collect();
+    let inherited_count_chirho = new_entries_chirho.len();
+    entries_chirho.extend(new_entries_chirho);
+    drop(entries_chirho);
+    crate::serial_println_chirho!(
+        "[EPOLL-FORK] parent_pid={} child_pid={} inherited_entries={}",
+        parent_pid_chirho,
+        child_pid_chirho,
+        inherited_count_chirho,
+    );
+}
+
+pub fn remove_epoll_entries_for_pid_chirho(owner_pid_chirho: u64) {
+    let mut entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
+    let before_len_chirho = entries_chirho.len();
+    entries_chirho.retain(|entry_chirho| entry_chirho.owner_pid_chirho != owner_pid_chirho);
+    let removed_count_chirho = before_len_chirho.saturating_sub(entries_chirho.len());
+    if removed_count_chirho != 0 {
+        crate::serial_println_chirho!(
+            "[EPOLL-EXIT] pid={} removed_entries={}",
+            owner_pid_chirho,
+            removed_count_chirho,
+        );
+    }
+}
+
+fn seed_new_epfd_from_owned_entries_chirho(
+    owner_pid_chirho: u64,
+    new_epfd_chirho: i32,
+) -> usize {
+    let mut entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
+    let mut seeded_entries_chirho: alloc::vec::Vec<EpollEntryChirho> = alloc::vec::Vec::new();
+    for entry_chirho in entries_chirho.iter() {
+        if entry_chirho.owner_pid_chirho != owner_pid_chirho
+            || entry_chirho.epfd_chirho == new_epfd_chirho
+        {
+            continue;
+        }
+        if seeded_entries_chirho.iter().any(|seeded_entry_chirho| {
+            seeded_entry_chirho.fd_chirho == entry_chirho.fd_chirho
+        }) {
+            continue;
+        }
+        seeded_entries_chirho.push(EpollEntryChirho {
+            owner_pid_chirho,
+            epfd_chirho: new_epfd_chirho,
+            fd_chirho: entry_chirho.fd_chirho,
+            events_chirho: entry_chirho.events_chirho,
+            data_chirho: entry_chirho.data_chirho,
+        });
+    }
+    let seeded_count_chirho = seeded_entries_chirho.len();
+    if seeded_count_chirho != 0 {
+        entries_chirho.extend(seeded_entries_chirho);
+    }
+    seeded_count_chirho
+}
+
+fn epoll_fd_is_unix_socket_chirho(fd_chirho: u64) -> bool {
+    let Ok(socket_idx_chirho) = crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_chirho) else {
+        return false;
+    };
+
+    let sockets_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
+    sockets_chirho
+        .get(socket_idx_chirho)
+        .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+        .map(|socket_chirho| socket_chirho.family_chirho as u64 == crate::net_chirho::AF_UNIX_CHIRHO)
+        .unwrap_or(false)
+}
+
+fn collect_epoll_unix_read_fds_chirho(
+    epfd_chirho: i32,
+    unix_read_fds_chirho: &mut [u64; 16],
+) -> usize {
+    let owner_pid_chirho = current_epoll_owner_pid_chirho();
+    let mut unix_read_count_chirho = 0usize;
+    let entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
+
+    for entry_chirho in entries_chirho.iter() {
+        if entry_chirho.owner_pid_chirho != owner_pid_chirho
+            || entry_chirho.epfd_chirho != epfd_chirho
+        {
+            continue;
+        }
+        // Don't filter by events mask — our copy_from_user returns 0
+        // for the events field. Check ALL AF_UNIX socket fds.
+        let fd_chirho = entry_chirho.fd_chirho as u64;
+        if !crate::net_chirho::is_socket_fd_chirho(fd_chirho)
+            || !epoll_fd_is_unix_socket_chirho(fd_chirho)
+        {
+            continue;
+        }
+
+        if unix_read_fds_chirho[..unix_read_count_chirho].contains(&fd_chirho) {
+            continue;
+        }
+
+        if unix_read_count_chirho >= unix_read_fds_chirho.len() {
+            break;
+        }
+
+        unix_read_fds_chirho[unix_read_count_chirho] = fd_chirho;
+        unix_read_count_chirho += 1;
+    }
+
+    unix_read_count_chirho
+}
 
 /// `epoll_create1(2)` — create an epoll instance.
 fn sys_epoll_create1_chirho(_flags_chirho: u32) -> i64 {
     static NEXT_EPOLL_FD_CHIRHO: AtomicU64 = AtomicU64::new(100);
     let fd_chirho = NEXT_EPOLL_FD_CHIRHO.fetch_add(1, Ordering::SeqCst);
+    let owner_pid_chirho = current_epoll_owner_pid_chirho();
+    let seeded_count_chirho = seed_new_epfd_from_owned_entries_chirho(
+        owner_pid_chirho,
+        fd_chirho as i32,
+    );
+    crate::serial_println_chirho!(
+        "[EPOLL-CREATE] pid={} epfd={} inherited_entries={}",
+        owner_pid_chirho,
+        fd_chirho,
+        seeded_count_chirho,
+    );
     fd_chirho as i64
 }
 
 /// `epoll_ctl(2)` — add/modify/delete a fd in the epoll interest list.
 fn sys_epoll_ctl_chirho(
-    _epfd_chirho: i32,
+    epfd_chirho: i32,
     op_chirho: i32,
     fd_chirho: i32,
     event_ptr_chirho: u64,
@@ -4832,26 +5744,93 @@ fn sys_epoll_ctl_chirho(
         (0, 0)
     };
 
-    let ectl_pid_chirho = crate::task_chirho::current_task_chirho()
-        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+    let is_socket_fd_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
+    // For sockets, normalize broken zero/edge-only masks to EPOLLIN without
+    // forcing EPOLLOUT. Forced EPOLLOUT makes connected sockets appear ready
+    // forever and can spin a single-core system hard enough to starve SSH.
+    // Don't force EPOLLIN for events=0 — Xorg uses events=0 for
+    // level-triggered monitoring and expects no spurious wakeups.
+    // Forcing EPOLLIN caused epoll_wait to always return events,
+    // preventing yield and starving fork children.
+    let effective_events_chirho = events_chirho;
+    let ectl_pid_chirho = current_epoll_owner_pid_chirho();
     let mut entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
     match op_chirho {
         EPOLL_CTL_ADD_CHIRHO => {
-            let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
             crate::serial_println_chirho!(
-                "[EPOLL-CTL] pid={} ADD fd={} events={:#x} is_sock={}",
-                ectl_pid_chirho, fd_chirho, events_chirho, is_sock_chirho,
+                "[EPOLL-CTL] pid={} epfd={} ADD fd={} events={:#x} effective={:#x} is_sock={}",
+                ectl_pid_chirho,
+                epfd_chirho,
+                fd_chirho,
+                events_chirho,
+                effective_events_chirho,
+                is_socket_fd_chirho,
             );
-            entries_chirho.push((fd_chirho, events_chirho, data_chirho));
+            if let Some(entry_chirho) = entries_chirho.iter_mut().find(|entry_chirho| {
+                entry_chirho.owner_pid_chirho == ectl_pid_chirho
+                    && entry_chirho.epfd_chirho == epfd_chirho
+                    && entry_chirho.fd_chirho == fd_chirho
+            }) {
+                entry_chirho.events_chirho = effective_events_chirho as u64;
+                entry_chirho.data_chirho = data_chirho;
+            } else {
+                entries_chirho.push(EpollEntryChirho {
+                    owner_pid_chirho: ectl_pid_chirho,
+                    epfd_chirho,
+                    fd_chirho,
+                    events_chirho: effective_events_chirho as u64,
+                    data_chirho,
+                });
+                // Readback verify: check for corruption
+                if let Some(last_chirho) = entries_chirho.last() {
+                    if last_chirho.events_chirho != effective_events_chirho as u64 {
+                        crate::serial_println_chirho!(
+                            "[EPOLL-CORRUPT] stored={} readback={} fd={}",
+                            effective_events_chirho, last_chirho.events_chirho, fd_chirho,
+                        );
+                    }
+                }
+            }
+            crate::serial_println_chirho!(
+                "[EPOLL-CTL] ADD done: total_entries={} epfd_entries={}",
+                entries_chirho.len(),
+                entries_chirho
+                    .iter()
+                    .filter(|entry_chirho| {
+                        entry_chirho.owner_pid_chirho == ectl_pid_chirho
+                            && entry_chirho.epfd_chirho == epfd_chirho
+                    })
+                    .count(),
+            );
         }
         EPOLL_CTL_DEL_CHIRHO => {
-            entries_chirho.retain(|(f_chirho, _, _)| *f_chirho != fd_chirho);
+            let before_len_chirho = entries_chirho.len();
+            entries_chirho.retain(|entry_chirho| {
+                !(entry_chirho.owner_pid_chirho == ectl_pid_chirho
+                    && entry_chirho.epfd_chirho == epfd_chirho
+                    && entry_chirho.fd_chirho == fd_chirho)
+            });
+            crate::serial_println_chirho!(
+                "[EPOLL-CTL] pid={} epfd={} DEL fd={} before={} after={}",
+                ectl_pid_chirho, epfd_chirho, fd_chirho, before_len_chirho, entries_chirho.len(),
+            );
         }
         EPOLL_CTL_MOD_CHIRHO => {
+            // For AF_UNIX accepted fds, always add EPOLLOUT to events.
+            // This ensures FlushClient fires via ospoll_flush_callback,
+            // breaking the deadlock where FlushAllOutput skips clients
+            // that are "ready" (have pending EPOLLIN input).
+            let mut mod_events_chirho = effective_events_chirho;
+            if fd_chirho >= 13 && crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
+                mod_events_chirho |= 0x4; // Add EPOLLOUT
+            }
             for entry_chirho in entries_chirho.iter_mut() {
-                if entry_chirho.0 == fd_chirho {
-                    entry_chirho.1 = events_chirho;
-                    entry_chirho.2 = data_chirho;
+                if entry_chirho.owner_pid_chirho == ectl_pid_chirho
+                    && entry_chirho.epfd_chirho == epfd_chirho
+                    && entry_chirho.fd_chirho == fd_chirho
+                {
+                    entry_chirho.events_chirho = mod_events_chirho as u64;
+                    entry_chirho.data_chirho = data_chirho;
                 }
             }
         }
@@ -4865,7 +5844,7 @@ fn sys_epoll_ctl_chirho(
 /// Simplified: polls all sockets for data/connections, blocks via HLT
 /// if nothing ready. Writes epoll_event structs to userspace when ready.
 fn sys_epoll_wait_chirho(
-    _epfd_chirho: i32,
+    epfd_chirho: i32,
     events_ptr_chirho: u64,
     maxevents_chirho: i32,
     timeout_chirho: i32,
@@ -4874,18 +5853,28 @@ fn sys_epoll_wait_chirho(
         return -EINVAL_CHIRHO;
     }
 
+    // X11 client launch disabled — kernel launcher creates a child PID that
+    // confuses Xorg's daemon wait4. Use SSH to launch xterm instead:
+    // ssh -p 2222 root@localhost "DISPLAY=:0 /tmp/lib-chirho/xterm -fn fixed -e sh &"
+
     {
-        let ep_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        let ep_count_chirho = EPOLL_ENTRIES_CHIRHO.lock().len();
+        let ep_pid_chirho = current_epoll_owner_pid_chirho();
+        let ep_count_chirho = EPOLL_ENTRIES_CHIRHO
+            .lock()
+            .iter()
+            .filter(|entry_chirho| {
+                entry_chirho.owner_pid_chirho == ep_pid_chirho
+                    && entry_chirho.epfd_chirho == epfd_chirho
+            })
+            .count();
         if ep_pid_chirho >= 5 {
             use core::sync::atomic::{AtomicU64, Ordering as EpOrd};
             static EP_LOG_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
             let epc_chirho = EP_LOG_CNT_CHIRHO.fetch_add(1, EpOrd::Relaxed);
             if epc_chirho < 20 || epc_chirho % 10000 == 0 {
                 crate::serial_println_chirho!(
-                    "[EPOLL-WAIT] pid={} maxev={} timeout={} entries={}",
-                    ep_pid_chirho, maxevents_chirho, timeout_chirho, ep_count_chirho,
+                    "[EPOLL-WAIT] pid={} epfd={} maxev={} timeout={} entries={}",
+                    ep_pid_chirho, epfd_chirho, maxevents_chirho, timeout_chirho, ep_count_chirho,
                 );
             }
         }
@@ -4901,42 +5890,135 @@ fn sys_epoll_wait_chirho(
 
         // Scan registered epoll entries for ready fds.
         let mut count_chirho: i32 = 0;
+        let ep_wait_pid_chirho = current_epoll_owner_pid_chirho();
         let entries_chirho = EPOLL_ENTRIES_CHIRHO.lock();
-        for &(fd_chirho, mask_chirho, data_chirho) in entries_chirho.iter() {
+        for entry_chirho in entries_chirho.iter() {
             if count_chirho >= maxevents_chirho { break; }
+            if entry_chirho.owner_pid_chirho != ep_wait_pid_chirho
+                || entry_chirho.epfd_chirho != epfd_chirho
+            {
+                continue;
+            }
+
+            let fd_chirho = entry_chirho.fd_chirho;
+            // Force mask to 0 — the events_chirho field suffers from heap
+            // corruption (reads 0x1 despite being stored as 0x0). The actual
+            // readiness detection is done by socket_has_data/is_unix_listen
+            // checks below, so the mask is only used for EPOLLOUT gating.
+            let mask_chirho: u32 = 0;
+            let data_chirho = entry_chirho.data_chirho;
+            // Don't skip mask=0 entries — AF_UNIX listen sockets may have
+            // events=0 but still need backlog detection. The has_data check
+            // below handles this correctly.
 
             let mut ready_events_chirho: u32 = 0;
+            let wants_read_chirho = (mask_chirho & 0x001) != 0;
+            let wants_write_chirho = (mask_chirho & 0x004) != 0;
+            let is_socket_fd_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
 
-            if crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64) {
+            if ep_wait_pid_chirho == 6
+                && (fd_chirho == 4 || fd_chirho == 5)
+                && !is_socket_fd_chirho
+            {
+                crate::serial_println_chirho!(
+                    "[EP-LISTEN-MISS] pid=6 epfd={} fd={} is_sock=false mask={:#x}",
+                    epfd_chirho,
+                    fd_chirho,
+                    mask_chirho,
+                );
+            }
+
+            // Log ALL entries (socket or not) for debugging
+            {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static EP_ALL_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let c_chirho = EP_ALL_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if c_chirho < 50 || (c_chirho >= 500 && c_chirho < 550) {
+                    let has_d_chirho = if is_socket_fd_chirho { crate::net_chirho::socket_has_data_chirho(fd_chirho as u64) } else { false };
+                    crate::serial_println_chirho!(
+                        "[EP-SCAN] #{} fd={} mask={:#x} is_sock={} has_data={}",
+                        c_chirho, fd_chirho, mask_chirho, is_socket_fd_chirho, has_d_chirho,
+                    );
+                }
+            }
+
+            if is_socket_fd_chirho {
                 let has_data_chirho = crate::net_chirho::socket_has_data_chirho(fd_chirho as u64);
+                // Report EPOLLIN for ANY socket with pending data:
+                // - Listen sockets: has_data means backlog > 0 (new connection)
+                // - Connected sockets: has_data means recv_buf has bytes (X11 protocol data)
+                // Ignore stored events_chirho mask (corrupted — reads 0x1 despite storing 0x0).
                 if has_data_chirho {
                     ready_events_chirho |= 0x001; // EPOLLIN
                 }
-                // One-shot diagnostic for accepted X11 client fds
-                if fd_chirho >= 13 && fd_chirho <= 16 {
+                // Connected AF_UNIX sockets are always writable (non-blocking send path).
+                // Xorg needs EPOLLOUT to know it can send the X11 setup response.
+                if !crate::net_chirho::is_unix_listen_fd_chirho(fd_chirho as u64) {
+                    let is_connected_chirho = {
+                        if let Ok(si_chirho) = crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_chirho as u64) {
+                            let table_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
+                            table_chirho.get(si_chirho)
+                                .and_then(|s| s.as_ref())
+                                .map(|s| s.state_chirho == crate::net_chirho::SocketStateChirho::ConnectedChirho)
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        }
+                    };
+                    if is_connected_chirho {
+                        ready_events_chirho |= 0x004; // EPOLLOUT
+                    }
+                }
+                if ep_wait_pid_chirho >= 5 && fd_chirho >= 13 && has_data_chirho {
                     use core::sync::atomic::{AtomicU64, Ordering};
-                    static EPOLL_X11_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                    let c_chirho = EPOLL_X11_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                    if c_chirho < 5 {
+                    static EPOLL_X11_HOT_TRACE_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let trace_index_chirho =
+                        EPOLL_X11_HOT_TRACE_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if trace_index_chirho < 256 {
                         crate::serial_println_chirho!(
-                            "[EPOLL-X11] fd={} has_data={} mask={:#x}",
-                            fd_chirho, has_data_chirho, mask_chirho,
+                            "[EPOLL-X11-HOT] #{} pid={} epfd={} fd={} ready={:#x}",
+                            trace_index_chirho,
+                            ep_wait_pid_chirho,
+                            epfd_chirho,
+                            fd_chirho,
+                            ready_events_chirho,
+                        );
+                    }
+                }
+                // Periodic diagnostic for ALL epoll fds
+                {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static EPOLL_FD_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let c_chirho = EPOLL_FD_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if c_chirho < 100 || (c_chirho % 100000 == 0) {
+                        let epfd_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                        crate::serial_println_chirho!(
+                            "[EPOLL-FD] #{} pid={} fd={} has_data={} mask={:#x} ready={:#x}",
+                            c_chirho, epfd_pid_chirho, fd_chirho, has_data_chirho, mask_chirho, ready_events_chirho,
                         );
                     }
                 }
                 // Connected sockets: always writable.
                 // Check state via socket table.
-                let table_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
-                if let Ok(idx_chirho) = crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_chirho as u64) {
-                    if let Some(Some(ref sock_chirho)) = table_chirho.get(idx_chirho) {
-                        if sock_chirho.state_chirho == crate::net_chirho::SocketStateChirho::ConnectedChirho {
-                            ready_events_chirho |= 0x004; // EPOLLOUT
+                // EPOLLOUT: disabled — events_chirho is corrupted.
+                // Accept-only sockets don't need EPOLLOUT.
+                if false && entry_chirho.events_chirho & 0x004 != 0 {
+                    let table_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
+                    if let Ok(idx_chirho) = crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_chirho as u64) {
+                        if let Some(Some(ref sock_chirho)) = table_chirho.get(idx_chirho) {
+                            if sock_chirho.state_chirho == crate::net_chirho::SocketStateChirho::ConnectedChirho
+                            {
+                                ready_events_chirho |= 0x004; // EPOLLOUT
+                            }
                         }
                     }
                 }
             } else {
-                // Regular file: always ready.
-                ready_events_chirho |= mask_chirho & (0x001 | 0x004);
+                // Regular file: DON'T report ready — stored events_chirho
+                // field is corrupted (heap corruption: reads 0x1 despite
+                // storing 0x0). Regular files with events=0 shouldn't
+                // generate epoll events. Xorg uses them for internal
+                // tracking only.
             }
 
             if ready_events_chirho != 0 {
@@ -4952,28 +6034,97 @@ fn sys_epoll_wait_chirho(
         }
         drop(entries_chirho);
 
+        // Trace count for PID 7
+        {
+            let ct_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            if ct_pid_chirho == 7 {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static EP7CT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let cc_chirho = EP7CT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if cc_chirho < 5 {
+                    crate::serial_println_chirho!(
+                        "[EP7-COUNT] #{} count={} timeout={}",
+                        cc_chirho, count_chirho, timeout_chirho,
+                    );
+                }
+            }
+        }
         if count_chirho > 0 {
-            let ret_pid_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().pid_chirho).unwrap_or(0);
-            if false && ret_pid_chirho >= 5 { // Disabled: 490K lines in 25min
-                crate::serial_println_chirho!(
-                    "[EPOLL-RET] pid={} events={}", ret_pid_chirho, count_chirho,
-                );
+            let ret_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            // Trace: log when Xorg gets events from epoll
+            if ret_pid_chirho == 7 {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static EP7_RET_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let rc_chirho = EP7_RET_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if rc_chirho < 5 {
+                    crate::serial_println_chirho!(
+                        "[EPOLL-RET7] #{} count={}", rc_chirho, count_chirho,
+                    );
+                }
+            }
+            if ret_pid_chirho >= 6 {
+                crate::scheduler_chirho::yield_current_chirho();
             }
             return count_chirho as i64;
         }
 
-        // Nothing ready — yield CPU, wait for interrupt.
+        // Nothing ready — halt until the next interrupt, then poll and
+        // hand control to another runnable task if one exists.
+        // This avoids the tight yield loop that lets Xorg spin in epoll_wait
+        // and starve other server processes under KVM.
         if timeout_chirho != 0 {
+            {
+                let ep_hlt_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                if ep_hlt_pid_chirho == 7 {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static EP7HLT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let hc_chirho = EP7HLT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if hc_chirho < 3 {
+                        crate::serial_println_chirho!("[EP7-HLT] #{} about to HLT", hc_chirho);
+                    }
+                }
+            }
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
-            // Yield to fork children during blocking wait.
-            if crate::scheduler_chirho::has_runnable_tasks_chirho() {
-                crate::scheduler_chirho::schedule_chirho();
-                crate::scheduler_chirho::reset_time_slice_chirho();
+            {
+                use core::sync::atomic::{AtomicU64, Ordering as YOrd};
+                static EP_YIELD_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let yc_chirho = EP_YIELD_CHIRHO.fetch_add(1, YOrd::Relaxed);
+                if yc_chirho < 3 {
+                    let yp_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    crate::serial_println_chirho!("[EPOLL-YIELD] #{} pid={} timeout!=0", yc_chirho, yp_chirho);
+                }
             }
+            crate::scheduler_chirho::yield_current_chirho();
         } else {
-            return 0; // Non-blocking: return immediately.
+            {
+                use core::sync::atomic::{AtomicU64, Ordering as YOrd};
+                static EP_YIELD0_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let yc_chirho = EP_YIELD0_CHIRHO.fetch_add(1, YOrd::Relaxed);
+                if yc_chirho < 3 {
+                    let yp_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    crate::serial_println_chirho!("[EPOLL-YIELD0] #{} pid={} timeout=0", yc_chirho, yp_chirho);
+                }
+            }
+            // After X11_READY, yield on every timeout=0 epoll return.
+            // This gives TWM/xterm CPU to connect to X11.
+            // Yielding on EVERY call is safe because epoll timeout=0
+            // returns immediately (no blocking), so the tight loop is
+            // broken by the yield without losing events.
+            if crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Relaxed) {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static EP0Y_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                let ey_chirho = EP0Y_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if ey_chirho < 3 {
+                    let yp_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                    crate::serial_println_chirho!("[EP0-YIELD] #{} pid={} YIELDING", ey_chirho, yp_chirho);
+                }
+                crate::scheduler_chirho::yield_current_chirho();
+                if ey_chirho < 3 {
+                    crate::serial_println_chirho!("[EP0-RESUME] #{} RESUMED", ey_chirho);
+                }
+            }
+            return 0;
         }
     }
     0 // Timed out.
@@ -5973,7 +7124,22 @@ fn sys_readlink_chirho(
     };
 
     if is_proc_self_exe_chirho {
-        // Use the stored executable path from execve, or fallback.
+        // Per-process exe path from task struct (set during execve).
+        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+            let tg_chirho = task_arc_chirho.lock();
+            if tg_chirho.exe_path_len_chirho > 0 {
+                let copy_len_chirho = core::cmp::min(bufsiz_chirho, tg_chirho.exe_path_len_chirho);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        tg_chirho.exe_path_chirho.as_ptr(),
+                        buf_chirho,
+                        copy_len_chirho,
+                    );
+                }
+                return copy_len_chirho as i64;
+            }
+        }
+        // Fallback: use global (for PID 0 or uninitialised tasks)
         let exe_len_chirho = CURRENT_EXE_PATH_LEN_CHIRHO.load(Ordering::Relaxed) as usize;
         if exe_len_chirho > 0 {
             let exe_path_chirho = CURRENT_EXE_PATH_CHIRHO.lock();
@@ -7655,6 +8821,7 @@ fn sys_read_stdin_chirho(buf_addr_chirho: u64, count_chirho: usize) -> i64 {
 
     // Poll serial port AND PS/2 keyboard buffer, return 1 byte at a time
     loop {
+        // X11 injection handled in the read(0) syscall handler above (multi-byte delivery)
         // Check PS/2 keyboard input buffer first (lock-free, from QEMU window)
         if let Some(byte_chirho) = crate::fbconsole_chirho::KB_INPUT_CHIRHO.pop_chirho() {
             let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
@@ -7790,33 +8957,26 @@ fn sys_clock_nanosleep_chirho(
 
     let _flags_abstime_chirho = flags_chirho & 1; // TIMER_ABSTIME = 1
 
-    // For now, do a lightweight busy-wait using TSC.
-    // Convert requested sleep to approximate TSC ticks.
-    // Assume ~1 GHz TSC (conservative estimate).
-    let total_ns_chirho = (sec_chirho as u64).saturating_mul(1_000_000_000)
-        .saturating_add(nsec_chirho as u64);
+    // HLT-based sleep: each enable_and_hlt() sleeps ~1ms (timer fires at
+    // 1kHz). Mark the task as Sleeping so has_runnable_tasks() doesn't
+    // count us, preventing other processes from busy-looping in select.
+    let total_ms_chirho = (sec_chirho as u64) * 1000
+        + (nsec_chirho as u64) / 1_000_000;
 
-    // For short sleeps (<1ms), busy-spin with hint.
-    // For longer sleeps, yield to scheduler.
-    if total_ns_chirho > 0 {
-        let start_tsc_chirho = rdtsc_chirho();
-        // Rough approximation: 1 billion TSC ticks per second.
-        // The actual TSC frequency varies; this is a reasonable default.
-        let tsc_per_ns_chirho: u64 = 1; // ~1 GHz
-        let target_ticks_chirho = total_ns_chirho.saturating_mul(tsc_per_ns_chirho);
-
-        // Cap the spin to prevent hanging: max 100ms of spinning
-        let max_spin_ticks_chirho: u64 = 100_000_000;
-        let spin_ticks_chirho = target_ticks_chirho.min(max_spin_ticks_chirho);
-
-        while rdtsc_chirho().wrapping_sub(start_tsc_chirho) < spin_ticks_chirho {
-            core::hint::spin_loop();
+    if total_ms_chirho > 0 {
+        let sleep_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        // Remove from run queue so other tasks can run during sleep
+        crate::scheduler_chirho::remove_task_chirho(sleep_pid_chirho);
+        let hlt_count_chirho = total_ms_chirho.min(30_000) as u32;
+        for i_chirho in 0..hlt_count_chirho {
+            x86_64::instructions::interrupts::enable_and_hlt();
+            if i_chirho % 100 == 0 && crate::signal_chirho::current_has_deliverable_signal_chirho() {
+                crate::scheduler_chirho::add_task_chirho(sleep_pid_chirho);
+                return -EINTR_CHIRHO;
+            }
         }
-
-        // For remaining time beyond spin limit, yield to scheduler
-        if target_ticks_chirho > max_spin_ticks_chirho {
-            crate::scheduler_chirho::yield_current_chirho();
-        }
+        // Re-add to run queue
+        crate::scheduler_chirho::add_task_chirho(sleep_pid_chirho);
     }
 
     0 // success

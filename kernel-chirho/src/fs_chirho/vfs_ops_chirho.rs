@@ -1235,37 +1235,47 @@ pub fn sys_openat_chirho(
             "/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n"),
             "/etc/shadow" => Some(b"root::0:0:99999:7:::\n"),
             "/etc/ld-musl-x86_64.path" => Some(b"/tmp/lib-chirho\n/lib\n/usr/lib\n"),
-            // Full /etc/profile — synthetic overrides ext4 version.
-            // dropbear & Xorg auto-start; idempotent (fail if already running)
-            "/etc/profile" => Some(concat!(
-                "export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\n",
-                "export PS1='lineluya# '\n",
-                "export HOME=/root\n",
-                "export TERM=linux\n",
-                "export DISPLAY=:0\n",
-                "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
-                "mkdir -p /var/run /var/log /tmp/.X11-unix 2>/dev/null\n",
-                "/usr/sbin/dropbear -R -E -B -p 2222 2>/dev/null &\n",
-                "/usr/libexec/Xorg :0 vt7 -noreset -novtswitch -keeptty 2>/dev/null &\n",
-                "# Wait for Xorg to create X11 socket, then start clients\n",
-                "i=0; while [ $i -lt 60 ]; do\n",
-                "  if cat /tmp/.X0-lock; then\n",
-                "    if [ ! -f /tmp/.xterm_started_chirho ]; then\n",
-                "      echo 1 > /tmp/.xterm_started_chirho\n",
-                "      DISPLAY=:0 /tmp/lib-chirho/xterm -e sh &\n",
-                "      DISPLAY=:0 /tmp/lib-chirho/twm &\n",
-                "    fi\n",
-                "    break\n",
-                "  fi\n",
-                "  sleep 2\n",
-                "  i=$((i+1))\n",
-                "done\n",
-                "echo '  Lineluya v8.0 — Hallelujah'\n",
-                "echo '  SSH: ssh -p 2222 root@localhost'\n",
-                "echo '  VNC: port 5901'\n",
-            ).as_bytes()),
+            // Full /etc/profile — one-shot guard prevents re-execution.
+            "/etc/profile" => {
+                use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+                static PROFILE_DONE_CHIRHO: AtomicBool = AtomicBool::new(false);
+                static PROFILE_COUNT_CHIRHO: AtomicU32 = AtomicU32::new(0);
+                let count_chirho = PROFILE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                if PROFILE_DONE_CHIRHO.swap(true, Ordering::Relaxed) {
+                    Some(b"export PATH=/bin:/sbin:/usr/bin:/usr/sbin\nexport PS1='lineluya# '\nexport DISPLAY=:0\nexport LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n")
+                } else {
+                    Some(concat!(
+                        "export PATH=/bin:/sbin:/usr/bin:/usr/sbin\n",
+                        "export PS1='lineluya# '\n",
+                        "export HOME=/root\n",
+                        "export SHELL=/bin/sh\n",
+                        "export DISPLAY=:0\n",
+                        "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
+                        "insmod /lib/modules/loop.ko &\n",
+                        "echo -ne '\\xff\\x7f' > /dev/dsp &\n",
+                        "/usr/sbin/dropbear -R -E -B -p 2222 &\n",
+                        "/tmp/lib-chirho/Xorg :0 -ac -noreset -novtswitch -keeptty -sharevts &\n",
+                        "/usr/bin/xgears-chirho &\n",
+                        "DISPLAY=:0 /usr/bin/twm &\n",
+                        "/tmp/lib-chirho/mpg123 -a /dev/dsp /root/test-tone-chirho.mp3 &\n",
+                        "DISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\n",
+                    ).as_bytes())
+                }
+            },
             // Xorg config: fbdev driver, no BusID (matches old probe BUS_NONE entity)
             "/etc/X11/xorg.conf" => Some(b"\
+Section \"Files\"\n\
+    ModulePath \"/tmp/xorg-modules-chirho\"\n\
+    FontPath \"/tmp/fonts-chirho\"\n\
+EndSection\n\
+\n\
+Section \"Module\"\n\
+    Disable \"glamoregl\"\n\
+    Disable \"dri\"\n\
+    Disable \"dri2\"\n\
+    Disable \"glx\"\n\
+EndSection\n\
+\n\
 Section \"Device\"\n\
     Identifier \"fb0-chirho\"\n\
     Driver \"fbdev\"\n\
@@ -1722,7 +1732,7 @@ pub fn close_fd_chirho(fd_chirho: u64) -> i64 {
                 closed_in_task_chirho = true;
             }
             // Diagnostic: trace PID 2 close(7) to debug heap corruption
-            if pid_close_chirho == 2 && fd_chirho >= 5 {
+            if false && pid_close_chirho == 2 && fd_chirho >= 5 {
                 crate::serial_println_chirho!(
                     "[CLOSE-DIAG] pid=2 close({}) had_fd={} closed_ok={}",
                     fd_chirho, had_fd_chirho, closed_in_task_chirho,

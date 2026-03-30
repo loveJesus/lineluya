@@ -342,35 +342,51 @@ fn arch_prepare_switch_chirho(old_pid_chirho: Option<u64>, next_pid_chirho: u64)
         }
     }
 
-    // Look up the target task's address-space and thread-pointer state.
-    let (new_pt_root_chirho, new_fs_base_chirho, new_gs_base_chirho) = {
+    // Look up the target task's address-space so CR3 can be switched after
+    // the low-level asm has already moved RSP onto the new task's kernel stack.
+    let new_pt_root_chirho = {
         let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
         list_chirho
             .iter()
             .find(|t_chirho| t_chirho.lock().pid_chirho == next_pid_chirho)
             .map(|t_chirho| {
                 let task_guard_chirho = t_chirho.lock();
-                (
-                    task_guard_chirho.page_table_root_chirho,
-                    task_guard_chirho.fs_base_chirho,
-                    task_guard_chirho.gs_base_chirho,
-                )
+                task_guard_chirho.page_table_root_chirho
             })
-            .unwrap_or((None, 0, 0))
+            .unwrap_or(None)
     };
 
-    // Switch to the task's page table, or fall back to boot PML4.
+    // Queue the CR3 load for the assembly switch path.
+    // Switching CR3 here is unsafe because the current Rust frames still live
+    // on the old task's kernel stack; if that stack is not mapped in the new PT
+    // the resumed task returns to corrupted state or silently disappears.
     if let Some(pt_root_chirho) = new_pt_root_chirho {
-        unsafe {
-            crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
-        }
+        crate::context_switch_chirho::set_pending_cr3_chirho(pt_root_chirho.as_u64());
     } else {
         // Task has no per-process PT — switch back to boot PML4
         // so the task runs in the shared boot address space.
         let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
         if boot_pml4_chirho.as_u64() != 0 {
-            unsafe {
-                crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho);
+            crate::context_switch_chirho::set_pending_cr3_chirho(boot_pml4_chirho.as_u64());
+        } else {
+            crate::context_switch_chirho::set_pending_cr3_chirho(0);
+        }
+    }
+
+    // Switch kernel stack for syscall entry: KERNEL_STACK_TOP_CHIRHO must
+    // point to the NEW task's kernel stack so that if the new task enters a
+    // syscall, it uses ITS OWN kernel stack (not the old task's).
+    // Without this, all tasks share one kernel stack and yield inside
+    // syscalls corrupts stack frames.
+    {
+        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+        if let Some(task_arc_chirho) = list_chirho
+            .iter()
+            .find(|t_chirho| t_chirho.lock().pid_chirho == next_pid_chirho)
+        {
+            let kstack_chirho = task_arc_chirho.lock().kernel_stack_chirho;
+            if kstack_chirho != 0 {
+                crate::syscall_entry_chirho::set_kernel_stack_top_chirho(kstack_chirho);
             }
         }
     }
@@ -1022,6 +1038,11 @@ pub fn yield_current_chirho() {
 #[inline]
 pub fn need_resched_chirho() -> bool {
     NEED_RESCHED_ATOMIC_CHIRHO.load(Ordering::Acquire)
+}
+
+/// Set the need-resched flag (stub for compatibility).
+pub fn set_need_resched_chirho() {
+    NEED_RESCHED_ATOMIC_CHIRHO.store(true, Ordering::Release);
 }
 
 /// Check if there are other runnable tasks in the run queue.

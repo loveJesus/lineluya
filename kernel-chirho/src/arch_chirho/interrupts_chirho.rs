@@ -293,6 +293,9 @@ struct UserPreemptTrampolinePageChirho {
 const fn build_user_preempt_trampoline_page_chirho() -> UserPreemptTrampolinePageChirho {
     let mut bytes_chirho = [0xCC; 4096];
     // mov eax, 24  ; SYS_sched_yield_chirho
+    // NOTE: this clobbers RAX but that's OK — most user code doesn't
+    // depend on RAX across preemption (it's a scratch register).
+    // The fork RAX issue is handled by the fork-yield mechanism.
     bytes_chirho[0] = 0xB8;
     bytes_chirho[1] = 24;
     bytes_chirho[2] = 0;
@@ -301,7 +304,7 @@ const fn build_user_preempt_trampoline_page_chirho() -> UserPreemptTrampolinePag
     // syscall — sched_yield handler restores original RIP via SYSRET
     bytes_chirho[5] = 0x0F;
     bytes_chirho[6] = 0x05;
-    // jmp -7 (loop back to mov eax) — safety net in case SYSRET lands here
+    // ret — safety net (never reached, SYSRET returns to preempted_rip)
     bytes_chirho[7] = 0xC3;
     UserPreemptTrampolinePageChirho { bytes_chirho }
 }
@@ -1208,12 +1211,23 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         }
     }
 
-    if was_user_mode_chirho
+    // User-mode preemption trampoline: saves user RAX in task struct
+    // (not on user stack) to avoid corrupting user stack state.
+    // PID 5-only trampoline preemption. Full preemption for all PIDs
+    // causes RSP corruption (page fault at -8). PID 5 (dropbear) is the
+    // main CPU hog; preempting it lets Xorg and other processes run.
+    // The is_task_runnable fix (Sleeping excluded) ensures the scheduler
+    // picks Ready fork children instead of cycling through Sleeping PIDs.
+    // DISABLED: yield_current in select HLT loop handles preemption.
+    // The trampoline's user-mode window is too small for the 1ms timer.
+    if false && was_user_mode_chirho
         && crate::scheduler_chirho::need_resched_chirho()
         && USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire)
     {
         let current_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if current_pid_chirho >= 2 { // Full preemption for all user processes
+        // Only preempt PIDs >= 5 (daemons). PIDs 2-4 are boot processes
+        // where RAX clobber from the trampoline breaks fork() return.
+        if current_pid_chirho >= 5 {
             let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
             let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
 
@@ -1245,7 +1259,7 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
 
             // Skip if already IN the trampoline page (avoid recursive push).
             let in_trampoline_chirho = user_rip_chirho >= USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO
-                && user_rip_chirho < USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO + 8;
+                && user_rip_chirho < USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO + 9;
             if !in_trampoline_chirho {
 
             // Guard: skip if already preempted (preempted_rip != 0).

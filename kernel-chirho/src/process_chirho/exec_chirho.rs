@@ -65,6 +65,13 @@ const USER_STACK_TOP_BASE_CHIRHO: u64 = 0x7FFF_FFFF_F000;
 /// User stack size (8 MiB).
 const USER_STACK_SIZE_CHIRHO: u64 = 8 * 1024 * 1024;
 
+/// Extra mapped page above the nominal stack top.
+///
+/// When tasks truly block in `SleepingChirho` instead of busy-yielding, some
+/// userspace paths touch the first page above the nominal top-of-stack
+/// boundary. Map one extra page so the stack VMA covers that access pattern.
+const USER_STACK_TOP_SLACK_CHIRHO: u64 = PAGE_SIZE_CHIRHO;
+
 /// Stride between per-PID stack regions (16 MiB = 2x stack size for guard gap).
 const PER_PID_STACK_STRIDE_CHIRHO: u64 = 16 * 1024 * 1024;
 
@@ -191,7 +198,18 @@ pub fn load_elf_into_memory_chirho(
 ) -> Result<LoadedElfChirho, ExecErrorChirho> {
     // Parse the ELF header and program headers.
     let elf_info_chirho = elf_chirho::parse_elf_chirho(elf_data_chirho)
-        .map_err(|_err_chirho| ExecErrorChirho::ElfParseChirho("ELF parse failed"))?;
+        .map_err(|err_chirho| {
+            crate::serial_println_chirho!(
+                "[ELF-PARSE-FAIL] data_len={} err={:?} magic=[{:#x},{:#x},{:#x},{:#x}]",
+                elf_data_chirho.len(),
+                err_chirho,
+                elf_data_chirho.get(0).copied().unwrap_or(0),
+                elf_data_chirho.get(1).copied().unwrap_or(0),
+                elf_data_chirho.get(2).copied().unwrap_or(0),
+                elf_data_chirho.get(3).copied().unwrap_or(0),
+            );
+            ExecErrorChirho::ElfParseChirho("ELF parse failed")
+        })?;
 
     if elf_info_chirho.segments_chirho.is_empty() {
         return Err(ExecErrorChirho::NoSegmentsChirho);
@@ -589,14 +607,15 @@ pub fn setup_user_stack_chirho(
 ) -> u64 {
     let mm_lock_chirho = mm_chirho::get_current_mm_chirho();
 
-    // The stack occupies [STACK_TOP - STACK_SIZE, STACK_TOP).
+    // The stack occupies [STACK_TOP - STACK_SIZE, STACK_TOP) for the initial
+    // userspace RSP, with one extra mapped page above STACK_TOP as slack.
     let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
 
     serial_debug_chirho!(
-        "[EXEC] Allocating user stack: {:#x}..{:#x} ({} MiB)",
+        "[EXEC] Allocating user stack: {:#x}..{:#x} (+{} top page)",
         stack_bottom_chirho,
-        user_stack_top_for_pid_chirho(),
-        USER_STACK_SIZE_CHIRHO / (1024 * 1024)
+        user_stack_top_for_pid_chirho() + USER_STACK_TOP_SLACK_CHIRHO,
+        USER_STACK_TOP_SLACK_CHIRHO / PAGE_SIZE_CHIRHO
     );
 
     // Map the stack pages.
@@ -606,7 +625,7 @@ pub fn setup_user_stack_chirho(
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
-                USER_STACK_SIZE_CHIRHO,
+                USER_STACK_SIZE_CHIRHO + USER_STACK_TOP_SLACK_CHIRHO,
                 PROT_READ_CHIRHO | PROT_WRITE_CHIRHO,
                 MAP_ANONYMOUS_CHIRHO | MAP_PRIVATE_CHIRHO | MAP_FIXED_CHIRHO,
                 -1,
@@ -779,10 +798,10 @@ pub fn setup_user_stack_with_args_chirho(
     let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
 
     serial_debug_chirho!(
-        "[EXEC] Allocating user stack (execve): {:#x}..{:#x} ({} MiB)",
+        "[EXEC] Allocating user stack (execve): {:#x}..{:#x} (+{} top page)",
         stack_bottom_chirho,
-        user_stack_top_for_pid_chirho(),
-        USER_STACK_SIZE_CHIRHO / (1024 * 1024)
+        user_stack_top_for_pid_chirho() + USER_STACK_TOP_SLACK_CHIRHO,
+        USER_STACK_TOP_SLACK_CHIRHO / PAGE_SIZE_CHIRHO
     );
 
     // Map the stack pages.
@@ -792,7 +811,7 @@ pub fn setup_user_stack_with_args_chirho(
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
-                USER_STACK_SIZE_CHIRHO,
+                USER_STACK_SIZE_CHIRHO + USER_STACK_TOP_SLACK_CHIRHO,
                 PROT_READ_CHIRHO | PROT_WRITE_CHIRHO,
                 MAP_ANONYMOUS_CHIRHO | MAP_PRIVATE_CHIRHO | MAP_FIXED_CHIRHO,
                 -1,
@@ -955,9 +974,10 @@ pub fn setup_user_stack_dynlink_chirho(
     let stack_bottom_chirho = user_stack_top_for_pid_chirho() - USER_STACK_SIZE_CHIRHO;
 
     serial_debug_chirho!(
-        "[EXEC] Allocating user stack (dynlink): {:#x}..{:#x}",
+        "[EXEC] Allocating user stack (dynlink): {:#x}..{:#x} (+{} top page)",
         stack_bottom_chirho,
-        user_stack_top_for_pid_chirho(),
+        user_stack_top_for_pid_chirho() + USER_STACK_TOP_SLACK_CHIRHO,
+        USER_STACK_TOP_SLACK_CHIRHO / PAGE_SIZE_CHIRHO,
     );
 
     // Map the stack pages.
@@ -967,7 +987,7 @@ pub fn setup_user_stack_dynlink_chirho(
         mm_ref_chirho
             .mmap_chirho(
                 stack_bottom_chirho,
-                USER_STACK_SIZE_CHIRHO,
+                USER_STACK_SIZE_CHIRHO + USER_STACK_TOP_SLACK_CHIRHO,
                 PROT_READ_CHIRHO | PROT_WRITE_CHIRHO,
                 MAP_ANONYMOUS_CHIRHO | MAP_PRIVATE_CHIRHO | MAP_FIXED_CHIRHO,
                 -1,

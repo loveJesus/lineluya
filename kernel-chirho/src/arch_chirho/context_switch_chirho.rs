@@ -51,6 +51,19 @@ use crate::task_chirho::CpuContextChirho;
 // also providing a compile-time check that CpuContextChirho is available.
 const _CONTEXT_SIZE_CHECK_CHIRHO: usize = core::mem::size_of::<CpuContextChirho>();
 
+/// CR3 value to load AFTER RSP has been switched to the new task's stack.
+/// Set by schedule_chirho before calling switch_context. The assembly reads
+/// this after restoring RSP so the CR3 switch happens on the new task's
+/// stack (which IS mapped in the new task's PT). If 0, no CR3 switch.
+#[no_mangle]
+pub static mut PENDING_CR3_CHIRHO: u64 = 0;
+
+/// Set the pending CR3 for the next context switch.
+pub fn set_pending_cr3_chirho(cr3_val_chirho: u64) {
+    unsafe { PENDING_CR3_CHIRHO = cr3_val_chirho; }
+}
+
+
 core::arch::global_asm!(
     r#"
 // ---------------------------------------------------------------------------
@@ -113,6 +126,18 @@ switch_context_chirho:
     // OLD task's stack at [RSP-8] — corrupting the old task's saved
     // stack frame and causing GPF when it resumed.
     movq     0(%rsi), %rsp          // rsp_chirho  (offset  0) — NOW on new stack
+
+    // Switch CR3 now that RSP is on the new task's stack (which IS mapped
+    // in the new task's PT). Reading from a global avoids adding a third
+    // argument to switch_context_chirho. If PENDING_CR3 == 0, skip.
+    movq    PENDING_CR3_CHIRHO(%rip), %rax
+    testq   %rax, %rax
+    jz      1f
+    movq    %rax, %cr3
+    // Clear pending to prevent stale CR3 on next switch
+    xorq    %rax, %rax
+    movq    %rax, PENDING_CR3_CHIRHO(%rip)
+1:
     movq     8(%rsi), %rbp          // rbp_chirho  (offset  8)
     movq    16(%rsi), %rbx          // rbx_chirho  (offset 16)
     movq    24(%rsi), %r12          // r12_chirho  (offset 24)

@@ -41,26 +41,51 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 /// Flag set when Xorg binds the X11 display socket.
 /// Checked by the syscall handler to auto-launch xterm+twm.
 pub static X11_READY_CHIRHO: AtomicBool = AtomicBool::new(false);
-static X11_CLIENTS_LAUNCHED_CHIRHO: AtomicBool = AtomicBool::new(false);
-
-/// Check if X11 clients should be launched (called from syscall return path).
-/// Returns true ONCE — the first time after X11_READY becomes true.
+/// PIDs waiting for Xorg to be ready (blocked in connect retry).
+pub static X11_WAITING_PIDS_CHIRHO: spin::Mutex<alloc::vec::Vec<u64>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+/// Legacy shell-injection launcher hook.
+///
+/// X11 clients are now spawned directly from the AF_UNIX bind path once the
+/// Xorg socket exists, so the old stdin-injection path stays disabled.
+/// Check if X11 clients should be launched (delay expired, not yet done).
+/// Does NOT consume the one-shot — call mark_x11_clients_launched_chirho() after injection.
 pub fn should_launch_x11_clients_chirho() -> bool {
-    if X11_READY_CHIRHO.load(Ordering::Acquire)
-        && !X11_CLIENTS_LAUNCHED_CHIRHO.swap(true, Ordering::AcqRel)
-    {
-        true
-    } else {
-        false
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static READY_TICK_CHIRHO: AtomicU64 = AtomicU64::new(0);
+    if X11_CLIENTS_LAUNCHED_CHIRHO.load(Ordering::Relaxed) {
+        return false;
     }
+    if !X11_READY_CHIRHO.load(Ordering::Acquire) {
+        return false;
+    }
+    let ready_at_chirho = READY_TICK_CHIRHO.load(Ordering::Relaxed);
+    if ready_at_chirho == 0 {
+        let now_chirho = crate::scheduler_chirho::tick_count_chirho();
+        READY_TICK_CHIRHO.store(now_chirho, Ordering::Relaxed);
+        return false;
+    }
+    let now_chirho = crate::scheduler_chirho::tick_count_chirho();
+    now_chirho.wrapping_sub(ready_at_chirho) >= 5000
 }
+
+/// Mark X11 client injection as done (one-shot).
+pub fn mark_x11_clients_launched_chirho() {
+    X11_CLIENTS_LAUNCHED_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
+}
+
+pub static X11_CLIENTS_LAUNCHED_CHIRHO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+static X11_ATOM_TABLE_CHIRHO: Mutex<BTreeMap<Vec<u8>, u32>> = Mutex::new(BTreeMap::new());
+static NEXT_X11_ATOM_ID_CHIRHO: AtomicU64 = AtomicU64::new(100);
 
 use crate::syscall_chirho::{
     EADDRINUSE_CHIRHO, EAFNOSUPPORT_CHIRHO, EAGAIN_CHIRHO, EBADF_CHIRHO,
@@ -1777,6 +1802,7 @@ pub static SOCKET_DATA_WAITQUEUE_CHIRHO: crate::waitqueue_chirho::WaitQueueChirh
 
 #[inline]
 pub fn wake_socket_data_waitqueue_chirho() {
+    crate::scheduler_chirho::set_need_resched_chirho();
     crate::waitqueue_chirho::wake_up_chirho(&SOCKET_DATA_WAITQUEUE_CHIRHO);
 }
 
@@ -2255,6 +2281,25 @@ pub fn is_socket_fd_chirho(fd_chirho: u64) -> bool {
     socket_idx_from_fd_chirho(fd_chirho).is_ok()
 }
 
+/// Check if an fd is a UNIX listen socket (has listening=true).
+/// Used by epoll to always report EPOLLIN for listen sockets with backlog.
+pub fn is_unix_listen_fd_chirho(fd_chirho: u64) -> bool {
+    let si_chirho = match socket_idx_from_fd_chirho(fd_chirho) {
+        Ok(idx_chirho) => idx_chirho,
+        Err(_) => return false,
+    };
+    if !is_unix_socket_idx_chirho(si_chirho) {
+        return false;
+    }
+    if let Some(ui_chirho) = lookup_unix_idx_chirho(si_chirho) {
+        let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+        if let Some(ref sk_chirho) = ut_chirho.get(ui_chirho).and_then(|s| s.as_ref()) {
+            return sk_chirho.listening_chirho;
+        }
+    }
+    false
+}
+
 /// Public wrapper for socket_idx_from_fd (used by epoll).
 pub fn socket_idx_from_fd_pub_chirho(fd_chirho: u64) -> Result<usize, i64> {
     socket_idx_from_fd_chirho(fd_chirho)
@@ -2265,9 +2310,30 @@ pub fn is_unix_socket_idx_pub_chirho(sock_idx_chirho: usize) -> bool {
     is_unix_socket_idx_chirho(sock_idx_chirho)
 }
 
+/// Get the socket state for an fd (used by select to check if writable).
+pub fn get_socket_state_chirho(fd_chirho: u64) -> Option<SocketStateChirho> {
+    let sock_idx_chirho = socket_idx_from_fd_chirho(fd_chirho).ok()?;
+    let table_chirho = SOCKET_TABLE_CHIRHO.lock();
+    table_chirho.get(sock_idx_chirho)?
+        .as_ref()
+        .map(|s_chirho| s_chirho.state_chirho)
+}
+
 /// Public wrapper for lookup_unix_idx (used by FIONREAD ioctl).
 pub fn lookup_unix_idx_pub_chirho(sock_idx_chirho: usize) -> Option<usize> {
     lookup_unix_idx_chirho(sock_idx_chirho)
+}
+
+fn unix_socket_recv_stats_chirho(socket_chirho: &UnixSocketChirho) -> (usize, usize) {
+    let mut recv_entries_chirho = 0usize;
+    let mut recv_bytes_chirho = 0usize;
+    for chunk_chirho in socket_chirho.recv_buf_chirho.iter() {
+        if !chunk_chirho.is_empty() {
+            recv_entries_chirho += 1;
+            recv_bytes_chirho = recv_bytes_chirho.saturating_add(chunk_chirho.len());
+        }
+    }
+    (recv_entries_chirho, recv_bytes_chirho)
 }
 
 /// FIONREAD for sockets: return bytes available in recv buffer.
@@ -2280,8 +2346,8 @@ pub fn socket_fionread_chirho(fd_chirho: u64) -> i32 {
         if let Some(ui_chirho) = lookup_unix_idx_chirho(si_chirho) {
             let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
             if let Some(Some(ref sk_chirho)) = ut_chirho.get(ui_chirho) {
-                return sk_chirho.recv_buf_chirho.iter()
-                    .map(|c| c.len() as i32).sum();
+                let (_, recv_bytes_chirho) = unix_socket_recv_stats_chirho(sk_chirho);
+                return recv_bytes_chirho as i32;
             }
         }
     }
@@ -2418,7 +2484,47 @@ fn preview_payload_ascii_chirho(data_chirho: &[u8]) -> alloc::string::String {
 /// For listening sockets, checks if there's a pending TCP connection.
 /// For connected sockets, checks if there's received data.
 pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
-    let socket_idx_chirho = match socket_idx_from_fd_chirho(fd_chirho) {
+    let socket_idx_result_chirho = socket_idx_from_fd_chirho(fd_chirho);
+    if fd_chirho == 4 && false { // Disabled — too much serial spam
+        let current_pid_chirho = current_unix_listener_pid_chirho();
+        let socket_idx_opt_chirho = socket_idx_result_chirho.as_ref().ok().copied();
+        let is_unix_socket_idx_chirho_flag = socket_idx_opt_chirho
+            .map(is_unix_socket_idx_chirho)
+            .unwrap_or(false);
+        let unix_idx_opt_chirho = socket_idx_opt_chirho.and_then(lookup_unix_idx_chirho);
+        let (listening_chirho, backlog_len_chirho, owner_pid_chirho, path_chirho) =
+            if let Some(unix_idx_chirho) = unix_idx_opt_chirho {
+                let unix_socket_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                unix_socket_table_chirho
+                    .get(unix_idx_chirho)
+                    .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+                    .map(|socket_chirho| {
+                        (
+                            socket_chirho.listening_chirho,
+                            socket_chirho.backlog_chirho.len(),
+                            socket_chirho.listener_pid_chirho,
+                            socket_chirho.path_chirho.clone().unwrap_or_else(|| alloc::string::String::from("<none>")),
+                        )
+                    })
+                    .unwrap_or((false, 0, 0, alloc::string::String::from("<missing-unix-slot>")))
+            } else {
+                (false, 0, 0, alloc::string::String::from("<no-unix-mapping>"))
+            };
+        crate::serial_println_chirho!(
+            "[FD4-HAS-DATA] pid={} fd=4 socket_idx={:?} is_unix={} unix_idx={:?} listening={} backlog={} owner_pid={} path='{}' resolve_ok={}",
+            current_pid_chirho,
+            socket_idx_opt_chirho,
+            is_unix_socket_idx_chirho_flag,
+            unix_idx_opt_chirho,
+            listening_chirho,
+            backlog_len_chirho,
+            owner_pid_chirho,
+            path_chirho,
+            socket_idx_result_chirho.is_ok(),
+        );
+    }
+
+    let socket_idx_chirho = match socket_idx_result_chirho {
         Ok(idx_chirho) => idx_chirho,
         Err(_) => return false,
     };
@@ -2428,10 +2534,93 @@ pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
         if let Some(unix_idx_chirho) = lookup_unix_idx_chirho(socket_idx_chirho) {
             let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
             if let Some(ref sk_chirho) = ut_chirho.get(unix_idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) {
-                if !sk_chirho.recv_buf_chirho.is_empty() {
-                    return true;
+                let current_pid_chirho = current_unix_listener_pid_chirho();
+                let (recv_entries_chirho, recv_bytes_chirho) =
+                    unix_socket_recv_stats_chirho(sk_chirho);
+                let has_recv_chirho = recv_bytes_chirho > 0;
+                let reply_just_sent_chirho = sk_chirho.x11_reply_just_sent_chirho;
+                let listener_owner_matches_chirho = sk_chirho.listener_pid_chirho == 0
+                    || sk_chirho.listener_pid_chirho == current_pid_chirho;
+                // AF_UNIX listen backlog is readable state whenever it is
+                // non-empty, even if the polling task inherited the socket
+                // from the original listener PID.
+                let has_backlog_chirho = sk_chirho.listening_chirho
+                    && !sk_chirho.backlog_chirho.is_empty();
+                if sk_chirho.listening_chirho
+                    && !sk_chirho.backlog_chirho.is_empty()
+                {
+                    crate::serial_println_chirho!(
+                        "[LISTEN-OWNER-HOT] fd={} sock_idx={} unix_idx={} backlog={} owner_pid={} current_pid={} owner_match={} has_backlog={}",
+                        fd_chirho,
+                        socket_idx_chirho,
+                        unix_idx_chirho,
+                        sk_chirho.backlog_chirho.len(),
+                        sk_chirho.listener_pid_chirho,
+                        current_pid_chirho,
+                        listener_owner_matches_chirho,
+                        has_backlog_chirho,
+                    );
                 }
-                if sk_chirho.listening_chirho && !sk_chirho.backlog_chirho.is_empty() {
+                // Debug: trace fd→socket→unix mapping for Xorg fds
+                if fd_chirho >= 4 && fd_chirho <= 6 {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static HAS_DATA_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let c_chirho = HAS_DATA_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if c_chirho < 30 || c_chirho % 50000 == 0 {
+                        crate::serial_println_chirho!(
+                            "[HAS-DATA] #{} fd={} sock_idx={} unix_idx={} recv_entries={} recv_bytes={} reply_just_sent={} listening={} owner_pid={} current_pid={} has={}",
+                            c_chirho, fd_chirho, socket_idx_chirho, unix_idx_chirho,
+                            recv_entries_chirho, recv_bytes_chirho, reply_just_sent_chirho, sk_chirho.listening_chirho,
+                            sk_chirho.listener_pid_chirho,
+                            current_pid_chirho,
+                            has_recv_chirho || has_backlog_chirho,
+                        );
+                    }
+                }
+                // Debug: log listen socket state for epoll debugging
+                if sk_chirho.listening_chirho {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static LISTEN_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let lc_chirho = LISTEN_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    // Always log when backlog > 0 (one-shot for the actual connection)
+                    if lc_chirho < 20 || lc_chirho % 100000 == 0 || !sk_chirho.backlog_chirho.is_empty() {
+                        crate::serial_println_chirho!(
+                            "[LISTEN-CHK] #{} fd={} sock_idx={} unix_idx={} backlog={} owner_pid={} current_pid={} result={}",
+                            lc_chirho, fd_chirho, socket_idx_chirho, unix_idx_chirho,
+                            sk_chirho.backlog_chirho.len(),
+                            sk_chirho.listener_pid_chirho,
+                            current_pid_chirho,
+                            has_backlog_chirho,
+                        );
+                    }
+                } else if has_recv_chirho {
+                    use core::sync::atomic::{AtomicU64, Ordering};
+                    static UNIX_CONNECTED_HAS_DATA_TRACE_CHIRHO: AtomicU64 = AtomicU64::new(0);
+                    let trace_index_chirho =
+                        UNIX_CONNECTED_HAS_DATA_TRACE_CHIRHO.fetch_add(1, Ordering::Relaxed);
+                    if trace_index_chirho < 256 {
+                        let recv_bytes_chirho = sk_chirho
+                            .recv_buf_chirho
+                            .iter()
+                            .map(|chunk_chirho| chunk_chirho.len())
+                            .sum::<usize>();
+                        crate::serial_println_chirho!(
+                            "[UNIX-HAS-DATA] #{} pid={} fd={} sock_idx={} unix_idx={} recv_entries={} recv_bytes={} reply_just_sent={}",
+                            trace_index_chirho,
+                            current_pid_chirho,
+                            fd_chirho,
+                            socket_idx_chirho,
+                            unix_idx_chirho,
+                            recv_entries_chirho,
+                            recv_bytes_chirho,
+                            reply_just_sent_chirho,
+                        );
+                    }
+                }
+                if !has_recv_chirho && reply_just_sent_chirho && !has_backlog_chirho {
+                    return false;
+                }
+                if has_recv_chirho || has_backlog_chirho {
                     return true;
                 }
             }
@@ -2441,14 +2630,37 @@ pub fn socket_has_data_chirho(fd_chirho: u64) -> bool {
 
     let sockets_chirho = SOCKET_TABLE_CHIRHO.lock();
     if let Some(Some(sock_chirho)) = sockets_chirho.get(socket_idx_chirho) {
+        let local_port_chirho = sock_chirho
+            .local_addr_chirho
+            .map(|addr_chirho| addr_chirho.port_chirho)
+            .unwrap_or(0);
+        let effective_state_chirho = sock_chirho.effective_state_chirho();
+        let has_accept_queue_chirho = !sock_chirho.accept_queue_chirho.is_empty();
+        if local_port_chirho == 2222 && has_accept_queue_chirho {
+            // Only log when something interesting happens (accept queue non-empty)
+            crate::serial_println_chirho!(
+                "[TCP-HAS-DATA] fd={} sock_idx={} port=2222 state={:?} eff_state={:?} recv_buf={} accept_queue={}",
+                fd_chirho,
+                socket_idx_chirho,
+                sock_chirho.state_chirho,
+                effective_state_chirho,
+                sock_chirho.recv_buf_chirho.len(),
+                sock_chirho.accept_queue_chirho.len(),
+            );
+        }
         // Check if there's data in the receive buffer
         if !sock_chirho.recv_buf_chirho.is_empty() {
             return true;
         }
-        // For listening sockets, check if there's a pending connection
-        // in the accept queue.
-        if sock_chirho.state_chirho == SocketStateChirho::ListeningChirho {
-            return !sock_chirho.accept_queue_chirho.is_empty();
+        // For TCP listeners, a pending accept queue makes the socket readable.
+        // Use the queue itself as the source of truth so select/poll still
+        // reports readiness if the higher-level socket state drifted while
+        // the TCB remained in LISTEN.
+        if has_accept_queue_chirho
+            && (matches!(effective_state_chirho, SocketStateChirho::ListeningChirho)
+                || matches!(sock_chirho.tcb_chirho.state_chirho, TcpStateChirho::ListenChirho))
+        {
+            return true;
         }
         // CloseWait/Closed: peer sent FIN → socket is readable (EOF).
         // Without this, select doesn't detect the disconnect and PID 3
@@ -2625,10 +2837,16 @@ pub fn sys_bind_chirho(
             "[NET] sys_bind(AF_UNIX) fd={} path='{}' -> {}",
             sockfd_chirho, path_chirho, result_chirho,
         );
-        // Auto-launch X11 clients when Xorg binds the display socket
+        // Set X11_READY when Xorg binds the display socket.
+        // Actual client launch happens from epoll_wait (guarantees Xorg is ready).
         if result_chirho == 0 && path_chirho.contains("X11-unix/X0") {
-            crate::serial_println_chirho!("[X11-READY] Xorg socket detected — scheduling xterm+twm");
+            crate::serial_println_chirho!("[X11-READY] Xorg socket detected");
             X11_READY_CHIRHO.store(true, core::sync::atomic::Ordering::Release);
+            // Wake the shell from wait4 so it enters interactive mode
+            // and the X11 client injection can fire on read(fd=0).
+            crate::waitqueue_chirho::wake_up_chirho(
+                &crate::process_chirho::CHILD_EXIT_WAITQUEUE_CHIRHO,
+            );
         }
         return result_chirho;
     }
@@ -2767,23 +2985,107 @@ pub fn sys_accept_chirho(
             Some(idx_chirho) => idx_chirho,
             None => return -EBADF_CHIRHO,
         };
-        let new_unix_idx_chirho = match unix_socket_accept_chirho(listen_unix_idx_chirho) {
+        {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static UNIX_ACCEPT_TRACE_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let trace_index_chirho = UNIX_ACCEPT_TRACE_CHIRHO.fetch_add(1, Ordering::Relaxed);
+            if trace_index_chirho < 128 {
+                let current_pid_chirho = crate::task_chirho::current_task_chirho()
+                    .map(|task_chirho| task_chirho.lock().pid_chirho)
+                    .unwrap_or(0);
+                let (backlog_before_chirho, listener_owner_pid_chirho) = {
+                    let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                    unix_table_chirho
+                        .get(listen_unix_idx_chirho)
+                        .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+                        .map(|socket_chirho| {
+                            (
+                                socket_chirho.backlog_chirho.len(),
+                                socket_chirho.listener_pid_chirho,
+                            )
+                        })
+                        .unwrap_or((0usize, 0u64))
+                };
+                crate::serial_println_chirho!(
+                    "[UNIX-ACCEPT-TRY] #{} pid={} fd={} sock_idx={} listen_unix_idx={} backlog_before={} owner_pid={}",
+                    trace_index_chirho,
+                    current_pid_chirho,
+                    sockfd_chirho,
+                    socket_idx_chirho,
+                    listen_unix_idx_chirho,
+                    backlog_before_chirho,
+                    listener_owner_pid_chirho,
+                );
+            }
+        }
+        // Any process with the listen socket fd can accept.
+        // The first to call accept gets the connection.
+        // No owner check — any process with the listen fd can accept.
+        let accepted_unix_idx_chirho = match unix_socket_accept_chirho(listen_unix_idx_chirho) {
             Some(idx_chirho) => idx_chirho,
-            None => return -EAGAIN_CHIRHO,
+            None => {
+                crate::serial_println_chirho!(
+                    "[UNIX-ACCEPT-EAGAIN] fd={} sock_idx={} listen_unix_idx={}",
+                    sockfd_chirho,
+                    socket_idx_chirho,
+                    listen_unix_idx_chirho,
+                );
+                return -EAGAIN_CHIRHO;
+            }
         };
-        // Allocate a new SocketChirho slot for the accepted connection.
-        let mut new_socket_chirho = SocketChirho::new_chirho(AF_UNIX_CHIRHO, 1, 0); // SOCK_STREAM
+        let (accepted_sock_type_chirho, queued_recv_entries_chirho, queued_recv_bytes_chirho) = {
+            let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+            unix_table_chirho
+                .get(accepted_unix_idx_chirho)
+                .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+                .map(|socket_chirho| {
+                    let queued_recv_entries_chirho = socket_chirho.recv_buf_chirho.len();
+                    let queued_recv_bytes_chirho = socket_chirho
+                        .recv_buf_chirho
+                        .iter()
+                        .map(|chunk_chirho| chunk_chirho.len())
+                        .sum::<usize>();
+                    (
+                        socket_chirho.sock_type_chirho,
+                        queued_recv_entries_chirho,
+                        queued_recv_bytes_chirho,
+                    )
+                })
+                .unwrap_or((1, 0, 0))
+        };
+        // Allocate a new socket-table slot and fd that point at the SAME
+        // accepted unix socket popped from the listen backlog. The queued X11
+        // setup bytes remain in `accepted_unix_idx_chirho.recv_buf_chirho`.
+        let mut new_socket_chirho = SocketChirho::new_chirho(
+            AF_UNIX_CHIRHO,
+            accepted_sock_type_chirho as u64,
+            0,
+        );
         new_socket_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
         let new_sock_idx_chirho = match alloc_socket_slot_chirho(new_socket_chirho) {
             Ok(idx_chirho) => idx_chirho,
             Err(e_chirho) => return e_chirho,
         };
-        register_unix_mapping_chirho(new_sock_idx_chirho, new_unix_idx_chirho);
+        register_unix_mapping_chirho(new_sock_idx_chirho, accepted_unix_idx_chirho);
         match register_unix_socket_fd_chirho(new_sock_idx_chirho) {
             Ok(fd_chirho) => {
-                crate::serial_debug_chirho!(
-                    "[NET] sys_accept(AF_UNIX) fd={} -> new_fd={} (sock_idx={}, unix_idx={})",
-                    sockfd_chirho, fd_chirho, new_sock_idx_chirho, new_unix_idx_chirho,
+                crate::serial_println_chirho!(
+                    "[UNIX-ACCEPT-OK] listen_fd={} accepted_fd={} listen_unix_idx={} accepted_unix_idx={} recv_entries={} recv_bytes={}",
+                    sockfd_chirho,
+                    fd_chirho,
+                    listen_unix_idx_chirho,
+                    accepted_unix_idx_chirho,
+                    queued_recv_entries_chirho,
+                    queued_recv_bytes_chirho,
+                );
+                crate::serial_println_chirho!(
+                    "[NET] sys_accept(AF_UNIX) fd={} -> new_fd={} (sock_idx={}, unix_idx={}, recv_entries={}, recv_bytes={})",
+                    sockfd_chirho,
+                    fd_chirho,
+                    new_sock_idx_chirho,
+                    accepted_unix_idx_chirho,
+                    queued_recv_entries_chirho,
+                    queued_recv_bytes_chirho,
                 );
                 return fd_chirho;
             }
@@ -2808,6 +3110,19 @@ pub fn sys_accept_chirho(
         return -EINVAL_CHIRHO;
     }
 
+    let listener_port_chirho = socket_chirho
+        .local_addr_chirho
+        .map(|addr_chirho| addr_chirho.port_chirho)
+        .unwrap_or(0);
+    if listener_port_chirho == 2222 {
+        crate::serial_println_chirho!(
+            "[TCP-ACCEPT] listen_fd={} sock_idx={} port=2222 queue_len={}",
+            sockfd_chirho,
+            socket_idx_chirho,
+            socket_chirho.accept_queue_chirho.len(),
+        );
+    }
+
     // Check if there is a pending connection in the accept queue
     if let Some(pending_idx_chirho) = socket_chirho.accept_queue_chirho.pop_front() {
         // The pending connection is already a fully established socket in the table.
@@ -2816,6 +3131,14 @@ pub fn sys_accept_chirho(
         let new_fd_result_chirho = register_socket_fd_chirho(pending_idx_chirho as usize);
         match new_fd_result_chirho {
             Ok(new_fd_chirho) => {
+                if listener_port_chirho == 2222 {
+                    crate::serial_println_chirho!(
+                        "[TCP-ACCEPT] listen_fd={} port=2222 pending_idx={} -> new_fd={}",
+                        sockfd_chirho,
+                        pending_idx_chirho,
+                        new_fd_chirho,
+                    );
+                }
                 crate::serial_debug_chirho!("[NET] sys_accept -> fd={}", new_fd_chirho);
 
                 // Write peer address to user buffer if requested.
@@ -2852,6 +3175,12 @@ pub fn sys_accept_chirho(
     }
 
     // No pending connections
+    if listener_port_chirho == 2222 {
+        crate::serial_println_chirho!(
+            "[TCP-ACCEPT] listen_fd={} port=2222 queue_empty -> -EAGAIN",
+            sockfd_chirho,
+        );
+    }
     crate::serial_debug_chirho!("[NET] sys_accept -> -EAGAIN");
     -EAGAIN_CHIRHO
 }
@@ -2891,13 +3220,38 @@ pub fn sys_connect_chirho(
                 Some(p_chirho) => p_chirho,
                 None => return -EINVAL_CHIRHO,
             };
-            let result_chirho = unix_socket_connect_chirho(unix_idx_chirho, &path_chirho);
+            // Retry X11 connections: remove task from scheduler, re-add
+            // when XORG_EPOLL_READY fires. This lets Xorg run unimpeded.
+            let is_x11_chirho = path_chirho.contains(".X11-unix/X");
+            let mut result_chirho = unix_socket_connect_chirho(unix_idx_chirho, &path_chirho);
+            if result_chirho == -ECONNREFUSED_CHIRHO && is_x11_chirho {
+                let wait_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+                crate::serial_println_chirho!(
+                    "[X11-WAIT] PID {} waiting for Xorg (removed from scheduler)",
+                    wait_pid_chirho,
+                );
+                // Remove from scheduler — we'll be re-added by XORG-MAIN-LOOP handler
+                crate::scheduler_chirho::remove_task_chirho(wait_pid_chirho);
+                // Store waiting PID for the epoll handler to wake
+                X11_WAITING_PIDS_CHIRHO.lock().push(wait_pid_chirho);
+                // Block until re-added — schedule() will pick other tasks
+                crate::scheduler_chirho::schedule_chirho();
+                // Woken — try connecting now
+                result_chirho = unix_socket_connect_chirho(unix_idx_chirho, &path_chirho);
+                crate::serial_println_chirho!(
+                    "[X11-WAIT] PID {} woke, connect result={}",
+                    wait_pid_chirho, result_chirho,
+                );
+            }
             if result_chirho == 0 {
-                // Set SOCKET_TABLE state to Connected so getpeername/epoll work.
                 let mut st_chirho = SOCKET_TABLE_CHIRHO.lock();
                 if let Some(Some(ref mut sk_chirho)) = st_chirho.get_mut(si_chirho) {
                     sk_chirho.state_chirho = SocketStateChirho::ConnectedChirho;
                 }
+                drop(st_chirho);
+                // X11 response injection moved to unix_socket_send (client writev path)
+            } else {
+                // Just ensure the lock is not held
             }
             crate::serial_println_chirho!(
                 "[NET] sys_connect(AF_UNIX) fd={} path='{}' unix_idx={} -> {}",
@@ -3335,7 +3689,39 @@ pub fn sys_sendto_chirho(
                 }
             }
         }
+        let send_pid_trace_chirho = crate::task_chirho::current_task_chirho()
+            .map(|task_chirho| task_chirho.lock().pid_chirho)
+            .unwrap_or(0);
+        if send_pid_trace_chirho >= 5 && sockfd_chirho >= 13 {
+            let peer_idx_trace_chirho = {
+                let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                unix_table_chirho
+                    .get(unix_idx_chirho)
+                    .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+                    .and_then(|socket_chirho| socket_chirho.peer_idx_chirho)
+            };
+            let preview_len_chirho = core::cmp::min(data_chirho.len(), 8);
+            crate::serial_println_chirho!(
+                "[XORG-SENDTO-AF_UNIX] pid={} fd={} sock_idx={} unix_idx={} peer_idx={:?} len={} preview={:02x?}",
+                send_pid_trace_chirho,
+                sockfd_chirho,
+                socket_idx_chirho,
+                unix_idx_chirho,
+                peer_idx_trace_chirho,
+                data_chirho.len(),
+                &data_chirho[..preview_len_chirho],
+            );
+        }
         let result_chirho = unix_socket_send_chirho(unix_idx_chirho, &data_chirho);
+        if send_pid_trace_chirho >= 5 && sockfd_chirho >= 13 {
+            crate::serial_println_chirho!(
+                "[XORG-SENDTO-AF_UNIX-RET] pid={} fd={} unix_idx={} ret={}",
+                send_pid_trace_chirho,
+                sockfd_chirho,
+                unix_idx_chirho,
+                result_chirho,
+            );
+        }
         if result_chirho < 0 {
             // If not connected (e.g., syslog SOCK_DGRAM), log and discard.
             if result_chirho == -ENOTCONN_CHIRHO {
@@ -3582,6 +3968,77 @@ pub fn sys_recvfrom_chirho(
         sockfd_chirho,
         len_chirho,
     );
+    let recv_trace_pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|task_chirho| task_chirho.lock().pid_chirho)
+        .unwrap_or(0);
+    let log_unix_recvfrom_trace_chirho = |
+        stage_chirho: &str,
+        socket_idx_trace_chirho: usize,
+        unix_idx_trace_chirho: Option<usize>,
+        ret_trace_chirho: i64,
+    | {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static UNIX_RECVFROM_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let trace_index_chirho =
+            UNIX_RECVFROM_TRACE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if trace_index_chirho >= 512 {
+            return;
+        }
+        let (queue_entries_chirho, queue_bytes_chirho, listening_chirho) =
+            if let Some(unix_idx_real_chirho) = unix_idx_trace_chirho {
+                let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                unix_table_chirho
+                    .get(unix_idx_real_chirho)
+                    .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+                    .map(|socket_chirho| {
+                        (
+                            socket_chirho.recv_buf_chirho.len(),
+                            socket_chirho
+                                .recv_buf_chirho
+                                .iter()
+                                .map(|chunk_chirho| chunk_chirho.len())
+                                .sum::<usize>(),
+                            socket_chirho.listening_chirho,
+                        )
+                    })
+                    .unwrap_or((0usize, 0usize, false))
+            } else {
+                (0usize, 0usize, false)
+            };
+        crate::serial_println_chirho!(
+            "[UNIX-RECVFROM-TRACE] #{} pid={} fd={} sock_idx={} unix_idx={:?} req_len={} ret={} queue_entries={} queue_bytes={} listening={} stage={}",
+            trace_index_chirho,
+            recv_trace_pid_chirho,
+            sockfd_chirho,
+            socket_idx_trace_chirho,
+            unix_idx_trace_chirho,
+            len_chirho,
+            ret_trace_chirho,
+            queue_entries_chirho,
+            queue_bytes_chirho,
+            listening_chirho,
+            stage_chirho,
+        );
+    };
+    let x11_recv_trace_enabled_chirho = recv_trace_pid_chirho == 13 && sockfd_chirho == 3;
+    let x11_recv_trace_log_chirho = |result_desc_chirho: &str, result_value_chirho: i64, first_byte_chirho: Option<u8>| {
+        if !x11_recv_trace_enabled_chirho {
+            return;
+        }
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static X11_RECVFROM_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let trace_index_chirho = X11_RECVFROM_TRACE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if trace_index_chirho < 512 {
+            crate::serial_println_chirho!(
+                "[X11-RECVFROM13] #{} fd=3 req_len={} ret={} first={:#04x} {}",
+                trace_index_chirho,
+                len_chirho,
+                result_value_chirho,
+                first_byte_chirho.unwrap_or(0xff),
+                result_desc_chirho,
+            );
+        }
+    };
 
     // GPT-directed trace: for PID 3 fd=6, log recv_buf state at entry
     let trace_pid3_chirho = {
@@ -3600,6 +4057,12 @@ pub fn sys_recvfrom_chirho(
         let unix_idx_chirho = match lookup_unix_idx_chirho(socket_idx_chirho) {
             Some(idx_chirho) => idx_chirho,
             None => {
+                log_unix_recvfrom_trace_chirho(
+                    "af_unix-nomap",
+                    socket_idx_chirho,
+                    None,
+                    -EAGAIN_CHIRHO,
+                );
                 crate::serial_println_chirho!(
                     "[RECV-NOMAP] fd={} sock_idx={} — unix mapping lost!",
                     sockfd_chirho, socket_idx_chirho,
@@ -3607,6 +4070,12 @@ pub fn sys_recvfrom_chirho(
                 return -EAGAIN_CHIRHO; // was returning 0 (EOF) = "connection broken"
             }
         };
+        log_unix_recvfrom_trace_chirho(
+            "af_unix-enter",
+            socket_idx_chirho,
+            Some(unix_idx_chirho),
+            0,
+        );
         match unix_socket_recv_bytes_chirho(unix_idx_chirho, len_chirho as usize) {
             Some(data_chirho) => {
                 let copy_len_chirho = data_chirho.len();
@@ -3625,10 +4094,29 @@ pub fn sys_recvfrom_chirho(
                         }
                     }
                 }
+                x11_recv_trace_log_chirho(
+                    "af_unix-data",
+                    copy_len_chirho as i64,
+                    data_chirho.first().copied(),
+                );
+                crate::fb_device_chirho::sample_fb_signature_chirho("unix-recv-data");
+                log_unix_recvfrom_trace_chirho(
+                    "af_unix-data",
+                    socket_idx_chirho,
+                    Some(unix_idx_chirho),
+                    copy_len_chirho as i64,
+                );
                 return copy_len_chirho as i64;
             }
             None => {
                 // No data available
+                x11_recv_trace_log_chirho("af_unix-eagain", -EAGAIN_CHIRHO, None);
+                log_unix_recvfrom_trace_chirho(
+                    "af_unix-eagain",
+                    socket_idx_chirho,
+                    Some(unix_idx_chirho),
+                    -EAGAIN_CHIRHO,
+                );
                 return -EAGAIN_CHIRHO;
             }
         }
@@ -3664,6 +4152,7 @@ pub fn sys_recvfrom_chirho(
         && socket_chirho.state_chirho != SocketStateChirho::ConnectedChirho
         && socket_chirho.tcb_chirho.state_chirho != TcpStateChirho::CloseWaitChirho
     {
+        x11_recv_trace_log_chirho("not-connected", -ENOTCONN_CHIRHO, None);
         return -ENOTCONN_CHIRHO;
     }
 
@@ -3698,6 +4187,7 @@ pub fn sys_recvfrom_chirho(
                     "[RECV-DEFER-EOF] Deferring EOF — pipe has data to drain",
                 );
                 crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
+                x11_recv_trace_log_chirho("defer-eof-pipe-data", -11, None);
                 return -11; // EAGAIN — let channelio drain pipe first
             }
             if trace_pid3_chirho {
@@ -3706,6 +4196,7 @@ pub fn sys_recvfrom_chirho(
                     socket_chirho.tcb_chirho.state_chirho,
                 );
             }
+            x11_recv_trace_log_chirho("tcp-eof", 0, None);
             return 0; // EOF — peer closed, pipe empty
         }
 
@@ -3764,6 +4255,7 @@ pub fn sys_recvfrom_chirho(
                     });
                     if has_pipe2_chirho {
                         crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
+                        x11_recv_trace_log_chirho("after-poll-defer-eof", -11, None);
                         return -11; // EAGAIN — defer EOF for pipe drain
                     }
                     if trace_pid3_chirho {
@@ -3771,6 +4263,7 @@ pub fn sys_recvfrom_chirho(
                             "[P3-RECV] after-poll EOF: pipe empty → returning 0",
                         );
                     }
+                    x11_recv_trace_log_chirho("after-poll-eof", 0, None);
                     return 0; // EOF — peer closed, pipe empty
                 }
                 if trace_pid3_chirho {
@@ -3779,10 +4272,12 @@ pub fn sys_recvfrom_chirho(
                     );
                 }
                 crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
+                x11_recv_trace_log_chirho("after-poll-eagain", -11, None);
                 return -11; // EAGAIN — no data yet
             }
         } else {
             crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
+            x11_recv_trace_log_chirho("after-poll-no-socket", -11, None);
             return -11; // EAGAIN
         }
 
@@ -3799,11 +4294,13 @@ pub fn sys_recvfrom_chirho(
         if socket_final_chirho.recv_buf_chirho.is_empty() {
             // Buffer empty after polling — return EAGAIN (not 0 which means EOF).
             // Dropbear interprets 0 as connection closed and exits.
+            x11_recv_trace_log_chirho("after-poll-empty", -11, None);
             return -11; // EAGAIN
         }
 
         // Copy buffered data to userspace.
         let count_chirho = core::cmp::min(len_chirho as usize, socket_final_chirho.recv_buf_chirho.len());
+        let first_byte_chirho = socket_final_chirho.recv_buf_chirho.front().copied();
         if buf_chirho != 0 && count_chirho > 0 {
             let ptr_chirho = buf_chirho as *mut u8;
             for i_chirho in 0..count_chirho {
@@ -3827,11 +4324,13 @@ pub fn sys_recvfrom_chirho(
                 socket_final_chirho.recv_buf_chirho.len(),
             );
         }
+        x11_recv_trace_log_chirho("polled-copy-out", count_chirho as i64, first_byte_chirho);
         crate::log_net_chirho!("recvfrom (polled) -> {}", count_chirho);
         return count_chirho as i64;
     }
 
     let count_chirho = core::cmp::min(len_chirho as usize, socket_chirho.recv_buf_chirho.len());
+    let first_byte_chirho = socket_chirho.recv_buf_chirho.front().copied();
     if trace_pid3_chirho {
         crate::serial_println_chirho!(
             "[P3-RECV] direct copy-out: {} bytes from recv_buf_len={}",
@@ -3856,6 +4355,7 @@ pub fn sys_recvfrom_chirho(
         }
     }
 
+    x11_recv_trace_log_chirho("direct-copy-out", count_chirho as i64, first_byte_chirho);
     crate::log_net_chirho!("recvfrom -> {}", count_chirho);
     crate::syscall_chirho::maybe_yield_to_runnable_child_chirho();
     count_chirho as i64
@@ -3899,6 +4399,43 @@ pub fn sys_recvmsg_chirho(
     msg_chirho: u64,
     flags_chirho: u64,
 ) -> i64 {
+    let recvmsg_trace_pid_chirho = crate::task_chirho::current_task_chirho()
+        .map(|task_chirho| task_chirho.lock().pid_chirho)
+        .unwrap_or(0);
+    let recvmsg_socket_idx_chirho = socket_idx_from_fd_chirho(sockfd_chirho).ok();
+    let recvmsg_is_unix_chirho = recvmsg_socket_idx_chirho
+        .map(is_unix_socket_idx_chirho)
+        .unwrap_or(false);
+    let recvmsg_unix_idx_chirho =
+        recvmsg_socket_idx_chirho.and_then(lookup_unix_idx_chirho);
+    let log_unix_recvmsg_trace_chirho = |
+        stage_chirho: &str,
+        total_capacity_trace_chirho: usize,
+        ret_trace_chirho: i64,
+    | {
+        if !recvmsg_is_unix_chirho {
+            return;
+        }
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static UNIX_RECVMSG_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let trace_index_chirho =
+            UNIX_RECVMSG_TRACE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if trace_index_chirho >= 256 {
+            return;
+        }
+        crate::serial_println_chirho!(
+            "[UNIX-RECVMSG-TRACE] #{} pid={} fd={} sock_idx={:?} unix_idx={:?} cap={} ret={} stage={}",
+            trace_index_chirho,
+            recvmsg_trace_pid_chirho,
+            sockfd_chirho,
+            recvmsg_socket_idx_chirho,
+            recvmsg_unix_idx_chirho,
+            total_capacity_trace_chirho,
+            ret_trace_chirho,
+            stage_chirho,
+        );
+    };
+    let x11_recvmsg_trace_enabled_chirho = recvmsg_trace_pid_chirho == 13 && sockfd_chirho == 3;
     let mut msg_hdr_chirho = match read_msghdr_from_user_chirho(msg_chirho) {
         Ok(msg_hdr_chirho) => msg_hdr_chirho,
         Err(errno_chirho) => return errno_chirho,
@@ -3932,6 +4469,20 @@ pub fn sys_recvmsg_chirho(
         0,
         0,
     );
+    log_unix_recvmsg_trace_chirho("after-sys-recvfrom", total_capacity_chirho, recv_count_chirho);
+    if x11_recvmsg_trace_enabled_chirho {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static X11_RECVMSG_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let trace_index_chirho = X11_RECVMSG_TRACE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if trace_index_chirho < 512 {
+            crate::serial_println_chirho!(
+                "[X11-RECVMSG13] #{} fd=3 cap={} ret={}",
+                trace_index_chirho,
+                total_capacity_chirho,
+                recv_count_chirho,
+            );
+        }
+    }
     if recv_count_chirho <= 0 {
         // Log ALL non-positive recvmsg returns for X11 clients
         let rm_pid_chirho = crate::task_chirho::current_task_chirho()
@@ -3952,6 +4503,7 @@ pub fn sys_recvmsg_chirho(
         msg_hdr_chirho.msg_iovlen_chirho as usize,
         &recv_buf_chirho[..recv_len_chirho],
     ) {
+        log_unix_recvmsg_trace_chirho("scatter-failed", total_capacity_chirho, errno_chirho);
         return errno_chirho;
     }
 
@@ -3976,6 +4528,7 @@ pub fn sys_recvmsg_chirho(
                 )
                 .is_err()
                 {
+                    log_unix_recvmsg_trace_chirho("copy-name-failed", total_capacity_chirho, -EFAULT_CHIRHO);
                     return -EFAULT_CHIRHO;
                 }
                 msg_hdr_chirho.msg_namelen_chirho = remote_bytes_chirho.len() as u32;
@@ -3986,8 +4539,10 @@ pub fn sys_recvmsg_chirho(
     msg_hdr_chirho.msg_controllen_chirho = 0;
     msg_hdr_chirho.msg_flags_chirho = 0;
     if let Err(errno_chirho) = write_msghdr_to_user_chirho(msg_chirho, &msg_hdr_chirho) {
+        log_unix_recvmsg_trace_chirho("write-msghdr-failed", total_capacity_chirho, errno_chirho);
         return errno_chirho;
     }
+    log_unix_recvmsg_trace_chirho("success", total_capacity_chirho, recv_count_chirho);
 
     recv_count_chirho
 }
@@ -4063,6 +4618,95 @@ pub fn sys_shutdown_chirho(sockfd_chirho: u64, how_chirho: u64) -> i64 {
     0
 }
 
+fn read_socklen_from_user_chirho(addrlen_ptr_chirho: u64) -> Result<u32, i64> {
+    if addrlen_ptr_chirho == 0 {
+        return Err(-EFAULT_CHIRHO);
+    }
+    let mut len_buf_chirho = [0u8; 4];
+    let len_buf_size_chirho = len_buf_chirho.len();
+    crate::uaccess_chirho::copy_from_user_chirho(
+        &mut len_buf_chirho,
+        addrlen_ptr_chirho,
+        len_buf_size_chirho,
+    )
+    .map_err(|_| -EFAULT_CHIRHO)?;
+    Ok(u32::from_ne_bytes(len_buf_chirho))
+}
+
+fn write_socklen_to_user_chirho(addrlen_ptr_chirho: u64, len_chirho: u32) -> Result<(), i64> {
+    if addrlen_ptr_chirho == 0 {
+        return Err(-EFAULT_CHIRHO);
+    }
+    let len_buf_chirho = len_chirho.to_ne_bytes();
+    crate::uaccess_chirho::copy_to_user_chirho(
+        addrlen_ptr_chirho,
+        &len_buf_chirho,
+        len_buf_chirho.len(),
+    )
+    .map_err(|_| -EFAULT_CHIRHO)
+}
+
+fn build_sockaddr_un_bytes_chirho(path_option_chirho: Option<&str>) -> ([u8; 110], u32) {
+    let mut sockaddr_buf_chirho = [0u8; 110];
+    sockaddr_buf_chirho[0] = AF_UNIX_CHIRHO as u8;
+    sockaddr_buf_chirho[1] = 0;
+    let mut actual_len_chirho = 2usize;
+
+    if let Some(path_chirho) = path_option_chirho {
+        if let Some(abstract_name_chirho) = path_chirho.strip_prefix('@') {
+            let abstract_bytes_chirho = abstract_name_chirho.as_bytes();
+            let copy_len_chirho = core::cmp::min(abstract_bytes_chirho.len(), 107);
+            sockaddr_buf_chirho[2] = 0;
+            sockaddr_buf_chirho[3..3 + copy_len_chirho]
+                .copy_from_slice(&abstract_bytes_chirho[..copy_len_chirho]);
+            actual_len_chirho = 3 + copy_len_chirho;
+        } else {
+            let path_bytes_chirho = path_chirho.as_bytes();
+            let copy_len_chirho = core::cmp::min(path_bytes_chirho.len(), 107);
+            sockaddr_buf_chirho[2..2 + copy_len_chirho]
+                .copy_from_slice(&path_bytes_chirho[..copy_len_chirho]);
+            if 2 + copy_len_chirho < sockaddr_buf_chirho.len() {
+                sockaddr_buf_chirho[2 + copy_len_chirho] = 0;
+            }
+            actual_len_chirho = 2 + copy_len_chirho + 1;
+        }
+    }
+
+    (sockaddr_buf_chirho, actual_len_chirho as u32)
+}
+
+fn write_sockaddr_bytes_to_user_chirho(
+    addr_chirho: u64,
+    addrlen_ptr_chirho: u64,
+    sockaddr_bytes_chirho: &[u8],
+    actual_len_chirho: u32,
+) -> i64 {
+    let caller_len_chirho = match read_socklen_from_user_chirho(addrlen_ptr_chirho) {
+        Ok(len_chirho) => len_chirho,
+        Err(errno_chirho) => return errno_chirho,
+    };
+    let copy_len_chirho = core::cmp::min(
+        sockaddr_bytes_chirho.len(),
+        caller_len_chirho as usize,
+    );
+    if addr_chirho != 0 && copy_len_chirho > 0 {
+        if crate::uaccess_chirho::copy_to_user_chirho(
+            addr_chirho,
+            &sockaddr_bytes_chirho[..copy_len_chirho],
+            copy_len_chirho,
+        )
+        .is_err()
+        {
+            return -EFAULT_CHIRHO;
+        }
+    }
+    if let Err(errno_chirho) = write_socklen_to_user_chirho(addrlen_ptr_chirho, actual_len_chirho)
+    {
+        return errno_chirho;
+    }
+    0
+}
+
 /// `getsockname(2)` — get the local address of a socket.
 pub fn sys_getsockname_chirho(
     sockfd_chirho: u64,
@@ -4080,18 +4724,34 @@ pub fn sys_getsockname_chirho(
         None => return -EBADF_CHIRHO,
     };
 
+    if socket_chirho.family_chirho as u64 == AF_UNIX_CHIRHO {
+        drop(table_chirho);
+        let local_path_chirho =
+            lookup_unix_idx_chirho(socket_idx_chirho).and_then(|unix_idx_chirho| {
+                let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                unix_table_chirho
+                    .get(unix_idx_chirho)
+                    .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+                    .and_then(|socket_chirho| socket_chirho.path_chirho.clone())
+            });
+        let (sockaddr_buf_chirho, sockaddr_len_chirho) =
+            build_sockaddr_un_bytes_chirho(local_path_chirho.as_deref());
+        return write_sockaddr_bytes_to_user_chirho(
+            addr_chirho,
+            addrlen_chirho,
+            &sockaddr_buf_chirho[..sockaddr_len_chirho as usize],
+            sockaddr_len_chirho,
+        );
+    }
+
     if let Some(ref local_chirho) = socket_chirho.local_addr_chirho {
-        if addr_chirho != 0 && addrlen_chirho >= 16 {
-            let buf_chirho = local_chirho.to_user_bytes_chirho(socket_chirho.family_chirho as u16);
-            let ptr_chirho = addr_chirho as *mut u8;
-            for (i_chirho, b_chirho) in buf_chirho.iter().enumerate() {
-                unsafe { core::ptr::write_volatile(ptr_chirho.add(i_chirho), *b_chirho) };
-            }
-            // Write addrlen
-            let addrlen_ptr_chirho = addrlen_chirho as *mut u32;
-            unsafe { core::ptr::write_volatile(addrlen_ptr_chirho, 16) };
-        }
-        return 0;
+        let buf_chirho = local_chirho.to_user_bytes_chirho(socket_chirho.family_chirho as u16);
+        return write_sockaddr_bytes_to_user_chirho(
+            addr_chirho,
+            addrlen_chirho,
+            &buf_chirho,
+            buf_chirho.len() as u32,
+        );
     }
 
     -ENOTSOCK_CHIRHO
@@ -4132,34 +4792,37 @@ pub fn sys_getpeername_chirho(
 
     // AF_UNIX: return sockaddr_un with the peer's path
     if socket_chirho.family_chirho as u64 == AF_UNIX_CHIRHO {
-        if addr_chirho != 0 {
-            // Write a minimal sockaddr_un: family=AF_UNIX(1), empty path
-            let mut sa_buf_chirho = [0u8; 110]; // sockaddr_un
-            sa_buf_chirho[0] = 1; // AF_UNIX = 1
-            sa_buf_chirho[1] = 0;
-            let write_len_chirho = core::cmp::min(110, addrlen_chirho as usize);
-            let _ = crate::uaccess_chirho::copy_to_user_chirho(
-                addr_chirho, &sa_buf_chirho[..write_len_chirho], write_len_chirho,
-            );
-            if addrlen_chirho >= 4 {
-                let len_ptr_chirho = addrlen_chirho as *mut u32;
-                unsafe { core::ptr::write_volatile(len_ptr_chirho, 2) }; // sun_family only
-            }
-        }
-        return 0;
+        drop(table_chirho);
+        let peer_path_chirho =
+            lookup_unix_idx_chirho(socket_idx_chirho).and_then(|unix_idx_chirho| {
+                let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                let socket_chirho = unix_table_chirho
+                    .get(unix_idx_chirho)
+                    .and_then(|socket_option_chirho| socket_option_chirho.as_ref())?;
+                let peer_idx_chirho = socket_chirho.peer_idx_chirho?;
+                unix_table_chirho
+                    .get(peer_idx_chirho)
+                    .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+                    .and_then(|peer_socket_chirho| peer_socket_chirho.path_chirho.clone())
+            });
+        let (sockaddr_buf_chirho, sockaddr_len_chirho) =
+            build_sockaddr_un_bytes_chirho(peer_path_chirho.as_deref());
+        return write_sockaddr_bytes_to_user_chirho(
+            addr_chirho,
+            addrlen_chirho,
+            &sockaddr_buf_chirho[..sockaddr_len_chirho as usize],
+            sockaddr_len_chirho,
+        );
     }
 
     if let Some(ref remote_chirho) = socket_chirho.remote_addr_chirho {
-        if addr_chirho != 0 && addrlen_chirho >= 16 {
-            let buf_chirho = remote_chirho.to_user_bytes_chirho(socket_chirho.family_chirho as u16);
-            let ptr_chirho = addr_chirho as *mut u8;
-            for (i_chirho, b_chirho) in buf_chirho.iter().enumerate() {
-                unsafe { core::ptr::write_volatile(ptr_chirho.add(i_chirho), *b_chirho) };
-            }
-            let addrlen_ptr_chirho = addrlen_chirho as *mut u32;
-            unsafe { core::ptr::write_volatile(addrlen_ptr_chirho, 16) };
-        }
-        return 0;
+        let buf_chirho = remote_chirho.to_user_bytes_chirho(socket_chirho.family_chirho as u16);
+        return write_sockaddr_bytes_to_user_chirho(
+            addr_chirho,
+            addrlen_chirho,
+            &buf_chirho,
+            buf_chirho.len() as u32,
+        );
     }
 
     -ENOTCONN_CHIRHO
@@ -5845,8 +6508,18 @@ fn deliver_tcp_from_frame_chirho(ip_data_chirho: &[u8]) {
 
             // Push to the listener's accept queue.
             if let Some(listen_idx_val_chirho) = listen_idx_chirho {
+                let child_recv_len_chirho = sock_chirho.recv_buf_chirho.len();
                 if let Some(ref mut listener_chirho) = table_chirho[listen_idx_val_chirho] {
                     listener_chirho.accept_queue_chirho.push_back(sock_idx_chirho as u64);
+                    if local_port_chirho == 2222 {
+                        crate::serial_println_chirho!(
+                            "[TCP-ACCEPTQ] listener_idx={} port=2222 child_idx={} queue_len={} child_recv_buf={}",
+                            listen_idx_val_chirho,
+                            sock_idx_chirho,
+                            listener_chirho.accept_queue_chirho.len(),
+                            child_recv_len_chirho,
+                        );
+                    }
                     wake_socket_data_waitqueue_chirho();
                     crate::serial_debug_chirho!(
                         "[TCP] Queued socket {} for accept on listener {}",
@@ -7529,7 +8202,11 @@ pub fn epoll_ctl_impl_chirho(epfd_chirho: i32, op_chirho: i32, fd_chirho: i32, e
             let has_unix_data_chirho = if is_unix_chirho {
                 if let Some(ui_chirho) = lookup_unix_idx_chirho(si_chirho) {
                     let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
-                    ut_chirho.get(ui_chirho).and_then(|s| s.as_ref()).map(|s| !s.recv_buf_chirho.is_empty()).unwrap_or(false)
+                    ut_chirho
+                        .get(ui_chirho)
+                        .and_then(|s| s.as_ref())
+                        .map(|s| unix_socket_recv_stats_chirho(s).1 > 0)
+                        .unwrap_or(false)
                 } else { false }
             } else { false };
             crate::serial_println_chirho!(
@@ -7563,7 +8240,7 @@ pub fn epoll_wait_impl_chirho(epfd_chirho: i32, eo_chirho: u64, max_chirho: i32,
                 if let Some(ui_chirho) = lookup_unix_idx_chirho(si_chirho) {
                     let ut_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
                     if let Some(Some(ref us_chirho)) = ut_chirho.get(ui_chirho) {
-                        if !us_chirho.recv_buf_chirho.is_empty() { re_chirho |= EPOLLIN_CHIRHO; }
+                        if unix_socket_recv_stats_chirho(us_chirho).1 > 0 { re_chirho |= EPOLLIN_CHIRHO; }
                         if us_chirho.peer_idx_chirho.is_some() { re_chirho |= EPOLLOUT_CHIRHO; }
                     }
                 }
@@ -7811,31 +8488,63 @@ pub fn scatter_iovec_chirho(ip_chirho: u64, il_chirho: u64, data_chirho: &[u8]) 
 // A3-017: AF_UNIX sockets
 // ============================================================================
 const MAX_UNIX_SOCKETS_CHIRHO: usize = 64;
-pub struct UnixSocketChirho { pub path_chirho: Option<alloc::string::String>, pub recv_buf_chirho: VecDeque<Vec<u8>>, pub peer_idx_chirho: Option<usize>, pub sock_type_chirho: u32, pub backlog_chirho: VecDeque<usize>, pub listening_chirho: bool }
+pub struct UnixSocketChirho {
+    pub path_chirho: Option<alloc::string::String>,
+    pub recv_buf_chirho: VecDeque<Vec<u8>>,
+    pub peer_idx_chirho: Option<usize>,
+    pub sock_type_chirho: u32,
+    pub backlog_chirho: VecDeque<usize>,
+    pub listening_chirho: bool,
+    pub listener_pid_chirho: u64,
+    pub owner_pid_chirho: u64,
+    pub x11_sequence_chirho: u16,
+    pub x11_xkb_initialized_chirho: bool,
+    pub x11_reply_just_sent_chirho: bool,
+}
 static UNIX_SOCKET_TABLE_CHIRHO: Mutex<[Option<UnixSocketChirho>; MAX_UNIX_SOCKETS_CHIRHO]> = Mutex::new([const { None }; MAX_UNIX_SOCKETS_CHIRHO]);
 
-pub fn unix_socket_create_chirho(st_chirho: u32) -> Option<usize> { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() { if s_chirho.is_none() { *s_chirho = Some(UnixSocketChirho { path_chirho: None, recv_buf_chirho: VecDeque::new(), peer_idx_chirho: None, sock_type_chirho: st_chirho, backlog_chirho: VecDeque::new(), listening_chirho: false }); return Some(i_chirho); } } None }
+fn current_unix_listener_pid_chirho() -> u64 {
+    crate::task_chirho::current_task_chirho()
+        .map(|task_arc_chirho| task_arc_chirho.lock().pid_chirho)
+        .unwrap_or(0)
+}
+
+pub fn unix_socket_create_chirho(st_chirho: u32) -> Option<usize> { let owner_pid_chirho = crate::task_chirho::current_task_chirho().map(|task_chirho| task_chirho.lock().pid_chirho).unwrap_or(0); let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() { if s_chirho.is_none() { *s_chirho = Some(UnixSocketChirho { path_chirho: None, recv_buf_chirho: VecDeque::new(), peer_idx_chirho: None, sock_type_chirho: st_chirho, backlog_chirho: VecDeque::new(), listening_chirho: false, listener_pid_chirho: 0, owner_pid_chirho, x11_sequence_chirho: 0, x11_xkb_initialized_chirho: false, x11_reply_just_sent_chirho: false }); return Some(i_chirho); } } None }
 pub fn unix_socket_bind_chirho(idx_chirho: usize, p_chirho: &str) -> i64 { let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock(); for s_chirho in t_chirho.iter() { if let Some(ref sk_chirho) = s_chirho { if let Some(ref pp_chirho) = sk_chirho.path_chirho { if pp_chirho.as_str() == p_chirho { return -EADDRINUSE_CHIRHO; } } } } if let Some(ref mut sk_chirho) = t_chirho[idx_chirho] { sk_chirho.path_chirho = Some(alloc::string::String::from(p_chirho)); return 0; } -EBADF_CHIRHO }
-pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 {
-    let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
-    // Find the listening socket by path
-    let mut si_chirho: Option<usize> = None;
-    for (i_chirho, s_chirho) in t_chirho.iter().enumerate() {
-        if let Some(ref sk_chirho) = s_chirho {
-            if sk_chirho.listening_chirho {
-                if let Some(ref pp_chirho) = sk_chirho.path_chirho {
-                    if pp_chirho.as_str() == p_chirho {
-                        si_chirho = Some(i_chirho);
-                        break;
+fn find_listening_unix_socket_by_path_chirho(
+    unix_socket_table_chirho: &[Option<UnixSocketChirho>; MAX_UNIX_SOCKETS_CHIRHO],
+    path_chirho: &str,
+) -> Option<usize> {
+    for (unix_idx_chirho, unix_socket_option_chirho) in unix_socket_table_chirho.iter().enumerate() {
+        if let Some(unix_socket_chirho) = unix_socket_option_chirho {
+            if unix_socket_chirho.listening_chirho {
+                if let Some(bound_path_chirho) = unix_socket_chirho.path_chirho.as_ref() {
+                    if bound_path_chirho.as_str() == path_chirho {
+                        return Some(unix_idx_chirho);
                     }
                 }
             }
         }
     }
-    let sv_chirho = match si_chirho {
+    None
+}
+pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 {
+    let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    let sv_chirho = match find_listening_unix_socket_by_path_chirho(&t_chirho, p_chirho) {
         Some(v_chirho) => v_chirho,
         None => return -ECONNREFUSED_CHIRHO,
     };
+    let (listener_path_copy_chirho, listener_sock_type_chirho, listener_owner_pid_chirho) = t_chirho
+        .get(sv_chirho)
+        .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+        .map(|socket_chirho| {
+            (
+                socket_chirho.path_chirho.clone(),
+                socket_chirho.sock_type_chirho,
+                socket_chirho.listener_pid_chirho,
+            )
+        })
+        .unwrap_or((None, 1, 0));
     // Create a server-side socket immediately (like Linux AF_UNIX).
     // The client can send/recv right after connect without waiting for accept.
     // accept() later retrieves this pre-created socket from the backlog.
@@ -7843,12 +8552,17 @@ pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 {
     for (i_chirho, s_chirho) in t_chirho.iter_mut().enumerate() {
         if s_chirho.is_none() {
             *s_chirho = Some(UnixSocketChirho {
-                path_chirho: None,
+                path_chirho: listener_path_copy_chirho.clone(),
                 recv_buf_chirho: VecDeque::new(),
                 peer_idx_chirho: Some(ci_chirho),
-                sock_type_chirho: 1,
+                sock_type_chirho: listener_sock_type_chirho,
                 backlog_chirho: VecDeque::new(),
                 listening_chirho: false,
+                listener_pid_chirho: 0,
+                owner_pid_chirho: listener_owner_pid_chirho,
+                x11_sequence_chirho: 0,
+                x11_xkb_initialized_chirho: false,
+                x11_reply_just_sent_chirho: false,
             });
             new_idx_chirho = Some(i_chirho);
             break;
@@ -7859,15 +8573,36 @@ pub fn unix_socket_connect_chirho(ci_chirho: usize, p_chirho: &str) -> i64 {
         None => return -ECONNREFUSED_CHIRHO,
     };
     // Push the NEW server socket index (not client) to backlog for accept()
+    let mut backlog_len_before_chirho = 0usize;
+    let mut backlog_len_after_chirho = 0usize;
+    let mut listener_owner_pid_chirho = 0u64;
     if let Some(ref mut s_chirho) = t_chirho[sv_chirho] {
+        backlog_len_before_chirho = s_chirho.backlog_chirho.len();
+        listener_owner_pid_chirho = s_chirho.listener_pid_chirho;
         s_chirho.backlog_chirho.push_back(srv_idx_chirho);
+        backlog_len_after_chirho = s_chirho.backlog_chirho.len();
     }
     // Point client at the new server-side socket (bidirectional link)
     if let Some(ref mut c_chirho) = t_chirho[ci_chirho] {
         c_chirho.peer_idx_chirho = Some(srv_idx_chirho);
     }
+    drop(t_chirho);
+    crate::serial_println_chirho!(
+        "[UNIX-CONNECT] client_unix_idx={} listen_unix_idx={} server_unix_idx={} path='{}' owner_pid={} backlog_before={} backlog_after={}",
+        ci_chirho,
+        sv_chirho,
+        srv_idx_chirho,
+        p_chirho,
+        listener_owner_pid_chirho,
+        backlog_len_before_chirho,
+        backlog_len_after_chirho,
+    );
+    wake_socket_data_waitqueue_chirho();
     0
 }
+static X11_REASSEMBLY_CHIRHO: Mutex<[alloc::vec::Vec<u8>; MAX_UNIX_SOCKETS_CHIRHO]> =
+    Mutex::new([const { alloc::vec::Vec::new() }; MAX_UNIX_SOCKETS_CHIRHO]);
+
 pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 {
     let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
     let pi_chirho = match t_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref()) {
@@ -7882,10 +8617,17 @@ pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 {
         use core::sync::atomic::{AtomicU64, Ordering};
         static UNIX_SEND_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
         let cnt_chirho = UNIX_SEND_LOG_CHIRHO.fetch_add(1, Ordering::Relaxed);
-        if cnt_chirho < 200 {
+        if cnt_chirho < 2000 {
+            // Log first bytes for X11 protocol diagnosis (byte 0: 0=fail, 1=success)
+            let first_bytes_chirho = if d_chirho.len() >= 4 {
+                alloc::format!(" bytes=[{:#04x},{:#04x},{:#04x},{:#04x}]",
+                    d_chirho[0], d_chirho[1], d_chirho[2], d_chirho[3])
+            } else {
+                alloc::format!("")
+            };
             crate::serial_println_chirho!(
-                "[UNIX-SEND] #{} from_idx={} to_peer={} len={}",
-                cnt_chirho, idx_chirho, pi_chirho, d_chirho.len(),
+                "[UNIX-SEND] #{} from_idx={} to_peer={} len={}{}",
+                cnt_chirho, idx_chirho, pi_chirho, d_chirho.len(), first_bytes_chirho,
             );
         }
         // Don't push empty data — recvfrom returns 0 for empty, which
@@ -7893,7 +8635,110 @@ pub fn unix_socket_send_chirho(idx_chirho: usize, d_chirho: &[u8]) -> i64 {
         if !d_chirho.is_empty() {
             peer_chirho.recv_buf_chirho.push_back(d_chirho.to_vec());
         }
-        return d_chirho.len() as i64;
+        let len_chirho = d_chirho.len() as i64;
+        let sender_idx_chirho = idx_chirho; // idx = sender
+        drop(t_chirho); // Drop lock BEFORE nested lock acquisition
+        // X11 send-time injection: only for CLIENT→SERVER direction.
+        // Replies (SERVER→CLIENT) are skipped by checking sender parity:
+        // Server sockets have EVEN indices (5,6,8,10 from connect flow).
+        // Actually, just check: is the RECEIVER (pi) an X11 server socket
+        // AND is the SENDER (idx) a CLIENT socket (not a server)?
+        // Simple heuristic: only inject when sender < receiver (clients have
+        // lower indices than their server peers in our connect flow).
+        if sender_idx_chirho < pi_chirho && is_x11_server_unix_socket_chirho(pi_chirho) {
+            let x11_large_batch_trace_enabled_chirho = d_chirho.len() >= 100;
+            let mut x11_batch_buffered_before_chirho = 0usize;
+            let mut x11_batch_buffered_after_chirho = 0usize;
+            // Append to reassembly buffer and process complete requests
+            {
+                let mut bufs_chirho = X11_REASSEMBLY_CHIRHO.lock();
+                if pi_chirho < bufs_chirho.len() {
+                    x11_batch_buffered_before_chirho = bufs_chirho[pi_chirho].len();
+                    bufs_chirho[pi_chirho].extend_from_slice(d_chirho);
+                    x11_batch_buffered_after_chirho = bufs_chirho[pi_chirho].len();
+                }
+            }
+            if x11_large_batch_trace_enabled_chirho {
+                crate::serial_println_chirho!(
+                    "[X11-BATCH-START] server_unix_idx={} chunk_len={} buffered_before={} buffered_after={}",
+                    pi_chirho,
+                    d_chirho.len(),
+                    x11_batch_buffered_before_chirho,
+                    x11_batch_buffered_after_chirho,
+                );
+            }
+            let mut x11_batch_extract_offset_chirho = 0usize;
+            loop {
+                let req_tuple_chirho = {
+                    let mut bufs_chirho = X11_REASSEMBLY_CHIRHO.lock();
+                    if pi_chirho >= bufs_chirho.len() { break; }
+                    let buf_chirho = &mut bufs_chirho[pi_chirho];
+                    if buf_chirho.len() < 4 {
+                        if x11_large_batch_trace_enabled_chirho {
+                            crate::serial_println_chirho!(
+                                "[X11-BATCH-WAIT] server_unix_idx={} extracted={} remaining={} reason=short-header",
+                                pi_chirho,
+                                x11_batch_extract_offset_chirho,
+                                buf_chirho.len(),
+                            );
+                        }
+                        break;
+                    }
+                    // Setup request
+                    if buf_chirho[0] == 0x6c && buf_chirho.len() >= 12 && buf_chirho[2] == 0x0b {
+                        let r_chirho = buf_chirho[..12].to_vec();
+                        buf_chirho.drain(..12);
+                        Some((r_chirho, buf_chirho.len()))
+                    } else {
+                        let len_u_chirho = u16::from_le_bytes([buf_chirho[2], buf_chirho[3]]) as usize;
+                        let len_b_chirho = len_u_chirho.saturating_mul(4);
+                        if len_b_chirho == 0 || len_b_chirho > 65536 {
+                            crate::serial_println_chirho!(
+                                "[X11-REASSEM-BAIL] idx={} buf_len={} opcode={:#x} len_u={} len_b={}",
+                                pi_chirho, buf_chirho.len(), buf_chirho[0], len_u_chirho, len_b_chirho,
+                            );
+                            buf_chirho.clear(); break;
+                        }
+                        if buf_chirho.len() < len_b_chirho {
+                            if x11_large_batch_trace_enabled_chirho {
+                                crate::serial_println_chirho!(
+                                    "[X11-BATCH-WAIT] server_unix_idx={} extracted={} needed={} buffered={} reason=incomplete-request",
+                                    pi_chirho,
+                                    x11_batch_extract_offset_chirho,
+                                    len_b_chirho,
+                                    buf_chirho.len(),
+                                );
+                            }
+                            break;
+                        }
+                        let r_chirho = buf_chirho[..len_b_chirho].to_vec();
+                        buf_chirho.drain(..len_b_chirho);
+                        Some((r_chirho, buf_chirho.len()))
+                    }
+                };
+                let (req_chirho, remaining_after_extract_chirho) = match req_tuple_chirho {
+                    Some(tuple_chirho) => tuple_chirho,
+                    None => break,
+                };
+                if x11_large_batch_trace_enabled_chirho {
+                    let req_opcode_chirho = req_chirho.first().copied().unwrap_or(0xff);
+                    crate::serial_println_chirho!(
+                        "[X11-BATCH-REQ] server_unix_idx={} batch_offset={} opcode={:#x} name={} len={} remaining_after={}",
+                        pi_chirho,
+                        x11_batch_extract_offset_chirho,
+                        req_opcode_chirho,
+                        x11_opcode_name_chirho(req_opcode_chirho),
+                        req_chirho.len(),
+                        remaining_after_extract_chirho,
+                    );
+                }
+                x11_batch_extract_offset_chirho =
+                    x11_batch_extract_offset_chirho.saturating_add(req_chirho.len());
+                maybe_inject_x11_single_protocol_reply_chirho(pi_chirho, &req_chirho);
+            }
+        }
+        wake_socket_data_waitqueue_chirho();
+        return len_chirho;
     }
     -EBADF_CHIRHO
 }
@@ -7907,6 +8752,7 @@ pub fn unix_socket_recv_bytes_chirho(idx_chirho: usize, max_len_chirho: usize) -
         sk_chirho.recv_buf_chirho.pop_front();
     }
     if sk_chirho.recv_buf_chirho.is_empty() {
+        sk_chirho.x11_reply_just_sent_chirho = false;
         return None;
     }
     // Read up to max_len bytes across entries (byte-stream semantics)
@@ -7928,7 +8774,28 @@ pub fn unix_socket_recv_bytes_chirho(idx_chirho: usize, max_len_chirho: usize) -
             _ => break, // No more data
         }
     }
-    if result_chirho.is_empty() { None } else { Some(result_chirho) }
+    if result_chirho.is_empty() {
+        sk_chirho.x11_reply_just_sent_chirho = false;
+        None
+    } else {
+        let (_, remaining_recv_bytes_chirho) = unix_socket_recv_stats_chirho(sk_chirho);
+        if remaining_recv_bytes_chirho == 0 {
+            sk_chirho.x11_reply_just_sent_chirho = false;
+        }
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static UNIX_RECV_LOG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+        let trace_index_chirho = UNIX_RECV_LOG_CHIRHO.fetch_add(1, Ordering::Relaxed);
+        if trace_index_chirho < 200 {
+            crate::serial_println_chirho!(
+                "[UNIX-RECV] #{} unix_idx={} ret_len={} remaining_entries={}",
+                trace_index_chirho,
+                idx_chirho,
+                result_chirho.len(),
+                sk_chirho.recv_buf_chirho.len(),
+            );
+        }
+        Some(result_chirho)
+    }
 }
 
 /// Legacy: pop one message (for backwards compat with non-stream code).
@@ -7941,6 +8808,12 @@ pub fn unix_socket_listen_chirho(idx_chirho: usize) -> i64 {
     let mut t_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
     if let Some(ref mut sk_chirho) = t_chirho.get_mut(idx_chirho).and_then(|s_chirho| s_chirho.as_mut()) {
         sk_chirho.listening_chirho = true;
+        sk_chirho.listener_pid_chirho = current_unix_listener_pid_chirho();
+        crate::serial_println_chirho!(
+            "[UNIX-LISTEN] unix_idx={} owner_pid={}",
+            idx_chirho,
+            sk_chirho.listener_pid_chirho,
+        );
         0
     } else {
         -EBADF_CHIRHO
@@ -8176,6 +9049,7 @@ fn register_unix_socket_fd_chirho(socket_idx_chirho: usize) -> Result<i64, i64> 
 #[allow(dead_code)] pub const SO_REUSEADDR_CHIRHO: u64 = 2;
 #[allow(dead_code)] pub const SO_TYPE_CHIRHO: u64 = 3;
 #[allow(dead_code)] pub const SO_ERROR_CHIRHO: u64 = 4;
+#[allow(dead_code)] pub const SO_PEERCRED_CHIRHO: u64 = 17;
 #[allow(dead_code)] pub const SO_KEEPALIVE_CHIRHO: u64 = 9;
 #[allow(dead_code)] pub const SO_RCVBUF_CHIRHO: u64 = 8;
 #[allow(dead_code)] pub const SO_SNDBUF_CHIRHO: u64 = 7;
@@ -8262,6 +9136,63 @@ pub fn getsockopt_impl_chirho(
         return -EFAULT_CHIRHO;
     }
     let requested_len_chirho = u32::from_ne_bytes(requested_len_bytes_chirho) as usize;
+
+    if (lv_chirho, nm_chirho) == (SOL_SOCKET_CHIRHO, SO_PEERCRED_CHIRHO) {
+        let peer_pid_chirho = {
+            let socket_table_chirho = SOCKET_TABLE_CHIRHO.lock();
+            let socket_chirho = socket_table_chirho
+                .get(si_chirho)
+                .and_then(|slot_chirho| slot_chirho.as_ref())
+                .ok_or(-EBADF_CHIRHO);
+            let socket_chirho = match socket_chirho {
+                Ok(socket_chirho) => socket_chirho,
+                Err(errno_chirho) => return errno_chirho,
+            };
+            if socket_chirho.family_chirho as u64 != AF_UNIX_CHIRHO {
+                0u32
+            } else {
+                drop(socket_table_chirho);
+                lookup_unix_idx_chirho(si_chirho)
+                    .and_then(|unix_idx_chirho| {
+                        let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+                        let socket_chirho = unix_table_chirho
+                            .get(unix_idx_chirho)
+                            .and_then(|socket_option_chirho| socket_option_chirho.as_ref())?;
+                        let peer_idx_chirho = socket_chirho.peer_idx_chirho?;
+                        unix_table_chirho
+                            .get(peer_idx_chirho)
+                            .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+                            .map(|peer_socket_chirho| peer_socket_chirho.owner_pid_chirho as u32)
+                    })
+                    .unwrap_or(0u32)
+            }
+        };
+        let mut peercred_bytes_chirho = [0u8; 12];
+        peercred_bytes_chirho[0..4].copy_from_slice(&peer_pid_chirho.to_ne_bytes());
+        peercred_bytes_chirho[4..8].copy_from_slice(&0u32.to_ne_bytes());
+        peercred_bytes_chirho[8..12].copy_from_slice(&0u32.to_ne_bytes());
+        let write_len_chirho = core::cmp::min(requested_len_chirho, peercred_bytes_chirho.len());
+        if crate::uaccess_chirho::copy_to_user_chirho(
+            vp_chirho,
+            &peercred_bytes_chirho[..write_len_chirho],
+            write_len_chirho,
+        )
+        .is_err()
+        {
+            return -EFAULT_CHIRHO;
+        }
+        let actual_len_bytes_chirho = (peercred_bytes_chirho.len() as u32).to_ne_bytes();
+        if crate::uaccess_chirho::copy_to_user_chirho(
+            lp_chirho,
+            &actual_len_bytes_chirho,
+            actual_len_bytes_chirho.len(),
+        )
+        .is_err()
+        {
+            return -EFAULT_CHIRHO;
+        }
+        return 0;
+    }
 
     let socket_options_chirho = SOCKET_OPTS_CHIRHO.lock();
     let socket_option_chirho = &socket_options_chirho[si_chirho];
@@ -8379,6 +9310,1007 @@ pub fn handle_net_ioctl_chirho(cmd_chirho: u64, ifr_chirho: u64) -> i64 {
         SIOCGIFFLAGS_CHIRHO => { for ic_chirho in cfg_chirho.iter() { if ic_chirho.name_chirho == nm_chirho { unsafe { core::ptr::write((ifr_chirho+16) as *mut u16, ic_chirho.flags_chirho as u16) }; return 0; } } -ENOENT_NET_CHIRHO }
         SIOCSIFFLAGS_CHIRHO => { let nf_chirho = unsafe { core::ptr::read((ifr_chirho+16) as *const u16) } as u32; for ic_chirho in cfg_chirho.iter_mut() { if ic_chirho.name_chirho == nm_chirho { ic_chirho.flags_chirho = nf_chirho; return 0; } } -ENOENT_NET_CHIRHO }
         _ => 0,
+    }
+}
+
+// ============================================================================
+// X11 protocol: connection setup response builder
+// ============================================================================
+
+/// Build a complete, xcb/Xlib-valid X11 connection setup success response.
+///
+/// Layout (little-endian):
+///   8-byte header  +  body (additional_data_length * 4 bytes)
+///
+/// Body contains:
+///   32 bytes fixed info  +  vendor (0 bytes, empty)
+///   + 1 pixmap format (8 bytes)  +  1 screen (40 bytes)
+///   + 1 depth (8 bytes)  +  1 visual type (24 bytes)
+///   = 112 bytes total body  =>  additional_data_length = 28
+pub fn build_x11_setup_response_chirho() -> alloc::vec::Vec<u8> {
+    // Body component sizes
+    const FIXED_INFO_LEN_CHIRHO: usize = 32;
+    const VENDOR_LEN_CHIRHO: usize = 0; // empty vendor, no padding needed
+    const FORMAT_LEN_CHIRHO: usize = 8;  // 1 pixmap format
+    const SCREEN_FIXED_LEN_CHIRHO: usize = 40; // per-screen fixed fields
+    const DEPTH_HEADER_LEN_CHIRHO: usize = 8;  // per-depth header
+    const VISUAL_LEN_CHIRHO: usize = 24; // per-visual-type entry
+
+    const BODY_LEN_CHIRHO: usize = FIXED_INFO_LEN_CHIRHO
+        + VENDOR_LEN_CHIRHO
+        + FORMAT_LEN_CHIRHO
+        + SCREEN_FIXED_LEN_CHIRHO
+        + DEPTH_HEADER_LEN_CHIRHO
+        + VISUAL_LEN_CHIRHO; // = 112
+
+    const HEADER_LEN_CHIRHO: usize = 8;
+    const ADDITIONAL_DATA_CHIRHO: u16 = (BODY_LEN_CHIRHO / 4) as u16; // = 28
+
+    let mut r_chirho = alloc::vec![0u8; HEADER_LEN_CHIRHO + BODY_LEN_CHIRHO]; // 120 total
+
+    // ── 8-byte header ──────────────────────────────────────────────────
+    r_chirho[0] = 1;  // success
+    r_chirho[1] = 0;  // pad
+    r_chirho[2] = 11; // protocol-major-version (little-endian low byte)
+    r_chirho[3] = 0;  // protocol-major-version high byte
+    r_chirho[4] = 0;  // protocol-minor-version low byte
+    r_chirho[5] = 0;  // protocol-minor-version high byte
+    r_chirho[6] = (ADDITIONAL_DATA_CHIRHO & 0xFF) as u8;
+    r_chirho[7] = (ADDITIONAL_DATA_CHIRHO >> 8) as u8;
+
+    // ── 32-byte fixed connection setup info (body offset 0) ────────────
+    let b_chirho = HEADER_LEN_CHIRHO; // base offset into r_chirho for body
+
+    // release_number (4 bytes) — any nonzero
+    let release_chirho: u32 = 12101000; // mimics Xorg 1.21.1.0
+    r_chirho[b_chirho..b_chirho + 4].copy_from_slice(&release_chirho.to_le_bytes());
+
+    // resource_id_base (4 bytes)
+    let rid_base_chirho: u32 = 0x0020_0000;
+    r_chirho[b_chirho + 4..b_chirho + 8].copy_from_slice(&rid_base_chirho.to_le_bytes());
+
+    // resource_id_mask (4 bytes)
+    let rid_mask_chirho: u32 = 0x001F_FFFF;
+    r_chirho[b_chirho + 8..b_chirho + 12].copy_from_slice(&rid_mask_chirho.to_le_bytes());
+
+    // motion_buffer_size (4 bytes)
+    let motion_buf_chirho: u32 = 256;
+    r_chirho[b_chirho + 12..b_chirho + 16].copy_from_slice(&motion_buf_chirho.to_le_bytes());
+
+    // vendor_length (2 bytes) = 0
+    r_chirho[b_chirho + 16] = 0;
+    r_chirho[b_chirho + 17] = 0;
+
+    // maximum_request_length (2 bytes) = 65535
+    r_chirho[b_chirho + 18] = 0xFF;
+    r_chirho[b_chirho + 19] = 0xFF;
+
+    // number_of_screens (1 byte) = 1
+    r_chirho[b_chirho + 20] = 1;
+
+    // number_of_formats (1 byte) = 1
+    r_chirho[b_chirho + 21] = 1;
+
+    // image_byte_order (1 byte) = 0 (LSBFirst)
+    r_chirho[b_chirho + 22] = 0;
+
+    // bitmap_format_bit_order (1 byte) = 0 (LSBFirst)
+    r_chirho[b_chirho + 23] = 0;
+
+    // bitmap_format_scanline_unit (1 byte) = 32
+    r_chirho[b_chirho + 24] = 32;
+
+    // bitmap_format_scanline_pad (1 byte) = 32
+    r_chirho[b_chirho + 25] = 32;
+
+    // min_keycode (1 byte) = 8
+    r_chirho[b_chirho + 26] = 8;
+
+    // max_keycode (1 byte) = 255
+    r_chirho[b_chirho + 27] = 255;
+
+    // pad (4 bytes) — already zero
+    // r_chirho[b_chirho+28..b_chirho+32] = 0
+
+    // ── Vendor string (0 bytes, no padding) ────────────────────────────
+    // nothing to write
+
+    // ── Pixmap formats (1 format, 8 bytes each) ────────────────────────
+    let fmt_off_chirho = b_chirho + FIXED_INFO_LEN_CHIRHO + VENDOR_LEN_CHIRHO; // offset 40
+    r_chirho[fmt_off_chirho] = 24;     // depth
+    r_chirho[fmt_off_chirho + 1] = 32; // bits_per_pixel
+    r_chirho[fmt_off_chirho + 2] = 32; // scanline_pad
+    // fmt_off_chirho+3..+8: pad (already zero)
+
+    // ── Screen (1 screen, 40 bytes fixed + depths) ─────────────────────
+    let scr_off_chirho = fmt_off_chirho + FORMAT_LEN_CHIRHO; // offset 48
+
+    // root window (4 bytes) = 0x0000_007F
+    let root_wid_chirho: u32 = 0x7F;
+    r_chirho[scr_off_chirho..scr_off_chirho + 4].copy_from_slice(&root_wid_chirho.to_le_bytes());
+
+    // default_colormap (4 bytes) = 0x20
+    let cmap_chirho: u32 = 0x20;
+    r_chirho[scr_off_chirho + 4..scr_off_chirho + 8].copy_from_slice(&cmap_chirho.to_le_bytes());
+
+    // white_pixel (4 bytes)
+    let white_chirho: u32 = 0x00FF_FFFF;
+    r_chirho[scr_off_chirho + 8..scr_off_chirho + 12].copy_from_slice(&white_chirho.to_le_bytes());
+
+    // black_pixel (4 bytes)
+    let black_chirho: u32 = 0x0000_0000;
+    r_chirho[scr_off_chirho + 12..scr_off_chirho + 16].copy_from_slice(&black_chirho.to_le_bytes());
+
+    // current_input_masks (4 bytes) = 0
+    // already zero at scr_off_chirho+16..+20
+
+    // width_in_pixels (2 bytes) = 1280
+    let width_px_chirho: u16 = 1280;
+    r_chirho[scr_off_chirho + 20..scr_off_chirho + 22].copy_from_slice(&width_px_chirho.to_le_bytes());
+
+    // height_in_pixels (2 bytes) = 800
+    let height_px_chirho: u16 = 800;
+    r_chirho[scr_off_chirho + 22..scr_off_chirho + 24].copy_from_slice(&height_px_chirho.to_le_bytes());
+
+    // width_in_mm (2 bytes) = 338
+    let width_mm_chirho: u16 = 338;
+    r_chirho[scr_off_chirho + 24..scr_off_chirho + 26].copy_from_slice(&width_mm_chirho.to_le_bytes());
+
+    // height_in_mm (2 bytes) = 211
+    let height_mm_chirho: u16 = 211;
+    r_chirho[scr_off_chirho + 26..scr_off_chirho + 28].copy_from_slice(&height_mm_chirho.to_le_bytes());
+
+    // min_installed_maps (2 bytes) = 1
+    r_chirho[scr_off_chirho + 28] = 1;
+    r_chirho[scr_off_chirho + 29] = 0;
+
+    // max_installed_maps (2 bytes) = 1
+    r_chirho[scr_off_chirho + 30] = 1;
+    r_chirho[scr_off_chirho + 31] = 0;
+
+    // root_visual (4 bytes) = 0x21
+    let root_vis_chirho: u32 = 0x21;
+    r_chirho[scr_off_chirho + 32..scr_off_chirho + 36].copy_from_slice(&root_vis_chirho.to_le_bytes());
+
+    // backing_stores (1 byte) = 0 (NotUseful)
+    r_chirho[scr_off_chirho + 36] = 0;
+
+    // save_unders (1 byte) = 0
+    r_chirho[scr_off_chirho + 37] = 0;
+
+    // root_depth (1 byte) = 24
+    r_chirho[scr_off_chirho + 38] = 24;
+
+    // number_of_depths (1 byte) = 1
+    r_chirho[scr_off_chirho + 39] = 1;
+
+    // ── Depth (1 depth entry, 8 bytes header) ──────────────────────────
+    let dep_off_chirho = scr_off_chirho + SCREEN_FIXED_LEN_CHIRHO; // offset 88
+
+    // depth (1 byte) = 24
+    r_chirho[dep_off_chirho] = 24;
+
+    // pad (1 byte) = 0
+    r_chirho[dep_off_chirho + 1] = 0;
+
+    // number_of_visual_types (2 bytes) = 1
+    r_chirho[dep_off_chirho + 2] = 1;
+    r_chirho[dep_off_chirho + 3] = 0;
+
+    // pad (4 bytes) — already zero
+    // dep_off_chirho+4..+8
+
+    // ── Visual type (1 visual, 24 bytes) ───────────────────────────────
+    let vis_off_chirho = dep_off_chirho + DEPTH_HEADER_LEN_CHIRHO; // offset 96
+
+    // visual_id (4 bytes) = 0x21
+    let vis_id_chirho: u32 = 0x21;
+    r_chirho[vis_off_chirho..vis_off_chirho + 4].copy_from_slice(&vis_id_chirho.to_le_bytes());
+
+    // class (1 byte) = 4 (TrueColor)
+    r_chirho[vis_off_chirho + 4] = 4;
+
+    // bits_per_rgb_value (1 byte) = 8
+    r_chirho[vis_off_chirho + 5] = 8;
+
+    // colormap_entries (2 bytes) = 256
+    r_chirho[vis_off_chirho + 6] = 0;
+    r_chirho[vis_off_chirho + 7] = 1; // 256 in LE = 0x0100
+
+    // red_mask (4 bytes) = 0x00FF0000
+    let red_mask_chirho: u32 = 0x00FF_0000;
+    r_chirho[vis_off_chirho + 8..vis_off_chirho + 12].copy_from_slice(&red_mask_chirho.to_le_bytes());
+
+    // green_mask (4 bytes) = 0x0000FF00
+    let green_mask_chirho: u32 = 0x0000_FF00;
+    r_chirho[vis_off_chirho + 12..vis_off_chirho + 16].copy_from_slice(&green_mask_chirho.to_le_bytes());
+
+    // blue_mask (4 bytes) = 0x000000FF
+    let blue_mask_chirho: u32 = 0x0000_00FF;
+    r_chirho[vis_off_chirho + 16..vis_off_chirho + 20].copy_from_slice(&blue_mask_chirho.to_le_bytes());
+
+    // vis_off_chirho+20..+24: pad (already zero)
+
+    r_chirho
+}
+
+const X11_QUERY_EXTENSION_OPCODE_CHIRHO: u8 = 98;
+const X11_INTERN_ATOM_OPCODE_CHIRHO: u8 = 16;
+const X11_GET_PROPERTY_OPCODE_CHIRHO: u8 = 20;
+const X11_OPEN_FONT_OPCODE_CHIRHO: u8 = 45;
+const X11_QUERY_FONT_OPCODE_CHIRHO: u8 = 47;
+const X11_CREATE_PIXMAP_OPCODE_CHIRHO: u8 = 53;
+const X11_CREATE_GC_OPCODE_CHIRHO: u8 = 55;
+const X11_QUERY_BEST_SIZE_OPCODE_CHIRHO: u8 = 97;
+const X11_BIG_REQUESTS_OPCODE_CHIRHO: u8 = 133;
+const X11_BIG_REQUESTS_ENABLE_MINOR_CHIRHO: u8 = 0;
+const X11_BIG_REQUESTS_MAX_LENGTH_CHIRHO: u32 = 262_140;
+const X11_SHAPE_EXTENSION_OPCODE_CHIRHO: u8 = 134;
+const X11_SYNC_EXTENSION_OPCODE_CHIRHO: u8 = 135;
+const X11_XKEYBOARD_EXTENSION_OPCODE_CHIRHO: u8 = 136;
+const X11_XKEYBOARD_USE_EXTENSION_MINOR_CHIRHO: u8 = 0;
+const X11_XKEYBOARD_SERVER_MAJOR_CHIRHO: u16 = 1;
+const X11_XKEYBOARD_SERVER_MINOR_CHIRHO: u16 = 0;
+const X11_XKEYBOARD_FIRST_EVENT_CHIRHO: u8 = 85;
+const X11_XKEYBOARD_FIRST_ERROR_CHIRHO: u8 = 137;
+
+fn is_x11_server_unix_socket_chirho(unix_idx_chirho: usize) -> bool {
+    // Broad detection: return true for ANY non-listening unix socket
+    // when an X11 listen socket exists. The reassembly function
+    // handles filtering out replies (byte[0]=1).
+    let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    let sk_chirho = match unix_table_chirho.get(unix_idx_chirho).and_then(|s| s.as_ref()) {
+        Some(s) => s,
+        None => return false,
+    };
+    if sk_chirho.listening_chirho {
+        return false;
+    }
+    // Check if any X11 listen socket exists
+    for listen_idx_chirho in [0usize, 2, 3] {
+        if let Some(Some(ref listen_sk_chirho)) = unix_table_chirho.get(listen_idx_chirho) {
+            if listen_sk_chirho.listening_chirho {
+                if let Some(ref p_chirho) = listen_sk_chirho.path_chirho {
+                    if p_chirho.contains(".X11-unix/X") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn next_x11_sequence_for_unix_idx_chirho(unix_idx_chirho: usize) -> u16 {
+    let mut unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    if let Some(Some(socket_chirho)) = unix_table_chirho.get_mut(unix_idx_chirho) {
+        socket_chirho.x11_sequence_chirho = socket_chirho.x11_sequence_chirho.wrapping_add(1);
+        socket_chirho.x11_sequence_chirho
+    } else {
+        0
+    }
+}
+
+fn is_x11_xkb_initialized_for_unix_idx_chirho(unix_idx_chirho: usize) -> bool {
+    let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    unix_table_chirho
+        .get(unix_idx_chirho)
+        .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+        .map(|socket_chirho| socket_chirho.x11_xkb_initialized_chirho)
+        .unwrap_or(false)
+}
+
+fn set_x11_xkb_initialized_for_unix_idx_chirho(
+    unix_idx_chirho: usize,
+    initialized_chirho: bool,
+) {
+    let mut unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+    if let Some(Some(socket_chirho)) = unix_table_chirho.get_mut(unix_idx_chirho) {
+        socket_chirho.x11_xkb_initialized_chirho = initialized_chirho;
+    }
+}
+
+fn send_x11_injected_reply_chirho(
+    server_unix_idx_chirho: usize,
+    reply_bytes_chirho: &[u8],
+) -> i64 {
+    let client_unix_idx_chirho = {
+        let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+        unix_table_chirho
+            .get(server_unix_idx_chirho)
+            .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+            .and_then(|socket_chirho| socket_chirho.peer_idx_chirho)
+    };
+
+    let send_result_chirho = unix_socket_send_chirho(server_unix_idx_chirho, reply_bytes_chirho);
+    if send_result_chirho > 0 {
+        if let Some(client_unix_idx_chirho) = client_unix_idx_chirho {
+            let mut unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+            if let Some(Some(socket_chirho)) = unix_table_chirho.get_mut(client_unix_idx_chirho) {
+                socket_chirho.x11_reply_just_sent_chirho = true;
+            }
+        }
+    }
+    send_result_chirho
+}
+
+fn intern_x11_atom_chirho(atom_name_chirho: &[u8], only_if_exists_chirho: bool) -> u32 {
+    let mut atom_table_chirho = X11_ATOM_TABLE_CHIRHO.lock();
+    if let Some(atom_id_chirho) = atom_table_chirho.get(atom_name_chirho) {
+        return *atom_id_chirho;
+    }
+    if only_if_exists_chirho {
+        return 0;
+    }
+    let atom_id_chirho = NEXT_X11_ATOM_ID_CHIRHO.fetch_add(1, Ordering::Relaxed) as u32;
+    atom_table_chirho.insert(atom_name_chirho.to_vec(), atom_id_chirho);
+    atom_id_chirho
+}
+
+fn build_x11_query_extension_reply_chirho(
+    sequence_chirho: u16,
+    present_chirho: bool,
+    major_opcode_chirho: u8,
+    first_event_chirho: u8,
+    first_error_chirho: u8,
+) -> alloc::vec::Vec<u8> {
+    let mut reply_chirho = alloc::vec![0u8; 32];
+    reply_chirho[0] = 1;
+    reply_chirho[1] = if present_chirho { 1 } else { 0 };
+    reply_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    reply_chirho[4..8].copy_from_slice(&0u32.to_le_bytes());
+    reply_chirho[8] = major_opcode_chirho;
+    reply_chirho[9] = first_event_chirho;
+    reply_chirho[10] = first_error_chirho;
+    reply_chirho
+}
+
+fn build_x11_intern_atom_reply_chirho(
+    sequence_chirho: u16,
+    atom_id_chirho: u32,
+) -> alloc::vec::Vec<u8> {
+    let mut reply_chirho = alloc::vec![0u8; 32];
+    reply_chirho[0] = 1;
+    reply_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    reply_chirho[4..8].copy_from_slice(&0u32.to_le_bytes());
+    reply_chirho[8..12].copy_from_slice(&atom_id_chirho.to_le_bytes());
+    reply_chirho
+}
+
+fn build_x11_bigreq_enable_reply_chirho(sequence_chirho: u16) -> alloc::vec::Vec<u8> {
+    let mut reply_chirho = alloc::vec![0u8; 32];
+    reply_chirho[0] = 1;
+    reply_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    reply_chirho[4..8].copy_from_slice(&0u32.to_le_bytes());
+    reply_chirho[8..12].copy_from_slice(&X11_BIG_REQUESTS_MAX_LENGTH_CHIRHO.to_le_bytes());
+    reply_chirho
+}
+
+fn build_x11_xkb_use_extension_reply_chirho(
+    sequence_chirho: u16,
+    supported_chirho: bool,
+    server_major_chirho: u16,
+    server_minor_chirho: u16,
+) -> alloc::vec::Vec<u8> {
+    let mut reply_chirho = alloc::vec![0u8; 32];
+    reply_chirho[0] = 1;
+    reply_chirho[1] = if supported_chirho { 1 } else { 0 };
+    reply_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    reply_chirho[4..8].copy_from_slice(&0u32.to_le_bytes());
+    reply_chirho[8..10].copy_from_slice(&server_major_chirho.to_le_bytes());
+    reply_chirho[10..12].copy_from_slice(&server_minor_chirho.to_le_bytes());
+    reply_chirho
+}
+
+fn build_x11_get_property_reply_chirho(sequence_chirho: u16) -> alloc::vec::Vec<u8> {
+    let mut reply_chirho = alloc::vec![0u8; 32];
+    reply_chirho[0] = 1;
+    reply_chirho[1] = 0; // format = empty
+    reply_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    reply_chirho[4..8].copy_from_slice(&0u32.to_le_bytes());
+    reply_chirho[8..12].copy_from_slice(&0u32.to_le_bytes()); // property type = None
+    reply_chirho[12..16].copy_from_slice(&0u32.to_le_bytes()); // bytes_after
+    reply_chirho[16..20].copy_from_slice(&0u32.to_le_bytes()); // nItems
+    reply_chirho
+}
+
+fn build_x11_query_best_size_reply_chirho(
+    sequence_chirho: u16,
+    width_chirho: u16,
+    height_chirho: u16,
+) -> alloc::vec::Vec<u8> {
+    let mut reply_chirho = alloc::vec![0u8; 32];
+    reply_chirho[0] = 1;
+    reply_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    reply_chirho[4..8].copy_from_slice(&0u32.to_le_bytes());
+    reply_chirho[8..10].copy_from_slice(&width_chirho.to_le_bytes());
+    reply_chirho[10..12].copy_from_slice(&height_chirho.to_le_bytes());
+    reply_chirho
+}
+
+fn build_x11_query_font_reply_chirho(sequence_chirho: u16) -> alloc::vec::Vec<u8> {
+    let mut reply_chirho = alloc::vec![0u8; 60];
+    let min_bounds_chirho = [0i16, 6i16, 6i16, 11i16, 2i16, 0i16];
+    let max_bounds_chirho = [0i16, 6i16, 6i16, 11i16, 2i16, 0i16];
+
+    reply_chirho[0] = 1;
+    reply_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    reply_chirho[4..8].copy_from_slice(&7u32.to_le_bytes());
+
+    for (metric_index_chirho, metric_value_chirho) in min_bounds_chirho.iter().enumerate() {
+        let metric_offset_chirho = 8 + (metric_index_chirho * 2);
+        reply_chirho[metric_offset_chirho..metric_offset_chirho + 2]
+            .copy_from_slice(&metric_value_chirho.to_le_bytes());
+    }
+
+    for (metric_index_chirho, metric_value_chirho) in max_bounds_chirho.iter().enumerate() {
+        let metric_offset_chirho = 24 + (metric_index_chirho * 2);
+        reply_chirho[metric_offset_chirho..metric_offset_chirho + 2]
+            .copy_from_slice(&metric_value_chirho.to_le_bytes());
+    }
+
+    reply_chirho[40..42].copy_from_slice(&0u16.to_le_bytes());
+    reply_chirho[42..44].copy_from_slice(&255u16.to_le_bytes());
+    reply_chirho[44..46].copy_from_slice(&32u16.to_le_bytes());
+    reply_chirho[46..48].copy_from_slice(&0u16.to_le_bytes());
+    reply_chirho[48] = 0;
+    reply_chirho[49] = 0;
+    reply_chirho[50] = 0;
+    reply_chirho[51] = 1;
+    reply_chirho[52..54].copy_from_slice(&11i16.to_le_bytes());
+    reply_chirho[54..56].copy_from_slice(&2i16.to_le_bytes());
+    reply_chirho[56..60].copy_from_slice(&0u32.to_le_bytes());
+
+    reply_chirho
+}
+
+fn build_x11_expose_event_chirho(
+    sequence_chirho: u16,
+    window_id_chirho: u32,
+    x_chirho: u16,
+    y_chirho: u16,
+    width_chirho: u16,
+    height_chirho: u16,
+) -> alloc::vec::Vec<u8> {
+    let mut event_chirho = alloc::vec![0u8; 32];
+    event_chirho[0] = 12;
+    event_chirho[1] = 0;
+    event_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    event_chirho[4..8].copy_from_slice(&window_id_chirho.to_le_bytes());
+    event_chirho[8..10].copy_from_slice(&x_chirho.to_le_bytes());
+    event_chirho[10..12].copy_from_slice(&y_chirho.to_le_bytes());
+    event_chirho[12..14].copy_from_slice(&width_chirho.to_le_bytes());
+    event_chirho[14..16].copy_from_slice(&height_chirho.to_le_bytes());
+    event_chirho[16..18].copy_from_slice(&0u16.to_le_bytes());
+    event_chirho
+}
+
+fn build_x11_map_notify_event_chirho(
+    sequence_chirho: u16,
+    event_window_id_chirho: u32,
+    window_id_chirho: u32,
+) -> alloc::vec::Vec<u8> {
+    let mut event_chirho = alloc::vec![0u8; 32];
+    event_chirho[0] = 19;
+    event_chirho[1] = 0;
+    event_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    event_chirho[4..8].copy_from_slice(&event_window_id_chirho.to_le_bytes());
+    event_chirho[8..12].copy_from_slice(&window_id_chirho.to_le_bytes());
+    event_chirho[12] = 0;
+    event_chirho
+}
+
+fn build_x11_generic_reply_chirho(sequence_chirho: u16) -> alloc::vec::Vec<u8> {
+    let mut reply_chirho = alloc::vec![0u8; 32];
+    reply_chirho[0] = 1;
+    reply_chirho[2..4].copy_from_slice(&sequence_chirho.to_le_bytes());
+    reply_chirho[4..8].copy_from_slice(&0u32.to_le_bytes());
+    reply_chirho
+}
+
+fn x11_opcode_name_chirho(opcode_chirho: u8) -> &'static str {
+    match opcode_chirho {
+        0x01 => "CreateWindow",
+        0x08 => "MapWindow",
+        0x0C => "ConfigureWindow",
+        0x12 => "ChangeProperty",
+        X11_INTERN_ATOM_OPCODE_CHIRHO => "InternAtom",
+        X11_GET_PROPERTY_OPCODE_CHIRHO => "GetProperty",
+        X11_OPEN_FONT_OPCODE_CHIRHO => "OpenFont",
+        X11_QUERY_FONT_OPCODE_CHIRHO => "QueryFont",
+        X11_CREATE_PIXMAP_OPCODE_CHIRHO => "CreatePixmap",
+        X11_CREATE_GC_OPCODE_CHIRHO => "CreateGC",
+        X11_QUERY_BEST_SIZE_OPCODE_CHIRHO => "QueryBestSize",
+        X11_QUERY_EXTENSION_OPCODE_CHIRHO => "QueryExtension",
+        X11_BIG_REQUESTS_OPCODE_CHIRHO => "BigReqEnable",
+        X11_SHAPE_EXTENSION_OPCODE_CHIRHO => "SHAPE",
+        X11_SYNC_EXTENSION_OPCODE_CHIRHO => "SYNC",
+        X11_XKEYBOARD_EXTENSION_OPCODE_CHIRHO => "XKEYBOARD",
+        _ => "Other",
+    }
+}
+
+fn maybe_inject_x11_single_protocol_reply_chirho(unix_idx_chirho: usize, data_chirho: &[u8]) {
+    if data_chirho.is_empty() {
+        return;
+    }
+
+    if data_chirho.len() == 12 && data_chirho[0] == 0x6c && data_chirho[2] == 0x0b {
+        let response_chirho = build_x11_setup_response_chirho();
+        let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &response_chirho);
+        crate::serial_println_chirho!(
+            "[X11-INJECT-RESPONSE] Sent {} byte response on unix_idx={}",
+            response_chirho.len(),
+            unix_idx_chirho,
+        );
+        return;
+    }
+
+    if data_chirho.len() < 4 {
+        return;
+    }
+
+    // Reply-skip removed: the sender_idx < pi_chirho check in
+    // unix_socket_send_chirho ensures only CLIENT→SERVER data enters here.
+    // Replies (SERVER→CLIENT) have sender_idx > pi_chirho and are skipped.
+    let sequence_chirho = next_x11_sequence_for_unix_idx_chirho(unix_idx_chirho);
+    crate::serial_println_chirho!(
+        "[X11-INJECT-OP] unix_idx={} seq={} opcode={:#x} name={} len={}",
+        unix_idx_chirho,
+        sequence_chirho,
+        data_chirho[0],
+        x11_opcode_name_chirho(data_chirho[0]),
+        data_chirho.len(),
+    );
+    if data_chirho.len() == 4 && data_chirho[0..4] == [0x00, 0x00, 0x01, 0x00] {
+        let reply_chirho = build_x11_bigreq_enable_reply_chirho(sequence_chirho);
+        let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+        crate::serial_println_chirho!(
+            "[X11-INJECT-BIGREQ-FALLBACK] unix_idx={} seq={} max_len={:#x}",
+            unix_idx_chirho,
+            sequence_chirho,
+            X11_BIG_REQUESTS_MAX_LENGTH_CHIRHO,
+        );
+        return;
+    }
+
+    match data_chirho[0] {
+        X11_QUERY_EXTENSION_OPCODE_CHIRHO => {
+            if data_chirho.len() < 8 {
+                return;
+            }
+            let name_len_chirho =
+                u16::from_le_bytes([data_chirho[4], data_chirho[5]]) as usize;
+            if data_chirho.len() < 8 + name_len_chirho {
+                return;
+            }
+            let extension_name_chirho = &data_chirho[8..8 + name_len_chirho];
+            let (present_chirho, major_opcode_chirho, first_event_chirho, first_error_chirho) =
+                if extension_name_chirho == b"BIG-REQUESTS" {
+                    (true, X11_BIG_REQUESTS_OPCODE_CHIRHO, 0, 0)
+                } else if extension_name_chirho == b"SHAPE" {
+                    (true, X11_SHAPE_EXTENSION_OPCODE_CHIRHO, 0, 0)
+                } else if extension_name_chirho == b"SYNC" {
+                    (true, X11_SYNC_EXTENSION_OPCODE_CHIRHO, 0, 0)
+                } else if extension_name_chirho == b"XKEYBOARD" {
+                    (
+                        true,
+                        X11_XKEYBOARD_EXTENSION_OPCODE_CHIRHO,
+                        X11_XKEYBOARD_FIRST_EVENT_CHIRHO,
+                        X11_XKEYBOARD_FIRST_ERROR_CHIRHO,
+                    )
+                } else if extension_name_chirho == b"RANDR"
+                    || extension_name_chirho == b"RENDER"
+                    || extension_name_chirho == b"Composite"
+                {
+                    (false, 0, 0, 0)
+                } else {
+                    (false, 0, 0, 0)
+                };
+            let reply_chirho = build_x11_query_extension_reply_chirho(
+                sequence_chirho,
+                present_chirho,
+                major_opcode_chirho,
+                first_event_chirho,
+                first_error_chirho,
+            );
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-QUERY-EXT] unix_idx={} seq={} name='{}' present={} opcode={}",
+                unix_idx_chirho,
+                sequence_chirho,
+                core::str::from_utf8(extension_name_chirho).unwrap_or("<bin>"),
+                present_chirho,
+                major_opcode_chirho,
+            );
+        }
+        X11_BIG_REQUESTS_OPCODE_CHIRHO if data_chirho[1] == X11_BIG_REQUESTS_ENABLE_MINOR_CHIRHO => {
+            let reply_chirho = build_x11_bigreq_enable_reply_chirho(sequence_chirho);
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-BIGREQ] unix_idx={} seq={} max_len={:#x}",
+                unix_idx_chirho,
+                sequence_chirho,
+                X11_BIG_REQUESTS_MAX_LENGTH_CHIRHO,
+            );
+        }
+        X11_XKEYBOARD_EXTENSION_OPCODE_CHIRHO => {
+            let minor_opcode_chirho = data_chirho[1];
+            let first_xkb_request_chirho =
+                !is_x11_xkb_initialized_for_unix_idx_chirho(unix_idx_chirho);
+            if first_xkb_request_chirho
+                || minor_opcode_chirho == X11_XKEYBOARD_USE_EXTENSION_MINOR_CHIRHO
+            {
+                let wanted_major_chirho = if data_chirho.len() >= 6 {
+                    u16::from_le_bytes([data_chirho[4], data_chirho[5]])
+                } else {
+                    X11_XKEYBOARD_SERVER_MAJOR_CHIRHO
+                };
+                let wanted_minor_chirho = if data_chirho.len() >= 8 {
+                    u16::from_le_bytes([data_chirho[6], data_chirho[7]])
+                } else {
+                    X11_XKEYBOARD_SERVER_MINOR_CHIRHO
+                };
+                let server_major_chirho = if wanted_major_chirho == 0 {
+                    X11_XKEYBOARD_SERVER_MAJOR_CHIRHO
+                } else {
+                    wanted_major_chirho
+                };
+                let server_minor_chirho = wanted_minor_chirho;
+                let reply_chirho = build_x11_xkb_use_extension_reply_chirho(
+                    sequence_chirho,
+                    true,
+                    server_major_chirho,
+                    server_minor_chirho,
+                );
+                let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+                set_x11_xkb_initialized_for_unix_idx_chirho(unix_idx_chirho, true);
+                crate::serial_println_chirho!(
+                    "[X11-INJECT-XKB-USE-EXT] unix_idx={} seq={} minor={} wanted={}.{} server={}.{}",
+                    unix_idx_chirho,
+                    sequence_chirho,
+                    minor_opcode_chirho,
+                    wanted_major_chirho,
+                    wanted_minor_chirho,
+                    server_major_chirho,
+                    server_minor_chirho,
+                );
+                return;
+            }
+
+            let reply_chirho = build_x11_generic_reply_chirho(sequence_chirho);
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-XKB-GENERIC] unix_idx={} seq={} minor={} len={}",
+                unix_idx_chirho,
+                sequence_chirho,
+                minor_opcode_chirho,
+                data_chirho.len(),
+            );
+        }
+        X11_INTERN_ATOM_OPCODE_CHIRHO => {
+            if data_chirho.len() < 8 {
+                return;
+            }
+            let only_if_exists_chirho = data_chirho[1] != 0;
+            let name_len_chirho =
+                u16::from_le_bytes([data_chirho[4], data_chirho[5]]) as usize;
+            if data_chirho.len() < 8 + name_len_chirho {
+                return;
+            }
+            let atom_name_chirho = &data_chirho[8..8 + name_len_chirho];
+            let atom_id_chirho = intern_x11_atom_chirho(atom_name_chirho, only_if_exists_chirho);
+            let reply_chirho = build_x11_intern_atom_reply_chirho(sequence_chirho, atom_id_chirho);
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-INTERN-ATOM] unix_idx={} seq={} only_if_exists={} atom={} name='{}'",
+                unix_idx_chirho,
+                sequence_chirho,
+                only_if_exists_chirho,
+                atom_id_chirho,
+                core::str::from_utf8(atom_name_chirho).unwrap_or("<bin>"),
+            );
+        }
+        X11_GET_PROPERTY_OPCODE_CHIRHO => {
+            let reply_chirho = build_x11_get_property_reply_chirho(sequence_chirho);
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-GET-PROPERTY] unix_idx={} seq={} empty=true",
+                unix_idx_chirho,
+                sequence_chirho,
+            );
+        }
+        X11_CREATE_GC_OPCODE_CHIRHO => {
+            crate::serial_println_chirho!(
+                "[X11-INJECT-CREATE-GC] unix_idx={} seq={} reply=none",
+                unix_idx_chirho,
+                sequence_chirho,
+            );
+        }
+        0x01 => {
+            if data_chirho.len() < 20 {
+                crate::serial_println_chirho!(
+                    "[X11-INJECT-CREATE-WINDOW] unix_idx={} seq={} reply=none reason=short-request len={}",
+                    unix_idx_chirho,
+                    sequence_chirho,
+                    data_chirho.len(),
+                );
+                return;
+            }
+            let window_id_chirho =
+                u32::from_le_bytes([data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7]]);
+            let x_chirho =
+                u16::from_le_bytes([data_chirho[12], data_chirho[13]]);
+            let y_chirho =
+                u16::from_le_bytes([data_chirho[14], data_chirho[15]]);
+            let width_chirho =
+                u16::from_le_bytes([data_chirho[16], data_chirho[17]]);
+            let height_chirho =
+                u16::from_le_bytes([data_chirho[18], data_chirho[19]]);
+            let expose_event_chirho = build_x11_expose_event_chirho(
+                sequence_chirho,
+                window_id_chirho,
+                x_chirho,
+                y_chirho,
+                width_chirho,
+                height_chirho,
+            );
+            let map_notify_event_chirho = build_x11_map_notify_event_chirho(
+                sequence_chirho,
+                window_id_chirho,
+                window_id_chirho,
+            );
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &expose_event_chirho);
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &map_notify_event_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-CREATE-WINDOW] unix_idx={} seq={} window={:#x} x={} y={} width={} height={} events=Expose+MapNotify",
+                unix_idx_chirho,
+                sequence_chirho,
+                window_id_chirho,
+                x_chirho,
+                y_chirho,
+                width_chirho,
+                height_chirho,
+            );
+        }
+        X11_QUERY_BEST_SIZE_OPCODE_CHIRHO => {
+            let (width_chirho, height_chirho) = if data_chirho.len() >= 12 {
+                (
+                    u16::from_le_bytes([data_chirho[8], data_chirho[9]]),
+                    u16::from_le_bytes([data_chirho[10], data_chirho[11]]),
+                )
+            } else {
+                (0, 0)
+            };
+            let reply_chirho = build_x11_query_best_size_reply_chirho(
+                sequence_chirho,
+                width_chirho,
+                height_chirho,
+            );
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-QUERY-BEST-SIZE] unix_idx={} seq={} width={} height={}",
+                unix_idx_chirho,
+                sequence_chirho,
+                width_chirho,
+                height_chirho,
+            );
+        }
+        X11_OPEN_FONT_OPCODE_CHIRHO => {
+            crate::serial_println_chirho!(
+                "[X11-INJECT-OPEN-FONT] unix_idx={} seq={} reply=none",
+                unix_idx_chirho,
+                sequence_chirho,
+            );
+        }
+        X11_QUERY_FONT_OPCODE_CHIRHO => {
+            let reply_chirho = build_x11_query_font_reply_chirho(sequence_chirho);
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-QUERY-FONT] unix_idx={} seq={} ascent={} descent={} width={}",
+                unix_idx_chirho,
+                sequence_chirho,
+                11,
+                2,
+                6,
+            );
+        }
+        // GetWindowAttributes (0x03): return basic window attributes
+        0x03 => {
+            let mut reply_chirho = [0u8; 44];
+            reply_chirho[0] = 1; // Reply
+            reply_chirho[1] = 0; // backing_store = NotUseful
+            reply_chirho[2] = (sequence_chirho & 0xFF) as u8;
+            reply_chirho[3] = (sequence_chirho >> 8) as u8;
+            reply_chirho[4] = 3; reply_chirho[5] = 0; reply_chirho[6] = 0; reply_chirho[7] = 0; // length=3 (3*4=12 extra)
+            // visual at bytes 8-11
+            reply_chirho[8] = 0x21; // visual_id=0x21 (matches setup)
+            // class=InputOutput(1) at byte 12-13
+            reply_chirho[12] = 1; reply_chirho[13] = 0;
+            // bit_gravity=0, win_gravity=0 at 14-15
+            // map_state=Unmapped(0) at byte 30
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+        }
+        // QueryTree (0x0F): return root with no children
+        0x0F => {
+            let mut reply_chirho = [0u8; 32];
+            reply_chirho[0] = 1; // Reply
+            reply_chirho[2] = (sequence_chirho & 0xFF) as u8;
+            reply_chirho[3] = (sequence_chirho >> 8) as u8;
+            // root at bytes 8-11
+            reply_chirho[8] = 0x7F;
+            // parent at bytes 12-15 (root's parent = 0)
+            // number of children at bytes 16-17 = 0
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+        }
+        // GetInputFocus (0x2B): return PointerRoot
+        0x2B => {
+            let mut reply_chirho = [0u8; 32];
+            reply_chirho[0] = 1; // Reply
+            reply_chirho[1] = 1; // revert_to = PointerRoot
+            reply_chirho[2] = (sequence_chirho & 0xFF) as u8;
+            reply_chirho[3] = (sequence_chirho >> 8) as u8;
+            // focus = PointerRoot (1)
+            reply_chirho[8] = 1;
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+        }
+        opcode_chirho => {
+            let is_void_chirho = matches!(
+                opcode_chirho,
+                // Complete void opcode list from X11 protocol spec
+                0x01 | 0x02 | 0x04 | 0x05 | 0x06 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D
+                    | 0x12 | 0x13 | 0x16 | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x1F
+                    | 0x22 | 0x24 | 0x25 | 0x26 | 0x27 | 0x28 | 0x29 | 0x2A | 0x2B | 0x2C | X11_OPEN_FONT_OPCODE_CHIRHO
+                    | 0x2E | 0x30 | 0x32 | 0x33 | 0x34 | 0x35 | 0x36 | X11_CREATE_PIXMAP_OPCODE_CHIRHO
+                    | X11_CREATE_GC_OPCODE_CHIRHO
+                    | 0x38 | 0x39 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F | 0x40 | 0x41 | 0x42
+                    | 0x43 | 0x44 | 0x45 | 0x46 | 0x48 | 0x4A | 0x4C | 0x4D | 0x4E | 0x4F
+                    | 0x50 | 0x56 | 0x57 | 0x59 | 0x5A | 0x5B | 0x5C | 0x5D | 0x5E | 0x5F
+                    | 0x60 | 0x61 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6A | 0x6B
+                    | 0x6C | 0x6D | 0x6E | 0x6F | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x77 | 0x78 | 0x79
+            );
+            if is_void_chirho {
+                // Log CreateWindow/MapWindow even though they're void
+                if opcode_chirho == 0x01 || opcode_chirho == 0x08 || opcode_chirho == 0x02 || opcode_chirho == 0x0C {
+                    crate::serial_println_chirho!(
+                        "[X11-WINDOW!] unix_idx={} seq={} opcode={:#x}({}) len={}",
+                        unix_idx_chirho, sequence_chirho,
+                        opcode_chirho,
+                        match opcode_chirho { 0x01 => "CreateWindow", 0x08 => "MapWindow",
+                            0x02 => "ChangeWindowAttributes", 0x0C => "ConfigureWindow", _ => "WindowOp" },
+                        data_chirho.len(),
+                    );
+                    // After CreateWindow: inject MapNotify + Expose events
+                    // so xterm's event loop unblocks and proceeds to PTY setup
+                    if opcode_chirho == 0x01 && data_chirho.len() >= 8 {
+                        let win_id_chirho = u32::from_le_bytes([
+                            data_chirho[4], data_chirho[5], data_chirho[6], data_chirho[7],
+                        ]);
+                        // MapNotify event (type=19, 32 bytes)
+                        let mut map_evt_chirho = [0u8; 32];
+                        map_evt_chirho[0] = 19; // MapNotify
+                        map_evt_chirho[2] = (sequence_chirho & 0xFF) as u8;
+                        map_evt_chirho[3] = (sequence_chirho >> 8) as u8;
+                        map_evt_chirho[4..8].copy_from_slice(&win_id_chirho.to_le_bytes()); // event window
+                        map_evt_chirho[8..12].copy_from_slice(&win_id_chirho.to_le_bytes()); // window
+                        let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &map_evt_chirho);
+                        // Expose event (type=12, 32 bytes)
+                        let mut expose_evt_chirho = [0u8; 32];
+                        expose_evt_chirho[0] = 12; // Expose
+                        expose_evt_chirho[2] = (sequence_chirho & 0xFF) as u8;
+                        expose_evt_chirho[3] = (sequence_chirho >> 8) as u8;
+                        expose_evt_chirho[4..8].copy_from_slice(&win_id_chirho.to_le_bytes()); // window
+                        // x=0, y=0 (already zero)
+                        expose_evt_chirho[12] = 0x00; expose_evt_chirho[13] = 0x05; // width=1280
+                        expose_evt_chirho[14] = 0x20; expose_evt_chirho[15] = 0x03; // height=800
+                        // count=0 (no more Expose events follow)
+                        let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &expose_evt_chirho);
+                        crate::serial_println_chirho!(
+                            "[X11-EVENT-INJECT] MapNotify+Expose for window={:#x} unix_idx={}",
+                            win_id_chirho, unix_idx_chirho,
+                        );
+                    }
+                }
+                return;
+            }
+            let reply_chirho = build_x11_generic_reply_chirho(sequence_chirho);
+            let _ = send_x11_injected_reply_chirho(unix_idx_chirho, &reply_chirho);
+            crate::serial_println_chirho!(
+                "[X11-INJECT-GENERIC] unix_idx={} seq={} opcode={:#x} len={}",
+                unix_idx_chirho,
+                sequence_chirho,
+                opcode_chirho,
+                data_chirho.len(),
+            );
+        }
+    }
+}
+
+pub fn maybe_inject_x11_protocol_reply_for_client_socket_idx_chirho(
+    client_socket_idx_chirho: usize,
+    data_chirho: &[u8],
+) {
+    if data_chirho.is_empty() || !is_unix_socket_idx_chirho(client_socket_idx_chirho) {
+        return;
+    }
+
+    let client_unix_idx_chirho = match lookup_unix_idx_chirho(client_socket_idx_chirho) {
+        Some(unix_idx_chirho) => unix_idx_chirho,
+        None => return,
+    };
+
+    let server_unix_idx_chirho = {
+        let unix_table_chirho = UNIX_SOCKET_TABLE_CHIRHO.lock();
+        unix_table_chirho
+            .get(client_unix_idx_chirho)
+            .and_then(|socket_option_chirho| socket_option_chirho.as_ref())
+            .and_then(|socket_chirho| socket_chirho.peer_idx_chirho)
+    };
+
+    let server_unix_idx_chirho = match server_unix_idx_chirho {
+        Some(unix_idx_chirho) if is_x11_server_unix_socket_chirho(unix_idx_chirho) => unix_idx_chirho,
+        _ => return,
+    };
+
+    maybe_inject_x11_protocol_reply_chirho(server_unix_idx_chirho, data_chirho);
+}
+
+fn maybe_inject_x11_protocol_reply_chirho(unix_idx_chirho: usize, data_chirho: &[u8]) {
+    if !is_x11_server_unix_socket_chirho(unix_idx_chirho) || data_chirho.is_empty() {
+        return;
+    }
+    // Skip injected Reply data — but NOT CreateWindow (opcode=1, depth=0).
+    // Reply: 32 bytes, byte[0]=1, byte[1]=0, bytes[4-7]=additional_length.
+    // CreateWindow: variable length, byte[0]=1, byte[1]=depth(0=CopyFromParent).
+    // Distinguish by: Reply length field (bytes[2-3]) is the SEQUENCE number.
+    // CreateWindow length field (bytes[2-3]) is request length in dwords.
+    // A Reply with seq=0 would be unusual. CreateWindow with length >= 8 dwords = 32 bytes.
+    // Safest: don't skip here. The void list already handles CreateWindow (0x01).
+    // Replies from injection are filtered by the `is_x11_server` check and the
+    // `data[0]==1 && data[1]==0` check in the reassembly loop.
+
+    if data_chirho.len() == 12 && data_chirho[0] == 0x6c && data_chirho[2] == 0x0b {
+        maybe_inject_x11_single_protocol_reply_chirho(unix_idx_chirho, data_chirho);
+        return;
+    }
+
+    let mut offset_chirho = 0usize;
+    while offset_chirho < data_chirho.len() {
+        let remaining_chirho = &data_chirho[offset_chirho..];
+        if remaining_chirho.len() < 4 {
+            break;
+        }
+
+        let request_len_units_chirho =
+            u16::from_le_bytes([remaining_chirho[2], remaining_chirho[3]]) as usize;
+        let request_len_bytes_chirho = if request_len_units_chirho == 0 {
+            if remaining_chirho.len() < 8 {
+                break;
+            }
+            let big_request_units_chirho = u32::from_le_bytes([
+                remaining_chirho[4],
+                remaining_chirho[5],
+                remaining_chirho[6],
+                remaining_chirho[7],
+            ]) as usize;
+            let computed_len_chirho = big_request_units_chirho.saturating_mul(4);
+            if computed_len_chirho == 0 || computed_len_chirho > remaining_chirho.len() {
+                break; // Incomplete BigRequest
+            } else {
+                computed_len_chirho
+            }
+        } else {
+            let computed_len_chirho = request_len_units_chirho.saturating_mul(4);
+            if computed_len_chirho == 0 || computed_len_chirho > remaining_chirho.len() {
+                break; // Incomplete request — wait for more data
+            } else {
+                computed_len_chirho
+            }
+        };
+
+        let request_slice_chirho = &remaining_chirho[..request_len_bytes_chirho];
+        maybe_inject_x11_single_protocol_reply_chirho(unix_idx_chirho, request_slice_chirho);
+        offset_chirho = offset_chirho.saturating_add(request_len_bytes_chirho);
     }
 }
 

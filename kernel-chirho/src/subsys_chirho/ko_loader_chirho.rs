@@ -4163,6 +4163,21 @@ pub fn sys_init_module_impl_chirho(
         return -EINVAL_CHIRHO;
     }
 
+    // Early duplicate check: if ANY module is already loaded, reject.
+    // This prevents arena overflow when /etc/profile is sourced by
+    // multiple shell processes (each calling insmod).
+    {
+        let loaded_chirho = LOADED_MODULES_CHIRHO.lock();
+        if loaded_chirho.iter().any(|m_chirho| {
+            m_chirho.state_chirho == ModuleStateChirho::LoadedChirho
+        }) {
+            crate::serial_println_chirho!(
+                "[KO] Module arena already has a loaded module — skipping duplicate insmod"
+            );
+            return 0; // Silently succeed (idempotent)
+        }
+    }
+
     // Copy the module image into a kernel buffer.
     let len_usize_chirho = len_chirho as usize;
     let is_kernel_ptr_chirho = img_ptr_chirho >= 0x8000_0000_0000

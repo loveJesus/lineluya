@@ -198,6 +198,8 @@ impl FileOpsChirho for DevDspOpsChirho {
         cmd_chirho: u64,
         arg_chirho: u64,
     ) -> Result<i64, i64> {
+        // Mask to 32 bits — syscall args are sign-extended from i32
+        let cmd_chirho = cmd_chirho & 0xFFFFFFFF;
         match cmd_chirho {
             SNDCTL_DSP_SETFMT_CHIRHO => {
                 // Return AFMT_S16_LE regardless of what was requested.
@@ -243,13 +245,39 @@ impl FileOpsChirho for DevDspOpsChirho {
                 // No special capabilities.
                 Ok(0)
             }
+            // SNDCTL_DSP_RESET (0x5000) — reset device to default state
+            0x5000 => Ok(0),
+            // SNDCTL_DSP_SYNC (0x5001) — flush buffers
+            0x5001 => Ok(0),
+            // SNDCTL_DSP_STEREO (0xC0045003) — set mono/stereo
+            0xC0045003 => Ok(0),
+            // SNDCTL_DSP_GETBLKSIZE (0xC0045004) — get fragment size
+            0xC0045004 => {
+                if arg_chirho != 0 {
+                    unsafe { core::ptr::write_volatile(arg_chirho as *mut i32, 4096); }
+                }
+                Ok(4096)
+            }
+            // SNDCTL_DSP_SETFRAGMENT (0xC004500A) — set buffer fragments
+            0xC004500A => Ok(0),
+            // SNDCTL_DSP_GETOSPACE (0x800C500C) — get output space
+            0x800C500C => {
+                if arg_chirho != 0 {
+                    // Return audio_buf_info: fragments=8, fragstotal=8, fragsize=4096, bytes=32768
+                    unsafe {
+                        let p_chirho = arg_chirho as *mut [i32; 4];
+                        core::ptr::write_volatile(p_chirho, [8, 8, 4096, 32768]);
+                    }
+                }
+                Ok(0)
+            }
             _ => {
-                crate::serial_debug_chirho!(
+                crate::serial_println_chirho!(
                     "SOUND: /dev/dsp unhandled ioctl cmd={:#x} arg={:#x}",
                     cmd_chirho,
                     arg_chirho
                 );
-                Err(-ENOSYS_CHIRHO)
+                Ok(0) // Return success for unknown ioctls to keep mpg123 happy
             }
         }
     }
@@ -275,7 +303,7 @@ pub static DEV_DSP_OPS_CHIRHO: DevDspOpsChirho = DevDspOpsChirho;
 /// Uses PIT channel 2 (ports 0x42/0x43) to generate a square wave and
 /// port 0x61 bits 0-1 to gate it to the speaker. A frequency of 0 silences
 /// the speaker immediately.
-fn pc_speaker_beep_chirho(freq_chirho: u32, duration_ms_chirho: u32) {
+pub fn pc_speaker_beep_chirho(freq_chirho: u32, duration_ms_chirho: u32) {
     use x86_64::instructions::port::Port;
 
     if freq_chirho == 0 || duration_ms_chirho == 0 {

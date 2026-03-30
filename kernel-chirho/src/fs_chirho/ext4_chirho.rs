@@ -785,7 +785,7 @@ impl PageCacheChirho {
 /// The old 512-entry cache caused evictions between SSH sessions, making
 /// library loading flaky ("not found" errors on 2nd+ SSH connection).
 pub static PAGE_CACHE_CHIRHO: spin::Mutex<PageCacheChirho> =
-    spin::Mutex::new(PageCacheChirho::new_chirho(8192));
+    spin::Mutex::new(PageCacheChirho::new_chirho(256));
 
 // ===========================================================================
 // A4-009: ext4 read-only VFS integration

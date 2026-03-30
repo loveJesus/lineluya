@@ -279,10 +279,21 @@ impl FileOpsChirho for DevConsoleOpsChirho {
         }
 
         // Auto-inject X11 client launch commands when Xorg socket is ready.
-        // This bypasses the shell profile timing issue — commands are
-        // injected directly into the shell's stdin read.
+        {
+            let read_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+            let x11_ready_chirho = crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
+            use core::sync::atomic::{AtomicU64, Ordering as DbgOrd};
+            static CON_READ_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
+            let rdcnt_chirho = CON_READ_DBG_CHIRHO.fetch_add(1, DbgOrd::Relaxed);
+            if rdcnt_chirho < 20 {
+                crate::serial_println_chirho!(
+                    "[CON-READ] #{} pid={} x11_ready={} buf_len={}",
+                    rdcnt_chirho, read_pid_chirho, x11_ready_chirho, buf_chirho.len(),
+                );
+            }
+        }
         if crate::net_chirho::should_launch_x11_clients_chirho() {
-            let cmd_chirho = b"xterm &\ntwm &\n";
+            let cmd_chirho = b"DISPLAY=:0 /tmp/lib-chirho/xterm -fn fixed -e sh &\nDISPLAY=:0 /tmp/lib-chirho/twm &\n";
             let n_chirho = cmd_chirho.len().min(buf_chirho.len());
             buf_chirho[..n_chirho].copy_from_slice(&cmd_chirho[..n_chirho]);
             crate::serial_println_chirho!("[X11-INJECT] Injected xterm+twm into shell stdin");
@@ -295,6 +306,15 @@ impl FileOpsChirho for DevConsoleOpsChirho {
         x86_64::instructions::interrupts::enable();
 
         loop {
+            // Check for X11 client injection INSIDE the loop so it fires
+            // even when the shell entered the read before X11_READY was set.
+            if crate::net_chirho::should_launch_x11_clients_chirho() {
+                let cmd_chirho = b"DISPLAY=:0 /tmp/lib-chirho/xterm -fn fixed -e sh &\nDISPLAY=:0 /tmp/lib-chirho/twm &\n";
+                let n_chirho = cmd_chirho.len().min(buf_chirho.len());
+                buf_chirho[..n_chirho].copy_from_slice(&cmd_chirho[..n_chirho]);
+                crate::serial_println_chirho!("[X11-INJECT] Injected xterm+twm into shell stdin (from loop)");
+                return Ok(n_chirho);
+            }
             if tty_chirho.ldisc_chirho.lock().has_data_chirho() {
                 break;
             }
@@ -476,7 +496,7 @@ static DEV_NODES_CHIRHO: &[DevNodeChirho] = &[
     DevNodeChirho { name_chirho: "tty7", major_chirho: 4, minor_chirho: 7, ops_chirho: &DEV_CONSOLE_OPS_CHIRHO, is_block_chirho: false },
     DevNodeChirho { name_chirho: "ptmx", major_chirho: 5, minor_chirho: 2, ops_chirho: &crate::pty_chirho::PTMX_OPS_CHIRHO, is_block_chirho: false },
     DevNodeChirho { name_chirho: "fb0", major_chirho: 29, minor_chirho: 0, ops_chirho: &crate::fb_device_chirho::FB_DEVICE_OPS_CHIRHO, is_block_chirho: false },
-    DevNodeChirho { name_chirho: "dsp", major_chirho: 14, minor_chirho: 3, ops_chirho: &crate::sound_chirho::DEV_DSP_OPS_CHIRHO, is_block_chirho: false },
+    DevNodeChirho { name_chirho: "dsp", major_chirho: 14, minor_chirho: 3, ops_chirho: &crate::hda_chirho::DEV_DSP_OPS_CHIRHO, is_block_chirho: false },
     DevNodeChirho { name_chirho: "loop-control", major_chirho: 10, minor_chirho: 237, ops_chirho: &crate::loop_device_chirho::LOOP_CONTROL_OPS_CHIRHO, is_block_chirho: false },
     // A2-LOOP-002: /dev/loop0..7 — BLOCK devices (S_IFBLK), required for losetup/mount
     DevNodeChirho { name_chirho: "loop0", major_chirho: 7, minor_chirho: 0, ops_chirho: &crate::loop_device_chirho::LOOP_DEVICE_OPS_CHIRHO, is_block_chirho: true },

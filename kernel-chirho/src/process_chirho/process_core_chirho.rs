@@ -284,6 +284,8 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
     let child_task_chirho = {
         let parent_chirho = parent_arc_chirho.lock();
         let parent_pid_chirho = parent_chirho.pid_chirho;
+        let parent_exe_path_chirho = parent_chirho.exe_path_chirho;
+        let parent_exe_len_chirho = parent_chirho.exe_path_len_chirho;
 
         // Copy the parent's syscall frame onto the child's kernel stack.
         // The frame sits at the top of the stack (highest address, growing
@@ -384,6 +386,8 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
             pid_chirho: child_pid_chirho,
             tgid_chirho: child_pid_chirho,
             ppid_chirho: parent_pid_chirho,
+            exe_path_chirho: parent_exe_path_chirho,
+            exe_path_len_chirho: parent_exe_len_chirho,
             state_chirho: TaskStateChirho::ReadyChirho,
             exit_code_chirho: 0,
             context_chirho: child_ctx_chirho,
@@ -501,6 +505,8 @@ pub fn sys_clone_chirho(
     let child_task_chirho = {
         let parent_chirho = parent_arc_chirho.lock();
         let parent_pid_chirho = parent_chirho.pid_chirho;
+        let parent_exe_path_chirho = parent_chirho.exe_path_chirho;
+        let parent_exe_len_chirho = parent_chirho.exe_path_len_chirho;
 
         // Copy syscall frame to child's kernel stack with rax=0.
         let frame_size_chirho = core::mem::size_of::<SyscallFrameChirho>() as u64;
@@ -578,6 +584,8 @@ pub fn sys_clone_chirho(
             pid_chirho: child_pid_chirho,
             tgid_chirho: child_tgid_chirho,
             ppid_chirho: parent_pid_chirho,
+            exe_path_chirho: parent_exe_path_chirho,
+            exe_path_len_chirho: parent_exe_len_chirho,
             state_chirho: TaskStateChirho::ReadyChirho,
             exit_code_chirho: 0,
             context_chirho: child_ctx_chirho,
@@ -671,10 +679,9 @@ pub fn sys_wait4_chirho(
         None => return -ECHILD_CHIRHO,
     };
 
-    // Fast-path for Xorg (PID 5 ONLY): don't block in wait4.
-    // Pre-compiled /tmp/server-0.xkm is on tmpfs. Kill the xkbcomp child.
-    // Do NOT apply to xterm/twm (PID 13+) — they need wait4 for shells.
-    if parent_pid_chirho == 5 && pid_chirho > 0 && (options_chirho & WNOHANG_CHIRHO) == 0 {
+    // Fast-path: kill xkbcomp child immediately. Pre-compiled /tmp/server-0.xkm exists.
+    // Xorg falls back to the pre-compiled file when xkbcomp "succeeds" instantly.
+    if parent_pid_chirho >= 3 && parent_pid_chirho <= 7 && pid_chirho > 0 && (options_chirho & WNOHANG_CHIRHO) == 0 {
         crate::serial_println_chirho!(
             "[WAIT4-FAST] PID {} wait4({}) → kill child + fake success",
             parent_pid_chirho, pid_chirho,
@@ -1115,6 +1122,15 @@ pub fn sys_execve_with_filename_chirho(
         }
     };
 
+    // Force SHELL=/bin/sh in environment (xterm uses $SHELL for sub-shell).
+    // BusyBox ash may set SHELL to the resolved binary path which is wrong.
+    let mut envp_vec_chirho = envp_vec_chirho;
+    if let Some(idx_chirho) = envp_vec_chirho.iter().position(|e_chirho| e_chirho.starts_with("SHELL=")) {
+        envp_vec_chirho[idx_chirho] = alloc::string::String::from("SHELL=/bin/sh");
+    } else {
+        envp_vec_chirho.push(alloc::string::String::from("SHELL=/bin/sh"));
+    }
+
     crate::serial_debug_chirho!(
         "[PROCESS] execve: envp ({} entries)",
         envp_vec_chirho.len()
@@ -1338,8 +1354,8 @@ pub fn sys_execve_with_filename_chirho(
                 Ok(result_chirho) => result_chirho,
                 Err(err_chirho) => {
                     crate::serial_println_chirho!(
-                        "[PROCESS] execve: dynamic ELF load failed: {:?}",
-                        err_chirho
+                        "[PROCESS] execve: dynamic ELF load failed for '{}': {:?}",
+                        filename_str_chirho, err_chirho
                     );
                     return -ENOEXEC_CHIRHO;
                 }
@@ -1410,8 +1426,8 @@ pub fn sys_execve_with_filename_chirho(
             Ok(info_chirho) => info_chirho,
             Err(err_chirho) => {
                 crate::serial_println_chirho!(
-                    "[PROCESS] execve: ELF load failed: {:?}",
-                    err_chirho
+                    "[PROCESS] execve: ELF load failed for '{}': {:?}",
+                    filename_str_chirho, err_chirho
                 );
                 return -ENOEXEC_CHIRHO;
             }
@@ -1833,8 +1849,19 @@ fn try_read_file_chirho(path_chirho: &str) -> Option<Vec<u8>> {
 
     // Read the entire file into a buffer.
     let mut buf_chirho = alloc::vec![0u8; size_chirho];
+    let buf_ptr_chirho = buf_chirho.as_ptr() as usize;
     match file_ops_chirho.read_chirho(&mut file_chirho, &mut buf_chirho) {
         Ok(bytes_read_chirho) => {
+            if size_chirho > 100_000 {
+                crate::serial_println_chirho!(
+                    "[EXEC-READ] '{}' size={} read={} buf_ptr={:#x} first4=[{:#x},{:#x},{:#x},{:#x}]",
+                    path_chirho, size_chirho, bytes_read_chirho, buf_ptr_chirho,
+                    buf_chirho.get(0).copied().unwrap_or(0),
+                    buf_chirho.get(1).copied().unwrap_or(0),
+                    buf_chirho.get(2).copied().unwrap_or(0),
+                    buf_chirho.get(3).copied().unwrap_or(0),
+                );
+            }
             buf_chirho.truncate(bytes_read_chirho);
             Some(buf_chirho)
         }

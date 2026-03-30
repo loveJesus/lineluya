@@ -88,7 +88,7 @@ pub fn check_stack_watch_chirho(site_chirho: &str) {
     static WATCH_SC_CHIRHO: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(0);
     let sc_cnt_chirho = WATCH_SC_CHIRHO.fetch_add(1, WatchOrd::Relaxed);
-    if sc_cnt_chirho < 50 { return; } // Wait for dropbear to fully init
+    return; // DISABLED — 11K lines of WATCH spam per boot. Re-enable if needed.
     if !WATCH_READY_CHIRHO.load(WatchOrd::Relaxed) {
         WATCH_READY_CHIRHO.store(true, WatchOrd::Relaxed);
     }
@@ -241,6 +241,14 @@ syscall_entry_chirho:
     popq    %rcx                             // rcx_chirho  (user RIP)
     popq    %r11                             // r11_chirho  (user RFLAGS)
 
+    // Set IOPL=3 in user RFLAGS if KDENABIO was called.
+    // This allows Xorg to use inb/outb for PCI config space.
+    // Check the global flag (1 byte at USER_IOPL3_CHIRHO).
+    cmpb    $0, USER_IOPL3_CHIRHO(%rip)
+    je      3f
+    orq     $0x3000, %r11                    // IOPL = 3
+3:
+
     // Step 9: Build IRETQ frame for return to userspace.
     // IRETQ is used instead of SYSRET because QEMU TCG on ARM64 has
     // SYSRET emulation issues that cause #UD with CS=0x08 at user addresses.
@@ -363,16 +371,15 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
         crate::signal_chirho::check_fatal_signals_on_return_chirho();
     }
 
-    // Preemptive scheduling on syscall return boundary — DISABLED.
-    // Calling schedule_chirho() here causes #UD when switching back to
-    // PID 3 (dropbear parent). The saved context gets corrupted.
-    // Tasks yield cooperatively via select/read/yield_current instead.
-    // TODO: fix the context save/restore to enable true preemption.
-    if !is_exit_syscall_chirho && !is_lifecycle_syscall_chirho
-        && crate::scheduler_chirho::need_resched_chirho()
-    {
-        // Just clear the flag — don't schedule.
-        crate::scheduler_chirho::reset_time_slice_chirho();
+    // Safe reschedule point: the syscall body has fully returned, the
+    // continuation now lives in this compact syscall wrapper frame, and the
+    // task's own SyscallFrameChirho is still on its kernel stack.
+    // Direct schedule/yield from deep inside syscall handlers can lose the
+    // caller continuation because those handlers suspend arbitrary kernel
+    // frames mid-call. Do the actual context switch here instead.
+    let allow_sysret_schedule_chirho = !is_exit_syscall_chirho && syscall_nr_chirho != 59;
+    if allow_sysret_schedule_chirho && crate::scheduler_chirho::need_resched_chirho() {
+        crate::scheduler_chirho::schedule_chirho();
     }
 
     // GPT-directed: log PID 2's select return + user [rsp] return target

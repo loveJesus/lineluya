@@ -127,6 +127,10 @@ mod evdev_chirho;
 mod random_chirho;
 #[path = "drivers_chirho/sound_chirho.rs"]
 mod sound_chirho;
+#[path = "drivers_chirho/hda_chirho.rs"]
+mod hda_chirho;
+#[path = "drivers_chirho/wav_player_chirho.rs"]
+mod wav_player_chirho;
 #[path = "drivers_chirho/loop_device_chirho.rs"]
 mod loop_device_chirho;
 
@@ -435,7 +439,11 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
 
     // Phase A2: Sound card PCI detection (A2-SOUND-001).
     sound_chirho::detect_sound_cards_chirho();
+    hda_chirho::init_hda_chirho();
     fb_println_chirho!("[OK] Sound subsystem initialized");
+    // Boot beep — audible confirmation that audio works (440Hz for 100ms)
+    sound_chirho::pc_speaker_beep_chirho(440, 100);
+    serial_println_chirho!("[AUDIO] Boot beep (440Hz 100ms) via PC speaker");
 
     net_chirho::init_networking_chirho();
     fb_println_chirho!("[OK] Networking initialized");
@@ -489,21 +497,25 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         // from ext4 (transitive NEEDED deps fail with errno clobbered).
         // By pre-copying to tmpfs, libraries are served from kernel memory.
         let libs_chirho: &[&str] = &[
-            "libXft.so.2", "libfontconfig.so.1", "libfreetype.so.6",
-            "libXext.so.6", "libXaw.so.7", "libXmu.so.6", "libXpm.so.4",
-            "libXt.so.6", "libX11.so.6", "libICE.so.6",
-            "libncursesw.so.6", "libxkbfile.so.1",
-            "libXrender.so.1", "libexpat.so.1", "libz.so.1", "libbz2.so.1",
-            "libpng16.so.16", "libbrotlidec.so.1", "libSM.so.6",
-            "libxcb.so.1", "libbrotlicommon.so.1", "libuuid.so.1",
-            "libXau.so.6", "libXdmcp.so.6", "libbsd.so.0", "libmd.so.0",
-            // Xorg deps
-            "libpixman-1.so.0", "libpciaccess.so.0", "libnettle.so.8",
-            "libXfont2.so.2", "libxshmfence.so.1", "libudev.so.1",
-            "libdrm.so.2", "libxcvt.so.0", "libfontenc.so.1",
-            // Dynamic linker itself — preloading to tmpfs dramatically speeds
-            // up fork+exec children (xkbcomp) since PT_INTERP is read from
-            // tmpfs instead of slow ext4/VirtIO-blk.
+            // Core X11 client libs (xterm, twm need these)
+            "libX11.so.6", "libXext.so.6", "libXt.so.6",
+            "libXmu.so.6", "libXaw.so.7", "libXpm.so.4",
+            "libXft.so.2", "libXrender.so.1", "libICE.so.6", "libSM.so.6",
+            "libxcb.so.1", "libXau.so.6", "libXdmcp.so.6",
+            // xterm deps
+            "libncursesw.so.6", "libfontconfig.so.1", "libfreetype.so.6",
+            "libexpat.so.1", "libz.so.1", "libbz2.so.1",
+            "libpng16.so.16", "libbrotlidec.so.1", "libbrotlicommon.so.1",
+            "libuuid.so.1", "libbsd.so.0", "libmd.so.0",
+            // GL/GLX libs for glxgears (small — <700KB each)
+            "libGL.so.1", "libglapi.so.0",
+            "libxcb-glx.so.0", "libX11-xcb.so.1", "libXxf86vm.so.1",
+            "libxcb-dri2.so.0", "libxcb-dri3.so.0", "libxcb-present.so.0",
+            "libxcb-xfixes.so.0", "libxcb-shm.so.0", "libxcb-randr.so.0",
+            "libXfixes.so.3", "libxshmfence.so.1", "libdrm.so.2",
+            // mpg123 deps
+            "libmpg123.so.0", "libout123.so.0", "libsyn123.so.0",
+            // Dynamic linker itself
             "ld-musl-x86_64.so.1",
         ];
         // Create /tmp/lib-chirho/ directory on tmpfs
@@ -513,52 +525,61 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         }
         let mut preloaded_chirho = 0usize;
         for lib_name_chirho in libs_chirho {
-            let src_path_chirho = {
-                let mut p_chirho = alloc::string::String::from("/lib/");
-                p_chirho.push_str(lib_name_chirho);
-                p_chirho
-            };
-            if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho(&src_path_chirho) {
-                let size_chirho = {
-                    let ig_chirho = inode_chirho.lock();
-                    ig_chirho.size_chirho as usize
+            for src_dir_chirho in ["/lib/", "/usr/lib/"] {
+                let src_path_chirho = {
+                    let mut p_chirho = alloc::string::String::from(src_dir_chirho);
+                    p_chirho.push_str(lib_name_chirho);
+                    p_chirho
                 };
-                if size_chirho > 0 && size_chirho < 4 * 1024 * 1024 {
-                    // Read entire file via ext4
-                    let mut data_chirho = alloc::vec![0u8; size_chirho];
-                    let file_chirho = alloc::sync::Arc::new(spin::Mutex::new(vfs_chirho::FileChirho {
-                        inode_chirho: inode_chirho.clone(),
-                        pos_chirho: 0,
-                        flags_chirho: 0,
-                        ops_chirho: ops_chirho,
-                    }));
-                    let mut pos_chirho = 0usize;
-                    while pos_chirho < size_chirho {
-                        let chunk_chirho = core::cmp::min(4096, size_chirho - pos_chirho);
-                        let mut file_guard_chirho = file_chirho.lock();
-                        match file_guard_chirho.ops_chirho.read_chirho(
-                            &mut file_guard_chirho, &mut data_chirho[pos_chirho..pos_chirho + chunk_chirho],
-                        ) {
-                            Ok(n_chirho) if n_chirho > 0 => pos_chirho += n_chirho,
-                            _ => break,
+                if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho(&src_path_chirho) {
+                    let size_chirho = {
+                        let ig_chirho = inode_chirho.lock();
+                        ig_chirho.size_chirho as usize
+                    };
+                    let max_preload_size_chirho = if *lib_name_chirho == "libgallium-25.2.7.so" {
+                        48 * 1024 * 1024
+                    } else {
+                        4 * 1024 * 1024
+                    };
+                    if size_chirho > 0 && size_chirho < max_preload_size_chirho {
+                        // Read entire file via ext4.
+                        let mut data_chirho = alloc::vec![0u8; size_chirho];
+                        let file_chirho = alloc::sync::Arc::new(spin::Mutex::new(vfs_chirho::FileChirho {
+                            inode_chirho: inode_chirho.clone(),
+                            pos_chirho: 0,
+                            flags_chirho: 0,
+                            ops_chirho: ops_chirho,
+                        }));
+                        let mut pos_chirho = 0usize;
+                        while pos_chirho < size_chirho {
+                            let chunk_chirho = core::cmp::min(4096, size_chirho - pos_chirho);
+                            let mut file_guard_chirho = file_chirho.lock();
+                            match file_guard_chirho.ops_chirho.read_chirho(
+                                &mut file_guard_chirho, &mut data_chirho[pos_chirho..pos_chirho + chunk_chirho],
+                            ) {
+                                Ok(n_chirho) if n_chirho > 0 => pos_chirho += n_chirho,
+                                _ => break,
+                            }
+                        }
+                        if pos_chirho >= 4 && data_chirho[0] == 0x7f && data_chirho[1] == b'E' {
+                            if pos_chirho < size_chirho {
+                                serial_println_chirho!(
+                                    "[PRELOAD-TRUNC] {} read={} expected={} ({}% complete)",
+                                    lib_name_chirho, pos_chirho, size_chirho,
+                                    pos_chirho * 100 / size_chirho,
+                                );
+                            }
+                            let dst_path_chirho = {
+                                let mut d_chirho = alloc::string::String::from("/tmp/lib-chirho/");
+                                d_chirho.push_str(lib_name_chirho);
+                                d_chirho
+                            };
+                            tmpfs_chirho::write_tmpfs_file_chirho(&dst_path_chirho, &data_chirho[..pos_chirho]);
+                            serial_println_chirho!("[INIT] Preloaded {} → {} ({} bytes)", src_path_chirho, dst_path_chirho, pos_chirho);
+                            preloaded_chirho += 1;
                         }
                     }
-                    if pos_chirho >= 4 && data_chirho[0] == 0x7f && data_chirho[1] == b'E' {
-                        if pos_chirho < size_chirho {
-                            serial_println_chirho!(
-                                "[PRELOAD-TRUNC] {} read={} expected={} ({}% complete)",
-                                lib_name_chirho, pos_chirho, size_chirho,
-                                pos_chirho * 100 / size_chirho,
-                            );
-                        }
-                        let dst_path_chirho = {
-                            let mut d_chirho = alloc::string::String::from("/tmp/lib-chirho/");
-                            d_chirho.push_str(lib_name_chirho);
-                            d_chirho
-                        };
-                        tmpfs_chirho::write_tmpfs_file_chirho(&dst_path_chirho, &data_chirho[..pos_chirho]);
-                        preloaded_chirho += 1;
-                    }
+                    break;
                 }
             }
         }
@@ -573,8 +594,13 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         // Preload X11 client binaries to tmpfs for fast exec.
         // Loading from ext4/VirtIO-blk takes 15+ minutes per binary.
         for bin_chirho in &[
+            ("/usr/libexec/Xorg", "/tmp/lib-chirho/Xorg"),
             ("/usr/bin/xterm", "/tmp/lib-chirho/xterm"),
             ("/usr/bin/twm", "/tmp/lib-chirho/twm"),
+            ("/usr/bin/mpg123", "/tmp/lib-chirho/mpg123"),
+            ("/usr/bin/glxinfo", "/tmp/lib-chirho/glxinfo"),
+            ("/usr/bin/glxgears", "/tmp/lib-chirho/glxgears"),
+            ("/usr/bin/xgears-chirho", "/tmp/lib-chirho/xgears-chirho"),
         ] {
             if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho(bin_chirho.0) {
                 let size_chirho = { inode_chirho.lock().size_chirho as usize };
@@ -600,6 +626,89 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
                 }
             }
         }
+        if let Ok((tmp_lib_inode_chirho, _)) = crate::fs_chirho::resolve_path_chirho("/tmp/lib-chirho") {
+            let tmp_lib_guard_chirho = tmp_lib_inode_chirho.lock();
+            let _ = tmp_lib_guard_chirho.ops_chirho.mkdir_chirho(&tmp_lib_guard_chirho, "dri", 0o755);
+        }
+        if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho("/usr/lib/dri/libdril_dri.so") {
+            let size_chirho = { inode_chirho.lock().size_chirho as usize };
+            if size_chirho > 0 && size_chirho < 2 * 1024 * 1024 {
+                let mut data_chirho = alloc::vec![0u8; size_chirho];
+                let file_chirho = alloc::sync::Arc::new(spin::Mutex::new(vfs_chirho::FileChirho {
+                    inode_chirho: inode_chirho.clone(),
+                    pos_chirho: 0,
+                    flags_chirho: 0,
+                    ops_chirho: ops_chirho,
+                }));
+                let mut pos_chirho = 0usize;
+                while pos_chirho < size_chirho {
+                    let chunk_chirho = core::cmp::min(4096, size_chirho - pos_chirho);
+                    let mut fg_chirho = file_chirho.lock();
+                    match fg_chirho.ops_chirho.read_chirho(&mut fg_chirho, &mut data_chirho[pos_chirho..pos_chirho + chunk_chirho]) {
+                        Ok(n_chirho) if n_chirho > 0 => pos_chirho += n_chirho,
+                        _ => break,
+                    }
+                }
+                for dri_dst_path_chirho in [
+                    "/tmp/lib-chirho/dri/libdril_dri.so",
+                    "/tmp/lib-chirho/dri/swrast_dri.so",
+                    "/tmp/lib-chirho/dri/kms_swrast_dri.so",
+                ] {
+                    tmpfs_chirho::write_tmpfs_file_chirho(dri_dst_path_chirho, &data_chirho[..pos_chirho]);
+                }
+                serial_println_chirho!("[INIT] Preloaded swrast DRI aliases ({} bytes)", pos_chirho);
+            }
+        }
+
+        // Preload Xorg module .so files to tmpfs — prevents ext4 directory
+        // scanning during LoadModule which triggers buddy allocator OOM from
+        // Vec doubling in the block I/O path.
+        {
+            // Create /usr/lib/xorg/modules directory tree in tmpfs
+            if let Ok((usr_inode_chirho, _)) = crate::fs_chirho::resolve_path_chirho("/tmp") {
+                let ug_chirho = usr_inode_chirho.lock();
+                let _ = ug_chirho.ops_chirho.mkdir_chirho(&ug_chirho, "xorg-modules-chirho", 0o755);
+            }
+            if let Ok((mod_inode_chirho, _)) = crate::fs_chirho::resolve_path_chirho("/tmp/xorg-modules-chirho") {
+                let mg_chirho = mod_inode_chirho.lock();
+                let _ = mg_chirho.ops_chirho.mkdir_chirho(&mg_chirho, "drivers", 0o755);
+                let _ = mg_chirho.ops_chirho.mkdir_chirho(&mg_chirho, "extensions", 0o755);
+                let _ = mg_chirho.ops_chirho.mkdir_chirho(&mg_chirho, "input", 0o755);
+            }
+            let xorg_modules_chirho: &[(&str, &str)] = &[
+                ("/usr/lib/xorg/modules/drivers/fbdev_drv.so", "/tmp/xorg-modules-chirho/drivers/fbdev_drv.so"),
+                ("/usr/lib/xorg/modules/libfbdevhw.so", "/tmp/xorg-modules-chirho/libfbdevhw.so"),
+                ("/usr/lib/xorg/modules/libshadowfb.so", "/tmp/xorg-modules-chirho/libshadowfb.so"),
+                ("/usr/lib/xorg/modules/libwfb.so", "/tmp/xorg-modules-chirho/libwfb.so"),
+                ("/usr/lib/xorg/modules/libshadow.so", "/tmp/xorg-modules-chirho/libshadow.so"),
+                ("/usr/lib/xorg/modules/libexa.so", "/tmp/xorg-modules-chirho/libexa.so"),
+                ("/usr/lib/xorg/modules/libvgahw.so", "/tmp/xorg-modules-chirho/libvgahw.so"),
+                ("/usr/lib/xorg/modules/libint10.so", "/tmp/xorg-modules-chirho/libint10.so"),
+                ("/usr/lib/xorg/modules/extensions/libglx.so", "/tmp/xorg-modules-chirho/extensions/libglx.so"),
+            ];
+            for (src_chirho, dst_chirho) in xorg_modules_chirho {
+                if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho(src_chirho) {
+                    let size_chirho = inode_chirho.lock().size_chirho as usize;
+                    if size_chirho > 0 && size_chirho < 512 * 1024 {
+                        let mut data_chirho = alloc::vec![0u8; size_chirho];
+                        let file_chirho = alloc::sync::Arc::new(spin::Mutex::new(vfs_chirho::FileChirho {
+                            inode_chirho: inode_chirho.clone(), pos_chirho: 0, flags_chirho: 0, ops_chirho,
+                        }));
+                        let mut pos_chirho = 0usize;
+                        while pos_chirho < size_chirho {
+                            let chunk_chirho = core::cmp::min(4096, size_chirho - pos_chirho);
+                            let mut fg_chirho = file_chirho.lock();
+                            match fg_chirho.ops_chirho.read_chirho(&mut fg_chirho, &mut data_chirho[pos_chirho..pos_chirho + chunk_chirho]) {
+                                Ok(n_chirho) if n_chirho > 0 => pos_chirho += n_chirho,
+                                _ => break,
+                            }
+                        }
+                        tmpfs_chirho::write_tmpfs_file_chirho(dst_chirho, &data_chirho[..pos_chirho]);
+                        serial_println_chirho!("[INIT] Preloaded {} ({} bytes)", dst_chirho, pos_chirho);
+                    }
+                }
+            }
+        }
 
         // Pre-compiled XKB keymap — xkbcomp takes 10+ minutes to load
         // libraries via VirtIO-blk. Write the pre-compiled keymap so Xorg
@@ -610,6 +719,47 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
             "[INIT] Pre-compiled XKB keymap written to /tmp/server-0.xkm ({} bytes)",
             XKM_DEFAULT_CHIRHO.len(),
         );
+
+        // Preload critical X11 font files from ext4 to tmpfs for fast loading.
+        // Without this, each OpenFont reads .pcf.gz from VirtIO-blk (~200ms each).
+        {
+            if let Ok((tmp_inode_chirho, _)) = crate::fs_chirho::resolve_path_chirho("/tmp") {
+                let tmp_guard_chirho = tmp_inode_chirho.lock();
+                let _ = tmp_guard_chirho.ops_chirho.mkdir_chirho(&tmp_guard_chirho, "fonts-chirho", 0o755);
+            }
+            let font_files_chirho = &[
+                "fonts.dir", "fonts.alias",
+                "6x13-ISO8859-1.pcf.gz", "6x13.pcf.gz", "6x13B.pcf.gz",
+                "cursor.pcf.gz", "fixed.pcf.gz",
+            ];
+            let mut font_count_chirho = 0usize;
+            for name_chirho in font_files_chirho {
+                let src_chirho = alloc::format!("/usr/share/fonts/misc/{}", name_chirho);
+                let dst_chirho = alloc::format!("/tmp/fonts-chirho/{}", name_chirho);
+                if let Ok((fi_chirho, fo_chirho)) = crate::fs_chirho::resolve_path_chirho(&src_chirho) {
+                    let sz_chirho = fi_chirho.lock().size_chirho as usize;
+                    if sz_chirho > 0 && sz_chirho < 512 * 1024 {
+                        let mut data_chirho = alloc::vec![0u8; sz_chirho];
+                        let fa_chirho = alloc::sync::Arc::new(spin::Mutex::new(vfs_chirho::FileChirho {
+                            inode_chirho: fi_chirho.clone(), pos_chirho: 0,
+                            flags_chirho: 0, ops_chirho: fo_chirho,
+                        }));
+                        let mut p_chirho = 0usize;
+                        while p_chirho < sz_chirho {
+                            let c_chirho = core::cmp::min(4096, sz_chirho - p_chirho);
+                            let mut fg_chirho = fa_chirho.lock();
+                            match fg_chirho.ops_chirho.read_chirho(&mut fg_chirho, &mut data_chirho[p_chirho..p_chirho+c_chirho]) {
+                                Ok(n_chirho) if n_chirho > 0 => p_chirho += n_chirho,
+                                _ => break,
+                            }
+                        }
+                        tmpfs_chirho::write_tmpfs_file_chirho(&dst_chirho, &data_chirho[..p_chirho]);
+                        font_count_chirho += 1;
+                    }
+                }
+            }
+            serial_println_chirho!("[INIT] Preloaded {} font files to /tmp/fonts-chirho/", font_count_chirho);
+        }
     }
 
     // Create /etc/profile and /root/.profile on tmpfs.

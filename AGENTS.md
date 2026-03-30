@@ -117,18 +117,28 @@ You can modify the following section
 
 ## Project: Lineluya — Linux Kernel Rewrite in Rust
 
-### Current State (v7.0 — "Hallelujah X11 Loads")
-- 85,000+ lines of Rust across 90+ kernel modules
-- **X.Org Server 1.21.1.21 loads and prints version** via SSH
-- **XTerm(403) works** — dynamically linked musl binary
-- **Audio**: Intel HDA + AC97 PCI detection, /dev/dsp PC speaker beep
-- **Framebuffer**: /dev/fb0 writable (1280x800 32bpp)
+### Current State (v9.0 — "Hallelujah Full Desktop")
+- 90,000+ lines of Rust across 90+ kernel modules
+- **ALL 8 capabilities in ONE boot** (zero OOM, 28K+ serial lines):
+  - `insmod /lib/modules/loop.ko` → init_module returned 0
+  - Boot beep 440Hz via PC speaker → AUDIO_OK
+  - `mpg123 /root/test-tone-chirho.mp3` → Decoding finished (OSS /dev/dsp)
+  - Xorg X Server 1.21.1 fbdev 1280x800 → XORG-MAIN-LOOP active
+  - xterm: CreateWindow + PTY /dev/pts/0,1 + /bin/sh -l
+  - twm: window manager connected, managing windows
+  - xgears-chirho: 57 X11 requests, 43 PolyFillRectangle draws
+  - Dropbear SSH: listening port 2222 with host keys
+- **40+ libraries preloaded** ext4→tmpfs at boot for reliable loading
+- **Xorg modules preloaded to tmpfs** (/tmp/xorg-modules-chirho/) avoiding ext4 OOM
+- **OOM killer**: alloc_error_handler kills task instead of halting kernel
+- **Large alloc pool**: frame-based allocator for >2MB allocs (boot PML4 mapped)
+- **Per-process /proc/self/exe**: exe_path stored in TaskChirho struct
+- **OSS audio ioctls**: RESET/SYNC/STEREO/GETBLKSIZE/SETFRAGMENT/GETOSPACE
+- **Preemptive timer fix**: limited to PID 4-6 to prevent trampoline stack corruption
+- **VMA overlap allocator**: retries past conflicts (up to 64 times)
+- **Direct brk allocation**: no VMA, prevents PROT_NONE conflict
+- **/proc/self/fd/N readlink**: musl transitive dependency resolution
 - **AF_UNIX sockets**: abstract + filesystem, full create/bind/listen/connect/accept
-- **Shebang `#!` execution** in execve
-- **MAP_FIXED mmap fix**: musl library loading now copies file data correctly
-- **PROT_NONE skip**: address reservation without frame allocation
-- **NULL deref guard**: 1MB guard zone prevents infinite loops
-- **SSH command execution works end-to-end**: 5 consecutive sessions
 - **10 real Alpine Linux programs run**: sqlite3, python3, dropbear, Xorg, xterm, BusyBox, losetup, mount, sh, insmod
 - **User signal handler delivery**: SIGCHLD handler invoked via sigframe on user stack + rt_sigreturn
 - **Per-process page tables with eager mirroring**: each process has isolated address space
@@ -227,4 +237,4 @@ qemu-system-x86_64 \
 - linked_list_allocator fragmentation under heavy alloc/dealloc
 
 ### Tags
-v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ, v5.0 Alpine loop.ko Loads, v7.0 Hallelujah X11 Loads
+v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ, v5.0 Alpine loop.ko Loads, v7.0 Hallelujah X11 Loads, v8.0 Hallelujah All Four Work, v9.0 Hallelujah Full Desktop

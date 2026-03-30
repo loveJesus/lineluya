@@ -381,6 +381,11 @@ impl FbConsoleChirho {
 
     /// Draw a single character at the current cursor position.
     fn draw_char_chirho(&self, ch_chirho: u8) {
+        // Stop drawing to framebuffer when Xorg is active (X11_READY).
+        // This lets Xorg's ShadowFB output be visible on VNC.
+        if crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let idx_chirho = if ch_chirho >= 0x20 && ch_chirho <= 0x7E {
             (ch_chirho - 0x20) as usize
         } else {
@@ -441,6 +446,8 @@ impl FbConsoleChirho {
         if !self.ready_chirho {
             return;
         }
+        // Console stays active — Xorg will overwrite when it renders.
+        // Keeping console helps verify fb→VNC path works.
 
         // ANSI escape sequence state machine:
         // ESC (0x1B) starts a sequence, skip bytes until a letter terminates it.

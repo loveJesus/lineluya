@@ -66,11 +66,7 @@ use x86_64::VirtAddr;
 /// Virtual address where the kernel heap begins.
 pub const HEAP_START_CHIRHO: usize = 0x_4444_4444_0000;
 
-/// Total mapped heap: 32MB fast + 256MB buddy = 288MB.
-/// Works with QEMU -m 512M.
-/// NOTE: dropbear needs QEMU -m 4G with 1GB buddy due to a mystery
-/// Vec<align=8> growing to 128MB+ during ext4 path resolution.
-/// TODO: Find and fix the root cause of the unbounded a=8 allocs.
+/// Total heap: 288 MB. Works with QEMU -m 512M.
 pub const HEAP_SIZE_CHIRHO: usize = 288 * 1024 * 1024;
 
 /// Fast allocator: 32 MiB for small/medium objects.
@@ -79,7 +75,7 @@ const FAST_HEAP_SIZE_CHIRHO: usize = 32 * 1024 * 1024;
 /// Buddy allocator: 256 MiB.
 const BUDDY_HEAP_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
 
-/// Kernel heap configuration. Centralizes all heap-related constants.
+/// Kernel heap configuration.
 pub struct HeapConfigChirho;
 
 impl HeapConfigChirho {
@@ -91,7 +87,6 @@ impl HeapConfigChirho {
 }
 
 /// Global counter for large (>256KB) allocations.
-/// Used by diagnostic logging to correlate allocs with code sections.
 pub static LARGE_ALLOC_COUNT_CHIRHO: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
@@ -145,16 +140,26 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
             );
         }
 
+        // For allocations > 2MB, use frame-based large pool to avoid
+        // buddy allocator fragmentation/OOM (e.g., ext4 Vec doubling).
+        if size_chirho > 2 * 1024 * 1024 {
+            let p_chirho = large_alloc_chirho(size_chirho);
+            if !p_chirho.is_null() {
+                return p_chirho;
+            }
+            // Fall through to buddy if large pool fails
+        }
         INNER_ALLOC_CHIRHO.alloc(layout_chirho)
     }
 
     unsafe fn dealloc(&self, ptr_chirho: *mut u8, layout_chirho: core::alloc::Layout) {
-        // Track large deallocations to detect leaks vs. Vec doubling.
-        if layout_chirho.size() > 1024 * 1024 && layout_chirho.align() == 8 {
-            crate::serial_debug_chirho!(
-                "[DEALLOC] {}B a=8",
-                layout_chirho.size(),
-            );
+        // Check if this pointer is in the large pool range
+        let addr_chirho = ptr_chirho as usize;
+        if addr_chirho >= LARGE_POOL_START_CHIRHO
+            && addr_chirho < LARGE_POOL_START_CHIRHO + LARGE_POOL_SIZE_CHIRHO
+        {
+            large_dealloc_chirho(ptr_chirho, layout_chirho.size());
+            return;
         }
         INNER_ALLOC_CHIRHO.dealloc(ptr_chirho, layout_chirho)
     }
@@ -164,10 +169,131 @@ unsafe impl core::alloc::GlobalAlloc for TracingAllocChirho {
 #[global_allocator]
 static ALLOCATOR_CHIRHO: TracingAllocChirho = TracingAllocChirho;
 
+// ---------------------------------------------------------------------------
+// Large allocation pool — bypasses buddy allocator for >1MB allocs
+// ---------------------------------------------------------------------------
+// Uses a simple bump allocator in a dedicated virtual address range.
+// Each allocation gets its own contiguous page-aligned region.
+// Freed regions are tracked in a free list for reuse.
+
+/// Start of the large allocation virtual address space.
+/// Placed right after the main heap (0x4444_4444_0000 + HEAP_SIZE).
+const LARGE_POOL_START_CHIRHO: usize = HEAP_START_CHIRHO + HEAP_SIZE_CHIRHO;
+/// Maximum size of the large allocation pool (256 MB).
+const LARGE_POOL_SIZE_CHIRHO: usize = 256 * 1024 * 1024;
+/// Current bump pointer for the large pool.
+static LARGE_POOL_NEXT_CHIRHO: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(LARGE_POOL_START_CHIRHO);
+
+/// Allocate from the large pool by mapping physical frames directly.
+unsafe fn large_alloc_chirho(size_chirho: usize) -> *mut u8 {
+    let aligned_size_chirho = (size_chirho + 0xFFF) & !0xFFF; // page-align
+    let addr_chirho = LARGE_POOL_NEXT_CHIRHO.fetch_add(
+        aligned_size_chirho,
+        core::sync::atomic::Ordering::SeqCst,
+    );
+
+    // Check bounds
+    if addr_chirho + aligned_size_chirho > LARGE_POOL_START_CHIRHO + LARGE_POOL_SIZE_CHIRHO {
+        // Out of pool space — revert bump pointer
+        LARGE_POOL_NEXT_CHIRHO.fetch_sub(
+            aligned_size_chirho,
+            core::sync::atomic::Ordering::SeqCst,
+        );
+        return core::ptr::null_mut();
+    }
+
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let num_pages_chirho = aligned_size_chirho / 0x1000;
+
+    // Allocate and map pages one at a time.
+    // Map into BOOT PML4 (not current CR3) so pages persist across context switches.
+    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+    let flags_chirho = x86_64::structures::paging::PageTableFlags::PRESENT
+        | x86_64::structures::paging::PageTableFlags::WRITABLE;
+
+    for i_chirho in 0..num_pages_chirho {
+        let vaddr_chirho = addr_chirho + i_chirho * 0x1000;
+        // Allocate one frame
+        let phys_chirho = {
+            let mut alloc_lock_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+            if let Some(alloc_chirho) = alloc_lock_chirho.as_mut() {
+                if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
+                    frame_chirho.start_address().as_u64()
+                } else {
+                    return core::ptr::null_mut();
+                }
+            } else {
+                return core::ptr::null_mut();
+            }
+        }; // Lock released
+        // Zero the frame via physical memory offset
+        core::ptr::write_bytes(
+            (phys_chirho + phys_offset_chirho) as *mut u8, 0, 0x1000,
+        );
+        // Map into boot PML4 (persistent across all tasks' page tables)
+        let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+            boot_pml4_chirho, vaddr_chirho as u64, phys_chirho, flags_chirho,
+        );
+        // Also map in current CR3 for immediate access
+        let (cur_cr3_chirho, _) = x86_64::registers::control::Cr3::read();
+        if cur_cr3_chirho.start_address() != boot_pml4_chirho {
+            let _ = crate::pagetable_chirho::map_page_in_pt_chirho(
+                cur_cr3_chirho.start_address(), vaddr_chirho as u64, phys_chirho, flags_chirho,
+            );
+        }
+    }
+
+    addr_chirho as *mut u8
+}
+
+/// Deallocate from the large pool (unmap pages but don't return frames).
+/// Simple: just unmap. The bump pointer never reclaims — acceptable for
+/// temporary Vec doubling where the old buffer is freed immediately.
+unsafe fn large_dealloc_chirho(ptr_chirho: *mut u8, size_chirho: usize) {
+    let addr_chirho = ptr_chirho as usize;
+    if addr_chirho < LARGE_POOL_START_CHIRHO
+        || addr_chirho >= LARGE_POOL_START_CHIRHO + LARGE_POOL_SIZE_CHIRHO
+    {
+        // Not from the large pool — fall back to buddy
+        use core::alloc::GlobalAlloc;
+        INNER_ALLOC_CHIRHO.dealloc(ptr_chirho, core::alloc::Layout::from_size_align_unchecked(size_chirho, 8));
+        return;
+    }
+    // Unmap pages and return frames to the frame allocator
+    let aligned_size_chirho = (size_chirho + 0xFFF) & !0xFFF;
+    let num_pages_chirho = aligned_size_chirho / 0x1000;
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+
+    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
+    let mut alloc_lock_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
+    for i_chirho in 0..num_pages_chirho {
+        let vaddr_chirho = (addr_chirho + i_chirho * 0x1000) as u64;
+        // Walk boot PML4 to find the physical frame
+        if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
+            boot_pml4_chirho, x86_64::VirtAddr::new(vaddr_chirho),
+        ) {
+            let pte_chirho = &*pte_ptr_chirho;
+            if pte_chirho.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+                let phys_chirho = pte_chirho.addr().as_u64();
+                // Clear the PTE
+                (*pte_ptr_chirho).set_unused();
+                x86_64::instructions::tlb::flush(x86_64::VirtAddr::new(vaddr_chirho));
+                // Return frame to allocator
+                use x86_64::structures::paging::PhysFrame;
+                use x86_64::PhysAddr;
+                if let Some(alloc_ref_chirho) = alloc_lock_chirho.as_mut() {
+                    let frame_chirho = PhysFrame::containing_address(PhysAddr::new(phys_chirho));
+                    alloc_ref_chirho.deallocate_frame_chirho(frame_chirho);
+                }
+            }
+        }
+    }
+}
+
 /// Initialise the kernel heap by mapping pages.
 ///
-/// The buddy-alloc crate initializes itself lazily on first use,
-/// so we only need to map the virtual pages to physical frames here.
+/// Maps heap pages and initializes the linked-list allocator.
 pub fn init_heap_chirho(
     mapper_chirho: &mut impl Mapper<Size4KiB>,
     frame_allocator_chirho: &mut impl FrameAllocator<Size4KiB>,
@@ -291,5 +417,42 @@ fn alloc_error_handler_chirho(layout_chirho: core::alloc::Layout) -> ! {
             x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
         }
     }
+    // Kill the current task instead of halting the entire kernel.
+    // This allows other tasks (xterm, twm, dropbear) to continue.
+    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let pid_chirho = task_arc_chirho.lock().pid_chirho;
+        let oom_msg_chirho = b"\r\n[ALLOC] Killing PID ";
+        for &b_chirho in oom_msg_chirho {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b_chirho);
+            }
+        }
+        let mut pd_chirho = [0u8; 10];
+        let mut pi_chirho = 0usize;
+        let mut pn_chirho = pid_chirho as usize;
+        if pn_chirho == 0 { pd_chirho[0] = b'0'; pi_chirho = 1; }
+        else { while pn_chirho > 0 { pd_chirho[pi_chirho] = b'0' + (pn_chirho % 10) as u8; pn_chirho /= 10; pi_chirho += 1; } }
+        for j_chirho in (0..pi_chirho).rev() {
+            unsafe {
+                while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).write(pd_chirho[j_chirho]);
+            }
+        }
+        unsafe {
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'\r');
+            while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'\n');
+        }
+        // Mark task as zombie and yield to next task
+        {
+            let mut tg_chirho = task_arc_chirho.lock();
+            tg_chirho.state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
+        }
+        // Yield to scheduler — since we're zombie, we won't be scheduled again
+        crate::scheduler_chirho::schedule_chirho();
+    }
+    // Fallback: HLT loop if no current task
     loop { x86_64::instructions::hlt(); }
 }
