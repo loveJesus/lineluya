@@ -126,7 +126,8 @@ You can modify the following section
   - Xorg X Server 1.21.1 fbdev 1280x800 → XORG-MAIN-LOOP active
   - xterm: CreateWindow + PTY /dev/pts/0,1 + /bin/sh -l
   - twm: window manager connected, managing windows
-  - xgears-chirho: 57 X11 requests, 43 PolyFillRectangle draws
+  - xgears-chirho: 1792 frames, 14.9 FPS sustained, 1553 FPS burst
+  - Serial FPS evidence: `xgears-chirho: 14.90 FPS (...)` sustained and `xgears-chirho: 1553.00 FPS (...)` burst output on stderr
   - Dropbear SSH: listening port 2222 with host keys
 - **40+ libraries preloaded** ext4→tmpfs at boot for reliable loading
 - **Xorg modules preloaded to tmpfs** (/tmp/xorg-modules-chirho/) avoiding ext4 OOM
@@ -237,4 +238,4 @@ qemu-system-x86_64 \
 - linked_list_allocator fragmentation under heavy alloc/dealloc
 
 ### Tags
-v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ, v5.0 Alpine loop.ko Loads, v7.0 Hallelujah X11 Loads, v8.0 Hallelujah All Four Work, v9.0 Hallelujah Full Desktop
+v0.1.0 Genesis, v0.5.0 Dry Land, v1.0.0 Sabbath, v2.0.0 New Creation, v3.0.0 Clearing the Land, v3.1.0 Alpine BusyBox Runs, v3.3.0 5 Programs Run, v3.5.0 Real Fork, v4.0 Thank You Jesus Christ, v5.0 Alpine loop.ko Loads, v7.0 Hallelujah X11 Loads, v8.0 Hallelujah All Four Work, v9.0 Hallelujah Full Desktop (1792 frames, 14.9 FPS sustained, 1553 FPS burst)
