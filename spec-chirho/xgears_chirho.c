@@ -16,6 +16,7 @@
 #define FPS_REPORT_NS_CHIRHO 2000000000ULL
 #define ROTATION_SAMPLES_CHIRHO 64
 #define FIXED_SCALE_CHIRHO 1024
+#define FLUSH_FRAME_GROUP_CHIRHO 4ULL
 #define CONNECT_RETRIES_CHIRHO 30
 #define CONNECT_RETRY_US_CHIRHO 100000U
 
@@ -254,7 +255,9 @@ static void draw_rotating_rectangle_chirho(XgearsStateChirho *state_chirho) {
         &fill_rectangles_chirho[1]
     );
 
-    xcb_flush(state_chirho->connection_chirho);
+    /* Flush every 4th frame to batch X11 ops into fewer writev calls */
+    if (state_chirho->total_frames_chirho % 4 == 3) {
+}
 }
 
 static void report_fps_if_needed_chirho(XgearsStateChirho *state_chirho) {
@@ -293,6 +296,16 @@ static void sleep_for_next_frame_chirho(void) {
     sleep_time_chirho.tv_sec = 0;
     sleep_time_chirho.tv_nsec = (long) FRAME_NS_CHIRHO;
     nanosleep(&sleep_time_chirho, NULL);
+}
+
+static void flush_if_needed_chirho(XgearsStateChirho *state_chirho) {
+    if (state_chirho->connection_chirho == NULL) {
+        return;
+    }
+
+    if ((state_chirho->total_frames_chirho % FLUSH_FRAME_GROUP_CHIRHO) == 0) {
+        xcb_flush(state_chirho->connection_chirho);
+    }
 }
 
 static xcb_screen_t *find_screen_chirho(
@@ -466,6 +479,7 @@ static void run_xgears_loop_chirho(XgearsStateChirho *state_chirho) {
         state_chirho->phase_index_chirho = (state_chirho->phase_index_chirho + 1) % ROTATION_SAMPLES_CHIRHO;
         state_chirho->total_frames_chirho += 1;
         state_chirho->report_frames_chirho += 1;
+        flush_if_needed_chirho(state_chirho);
         report_fps_if_needed_chirho(state_chirho);
         /* No sleep — draw as fast as possible for maximum frame rate */
     }
@@ -482,6 +496,7 @@ static void destroy_xgears_state_chirho(XgearsStateChirho *state_chirho) {
     }
 
     if (state_chirho->window_chirho != 0) {
+        xcb_flush(state_chirho->connection_chirho);
         xcb_destroy_window(state_chirho->connection_chirho, state_chirho->window_chirho);
         state_chirho->window_chirho = 0;
     }
