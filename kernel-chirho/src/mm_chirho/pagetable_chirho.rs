@@ -1163,6 +1163,56 @@ pub fn mirror_user_mappings_chirho(target_pml4_phys_chirho: PhysAddr) -> usize {
 // map_page_in_pt_chirho — map a page in a SPECIFIC page table
 // ============================================================================
 
+/// Failure modes for allocating and mapping one zero-filled demand page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemandPageMapErrorChirho {
+    AllocatorBusyChirho,
+    AllocatorNotInitializedChirho,
+    LeafFrameExhaustedChirho,
+    PageTableFrameExhaustedChirho,
+}
+
+/// Allocate, zero, and map one demand page without recursively holding the
+/// global frame-allocator lock.
+///
+/// [`map_page_in_pt_chirho`] may allocate intermediate page-table levels, so
+/// its caller must not retain the allocator guard used for the leaf frame.
+/// Keeping that ownership sequence here prevents a page fault at a new 2 MiB
+/// boundary from self-deadlocking while the mapper creates its PT level.
+pub fn map_zeroed_demand_page_chirho(
+    pml4_phys_chirho: PhysAddr,
+    vaddr_chirho: u64,
+    flags_chirho: PageTableFlags,
+) -> Result<PhysAddr, DemandPageMapErrorChirho> {
+    let leaf_frame_chirho = {
+        let Some(mut allocator_guard_chirho) = GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() else {
+            return Err(DemandPageMapErrorChirho::AllocatorBusyChirho);
+        };
+        let Some(allocator_chirho) = allocator_guard_chirho.as_mut() else {
+            return Err(DemandPageMapErrorChirho::AllocatorNotInitializedChirho);
+        };
+        allocator_chirho
+            .allocate_frame()
+            .ok_or(DemandPageMapErrorChirho::LeafFrameExhaustedChirho)?
+    };
+    let leaf_phys_chirho = leaf_frame_chirho.start_address();
+    zero_frame_chirho(leaf_phys_chirho);
+
+    if map_page_in_pt_chirho(
+        pml4_phys_chirho,
+        vaddr_chirho,
+        leaf_phys_chirho.as_u64(),
+        flags_chirho,
+    )
+    .is_err()
+    {
+        crate::mm_chirho::deallocate_frame_chirho(leaf_frame_chirho);
+        return Err(DemandPageMapErrorChirho::PageTableFrameExhaustedChirho);
+    }
+
+    Ok(leaf_phys_chirho)
+}
+
 /// Map a 4 KiB virtual page to a physical frame in a specific page table.
 ///
 /// Unlike the global mapper (which maps into the current CR3 page table),
@@ -1171,6 +1221,8 @@ pub fn mirror_user_mappings_chirho(target_pml4_phys_chirho: PhysAddr) -> usize {
 ///
 /// Intermediate page table levels (PDPT, PD, PT) are allocated on demand
 /// from the frame allocator.
+/// Callers must not hold [`GLOBAL_FRAME_ALLOCATOR_CHIRHO`] because allocating
+/// one of those levels acquires it internally.
 ///
 /// Returns `Ok(())` on success, or `Err(())` on OOM or failure.
 pub fn map_page_in_pt_chirho(

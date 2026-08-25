@@ -508,7 +508,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
             let page_vaddr_chirho = fault_addr_chirho.as_u64() & !0xFFF;
             if page_vaddr_chirho < 0x8000_0000_0000 {
                 use x86_64::structures::paging::{
-                    FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
+                    Mapper, Page, PageTableFlags, Size4KiB,
                 };
 
                 let current_pml4_chirho = crate::pagetable_chirho::get_current_pml4_phys_chirho();
@@ -557,38 +557,25 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     }
                 }
 
-                // Not in boot PT — allocate a new frame.
-                let mut ag_chirho = loop {
-                    if let Some(g_chirho) = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() { break g_chirho; }
-                    core::hint::spin_loop();
-                };
-                if let Some(alloc_chirho) = ag_chirho.as_mut() {
-                    if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
-                        let phys_chirho = frame_chirho.start_address().as_u64();
-                        let (cr3_pf_chirho, _) = x86_64::registers::control::Cr3::read();
-                        if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
-                            cr3_pf_chirho.start_address(), page_vaddr_chirho, phys_chirho, rw_flags_chirho,
-                        ) {
-                            crate::serial_println_chirho!(
-                                "[PF] map failed for {:#x}: {:?}",
-                                page_vaddr_chirho,
-                                map_error_chirho
-                            );
-                        }
+                // Not in boot PT — allocate and map without retaining the
+                // frame-allocator guard across page-table-level allocation.
+                let (cr3_pf_chirho, _) = x86_64::registers::control::Cr3::read();
+                match crate::pagetable_chirho::map_zeroed_demand_page_chirho(
+                    cr3_pf_chirho.start_address(),
+                    page_vaddr_chirho,
+                    rw_flags_chirho,
+                ) {
+                    Ok(_) => {
                         x86_64::instructions::tlb::flush(fault_addr_chirho);
-                        unsafe { core::ptr::write_bytes(page_vaddr_chirho as *mut u8, 0, 4096); }
                         return;
-                    } else {
+                    }
+                    Err(map_error_chirho) => {
                         crate::serial_println_chirho!(
-                            "[PF-OOM] kern page alloc failed for {:#x}",
+                            "[PF] kernel demand map failed for {:#x}: {:?}",
                             page_vaddr_chirho,
+                            map_error_chirho,
                         );
                     }
-                } else {
-                    crate::serial_println_chirho!(
-                        "[PF-NOINIT] allocator not init for {:#x}",
-                        page_vaddr_chirho,
-                    );
                 }
             }
         }
@@ -597,30 +584,10 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
     if is_user_chirho {
         if let Ok(fault_addr_chirho) = Cr2::read() {
             use x86_64::structures::paging::{
-                FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
+                PageTableFlags,
             };
-            use x86_64::VirtAddr;
 
             let page_vaddr_chirho = fault_addr_chirho.as_u64() & !0xFFF;
-
-            // Trace page faults for PID >= 5 (Xorg)
-            {
-                let pf_pid_chirho = crate::task_chirho::current_task_chirho()
-                    .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
-                if pf_pid_chirho >= 5 {
-                    use core::sync::atomic::{AtomicU64, Ordering as PfOrd};
-                    static PF5_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                    let pfc_chirho = PF5_CNT_CHIRHO.fetch_add(1, PfOrd::Relaxed);
-                    if pfc_chirho < 20 || pfc_chirho % 1000 == 0 {
-                        crate::serial_println_chirho!(
-                            "[PF-PID{}] #{} addr={:#x} write={} present={}",
-                            pf_pid_chirho, pfc_chirho, fault_addr_chirho.as_u64(),
-                            is_write_chirho, is_present_chirho,
-                        );
-                    }
-                }
-            }
-
             // --- Lazy page migration from boot PT (PID 0/1 only) ---
             // For PID >= 2 with authoritative per-process PTs, do NOT
             // import boot PML4 mappings — they belong to PID 0's init shell.
@@ -772,52 +739,29 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 }
             }
 
-            // --- Normal page fault: allocate a new frame ---
-            let page_chirho: Page<Size4KiB> =
-                Page::containing_address(fault_addr_chirho);
-
+            // --- Normal page fault: allocate and map a zero-filled frame ---
             let flags_chirho = PageTableFlags::PRESENT
                 | PageTableFlags::WRITABLE
                 | PageTableFlags::USER_ACCESSIBLE;
 
-            // Allocate a new frame for the faulting page.
-            let mut ag_chirho = loop {
-                if let Some(g_chirho) = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.try_lock() {
-                    break g_chirho;
-                }
-                core::hint::spin_loop();
-            };
-            if let Some(alloc_chirho) = ag_chirho.as_mut() {
-                if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
-                    let frame_phys_chirho = frame_chirho.start_address().as_u64();
-
-                    // Map via CR3-based map_page_in_pt_chirho ONLY.
-                    // NO GLOBAL_MAPPER.map_to — it creates duplicate intermediate
-                    // PT pages that cause cross-process PTE corruption.
-                    let (cr3_upf_chirho, _) = x86_64::registers::control::Cr3::read();
-                    if let Err(map_error_chirho) = crate::pagetable_chirho::map_page_in_pt_chirho(
-                        cr3_upf_chirho.start_address(),
-                        page_vaddr_chirho,
-                        frame_phys_chirho,
-                        flags_chirho,
-                    ) {
-                        crate::serial_println_chirho!(
-                            "[PF] user map failed for {:#x}: {:?}",
-                            page_vaddr_chirho,
-                            map_error_chirho
-                        );
-                    }
+            // The helper releases the leaf-frame allocator guard before
+            // map_page_in_pt_chirho can allocate intermediate table levels.
+            let (cr3_upf_chirho, _) = x86_64::registers::control::Cr3::read();
+            match crate::pagetable_chirho::map_zeroed_demand_page_chirho(
+                cr3_upf_chirho.start_address(),
+                page_vaddr_chirho,
+                flags_chirho,
+            ) {
+                Ok(_) => {
                     x86_64::instructions::tlb::flush(fault_addr_chirho);
-
-                    // Zero the page.
-                    unsafe {
-                        core::ptr::write_bytes(
-                            (page_chirho.start_address().as_u64()) as *mut u8,
-                            0,
-                            4096,
-                        );
-                    }
                     return;
+                }
+                Err(map_error_chirho) => {
+                    crate::serial_println_chirho!(
+                        "[PF] user demand map failed for {:#x}: {:?}",
+                        page_vaddr_chirho,
+                        map_error_chirho,
+                    );
                 }
             }
         }
