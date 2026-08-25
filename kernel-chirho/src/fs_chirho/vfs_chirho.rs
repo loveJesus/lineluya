@@ -342,10 +342,10 @@ impl FdTableChirho {
 
     /// Allocate the lowest available file descriptor, returning its index.
     pub fn alloc_fd_chirho(&mut self) -> Result<usize, i64> {
-        // Start from fd=3 to avoid recycling stdin/stdout/stderr (0-2).
-        // Xorg closes stderr then opens /dev/fb0 which gets fd=2,
-        // causing the fbdev driver to share fd=2 with the log writer.
-        for (idx_chirho, slot_chirho) in self.fds_chirho.iter().enumerate().skip(3) {
+        // POSIX requires open/dup to choose the lowest available descriptor.
+        // Shell background jobs rely on this after closing stdin: opening
+        // /dev/null must return fd 0, not an arbitrarily reserved fd >= 3.
+        for (idx_chirho, slot_chirho) in self.fds_chirho.iter().enumerate() {
             if slot_chirho.is_none() {
                 return Ok(idx_chirho);
             }
