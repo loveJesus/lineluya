@@ -686,7 +686,25 @@ pub fn mount_tmpfs_chirho() -> Arc<Mutex<SuperblockChirho>> {
 ///
 /// Used by the kernel to create configuration files (e.g., `/etc/profile`)
 /// before launching userspace.
+/// Write a tmpfs file with the default data mode (0644).
+///
+/// Use [`write_tmpfs_file_mode_chirho`] for anything that must be EXECUTABLE.
 pub fn write_tmpfs_file_chirho(path_chirho: &str, content_chirho: &[u8]) {
+    write_tmpfs_file_mode_chirho(path_chirho, content_chirho, 0o644);
+}
+
+/// Write a tmpfs file with an explicit permission mode.
+///
+/// Every tmpfs file used to be created 0644, including preloaded BINARIES. A
+/// rootfs launcher doing the correct thing — `[ -x /tmp/lib-chirho/Xorg ]` —
+/// therefore rejected a perfectly good 1,900,792-byte Xorg because its mode
+/// said it was not executable. The metadata was wrong, not the file, and
+/// weakening the launcher to `-f` would have hidden that.
+pub fn write_tmpfs_file_mode_chirho(
+    path_chirho: &str,
+    content_chirho: &[u8],
+    mode_chirho: u32,
+) {
     // Split path into directory and filename
     let (dir_path_chirho, file_name_chirho) = match path_chirho.rfind('/') {
         Some(idx_chirho) if idx_chirho > 0 => (&path_chirho[..idx_chirho], &path_chirho[idx_chirho + 1..]),
@@ -746,7 +764,7 @@ pub fn write_tmpfs_file_chirho(path_chirho: &str, content_chirho: &[u8]) {
         // Create new file
         let new_inode_chirho = Arc::new(Mutex::new(InodeChirho {
             ino_chirho: alloc_ino_chirho(),
-            mode_chirho: S_IFREG_CHIRHO | 0o644,
+            mode_chirho: S_IFREG_CHIRHO | (mode_chirho & 0o7777),
             uid_chirho: 0,
             gid_chirho: 0,
             size_chirho: content_chirho.len() as u64,

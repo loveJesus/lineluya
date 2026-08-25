@@ -598,7 +598,7 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
                                 d_chirho.push_str(lib_name_chirho);
                                 d_chirho
                             };
-                            tmpfs_chirho::write_tmpfs_file_chirho(&dst_path_chirho, &data_chirho[..pos_chirho]);
+                            tmpfs_chirho::write_tmpfs_file_mode_chirho(&dst_path_chirho, &data_chirho[..pos_chirho], 0o755);
                             serial_println_chirho!("[INIT] Preloaded {} → {} ({} bytes)", src_path_chirho, dst_path_chirho, pos_chirho);
                             preloaded_chirho += 1;
                         }
@@ -645,7 +645,7 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
                             _ => break,
                         }
                     }
-                    tmpfs_chirho::write_tmpfs_file_chirho(bin_chirho.1, &data_chirho[..pos_chirho]);
+                    tmpfs_chirho::write_tmpfs_file_mode_chirho(bin_chirho.1, &data_chirho[..pos_chirho], 0o755);
                     serial_println_chirho!("[INIT] Preloaded {} → {} ({} bytes)", bin_chirho.0, bin_chirho.1, pos_chirho);
                 }
             }
@@ -678,7 +678,7 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
                     "/tmp/lib-chirho/dri/swrast_dri.so",
                     "/tmp/lib-chirho/dri/kms_swrast_dri.so",
                 ] {
-                    tmpfs_chirho::write_tmpfs_file_chirho(dri_dst_path_chirho, &data_chirho[..pos_chirho]);
+                    tmpfs_chirho::write_tmpfs_file_mode_chirho(dri_dst_path_chirho, &data_chirho[..pos_chirho], 0o755);
                 }
                 serial_println_chirho!("[INIT] Preloaded swrast DRI aliases ({} bytes)", pos_chirho);
             }
@@ -727,7 +727,7 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
                                 _ => break,
                             }
                         }
-                        tmpfs_chirho::write_tmpfs_file_chirho(dst_chirho, &data_chirho[..pos_chirho]);
+                        tmpfs_chirho::write_tmpfs_file_mode_chirho(dst_chirho, &data_chirho[..pos_chirho], 0o755);
                         serial_println_chirho!("[INIT] Preloaded {} ({} bytes)", dst_chirho, pos_chirho);
                     }
                 }
