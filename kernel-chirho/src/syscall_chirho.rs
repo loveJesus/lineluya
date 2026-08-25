@@ -7687,6 +7687,35 @@ fn sys_statx_chirho(
 // Directory syscall implementations (P3-015)
 // ============================================================================
 
+/// Create one directory after applying the shared `mkdir(2)`/`mkdirat(2)`
+/// existing-path contract.
+///
+/// BusyBox `mkdir -p` probes every prefix, including `/` and exact mount
+/// points such as `/tmp`. The syscall must return `EEXIST` for those existing
+/// paths; resolving them as a parent/name pair would instead reject `/` or
+/// accidentally treat a mount point as a child of its own mounted root.
+fn create_directory_at_path_chirho(path_chirho: &str, mode_chirho: u32) -> i64 {
+    if crate::fs_chirho::resolve_path_chirho(path_chirho).is_ok() {
+        return -EEXIST_CHIRHO;
+    }
+
+    let (parent_inode_chirho, name_chirho) =
+        match crate::fs_chirho::resolve_parent_live_chirho(path_chirho) {
+            Ok(result_chirho) => result_chirho,
+            Err(errno_chirho) => return errno_chirho,
+        };
+
+    let parent_guard_chirho = parent_inode_chirho.lock();
+    match parent_guard_chirho.ops_chirho.mkdir_chirho(
+        &parent_guard_chirho,
+        &name_chirho,
+        mode_chirho,
+    ) {
+        Ok(_) => 0,
+        Err(errno_chirho) => errno_chirho,
+    }
+}
+
 /// `mkdir(2)` implementation (syscall 83).
 ///
 /// Resolves the parent directory in the live tmpfs tree and creates a new
@@ -7713,16 +7742,7 @@ fn sys_mkdir_chirho(
 
     crate::serial_debug_chirho!("[SYSCALL] mkdir({}, {:#o})", path_chirho, mode_chirho);
 
-    let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
-        Ok(result_chirho) => result_chirho,
-        Err(errno_chirho) => return errno_chirho,
-    };
-
-    let parent_guard_chirho = parent_inode_chirho.lock();
-    match parent_guard_chirho.ops_chirho.mkdir_chirho(&parent_guard_chirho, &name_chirho, mode_chirho) {
-        Ok(_) => 0,
-        Err(errno_chirho) => errno_chirho,
-    }
+    create_directory_at_path_chirho(&path_chirho, mode_chirho)
 }
 
 /// `mkdirat(2)` implementation (syscall 258).
@@ -7757,16 +7777,7 @@ fn sys_mkdirat_chirho(
 
     crate::serial_debug_chirho!("[SYSCALL] mkdirat({}, {}, {:#o})", dirfd_chirho, path_chirho, mode_chirho);
 
-    let (parent_inode_chirho, name_chirho) = match crate::fs_chirho::resolve_parent_live_chirho(&path_chirho) {
-        Ok(result_chirho) => result_chirho,
-        Err(errno_chirho) => return errno_chirho,
-    };
-
-    let parent_guard_chirho = parent_inode_chirho.lock();
-    match parent_guard_chirho.ops_chirho.mkdir_chirho(&parent_guard_chirho, &name_chirho, mode_chirho) {
-        Ok(_) => 0,
-        Err(errno_chirho) => errno_chirho,
-    }
+    create_directory_at_path_chirho(&path_chirho, mode_chirho)
 }
 
 /// `rmdir(2)` implementation (syscall 84).
