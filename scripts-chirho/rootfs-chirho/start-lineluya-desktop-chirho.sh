@@ -54,7 +54,13 @@ while [ "$server_attempt_chirho" -lt "$SERVER_ATTEMPTS_CHIRHO" ]; do
     if ! kill -0 "$XORG_PID_CHIRHO" 2>/dev/null; then
         fail_desktop_chirho "Xorg exited before accepting clients"
     fi
-    if timeout 3 /usr/bin/xgears-chirho --probe-server-chirho \
+    # No `timeout` wrapper: this loop is ALREADY bounded by
+    # SERVER_ATTEMPTS_CHIRHO, and the probe fails fast when the display
+    # socket is absent or refuses. Depending on an external applet made
+    # readiness hostage to PATH lookup, which is exactly how this failed:
+    #   [VFS] resolve_path FAILED for '/usr/sbin/timeout'
+    #   line 57: timeout: not found
+    if /usr/bin/xgears-chirho --probe-server-chirho \
         >/dev/null 2>&1; then
         server_ready_chirho=1
         break
@@ -76,7 +82,8 @@ while [ "$window_manager_attempt_chirho" -lt "$WINDOW_MANAGER_ATTEMPTS_CHIRHO" ]
     if ! kill -0 "$TWM_PID_CHIRHO" 2>/dev/null; then
         fail_desktop_chirho "twm exited before becoming window manager"
     fi
-    if timeout 3 /usr/bin/xgears-chirho --probe-window-manager-chirho \
+    # Bounded by WINDOW_MANAGER_ATTEMPTS_CHIRHO; see the note above.
+    if /usr/bin/xgears-chirho --probe-window-manager-chirho \
         >/dev/null 2>&1; then
         window_manager_ready_chirho=1
         break
