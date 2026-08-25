@@ -8,10 +8,14 @@
 
 extern crate alloc;
 
+#[path = "ext4_extent_tree_chirho.rs"]
+mod ext4_extent_tree_chirho;
+
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use ext4_extent_tree_chirho::find_physical_block_chirho;
 use spin::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -1058,128 +1062,21 @@ impl Ext4MountChirho {
         header_chirho: &Ext4ExtentHeaderChirho,
         logical_block_chirho: u32,
     ) -> Option<u64> {
-        let raw_bytes_chirho: &[u8] = unsafe {
+        if !header_chirho.is_valid_chirho() {
+            return None;
+        }
+        let root_node_chirho = unsafe {
             core::slice::from_raw_parts(
                 block_data_chirho.as_ptr() as *const u8,
-                60,
+                core::mem::size_of_val(block_data_chirho),
             )
         };
-
-        if header_chirho.eh_depth_chirho == 0 {
-            // Leaf node — search extents
-            let entries_chirho = header_chirho.eh_entries_chirho as usize;
-            for i_chirho in 0..entries_chirho {
-                let ext_off_chirho = 12 + i_chirho * 12;
-                if ext_off_chirho + 12 > 60 { break; }
-                let ee_block_chirho = u32::from_le_bytes([
-                    raw_bytes_chirho[ext_off_chirho],
-                    raw_bytes_chirho[ext_off_chirho + 1],
-                    raw_bytes_chirho[ext_off_chirho + 2],
-                    raw_bytes_chirho[ext_off_chirho + 3],
-                ]);
-                let ee_len_chirho = u16::from_le_bytes([
-                    raw_bytes_chirho[ext_off_chirho + 4],
-                    raw_bytes_chirho[ext_off_chirho + 5],
-                ]);
-                let ee_start_lo_chirho = u32::from_le_bytes([
-                    raw_bytes_chirho[ext_off_chirho + 8],
-                    raw_bytes_chirho[ext_off_chirho + 9],
-                    raw_bytes_chirho[ext_off_chirho + 10],
-                    raw_bytes_chirho[ext_off_chirho + 11],
-                ]);
-                let ee_start_hi_chirho = u16::from_le_bytes([
-                    raw_bytes_chirho[ext_off_chirho + 6],
-                    raw_bytes_chirho[ext_off_chirho + 7],
-                ]);
-                let phys_start_chirho = (ee_start_hi_chirho as u64) << 32 | (ee_start_lo_chirho as u64);
-                let actual_len_chirho = if ee_len_chirho > 0x8000 {
-                    (ee_len_chirho - 0x8000) as u32
-                } else {
-                    ee_len_chirho as u32
-                };
-
-                if logical_block_chirho >= ee_block_chirho
-                    && logical_block_chirho < ee_block_chirho + actual_len_chirho
-                {
-                    let offset_chirho = (logical_block_chirho - ee_block_chirho) as u64;
-                    return Some(phys_start_chirho + offset_chirho);
-                }
-            }
-            None // Not found — sparse hole
-        } else {
-            // Index node — find child and recurse
-            let entries_chirho = header_chirho.eh_entries_chirho as usize;
-            let mut best_idx_chirho: Option<usize> = None;
-            for i_chirho in 0..entries_chirho {
-                let idx_off_chirho = 12 + i_chirho * 12;
-                if idx_off_chirho + 12 > 60 { break; }
-                let ei_block_chirho = u32::from_le_bytes([
-                    raw_bytes_chirho[idx_off_chirho],
-                    raw_bytes_chirho[idx_off_chirho + 1],
-                    raw_bytes_chirho[idx_off_chirho + 2],
-                    raw_bytes_chirho[idx_off_chirho + 3],
-                ]);
-                if logical_block_chirho >= ei_block_chirho {
-                    best_idx_chirho = Some(i_chirho);
-                }
-            }
-
-            if let Some(idx_chirho) = best_idx_chirho {
-                let idx_off_chirho = 12 + idx_chirho * 12;
-                let child_lo_chirho = u32::from_le_bytes([
-                    raw_bytes_chirho[idx_off_chirho + 4],
-                    raw_bytes_chirho[idx_off_chirho + 5],
-                    raw_bytes_chirho[idx_off_chirho + 6],
-                    raw_bytes_chirho[idx_off_chirho + 7],
-                ]);
-                let child_hi_chirho = u16::from_le_bytes([
-                    raw_bytes_chirho[idx_off_chirho + 8],
-                    raw_bytes_chirho[idx_off_chirho + 9],
-                ]);
-                let child_block_chirho = (child_hi_chirho as u64) << 32 | (child_lo_chirho as u64);
-
-                // Read the child node from disk via block cache
-                let child_vec_chirho = self.read_block_cached_chirho(child_block_chirho)?;
-                let mut child_data_chirho = [0u8; 4096];
-                let copy_len_chirho = core::cmp::min(4096, child_vec_chirho.len());
-                child_data_chirho[..copy_len_chirho].copy_from_slice(&child_vec_chirho[..copy_len_chirho]);
-
-                // Parse child header
-                let child_header_chirho = Ext4ExtentHeaderChirho {
-                    eh_magic_chirho: u16::from_le_bytes([child_data_chirho[0], child_data_chirho[1]]),
-                    eh_entries_chirho: u16::from_le_bytes([child_data_chirho[2], child_data_chirho[3]]),
-                    eh_max_chirho: u16::from_le_bytes([child_data_chirho[4], child_data_chirho[5]]),
-                    eh_depth_chirho: u16::from_le_bytes([child_data_chirho[6], child_data_chirho[7]]),
-                    eh_generation_chirho: u32::from_le_bytes([
-                        child_data_chirho[8], child_data_chirho[9],
-                        child_data_chirho[10], child_data_chirho[11],
-                    ]),
-                };
-
-                if !child_header_chirho.is_valid_chirho() {
-                    return None;
-                }
-
-                // Convert child_data to [u32; 15] format for recursion
-                let mut child_block_arr_chirho = [0u32; 15];
-                for k_chirho in 0..15 {
-                    child_block_arr_chirho[k_chirho] = u32::from_le_bytes([
-                        child_data_chirho[k_chirho * 4],
-                        child_data_chirho[k_chirho * 4 + 1],
-                        child_data_chirho[k_chirho * 4 + 2],
-                        child_data_chirho[k_chirho * 4 + 3],
-                    ]);
-                }
-
-                self.find_phys_block_chirho(
-                    &child_block_arr_chirho,
-                    &child_header_chirho,
-                    logical_block_chirho,
-                )
-            } else {
-                None
-            }
-        }
+        find_physical_block_chirho(
+            root_node_chirho,
+            logical_block_chirho,
+            header_chirho.eh_depth_chirho,
+            |child_block_chirho| self.read_block_cached_chirho(child_block_chirho),
+        )
     }
 
     /// Read leaf extents from the i_block array.
