@@ -1079,6 +1079,28 @@ pub fn sys_execve_with_filename_chirho(
     argv_chirho: u64,
     envp_chirho: u64,
 ) -> i64 {
+    sys_execve_prefixed_chirho(
+        filename_str_chirho,
+        argv_chirho,
+        envp_chirho,
+        alloc::vec::Vec::new(),
+    )
+}
+
+/// `execve` with an optional argv prefix, used to implement `#!` scripts.
+///
+/// POSIX requires the interpreter to be invoked as
+/// `[interp, script_path, original_argv[1..]]`. Passing the caller's argv
+/// through unchanged leaves the SCRIPT NAME in argv[0], which breaks any
+/// multi-call binary: BusyBox dispatches on argv[0], so it looked for an
+/// applet named `start-lineluya-desktop-chirho.sh` and reported
+/// "applet not found" instead of running the script.
+fn sys_execve_prefixed_chirho(
+    filename_str_chirho: String,
+    argv_chirho: u64,
+    envp_chirho: u64,
+    argv_prefix_chirho: alloc::vec::Vec<String>,
+) -> i64 {
     // Track whether this is a procfd (fexecve) exec so we can preserve
     // socket fds across exec for dropbear's `-2 N` connection passing.
     // Check BOTH the current filename AND the resolve_exec_source result
@@ -1090,7 +1112,7 @@ pub fn sys_execve_with_filename_chirho(
     // -----------------------------------------------------------------------
     // Step 2: Read argv array from userspace
     // -----------------------------------------------------------------------
-    let argv_vec_chirho = match read_user_string_array_chirho(argv_chirho) {
+    let mut argv_vec_chirho = match read_user_string_array_chirho(argv_chirho) {
         Ok(v_chirho) => v_chirho,
         Err(errno_chirho) => {
             crate::serial_println_chirho!(
@@ -1200,15 +1222,21 @@ pub fn sys_execve_with_filename_chirho(
             "[EXEC] shebang: interp='{}' script='{}'",
             interp_chirho, filename_str_chirho,
         );
-        // Re-exec with the interpreter binary. Pass the original argv/envp
-        // pointers through — the interpreter (e.g., /bin/sh) will get the
-        // script path as argv[0] and the remaining args as argv[1..].
-        // This is a simplification (Linux prepends interpreter to argv),
-        // but works for most #!/bin/sh scripts.
-        return sys_execve_with_filename_chirho(
+        // Re-exec the interpreter with POSIX shebang argv:
+        //   [interpreter, script_path, original_argv[1..]]
+        // The previous code passed the caller's argv through unchanged and
+        // called that "a simplification that works for most #!/bin/sh
+        // scripts". It does not: it leaves the SCRIPT NAME in argv[0], and a
+        // multi-call binary dispatches on argv[0], so BusyBox searched for an
+        // applet by the script's name and failed with "applet not found".
+        return sys_execve_prefixed_chirho(
             String::from(interp_chirho),
             argv_chirho,
             envp_chirho,
+            alloc::vec![
+                String::from(interp_chirho),
+                filename_str_chirho.clone(),
+            ],
         );
     }
 
@@ -1273,6 +1301,14 @@ pub fn sys_execve_with_filename_chirho(
     // -----------------------------------------------------------------------
     // Step 5: Check for PT_INTERP (dynamic linking) and load the ELF
     // -----------------------------------------------------------------------
+    // Shebang: replace argv[0] (the script name as invoked) with
+    // [interpreter, script_path], keeping the caller's remaining arguments.
+    if !argv_prefix_chirho.is_empty() {
+        let mut combined_argv_chirho = argv_prefix_chirho;
+        combined_argv_chirho.extend(argv_vec_chirho.into_iter().skip(1));
+        argv_vec_chirho = combined_argv_chirho;
+    }
+
     // If argv is empty, use the filename as argv[0] (standard behaviour).
     let effective_argv_chirho = if argv_vec_chirho.is_empty() {
         alloc::vec![filename_str_chirho.clone()]
