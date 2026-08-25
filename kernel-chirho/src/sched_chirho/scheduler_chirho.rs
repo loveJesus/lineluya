@@ -60,6 +60,8 @@ pub const X11_RENDER_TIME_SLICE_CHIRHO: u64 = DEFAULT_TIME_SLICE_CHIRHO * 3;
 /// queue can grow dynamically, but we guard against runaway task creation.
 pub const MAX_TASKS_CHIRHO: usize = 1024;
 
+const X11_RENDER_TASK_WORD_COUNT_CHIRHO: usize = MAX_TASKS_CHIRHO.div_ceil(64);
+
 // ---------------------------------------------------------------------------
 // Atomic flags (accessible without acquiring the scheduler lock)
 // ---------------------------------------------------------------------------
@@ -72,6 +74,11 @@ static NEED_RESCHED_ATOMIC_CHIRHO: AtomicBool = AtomicBool::new(false);
 /// Monotonically increasing tick counter.  Useful for timekeeping, profiling,
 /// and as a coarse timestamp source.  Updated on every timer interrupt.
 static GLOBAL_TICK_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Lock-free membership set for tasks participating in the X11 transport.
+/// PIDs are not recycled in this kernel, so bits remain valid for the boot.
+static X11_RENDER_TASK_BITS_CHIRHO: [AtomicU64; X11_RENDER_TASK_WORD_COUNT_CHIRHO] =
+    [const { AtomicU64::new(0) }; X11_RENDER_TASK_WORD_COUNT_CHIRHO];
 
 /// Limited scheduler tick trace for debugging PID 4 post-yield starvation.
 static TICK_TRACE_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
@@ -117,14 +124,21 @@ extern "C" {
     );
 }
 
-/// Thin wrapper around [`switch_context_chirho`] so the resumed task lands in
-/// a tiny post-switch frame first, not directly in the middle of the larger
-/// `schedule_chirho` body.
+/// Resume target saved by [`switch_context_return_wrapper_chirho`].
 ///
-/// The raw assembly already preserves the resumed task's callee-saved state.
-/// This wrapper's job is only to keep the immediate post-switch resume path
-/// structurally simple and to re-enable interrupts before returning to the
-/// caller.
+/// A previously-running task returns here first, then this second `ret`
+/// consumes the continuation stored at its saved `rsp_chirho` and resumes the
+/// suspended Rust call stack.
+#[unsafe(naked)]
+unsafe extern "C" fn switch_context_return_resume_chirho() {
+    core::arch::naked_asm!("sti", "ret");
+}
+
+/// Thin wrapper around [`switch_context_chirho`] so a resumed task first lands
+/// in [`switch_context_return_resume_chirho`] rather than directly in the
+/// middle of the larger [`schedule_chirho`] body.
+///
+/// Workflow: `spec-chirho/workflows-chirho/context-switch-chirho.md`.
 #[unsafe(naked)]
 unsafe extern "C" fn switch_context_return_wrapper_chirho(
     old_context_chirho: *mut crate::task_chirho::CpuContextChirho,
@@ -132,16 +146,14 @@ unsafe extern "C" fn switch_context_return_wrapper_chirho(
 ) {
     core::arch::naked_asm!(
         // Enter switch_context_chirho with a synthetic return address to the
-        // local resume label below. This avoids a compiler-generated wrapper
-        // frame while still giving switch_context_chirho the call/return shape
-        // it expects: [RSP] holds the continuation RIP.
-        "lea rax, [rip + 2f]",
+        // dedicated resume helper below. This avoids a compiler-generated
+        // wrapper frame while still giving switch_context_chirho the call/return
+        // shape it expects: [RSP] holds the caller continuation RIP.
+        "lea rax, [rip + {return_resume_chirho}]",
         "push rax",
         "jmp {switch_context_chirho}",
-        "2:",
-        "sti",
-        "ret",
         switch_context_chirho = sym switch_context_chirho,
+        return_resume_chirho = sym switch_context_return_resume_chirho,
     );
 }
 
@@ -193,43 +205,148 @@ fn task_state_name_for_pid_chirho(pid_chirho: u64) -> &'static str {
     }
 }
 
-fn task_has_x11_render_socket_chirho(pid_chirho: u64) -> bool {
-    let Some(task_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) else {
-        return false;
-    };
-
-    let task_guard_chirho = task_arc_chirho.lock();
-    let Some(fd_table_chirho) = task_guard_chirho.fd_table_chirho.as_ref() else {
-        return false;
-    };
-
-    for file_option_chirho in fd_table_chirho.fds_chirho.iter() {
-        let Some(file_arc_chirho) = file_option_chirho.as_ref() else {
-            continue;
-        };
-
-        let (inode_mode_chirho, inode_number_chirho) = {
-            let file_guard_chirho = file_arc_chirho.lock();
-            let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
-            (inode_guard_chirho.mode_chirho, inode_guard_chirho.ino_chirho)
-        };
-
-        if (inode_mode_chirho & 0o170000) != 0o140000 {
-            continue;
-        }
-
-        if crate::net_chirho::is_x11_connected_unix_socket_idx_chirho(
-            inode_number_chirho as usize,
-        ) {
-            return true;
-        }
+/// Mark a task for the X11/render time-slice boost.
+///
+/// AF_UNIX connect calls this after dropping its socket-table lock. Keeping
+/// the classification here makes scheduler lookup O(1) and lock-free.
+///
+/// Scheduler invariant: task selection must never acquire VFS, `FileChirho`,
+/// `InodeChirho`, or socket locks. A suspended task may own any of them, so
+/// inspecting its descriptor graph while selecting it can self-deadlock before
+/// the context switch begins.
+pub fn mark_x11_render_task_chirho(pid_chirho: u64) {
+    let pid_index_chirho = pid_chirho as usize;
+    if pid_index_chirho >= MAX_TASKS_CHIRHO {
+        return;
     }
 
-    false
+    let word_index_chirho = pid_index_chirho / 64;
+    let bit_index_chirho = pid_index_chirho % 64;
+    X11_RENDER_TASK_BITS_CHIRHO[word_index_chirho]
+        .fetch_or(1u64 << bit_index_chirho, Ordering::Relaxed);
+}
+
+fn is_x11_render_task_chirho(pid_chirho: u64) -> bool {
+    let pid_index_chirho = pid_chirho as usize;
+    if pid_index_chirho >= MAX_TASKS_CHIRHO {
+        return false;
+    }
+
+    let word_index_chirho = pid_index_chirho / 64;
+    let bit_index_chirho = pid_index_chirho % 64;
+    X11_RENDER_TASK_BITS_CHIRHO[word_index_chirho].load(Ordering::Relaxed)
+        & (1u64 << bit_index_chirho)
+        != 0
+}
+
+fn is_kernel_instruction_address_chirho(address_chirho: u64) -> bool {
+    use x86_64::structures::paging::PageTableFlags;
+
+    let Some((_physical_address_chirho, flags_chirho)) =
+        crate::pagetable_chirho::lookup_in_boot_pt_chirho(address_chirho)
+    else {
+        return false;
+    };
+
+    flags_chirho.contains(PageTableFlags::PRESENT)
+        && !flags_chirho.contains(PageTableFlags::USER_ACCESSIBLE)
+        && !flags_chirho.contains(PageTableFlags::NO_EXECUTE)
+}
+
+/// Validate a selected task's saved context against the actual two-return ABI.
+///
+/// Fresh tasks enter their saved `rip_chirho` directly. A resumed task first
+/// enters [`switch_context_return_resume_chirho`], then consumes the Rust
+/// continuation stored at its saved `rsp_chirho`. The stack pointer and that
+/// second return word must belong to the selected task's own kernel stack.
+///
+/// Workflow: `spec-chirho/workflows-chirho/context-switch-chirho.md`.
+fn task_context_is_valid_chirho(
+    pid_chirho: u64,
+    context_chirho: *const crate::task_chirho::CpuContextChirho,
+) -> bool {
+    if context_chirho.is_null() {
+        crate::serial_println_chirho!(
+            "[SCHED] invalid context pid={}: null context slot",
+            pid_chirho,
+        );
+        return false;
+    }
+
+    let Some(task_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) else {
+        crate::serial_println_chirho!(
+            "[SCHED] invalid context pid={}: task missing",
+            pid_chirho,
+        );
+        return false;
+    };
+    let (stack_top_chirho, stack_size_chirho) = {
+        let task_guard_chirho = task_arc_chirho.lock();
+        (
+            task_guard_chirho.kernel_stack_chirho,
+            task_guard_chirho.kernel_stack_size_chirho as u64,
+        )
+    };
+    let Some(stack_base_chirho) = stack_top_chirho.checked_sub(stack_size_chirho) else {
+        crate::serial_println_chirho!(
+            "[SCHED] invalid context pid={}: stack top/size underflow",
+            pid_chirho,
+        );
+        return false;
+    };
+
+    // SAFETY: task context slots are static for the boot, and the pointer was
+    // checked above. The scheduler is the sole context-slot writer on this CPU.
+    let (saved_rip_chirho, saved_rsp_chirho) = unsafe {
+        (
+            (*context_chirho).rip_chirho,
+            (*context_chirho).rsp_chirho,
+        )
+    };
+    let saved_rsp_in_stack_chirho = stack_size_chirho > 0
+        && saved_rsp_chirho >= stack_base_chirho
+        && saved_rsp_chirho <= stack_top_chirho
+        && saved_rsp_chirho & (core::mem::align_of::<u64>() as u64 - 1) == 0;
+    let is_resumed_context_chirho =
+        saved_rip_chirho == switch_context_return_resume_chirho as *const () as u64;
+    let second_return_fits_chirho = is_resumed_context_chirho
+        && saved_rsp_in_stack_chirho
+        && saved_rsp_chirho
+            <= stack_top_chirho.saturating_sub(core::mem::size_of::<u64>() as u64);
+    let second_return_rip_chirho = if second_return_fits_chirho {
+        // SAFETY: the complete word is inside this task's mapped kernel stack.
+        unsafe { core::ptr::read_unaligned(saved_rsp_chirho as *const u64) }
+    } else {
+        0
+    };
+    let saved_rip_ok_chirho = is_kernel_instruction_address_chirho(saved_rip_chirho);
+    let second_return_ok_chirho = !is_resumed_context_chirho
+        || (second_return_fits_chirho
+            && is_kernel_instruction_address_chirho(second_return_rip_chirho));
+    let context_ok_chirho =
+        saved_rsp_in_stack_chirho && saved_rip_ok_chirho && second_return_ok_chirho;
+
+    if !context_ok_chirho {
+        crate::serial_println_chirho!(
+            "[SCHED] invalid context pid={} rip={:#x} rsp={:#x} stack=[{:#x},{:#x}] resumed={} second_rip={:#x} rip_ok={} rsp_ok={} second_ok={}",
+            pid_chirho,
+            saved_rip_chirho,
+            saved_rsp_chirho,
+            stack_base_chirho,
+            stack_top_chirho,
+            is_resumed_context_chirho,
+            second_return_rip_chirho,
+            saved_rip_ok_chirho,
+            saved_rsp_in_stack_chirho,
+            second_return_ok_chirho,
+        );
+    }
+
+    context_ok_chirho
 }
 
 fn time_slice_for_pid_chirho(pid_chirho: u64) -> u64 {
-    if task_has_x11_render_socket_chirho(pid_chirho) {
+    if is_x11_render_task_chirho(pid_chirho) {
         X11_RENDER_TIME_SLICE_CHIRHO
     } else if pid_chirho >= 12 {
         // Boost SSH/Dropbear and late-spawned children (pid ≥ 12).
@@ -428,7 +545,6 @@ fn arch_prepare_switch_chirho(old_pid_chirho: Option<u64>, next_pid_chirho: u64)
             crate::context_switch_chirho::set_pending_cr3_chirho(0);
         }
     }
-
     // Switch kernel stack for syscall entry: KERNEL_STACK_TOP_CHIRHO must
     // point to the NEW task's kernel stack so that if the new task enters a
     // syscall, it uses ITS OWN kernel stack (not the old task's).
@@ -533,8 +649,22 @@ pub fn schedule_chirho() {
         for _ in 0..queue_len_chirho {
             if let Some(candidate_chirho) = scheduler_chirho.tasks_chirho.pop_front() {
                 if crate::task_chirho::is_task_runnable_chirho(candidate_chirho) {
-                    next_pid_chirho = Some(candidate_chirho);
-                    break;
+                    let candidate_is_current_chirho = old_pid_chirho == Some(candidate_chirho);
+                    let candidate_context_chirho =
+                        crate::task_chirho::context_ptr_chirho(candidate_chirho);
+                    if candidate_is_current_chirho
+                        || task_context_is_valid_chirho(
+                            candidate_chirho,
+                            candidate_context_chirho,
+                        )
+                    {
+                        next_pid_chirho = Some(candidate_chirho);
+                        break;
+                    }
+                    // A corrupt context cannot safely run. Keep searching for
+                    // another runnable task instead of poisoning scheduler
+                    // bookkeeping with a switch that must later be aborted.
+                    continue;
                 }
                 // Dead/zombie task — discard silently.
                 // Trace discarded PID 4 for debugging
@@ -601,6 +731,11 @@ pub fn schedule_chirho() {
                 if let Some(mut guard_chirho) = SCHEDULER_CHIRHO.try_lock() {
                     if let Some(sched_chirho) = guard_chirho.as_mut() {
                         if let Some(pid_chirho) = sched_chirho.tasks_chirho.pop_front() {
+                            let new_ctx_ptr_chirho =
+                                crate::task_chirho::context_ptr_chirho(pid_chirho);
+                            if !task_context_is_valid_chirho(pid_chirho, new_ctx_ptr_chirho) {
+                                continue;
+                            }
                             sched_chirho.current_pid_chirho = Some(pid_chirho);
                             sched_chirho.remaining_ticks_chirho =
                                 time_slice_for_pid_chirho(pid_chirho);
@@ -648,7 +783,6 @@ pub fn schedule_chirho() {
                                 }
                             }
                             // Context switch to the woken task
-                            let new_ctx_ptr_chirho = crate::task_chirho::context_ptr_chirho(pid_chirho);
                             let boot_ctx_ptr_chirho = crate::task_chirho::boot_context_ptr_chirho();
                             unsafe {
                                 switch_context_return_wrapper_chirho(boot_ctx_ptr_chirho, new_ctx_ptr_chirho);
@@ -660,8 +794,8 @@ pub fn schedule_chirho() {
             }
         }
         Some(next_chirho) => {
-                // 4. If the next task is the same as the old one, no context
-                //    switch is necessary — just reset the time slice.
+            // 4. If the next task is the same as the old one, no context
+            // switch is necessary — just reset the time slice.
             if old_pid_chirho == Some(next_chirho) {
                 scheduler_chirho.current_pid_chirho = Some(next_chirho);
                 scheduler_chirho.remaining_ticks_chirho =
@@ -670,131 +804,72 @@ pub fn schedule_chirho() {
                 return;
             }
 
-                // 5. Different task — perform a context switch.
-                scheduler_chirho.current_pid_chirho = Some(next_chirho);
+            // 5. Different task — perform a context switch. Candidate context
+            // validation happened while selecting it above, before scheduler
+            // bookkeeping or architecture state changed.
+            scheduler_chirho.current_pid_chirho = Some(next_chirho);
             scheduler_chirho.remaining_ticks_chirho =
                 time_slice_for_pid_chirho(next_chirho);
 
-                // Obtain raw pointers to the CPU contexts *before* dropping the
-                // scheduler lock.  The task table is expected to provide stable
-                // pointers (pinned allocations) for the lifetime of the task.
-                //
-                // NOTE: In a real implementation the task table lookup would go
-                // here.  For now we reference the task module's accessor API.
-                // The actual context switch is unsafe because it manipulates
-                // raw register state.
-                let old_ctx_ptr_chirho = match old_pid_chirho {
-                    Some(pid_chirho) => {
-                        crate::task_chirho::context_ptr_mut_chirho(pid_chirho)
-                    }
-                    None => {
-                        // No previous task (first schedule).  We still need a
-                        // valid pointer to save into, so use the boot context.
-                        crate::task_chirho::boot_context_ptr_chirho()
-                    }
+            // Obtain stable static context-slot pointers before dropping the
+            // scheduler lock.
+            let old_ctx_ptr_chirho = match old_pid_chirho {
+                Some(pid_chirho) => crate::task_chirho::context_ptr_mut_chirho(pid_chirho),
+                None => crate::task_chirho::boot_context_ptr_chirho(),
+            };
+            let new_ctx_ptr_chirho = crate::task_chirho::context_ptr_chirho(next_chirho);
+
+            // Drop the scheduler lock before switching so the resumed task can
+            // acquire it immediately.
+            drop(scheduler_guard_chirho);
+
+            // Save the old task's FS/GS bases and queue the new CR3. Do not
+            // write the new user FS base until all remaining Rust setup ends.
+            arch_prepare_switch_chirho(old_pid_chirho, next_chirho);
+
+            // Snapshot the target's switch metadata while kernel FS is still
+            // active, then release every Rust guard before writing user MSRs.
+            let (
+                next_task_arc_chirho,
+                next_kstack_top_chirho,
+                next_fs_base_chirho,
+                next_gs_base_chirho,
+            ) = {
+                let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
+                let Some(task_arc_chirho) = list_chirho
+                    .iter()
+                    .find(|task_chirho| task_chirho.lock().pid_chirho == next_chirho)
+                else {
+                    panic!("selected task {} vanished before context switch", next_chirho);
                 };
-                let new_ctx_ptr_chirho =
-                    crate::task_chirho::context_ptr_chirho(next_chirho);
+                let task_arc_copy_chirho = alloc::sync::Arc::clone(task_arc_chirho);
+                let task_guard_chirho = task_arc_chirho.lock();
+                (
+                    task_arc_copy_chirho,
+                    task_guard_chirho.kernel_stack_chirho,
+                    task_guard_chirho.fs_base_chirho,
+                    task_guard_chirho.gs_base_chirho,
+                )
+            };
 
-                // Drop the scheduler lock before performing the actual context
-                // switch so that the new task can acquire it if needed.
-                drop(scheduler_guard_chirho);
-
-                // Save old task's FS/GS base and switch CR3.
-                // CRITICAL: Do NOT write the new task's FS base yet!
-                // The Rust code below (TSS setup, CURRENT_TASK update) might
-                // use FS-relative addressing (stack protector, TLS). Writing
-                // the child's user FS base here would cause kernel code to
-                // read from user memory, corrupting state ~40% of the time.
-                arch_prepare_switch_chirho(old_pid_chirho, next_chirho);
-
-                // Set kernel stack + current task for the new task.
-                {
-                    let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
-                    if let Some(task_arc_chirho) = list_chirho
-                        .iter()
-                        .find(|t_chirho| t_chirho.lock().pid_chirho == next_chirho)
-                    {
-                        let kstack_top_chirho = task_arc_chirho.lock().kernel_stack_chirho;
-                        unsafe {
-                            crate::gdt_chirho::set_tss_rsp0_chirho(kstack_top_chirho);
-                        }
-                        crate::syscall_entry_chirho::set_kernel_stack_top_chirho(kstack_top_chirho);
-
-                        // FD table swap temporarily disabled to test if it causes
-                        // the context switch #UD crash. The lookup_fd_chirho
-                        // fallback in VFS handles per-task fds without swapping.
-
-                        // NOW update CURRENT_TASK.
-                        crate::task_chirho::set_current_task_chirho(
-                            alloc::sync::Arc::clone(task_arc_chirho),
-                        );
-                    }
-                }
-
-                if old_ctx_ptr_chirho.is_null() || new_ctx_ptr_chirho.is_null() {
-                    return;
-                }
-                unsafe {
-                    let new_rip_chirho = (*new_ctx_ptr_chirho).rip_chirho;
-                    let new_rsp_chirho = (*new_ctx_ptr_chirho).rsp_chirho;
-                    // Verify new RIP is in kernel code range (0x10000...)
-                    // For RESUMED tasks, validate the return address at saved RSP.
-                    // First-time tasks have a zero-filled stack — detect by checking
-                    // if the value at RSP is 0 (entry point is in rip, not on stack).
-                    // Validate the saved context is reasonable.
-                    // Kernel code can be at various addresses depending on
-                    // the bootloader and QEMU mode (TCG vs KVM):
-                    //   TCG:  0x1_0000_0000_0000 range (PML4[2])
-                    //   KVM:  0x0000_8000_0000 range (lower address)
-                    // Validate RIP is in kernel code range and RSP is in
-                    // kernel stack range. Do NOT check *RSP — after switch_context
-                    // saves, *RSP is the last pushed callee-saved register (R15),
-                    // which can be any value (e.g., 0x17 = write return value).
-                    let rip_ok_chirho = new_rip_chirho > 0x80_0000_0000
-                        || new_rip_chirho == 0; // zero for first-time dispatch
-                    let rsp_ok_chirho = new_rsp_chirho >= 0xFFFF_8000_0000_0000
-                        || (new_rsp_chirho >= 0x4000_0000_0000
-                            && new_rsp_chirho < 0x8000_0000_0000);
-
-                    if !rip_ok_chirho || !rsp_ok_chirho {
-                        crate::serial_println_chirho!(
-                            "[SCHED] ABORT switch {:?}->{}: rip={:#x} rsp={:#x}",
-                            old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
-                        );
-                        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-                        return;
-                    }
-                    crate::serial_debug_chirho!(
-                        "[SCHED] switch {:?}->{}: rip={:#x} rsp={:#x}",
-                        old_pid_chirho, next_chirho, new_rip_chirho, new_rsp_chirho,
-                    );
-                    // NOW write the new task's FS/GS base, right before
-                    // the asm context switch. No more Rust code runs after
-                    // this until we're in the new task's context.
-                    {
-                        use x86_64::registers::model_specific::Msr;
-                        let list_chirho = crate::task_chirho::TASK_LIST_CHIRHO.lock();
-                        if let Some(task_chirho) = list_chirho.iter()
-                            .find(|t| t.lock().pid_chirho == next_chirho)
-                        {
-                            let tg_chirho = task_chirho.lock();
-                            let new_fs_chirho = tg_chirho.fs_base_chirho;
-                            unsafe {
-                                Msr::new(0xC000_0100).write(new_fs_chirho);
-                                Msr::new(0xC000_0102).write(tg_chirho.gs_base_chirho);
-                            }
-                            // FS-WRITE trace removed (was flooding log on every PID 2 context switch)
-                        }
-                    }
-                    switch_context_return_wrapper_chirho(
-                        old_ctx_ptr_chirho,
-                        new_ctx_ptr_chirho,
-                    );
-                    // After the wrapper returns we are back on the restored
-                    // task's stack and interrupts have already been re-enabled.
-                    return;
+            // Publish the target's syscall/interrupt stack and task identity.
+            unsafe {
+                crate::gdt_chirho::set_tss_rsp0_chirho(next_kstack_top_chirho);
             }
+            crate::syscall_entry_chirho::set_kernel_stack_top_chirho(next_kstack_top_chirho);
+            crate::task_chirho::set_current_task_chirho(next_task_arc_chirho);
+
+            // Write the target's user FS/GS bases immediately before the raw
+            // switch. No Rust guard or unrelated code crosses this boundary.
+            unsafe {
+                use x86_64::registers::model_specific::Msr;
+                Msr::new(0xC000_0100).write(next_fs_base_chirho);
+                Msr::new(0xC000_0102).write(next_gs_base_chirho);
+                switch_context_return_wrapper_chirho(old_ctx_ptr_chirho, new_ctx_ptr_chirho);
+            }
+            // The wrapper's second return has restored this task's suspended
+            // Rust continuation and already re-enabled interrupts.
+            return;
         }
     }
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }

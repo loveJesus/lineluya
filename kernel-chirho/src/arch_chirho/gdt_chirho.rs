@@ -29,6 +29,7 @@
 //! - STAR\[63:48\] = 0x18 (user base). SYSRET64 loads CS=(0x18+16)|3=0x2B,
 //!   SS=(0x18+8)|3=0x23.
 
+use core::cell::UnsafeCell;
 use spin::Lazy;
 use x86_64::instructions::segmentation::{Segment, CS, DS, ES, SS};
 use x86_64::instructions::tables::load_tss;
@@ -113,6 +114,32 @@ struct GdtChirho {
 // TSS
 // ============================================================================
 
+/// Interior-mutable storage for the hardware-owned TSS.
+///
+/// The CPU reads this object directly after `ltr`, while the scheduler updates
+/// RSP0 with interrupts disabled on this single-CPU kernel. `UnsafeCell` makes
+/// that mutation explicit instead of casting a shared reference to mutable.
+#[repr(transparent)]
+struct TssStorageChirho {
+    value_chirho: UnsafeCell<TaskStateSegment>,
+}
+
+impl TssStorageChirho {
+    fn new_chirho(value_chirho: TaskStateSegment) -> Self {
+        Self {
+            value_chirho: UnsafeCell::new(value_chirho),
+        }
+    }
+
+    fn as_ptr_chirho(&self) -> *mut TaskStateSegment {
+        self.value_chirho.get()
+    }
+}
+
+// SAFETY: Lineluya currently runs one CPU. Runtime TSS writes happen with
+// interrupts disabled; initialization writes happen before userspace starts.
+unsafe impl Sync for TssStorageChirho {}
+
 /// Static Task State Segment, lazily initialised.
 ///
 /// The TSS is configured with:
@@ -121,7 +148,7 @@ struct GdtChirho {
 ///   original kernel stack is corrupted or overflowed.
 /// - `privilege_stack_table[0]`: the ring-0 stack pointer used on privilege
 ///   transitions (e.g., when a user-mode interrupt enters ring 0).
-pub static TSS_CHIRHO: Lazy<TaskStateSegment> = Lazy::new(|| {
+static TSS_CHIRHO: Lazy<TssStorageChirho> = Lazy::new(|| {
     let mut tss_chirho = TaskStateSegment::new();
 
     // -- Double-fault IST stack (IST index 0) --
@@ -163,20 +190,42 @@ pub static TSS_CHIRHO: Lazy<TaskStateSegment> = Lazy::new(|| {
     };
     tss_chirho.privilege_stack_table[0] = privilege_stack_end_chirho;
 
-    tss_chirho
+    TssStorageChirho::new_chirho(tss_chirho)
 });
+
+fn tss_ref_chirho() -> &'static TaskStateSegment {
+    // SAFETY: the allocation is static and never moves after Lazy
+    // initialization. Mutation is restricted to the two setters below.
+    unsafe { &*TSS_CHIRHO.as_ptr_chirho() }
+}
 
 /// Update TSS.RSP0 (privilege_stack_table[0]) to point at the given
 /// task's kernel stack top.  Called by the scheduler before a context
 /// switch so that SYSCALL/interrupt entry uses the correct kernel stack.
 ///
+/// Workflow: `spec-chirho/workflows-chirho/context-switch-chirho.md`.
+///
 /// # Safety
 /// The stack address must be a valid, mapped kernel stack top.
 pub unsafe fn set_tss_rsp0_chirho(stack_top_chirho: u64) {
-    use x86_64::VirtAddr;
     // SAFETY: single-CPU, interrupts disabled during schedule.
-    let tss_ptr_chirho = &TSS_CHIRHO as *const _ as *mut x86_64::structures::tss::TaskStateSegment;
-    (*tss_ptr_chirho).privilege_stack_table[0] = VirtAddr::new(stack_top_chirho);
+    unsafe {
+        (*TSS_CHIRHO.as_ptr_chirho()).privilege_stack_table[0] =
+            VirtAddr::new(stack_top_chirho);
+    }
+}
+
+/// Update the page-fault IST entry during early syscall-entry initialization.
+///
+/// # Safety
+/// The stack address must be valid and mapped for the kernel lifetime. This
+/// must run before userspace or interrupt-driven task switching begins.
+pub unsafe fn set_page_fault_ist_chirho(stack_top_chirho: u64) {
+    // SAFETY: initialization is single-threaded and precedes userspace.
+    unsafe {
+        (*TSS_CHIRHO.as_ptr_chirho()).interrupt_stack_table
+            [PAGE_FAULT_IST_INDEX_CHIRHO as usize] = VirtAddr::new(stack_top_chirho);
+    }
 }
 
 // ============================================================================
@@ -216,7 +265,7 @@ static GDT_CHIRHO: Lazy<GdtChirho> = Lazy::new(|| {
     let user_code_selector_chirho = gdt_chirho.append(Descriptor::user_code_segment());
 
     // [6+7] TSS descriptor (occupies two GDT slots as a system segment)
-    let tss_selector_chirho = gdt_chirho.append(Descriptor::tss_segment(&TSS_CHIRHO));
+    let tss_selector_chirho = gdt_chirho.append(Descriptor::tss_segment(tss_ref_chirho()));
 
     GdtChirho {
         gdt_chirho,

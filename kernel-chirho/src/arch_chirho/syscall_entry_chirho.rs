@@ -456,18 +456,6 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
                 );
             }
         }
-        // Xorg debug: log syscalls for PID 5+ only (Xorg after fork from shell)
-        if pid_chirho >= 5 {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static XORG_SC_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let xc_chirho = XORG_SC_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if xc_chirho < 100 { // Reduced from 5000
-                crate::serial_println_chirho!(
-                    "[XORG-SC] #{} pid={} nr={} result={}",
-                    xc_chirho, pid_chirho, syscall_nr_chirho, result_chirho,
-                );
-            }
-        }
     }
 
     result_chirho
@@ -536,17 +524,12 @@ pub unsafe fn init_syscall_entry_chirho() {
         let rsp0_top_chirho = (rsp0_stack_chirho.as_ptr() as u64 + 32 * 1024) & !0xF;
         core::mem::forget(rsp0_stack_chirho);
 
-        // Write directly to the TSS memory. The TSS is a Lazy<TaskStateSegment>
-        // which is already initialized. We write via raw pointer to update RSP0.
+        // The GDT module owns the Lazy<TSS> interior-mutation boundary. Going
+        // through its setters addresses the initialized TaskStateSegment, not
+        // the Lazy wrapper header.
         unsafe {
-            let tss_ptr_chirho = &crate::gdt_chirho::TSS_CHIRHO as *const _
-                as *const x86_64::structures::tss::TaskStateSegment
-                as *mut x86_64::structures::tss::TaskStateSegment;
-            (*tss_ptr_chirho).privilege_stack_table[0] =
-                x86_64::VirtAddr::new(rsp0_top_chirho);
-            // Also update IST[1] (page fault stack) to heap memory
-            (*tss_ptr_chirho).interrupt_stack_table[1] =
-                x86_64::VirtAddr::new(rsp0_top_chirho - 16384);
+            crate::gdt_chirho::set_tss_rsp0_chirho(rsp0_top_chirho);
+            crate::gdt_chirho::set_page_fault_ist_chirho(rsp0_top_chirho - 16384);
         }
 
         crate::serial_debug_chirho!(

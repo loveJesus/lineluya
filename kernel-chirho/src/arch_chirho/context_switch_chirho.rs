@@ -9,6 +9,8 @@
 //! and restores them from the "new" [`CpuContextChirho`], then returns into the
 //! new task's execution context.
 //!
+//! Workflow: `spec-chirho/workflows-chirho/context-switch-chirho.md`.
+//!
 //! # CpuContextChirho field layout (`#[repr(C)]`)
 //!
 //! | Offset | Field          | Register |
