@@ -686,8 +686,18 @@ pub fn sys_wait4_chirho(
             "[WAIT4-FAST] PID {} wait4({}) → kill child + fake success",
             parent_pid_chirho, pid_chirho,
         );
-        // Kill the child to free CPU (xkbcomp isn't needed)
-        crate::signal_chirho::send_signal_chirho(pid_chirho as u64, 9); // SIGKILL
+        // Kill the child to free CPU (xkbcomp isn't needed).  The fake success
+        // returned below is deliberate, but a SIGKILL that did not land means
+        // the child is still burning CPU - report it rather than drop it.
+        if let Err(errno_chirho) =
+            crate::signal_chirho::send_signal_chirho(pid_chirho as u64, 9)
+        {
+            crate::serial_println_chirho!(
+                "[WAIT4-FAST] SIGKILL to PID {} failed (errno {}) - child may still run",
+                pid_chirho,
+                errno_chirho,
+            );
+        }
         if wstatus_chirho != 0 {
             let status_chirho: i32 = 0;
             let _ = crate::uaccess_chirho::copy_to_user_chirho(

@@ -1764,13 +1764,39 @@ extern "x86-interrupt" fn sb16_audio_irq_handler_chirho(
 }
 
 /// Serial port COM1 interrupt handler (IRQ 4, vector 36).
-/// Fires when data arrives on the serial port. We just acknowledge
-/// the interrupt — the actual data reading happens in the polling loop.
+///
+/// Drains the UART receive register into the TTY line discipline, mirroring
+/// the keyboard handler. `input_char_chirho` drops the ldisc guard before
+/// waking `read_wait_chirho`, so no lock is held across the wake.
+///
+/// This used to be a bare EOI with the comment "the actual data reading
+/// happens in the polling loop". That was load-bearing in the worst way: it
+/// forced the console read to busy-poll, which is what made a blocking read
+/// monopolise the CPU. It also left the UART asserting its receive condition,
+/// since EOI without reading RBR does not clear the source.
+///
+/// Workflow: spec-chirho/workflows-chirho/x11-bringup-chirho.md
 extern "x86-interrupt" fn serial_interrupt_handler_chirho(
     _stack_frame_chirho: InterruptStackFrame,
 ) {
-    // Don't read data here — the polling loop in sys_read_stdin handles it.
-    // Just send EOI to acknowledge the interrupt.
+    // Drain every byte the UART has buffered. Reading RBR (0x3F8) is what
+    // actually clears the interrupt condition; EOI alone does not.
+    unsafe {
+        let tty_chirho = crate::tty_chirho::tty0_chirho();
+        loop {
+            let line_status_chirho: u8 =
+                x86_64::instructions::port::Port::<u8>::new(0x3FD).read();
+            if line_status_chirho & 0x01 == 0 {
+                break; // receive buffer empty
+            }
+            let byte_chirho: u8 =
+                x86_64::instructions::port::Port::<u8>::new(0x3F8).read();
+            // Terminals send CR for Enter; the line discipline expects LF.
+            let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
+            tty_chirho.input_char_chirho(ch_chirho);
+        }
+    }
+
     unsafe {
         PICS_CHIRHO
             .lock()

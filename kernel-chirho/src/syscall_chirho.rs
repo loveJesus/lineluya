@@ -133,10 +133,6 @@ impl SyscallFrameChirho {
 // as they are implemented.
 
 /// `read(2)` -- read from a file descriptor.
-/// Flag: Xorg has entered its main epoll loop — safe to launch X11 clients.
-pub static XORG_EPOLL_READY_CHIRHO: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
 pub const SYS_READ_CHIRHO: u64 = 0;
 /// `write(2)` -- write to a file descriptor.
 pub const SYS_WRITE_CHIRHO: u64 = 1;
@@ -1694,61 +1690,10 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                         );
                     }
                 }
-                // X11 client injection: deliver command bytes across multiple
-                // read(0,buf,1) calls. BusyBox ash reads 1 byte at a time.
-                // Gate: start only when should_launch returns true (X11_READY + 5s delay).
-                // Once started (ACTIVE=true), deliver regardless of should_launch state.
-                {
-                    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-                    static X11_INJECT_ACTIVE_CHIRHO: AtomicBool = AtomicBool::new(false);
-                    static X11_INJECT_POS_CHIRHO: AtomicUsize = AtomicUsize::new(0);
-                    static X11_INJECT_CMD_CHIRHO: &[u8] =
-                        b"DISPLAY=:0 /usr/bin/twm &\nDISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\n";
-                    let inject_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                    // One-shot debug: log read(0) from PID 0
-                    if inject_pid_chirho <= 2 {
-                        use core::sync::atomic::AtomicU64;
-                        static RD0_DBG_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                        let rd_cnt_chirho = RD0_DBG_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                        if rd_cnt_chirho < 5 || (rd_cnt_chirho % 10000 == 0) {
-                            crate::serial_println_chirho!(
-                                "[RD0-INJECT] pid={} rd#={} epoll_ready={} active={}",
-                                inject_pid_chirho, rd_cnt_chirho,
-                                XORG_EPOLL_READY_CHIRHO.load(Ordering::Relaxed),
-                                X11_INJECT_ACTIVE_CHIRHO.load(Ordering::Relaxed),
-                            );
-                        }
-                    }
-                    if inject_pid_chirho <= 2 {
-                        // Activate when X11 ready (one-shot)
-                        if !X11_INJECT_ACTIVE_CHIRHO.load(Ordering::Relaxed)
-                            && XORG_EPOLL_READY_CHIRHO.load(Ordering::Acquire)
-                        {
-                            X11_INJECT_ACTIVE_CHIRHO.store(true, Ordering::Relaxed);
-                            crate::serial_println_chirho!(
-                                "[X11-INJECT] Activated ({} bytes to deliver)",
-                                X11_INJECT_CMD_CHIRHO.len(),
-                            );
-                        }
-                        if X11_INJECT_ACTIVE_CHIRHO.load(Ordering::Relaxed) {
-                            let pos_chirho = X11_INJECT_POS_CHIRHO.load(Ordering::Relaxed);
-                            if pos_chirho < X11_INJECT_CMD_CHIRHO.len() {
-                                let remaining_chirho = &X11_INJECT_CMD_CHIRHO[pos_chirho..];
-                                let n_chirho = remaining_chirho.len().min(arg2_chirho as usize);
-                                if crate::uaccess_chirho::copy_to_user_chirho(
-                                    arg1_chirho, &remaining_chirho[..n_chirho], n_chirho,
-                                ).is_ok() {
-                                    X11_INJECT_POS_CHIRHO.store(pos_chirho + n_chirho, Ordering::Relaxed);
-                                    if pos_chirho + n_chirho >= X11_INJECT_CMD_CHIRHO.len() {
-                                        crate::serial_println_chirho!("[X11-INJECT] Complete");
-                                        crate::net_chirho::mark_x11_clients_launched_chirho();
-                                    }
-                                    return n_chirho as i64;
-                                }
-                            }
-                        }
-                    }
-                }
+                // The stdin command injector that used to live here is gone.
+                // It was unreachable (gated on a flag only its own dead twin
+                // ever set) and duplicated the rootfs rc script, which is now
+                // the single launcher for Xorg and its clients.
                 // stdin: check if fd=0 has been redirected (dup2/pipe).
                 // For the init shell (PID 0), use direct serial poll.
                 // For fork children (PID 3+), use VFS which handles pipes.
@@ -2634,39 +2579,28 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
             arg2_chirho as i32,
             arg3_chirho,
         ),
-        SYS_EPOLL_WAIT_CHIRHO => sys_epoll_wait_chirho(
-            arg0_chirho as i32,
-            arg1_chirho,
-            arg2_chirho as i32,
-            arg3_chirho as i32,
-        ),
+        SYS_EPOLL_WAIT_CHIRHO => {
+            // Both epoll entry points feed the same readiness hook: which one
+            // Xorg uses is a libc detail, and gating on only one of them would
+            // leave the server silently unrecognised.
+            crate::x11_bringup_chirho::on_epoll_wait_chirho(
+                crate::scheduler_chirho::current_pid_chirho().unwrap_or(0),
+            );
+            sys_epoll_wait_chirho(
+                arg0_chirho as i32,
+                arg1_chirho,
+                arg2_chirho as i32,
+                arg3_chirho as i32,
+            )
+        },
         SYS_EPOLL_PWAIT_CHIRHO => {
-            // Detect Xorg entering main event loop — launch twm/xterm
-            {
-                use core::sync::atomic::{AtomicBool, Ordering};
-                static XORG_MAIN_LOOP_CHIRHO: AtomicBool = AtomicBool::new(false);
-                let epoll_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                if epoll_pid_chirho >= 3 && epoll_pid_chirho <= 7
-                    && !XORG_MAIN_LOOP_CHIRHO.load(Ordering::Relaxed)
-                    && crate::net_chirho::X11_READY_CHIRHO.load(Ordering::Acquire)
-                {
-                    XORG_MAIN_LOOP_CHIRHO.store(true, Ordering::Relaxed);
-                    crate::serial_println_chirho!(
-                        "[XORG-MAIN-LOOP] PID {} entered epoll_wait — Xorg ready for clients",
-                        epoll_pid_chirho,
-                    );
-                    XORG_EPOLL_READY_CHIRHO.store(true, Ordering::Release);
-                    // Wake PIDs waiting for Xorg (blocked in connect retry)
-                    let waiting_chirho = {
-                        let mut w_chirho = crate::net_chirho::X11_WAITING_PIDS_CHIRHO.lock();
-                        core::mem::take(&mut *w_chirho)
-                    };
-                    for wpid_chirho in waiting_chirho {
-                        crate::serial_println_chirho!("[XORG-WAKE] Re-adding PID {} to scheduler", wpid_chirho);
-                        crate::scheduler_chirho::add_task_chirho(wpid_chirho);
-                    }
-                }
-            }
+            // Xorg readiness is owned by x11_bringup_chirho. It identifies the
+            // server by executable path rather than PID — the previous
+            // `pid >= 3 && pid <= 7` gate became dead code the moment Xorg
+            // landed on PID 9, so no client was ever woken.
+            crate::x11_bringup_chirho::on_epoll_wait_chirho(
+                crate::scheduler_chirho::current_pid_chirho().unwrap_or(0),
+            );
             sys_epoll_wait_chirho(
                 arg0_chirho as i32,
                 arg1_chirho,
@@ -3447,6 +3381,27 @@ fn sys_readv_chirho(
 
     let mut total_read_chirho: i64 = 0;
 
+    // fd 0 is NOT necessarily the console.
+    //
+    // A child that had a pipe dup2'd onto its stdin must read the PIPE. Xorg
+    // spawns xkbcomp exactly that way: it writes the keymap into a pipe, closes
+    // the write end, then wait4()s. readv() used to route every fd 0 straight to
+    // the TTY, so xkbcomp blocked forever on console input that never arrived,
+    // Xorg blocked in wait4() on xkbcomp, and X never reached its event loop.
+    // sys_read_chirho already draws this distinction; readv did not.
+    //
+    // Computed once here rather than per-iovec: it takes the task lock.
+    let fd0_is_redirected_chirho = fd_chirho == 0
+        && crate::task_chirho::current_task_chirho()
+            .and_then(|t_chirho| {
+                let task_chirho = t_chirho.lock();
+                task_chirho
+                    .fd_table_chirho
+                    .as_ref()
+                    .and_then(|fdt_chirho| fdt_chirho.get_chirho(0))
+            })
+            .is_some();
+
     for i_chirho in 0..iovcnt_chirho as usize {
         // Read the iovec entry from user memory
         let mut iov_buf_chirho = [0u8; 16]; // IoVecChirho is 16 bytes (ptr + len)
@@ -3469,8 +3424,9 @@ fn sys_readv_chirho(
             continue;
         }
 
-        // Route read through VFS (fd 0 stdin handled by dispatch)
-        let result_chirho = if fd_chirho == 0 {
+        // Console only when fd 0 really is the console; otherwise go through
+        // the VFS so pipes, PTYs and sockets behave correctly.
+        let result_chirho = if fd_chirho == 0 && !fd0_is_redirected_chirho {
             sys_read_stdin_chirho(iov_base_chirho, iov_len_chirho)
         } else {
             crate::fs_chirho::sys_read_real_chirho(fd_chirho, iov_base_chirho, iov_len_chirho)
@@ -3865,12 +3821,23 @@ fn sys_brk_chirho(addr_chirho: u64) -> i64 {
                 core::ptr::write_bytes((phys_chirho + phys_off_chirho) as *mut u8, 0, 0x1000);
             }
             let (cr3_map_chirho, _) = x86_64::registers::control::Cr3::read();
-            crate::pagetable_chirho::map_page_in_pt_chirho(
+            if crate::pagetable_chirho::map_page_in_pt_chirho(
                 cr3_map_chirho.start_address(),
                 page_addr_chirho,
                 phys_chirho,
                 flags_chirho,
-            );
+            ).is_err() {
+                // The frame is allocated but unreachable.  Extending the break
+                // past an unmapped page hands userspace an address that faults
+                // on first touch, so stop at the old break - the same answer
+                // the frame-exhaustion path above gives.
+                crate::serial_println_chirho!(
+                    "[BRK] map_page_in_pt_chirho failed at {:#x} - brk stays at {:#x}",
+                    page_addr_chirho,
+                    old_brk_chirho,
+                );
+                return old_brk_chirho as i64;
+            }
         }
     }
 

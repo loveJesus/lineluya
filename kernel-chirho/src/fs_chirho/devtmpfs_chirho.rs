@@ -278,7 +278,10 @@ impl FileOpsChirho for DevConsoleOpsChirho {
             return Ok(n_chirho);
         }
 
-        // Auto-inject X11 client launch commands when Xorg socket is ready.
+        // Console-read tracing. The xterm+twm injector that used to sit here
+        // fired 40 times per boot: it never consumed its one-shot, because
+        // the consume call lived in a dead twin in syscall_chirho.  The
+        // rootfs rc script is now the single launcher.
         {
             let read_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
             let x11_ready_chirho = crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
@@ -292,87 +295,26 @@ impl FileOpsChirho for DevConsoleOpsChirho {
                 );
             }
         }
-        if crate::net_chirho::should_launch_x11_clients_chirho() {
-            let cmd_chirho = b"DISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\nDISPLAY=:0 /usr/bin/twm &\n";
-            let n_chirho = cmd_chirho.len().min(buf_chirho.len());
-            buf_chirho[..n_chirho].copy_from_slice(&cmd_chirho[..n_chirho]);
-            crate::serial_println_chirho!("[X11-INJECT] Injected xterm+twm into shell stdin");
-            return Ok(n_chirho);
-        }
 
-        // Blocking read: poll PS/2 keyboard port directly.
-        // Must enable interrupts during polling so timer ticks keep running.
-        // The SYSCALL entry path masks IF, so we re-enable here.
-        x86_64::instructions::interrupts::enable();
+        // Block until the line discipline has data.
+        //
+        // This replaces a busy-poll loop that read the UART and PS/2 ports
+        // directly and never surrendered the CPU. Input now arrives the way it
+        // does on real hardware: the serial (IRQ 4) and keyboard (IRQ 1)
+        // handlers feed `input_char_chirho`, which drops the ldisc guard and
+        // then wakes `read_wait_chirho`.
+        //
+        // `wait_event_chirho` checks the condition before sleeping, so a byte
+        // that lands before the block is not lost. No lock is held across the
+        // block: the closure's guard is a temporary that drops at the end of
+        // the expression.
+        //
+        // Workflow: spec-chirho/workflows-chirho/x11-bringup-chirho.md
+        crate::waitqueue_chirho::wait_event_chirho(
+            &tty_chirho.read_wait_chirho,
+            || tty_chirho.ldisc_chirho.lock().has_data_chirho(),
+        );
 
-        loop {
-            // Check for X11 client injection INSIDE the loop so it fires
-            // even when the shell entered the read before X11_READY was set.
-            if crate::net_chirho::should_launch_x11_clients_chirho() {
-                let cmd_chirho = b"DISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\nDISPLAY=:0 /usr/bin/twm &\n";
-                let n_chirho = cmd_chirho.len().min(buf_chirho.len());
-                buf_chirho[..n_chirho].copy_from_slice(&cmd_chirho[..n_chirho]);
-                crate::serial_println_chirho!("[X11-INJECT] Injected xterm+twm into shell stdin (from loop)");
-                return Ok(n_chirho);
-            }
-            if tty_chirho.ldisc_chirho.lock().has_data_chirho() {
-                break;
-            }
-            // Poll BOTH serial port (0x3F8) AND PS/2 keyboard (0x60).
-            // Serial is more reliable in QEMU — stdin goes to serial.
-            // Check serial port LSR (0x3FD) bit 0 = data ready
-            let serial_status_chirho: u8 = unsafe {
-                x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
-            };
-            if serial_status_chirho & 0x01 != 0 {
-                // Read ALL available serial bytes into the caller's buffer
-                let mut count_chirho = 0usize;
-                while count_chirho < buf_chirho.len() {
-                    let st_chirho: u8 = unsafe {
-                        x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
-                    };
-                    if st_chirho & 0x01 == 0 { break; } // no more data
-                    let byte_chirho: u8 = unsafe {
-                        x86_64::instructions::port::Port::<u8>::new(0x3F8).read()
-                    };
-                    let ch_chirho = if byte_chirho == b'\r' { b'\n' } else { byte_chirho };
-                    buf_chirho[count_chirho] = ch_chirho;
-                    count_chirho += 1;
-                }
-                if count_chirho > 0 {
-                    return Ok(count_chirho);
-                }
-            }
-
-            // Also poll PS/2 keyboard port
-            let ps2_status_chirho: u8 = unsafe {
-                x86_64::instructions::port::Port::<u8>::new(0x64).read()
-            };
-            if ps2_status_chirho & 0x01 != 0 {
-                let scancode_chirho: u8 = unsafe {
-                    x86_64::instructions::port::Port::<u8>::new(0x60).read()
-                };
-                use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
-                static POLL_KBD_CHIRHO: spin::Mutex<Option<Keyboard<layouts::Us104Key, ScancodeSet1>>> =
-                    spin::Mutex::new(None);
-                let mut kbd_guard_chirho = POLL_KBD_CHIRHO.lock();
-                let kbd_chirho = kbd_guard_chirho.get_or_insert_with(|| {
-                    Keyboard::new(ScancodeSet1::new(), layouts::Us104Key, HandleControl::Ignore)
-                });
-                if let Ok(Some(key_event_chirho)) = kbd_chirho.add_byte(scancode_chirho) {
-                    if let Some(key_chirho) = kbd_chirho.process_keyevent(key_event_chirho) {
-                        match key_chirho {
-                            DecodedKey::Unicode(ch_chirho) => {
-                                tty_chirho.input_char_chirho(ch_chirho as u8);
-                            }
-                            DecodedKey::RawKey(_) => {}
-                        }
-                    }
-                }
-            }
-            // Brief yield to avoid burning CPU
-            core::hint::spin_loop();
-        }
 
         // Data is now available — read it.
         let mut ldisc_chirho = tty_chirho.ldisc_chirho.lock();

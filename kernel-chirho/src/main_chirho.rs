@@ -5,7 +5,6 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
-#![feature(custom_test_frameworks)]
 #![feature(alloc_error_handler)]
 #![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 #![allow(unused_parens, unused_braces, unused_unsafe, unused_assignments)]
@@ -140,6 +139,12 @@ mod loop_device_chirho;
 // ============================================================================
 #[path = "net_chirho/net_core_chirho.rs"]
 mod net_chirho;
+
+// ============================================================================
+// X11 bring-up — Xorg readiness handshake and parked-client wake
+// ============================================================================
+#[path = "x11_chirho/x11_bringup_chirho.rs"]
+mod x11_bringup_chirho;
 
 // ============================================================================
 // Scheduling — task management, scheduler, wait queues, futex
