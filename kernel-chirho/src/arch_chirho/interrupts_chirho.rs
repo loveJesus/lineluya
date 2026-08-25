@@ -1183,7 +1183,8 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
 
     // Log PID 5 timer state for preemption debugging
     {
-        let dbg_any_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        let dbg_any_pid_chirho =
+            crate::scheduler_chirho::try_current_pid_chirho().unwrap_or(0);
         if dbg_any_pid_chirho == 5 {
             use core::sync::atomic::{AtomicU64, Ordering as KOrd};
             static P5_ANY_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
@@ -1198,7 +1199,8 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         }
     }
     if was_user_mode_chirho {
-        let dbg_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        let dbg_pid_chirho =
+            crate::scheduler_chirho::try_current_pid_chirho().unwrap_or(0);
         if dbg_pid_chirho == 5 {
             use core::sync::atomic::{AtomicU64, Ordering as DebugOrd};
             static P5_TIMER_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
@@ -1229,7 +1231,8 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         && crate::scheduler_chirho::need_resched_chirho()
         && USER_PREEMPT_TRAMPOLINE_READY_CHIRHO.load(Ordering::Acquire)
     {
-        let current_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
+        let current_pid_chirho =
+            crate::scheduler_chirho::try_current_pid_chirho().unwrap_or(0);
         // Only preempt PIDs >= 5 (daemons). PIDs 2-4 are boot processes
         // where RAX clobber from the trampoline breaks fork() return.
         if current_pid_chirho >= 5 {

@@ -1256,6 +1256,21 @@ pub fn current_pid_chirho() -> Option<u64> {
     })
 }
 
+/// Return the current PID without ever waiting for the scheduler lock.
+///
+/// Interrupt handlers must use this accessor: an interrupt can arrive while
+/// the interrupted context owns `SCHEDULER_CHIRHO`, and blocking on that same
+/// lock would prevent the owner from ever resuming to release it.
+pub fn try_current_pid_chirho() -> Option<u64> {
+    SCHEDULER_CHIRHO
+        .try_lock()
+        .and_then(|scheduler_guard_chirho| {
+            scheduler_guard_chirho
+                .as_ref()
+                .and_then(|scheduler_chirho| scheduler_chirho.current_pid_chirho)
+        })
+}
+
 /// Return the global tick count (monotonically increasing, lock-free).
 #[inline]
 pub fn tick_count_chirho() -> u64 {
