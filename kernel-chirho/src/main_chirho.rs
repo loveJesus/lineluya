@@ -549,6 +549,12 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         }
         let mut preloaded_chirho = 0usize;
         for lib_name_chirho in libs_chirho {
+            // Every skip path below reports itself. Previously all three were
+            // silent, so "Preloaded 36 libraries" out of a 50-entry list was not
+            // a measurement of success — it was the ABSENCE of any record of the
+            // other 14, and Xorg died on unresolved XdmcpWrap/udev_* symbols
+            // with nothing in the log pointing at why.
+            let mut resolved_chirho = false;
             for src_dir_chirho in ["/lib/", "/usr/lib/"] {
                 let src_path_chirho = {
                     let mut p_chirho = alloc::string::String::from(src_dir_chirho);
@@ -556,6 +562,7 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
                     p_chirho
                 };
                 if let Ok((inode_chirho, ops_chirho)) = crate::fs_chirho::resolve_path_chirho(&src_path_chirho) {
+                    resolved_chirho = true;
                     let size_chirho = {
                         let ig_chirho = inode_chirho.lock();
                         ig_chirho.size_chirho as usize
@@ -601,10 +608,28 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
                             tmpfs_chirho::write_tmpfs_file_mode_chirho(&dst_path_chirho, &data_chirho[..pos_chirho], 0o755);
                             serial_println_chirho!("[INIT] Preloaded {} → {} ({} bytes)", src_path_chirho, dst_path_chirho, pos_chirho);
                             preloaded_chirho += 1;
+                        } else {
+                            serial_println_chirho!(
+                                "[PRELOAD-SKIP] {} not ELF after read (read={} size={} first2=[{:#x},{:#x}])",
+                                src_path_chirho, pos_chirho, size_chirho,
+                                if pos_chirho > 0 { data_chirho[0] } else { 0 },
+                                if pos_chirho > 1 { data_chirho[1] } else { 0 },
+                            );
                         }
+                    } else {
+                        serial_println_chirho!(
+                            "[PRELOAD-SKIP] {} rejected by size gate (size={} max={})",
+                            src_path_chirho, size_chirho, max_preload_size_chirho,
+                        );
                     }
                     break;
                 }
+            }
+            if !resolved_chirho {
+                serial_println_chirho!(
+                    "[PRELOAD-SKIP] {} not resolvable in /lib/ or /usr/lib/",
+                    lib_name_chirho,
+                );
             }
         }
         serial_println_chirho!("[INIT] Preloaded {} libraries to /tmp/lib-chirho/", preloaded_chirho);
