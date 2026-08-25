@@ -12,6 +12,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
+use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -327,6 +328,202 @@ const EBADF_CHIRHO: i64 = -9;
 /// Linux errno: too many open files.
 const EMFILE_CHIRHO: i64 = -24;
 
+/// A pipe endpoint can contribute a reader reference, a writer reference, or
+/// both for an `O_RDWR` FIFO description.
+#[derive(Clone, Copy)]
+struct PipeEndpointReferenceChirho {
+    reads_chirho: bool,
+    writes_chirho: bool,
+}
+
+/// Keep impossible accounting diagnostics bounded. These messages expose a
+/// residual descriptor bug; they never repair one by reopening a closed end.
+static PIPE_REFERENCE_INVARIANT_COUNT_CHIRHO: AtomicU32 = AtomicU32::new(0);
+const PIPE_REFERENCE_INVARIANT_LIMIT_CHIRHO: u32 = 16;
+
+/// A nonzero value means an fd table reached `Drop` with live descriptors.
+/// Drop is deliberately lock-free; normal ownership paths must explicitly
+/// retire descriptors before releasing the table.
+static UNRETIRED_FD_TABLE_DROP_COUNT_CHIRHO: AtomicU32 = AtomicU32::new(0);
+
+fn saturating_atomic_increment_chirho(counter_chirho: &AtomicU32) -> u32 {
+    counter_chirho
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value_chirho| {
+            Some(value_chirho.saturating_add(1))
+        })
+        .unwrap_or_else(|value_chirho| value_chirho)
+}
+
+fn pipe_endpoint_reference_chirho(
+    file_arc_chirho: &Arc<Mutex<FileChirho>>,
+) -> Option<(
+    Arc<Mutex<crate::pipe_chirho::PipeChirho>>,
+    PipeEndpointReferenceChirho,
+)> {
+    let file_guard_chirho = file_arc_chirho.lock();
+    let access_mode_chirho = file_guard_chirho.flags_chirho & 0b11;
+    let endpoint_chirho = match access_mode_chirho {
+        O_RDONLY_CHIRHO => PipeEndpointReferenceChirho {
+            reads_chirho: true,
+            writes_chirho: false,
+        },
+        O_WRONLY_CHIRHO => PipeEndpointReferenceChirho {
+            reads_chirho: false,
+            writes_chirho: true,
+        },
+        O_RDWR_CHIRHO => PipeEndpointReferenceChirho {
+            reads_chirho: true,
+            writes_chirho: true,
+        },
+        _ => return None,
+    };
+    let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
+    if (inode_guard_chirho.mode_chirho & 0o170000) != 0o010000 {
+        return None;
+    }
+    let pipe_arc_chirho = inode_guard_chirho
+        .fs_data_chirho
+        .as_ref()?
+        .downcast_ref::<Arc<Mutex<crate::pipe_chirho::PipeChirho>>>()?
+        .clone();
+    Some((pipe_arc_chirho, endpoint_chirho))
+}
+
+fn report_pipe_reference_invariant_chirho(
+    operation_chirho: &str,
+    readers_chirho: u32,
+    writers_chirho: u32,
+    closed_read_chirho: bool,
+    closed_write_chirho: bool,
+) {
+    let report_index_chirho =
+        saturating_atomic_increment_chirho(&PIPE_REFERENCE_INVARIANT_COUNT_CHIRHO);
+    if report_index_chirho < PIPE_REFERENCE_INVARIANT_LIMIT_CHIRHO {
+        crate::serial_println_chirho!(
+            "[PIPE-REF-INVARIANT] #{} op={} readers={} writers={} closed_read={} closed_write={}",
+            report_index_chirho,
+            operation_chirho,
+            readers_chirho,
+            writers_chirho,
+            closed_read_chirho,
+            closed_write_chirho,
+        );
+    }
+}
+
+/// Account one additional descriptor that refers to an existing pipe open-file
+/// description. A legitimate duplicate is created while the source descriptor
+/// is still live, so its endpoint count must be nonzero and not closed.
+fn increment_pipe_descriptor_reference_chirho(
+    file_arc_chirho: &Arc<Mutex<FileChirho>>,
+    operation_chirho: &str,
+) {
+    let Some((pipe_arc_chirho, endpoint_chirho)) =
+        pipe_endpoint_reference_chirho(file_arc_chirho)
+    else {
+        return;
+    };
+    let mut pipe_guard_chirho = pipe_arc_chirho.lock();
+    let mut invariant_broken_chirho =
+        (endpoint_chirho.reads_chirho
+            && (pipe_guard_chirho.readers_chirho == 0
+                || pipe_guard_chirho.closed_read_chirho))
+            || (endpoint_chirho.writes_chirho
+                && (pipe_guard_chirho.writers_chirho == 0
+                    || pipe_guard_chirho.closed_write_chirho));
+
+    if endpoint_chirho.reads_chirho {
+        if pipe_guard_chirho.readers_chirho == u32::MAX {
+            invariant_broken_chirho = true;
+        } else {
+            pipe_guard_chirho.readers_chirho += 1;
+        }
+    }
+    if endpoint_chirho.writes_chirho {
+        if pipe_guard_chirho.writers_chirho == u32::MAX {
+            invariant_broken_chirho = true;
+        } else {
+            pipe_guard_chirho.writers_chirho += 1;
+        }
+    }
+    let snapshot_chirho = (
+        pipe_guard_chirho.readers_chirho,
+        pipe_guard_chirho.writers_chirho,
+        pipe_guard_chirho.closed_read_chirho,
+        pipe_guard_chirho.closed_write_chirho,
+    );
+    drop(pipe_guard_chirho);
+
+    if invariant_broken_chirho {
+        report_pipe_reference_invariant_chirho(
+            operation_chirho,
+            snapshot_chirho.0,
+            snapshot_chirho.1,
+            snapshot_chirho.2,
+            snapshot_chirho.3,
+        );
+    }
+}
+
+/// Release exactly one descriptor reference. EOF/EPIPE state changes only when
+/// the final descriptor for the corresponding endpoint is retired.
+fn decrement_pipe_descriptor_reference_chirho(
+    file_arc_chirho: &Arc<Mutex<FileChirho>>,
+    operation_chirho: &str,
+) {
+    let Some((pipe_arc_chirho, endpoint_chirho)) =
+        pipe_endpoint_reference_chirho(file_arc_chirho)
+    else {
+        return;
+    };
+    let mut pipe_guard_chirho = pipe_arc_chirho.lock();
+    let mut invariant_broken_chirho = false;
+
+    if endpoint_chirho.reads_chirho {
+        if pipe_guard_chirho.readers_chirho == 0 {
+            invariant_broken_chirho = true;
+        } else {
+            if pipe_guard_chirho.closed_read_chirho {
+                invariant_broken_chirho = true;
+            }
+            pipe_guard_chirho.readers_chirho -= 1;
+            if pipe_guard_chirho.readers_chirho == 0 {
+                pipe_guard_chirho.closed_read_chirho = true;
+            }
+        }
+    }
+    if endpoint_chirho.writes_chirho {
+        if pipe_guard_chirho.writers_chirho == 0 {
+            invariant_broken_chirho = true;
+        } else {
+            if pipe_guard_chirho.closed_write_chirho {
+                invariant_broken_chirho = true;
+            }
+            pipe_guard_chirho.writers_chirho -= 1;
+            if pipe_guard_chirho.writers_chirho == 0 {
+                pipe_guard_chirho.closed_write_chirho = true;
+            }
+        }
+    }
+    let snapshot_chirho = (
+        pipe_guard_chirho.readers_chirho,
+        pipe_guard_chirho.writers_chirho,
+        pipe_guard_chirho.closed_read_chirho,
+        pipe_guard_chirho.closed_write_chirho,
+    );
+    drop(pipe_guard_chirho);
+
+    if invariant_broken_chirho {
+        report_pipe_reference_invariant_chirho(
+            operation_chirho,
+            snapshot_chirho.0,
+            snapshot_chirho.1,
+            snapshot_chirho.2,
+            snapshot_chirho.3,
+        );
+    }
+}
+
 impl FdTableChirho {
     /// Create a new, empty file-descriptor table with room for
     /// `capacity_chirho` descriptors.
@@ -364,46 +561,8 @@ impl FdTableChirho {
     pub fn close_chirho(&mut self, fd_chirho: usize) -> Result<(), i64> {
         match self.fds_chirho.get_mut(fd_chirho) {
             Some(slot_chirho @ Some(_)) => {
-                // Take the Arc out of the slot so we can check strong_count.
                 let file_arc_chirho = slot_chirho.take().unwrap();
-
-                // Pipe close: decrement the reader/writer counter. Only set
-                // closed_write/closed_read when the counter reaches 0.
-                // The old Arc::strong_count check was unreliable because
-                // multiple per-process fd tables clone the Arc independently,
-                // and the global table isolation changed the refcount behavior.
-                {
-                    let file_guard_chirho = file_arc_chirho.lock();
-                    let is_fifo_chirho = (file_guard_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
-                    if is_fifo_chirho {
-                        let flags_chirho = file_guard_chirho.flags_chirho;
-                        if let Some(ref fs_data_chirho) = file_guard_chirho.inode_chirho.lock().fs_data_chirho {
-                            if let Some(pipe_arc_chirho) = fs_data_chirho
-                                .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
-                            {
-                                let mut pipe_chirho = pipe_arc_chirho.lock();
-                                if flags_chirho & O_WRONLY_CHIRHO != 0 || flags_chirho & O_RDWR_CHIRHO != 0 {
-                                    if pipe_chirho.writers_chirho > 0 {
-                                        pipe_chirho.writers_chirho -= 1;
-                                    }
-                                    if pipe_chirho.writers_chirho == 0 {
-                                        pipe_chirho.closed_write_chirho = true;
-                                    }
-                                }
-                                if flags_chirho == O_RDONLY_CHIRHO {
-                                    if pipe_chirho.readers_chirho > 0 {
-                                        pipe_chirho.readers_chirho -= 1;
-                                    }
-                                    if pipe_chirho.readers_chirho == 0 {
-                                        pipe_chirho.closed_read_chirho = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    drop(file_guard_chirho);
-                }
-                // Arc drops here (file_arc_chirho goes out of scope)
+                decrement_pipe_descriptor_reference_chirho(&file_arc_chirho, "close");
                 drop(file_arc_chirho);
                 if fd_chirho < self.paths_chirho.len() {
                     self.paths_chirho[fd_chirho] = None;
@@ -421,13 +580,69 @@ impl FdTableChirho {
     pub fn dup_chirho(&mut self, old_fd_chirho: usize) -> Result<usize, i64> {
         let file_chirho = self.get_chirho(old_fd_chirho).ok_or(EBADF_CHIRHO)?;
         let new_fd_chirho = self.alloc_fd_chirho()?;
+        let path_chirho = self.paths_chirho.get(old_fd_chirho).cloned().flatten();
+        self.install_duplicate_at_chirho(
+            new_fd_chirho,
+            file_chirho,
+            path_chirho,
+            false,
+            "dup",
+        )
+    }
+
+    /// Duplicate `old_fd_chirho` onto `new_fd_chirho`, atomically retiring an
+    /// occupied destination descriptor before installation.
+    pub fn dup2_chirho(
+        &mut self,
+        old_fd_chirho: usize,
+        new_fd_chirho: usize,
+    ) -> Result<usize, i64> {
+        let file_chirho = self.get_chirho(old_fd_chirho).ok_or(EBADF_CHIRHO)?;
+        if old_fd_chirho == new_fd_chirho {
+            return Ok(new_fd_chirho);
+        }
+        let path_chirho = self.paths_chirho.get(old_fd_chirho).cloned().flatten();
+        self.install_duplicate_at_chirho(
+            new_fd_chirho,
+            file_chirho,
+            path_chirho,
+            false,
+            "dup2",
+        )
+    }
+
+    /// Install another descriptor reference to an existing open-file
+    /// description at an exact slot. This is also used for the temporary
+    /// global compatibility mirror, whose Arc must participate in pipe EOF and
+    /// EPIPE accounting if it can later be closed as a descriptor.
+    pub fn install_duplicate_at_chirho(
+        &mut self,
+        new_fd_chirho: usize,
+        file_chirho: Arc<Mutex<FileChirho>>,
+        path_chirho: Option<String>,
+        cloexec_chirho: bool,
+        operation_chirho: &str,
+    ) -> Result<usize, i64> {
+        if new_fd_chirho >= self.fds_chirho.len() {
+            return Err(EBADF_CHIRHO);
+        }
+
+        // Increment first so dup2 over another descriptor for the same pipe
+        // never transiently publishes EOF/EPIPE while the source is still live.
+        increment_pipe_descriptor_reference_chirho(&file_chirho, operation_chirho);
+        if self.fds_chirho[new_fd_chirho].is_some() {
+            if let Err(error_chirho) = self.close_chirho(new_fd_chirho) {
+                decrement_pipe_descriptor_reference_chirho(
+                    &file_chirho,
+                    "duplicate-rollback",
+                );
+                return Err(error_chirho);
+            }
+        }
+
         self.fds_chirho[new_fd_chirho] = Some(file_chirho);
-        if new_fd_chirho < self.paths_chirho.len() && old_fd_chirho < self.paths_chirho.len() {
-            self.paths_chirho[new_fd_chirho] = self.paths_chirho[old_fd_chirho].clone();
-        }
-        if new_fd_chirho < self.cloexec_chirho.len() {
-            self.cloexec_chirho[new_fd_chirho] = false;
-        }
+        self.paths_chirho[new_fd_chirho] = path_chirho;
+        self.cloexec_chirho[new_fd_chirho] = cloexec_chirho;
         Ok(new_fd_chirho)
     }
 
@@ -521,30 +736,12 @@ impl FdTableChirho {
         // Clone the fd vector (Arc refs are shared — POSIX fork semantics).
         let cloned_fds_chirho = self.fds_chirho.clone();
 
-        // Increment pipe reader/writer counters for each cloned pipe fd.
-        // Without this, close_chirho's decrement reaches 0 too early,
-        // setting closed_write/closed_read while the other process still
-        // has the pipe open — causing spurious EOF on select().
+        // Every cloned slot is another live descriptor reference. The open
+        // file description is shared, but pipe EOF/EPIPE lifetime is counted
+        // per descriptor across both fd tables.
         for slot_chirho in &cloned_fds_chirho {
             if let Some(ref file_arc_chirho) = slot_chirho {
-                let file_guard_chirho = file_arc_chirho.lock();
-                let is_fifo_chirho = (file_guard_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
-                if is_fifo_chirho {
-                    let flags_chirho = file_guard_chirho.flags_chirho;
-                    if let Some(ref fs_data_chirho) = file_guard_chirho.inode_chirho.lock().fs_data_chirho {
-                        if let Some(pipe_arc_chirho) = fs_data_chirho
-                            .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
-                        {
-                            let mut pipe_chirho = pipe_arc_chirho.lock();
-                            if flags_chirho & O_WRONLY_CHIRHO != 0 || flags_chirho & O_RDWR_CHIRHO != 0 {
-                                pipe_chirho.writers_chirho += 1;
-                            }
-                            if flags_chirho == O_RDONLY_CHIRHO {
-                                pipe_chirho.readers_chirho += 1;
-                            }
-                        }
-                    }
-                }
+                increment_pipe_descriptor_reference_chirho(file_arc_chirho, "fork-clone");
             }
         }
 
@@ -555,43 +752,236 @@ impl FdTableChirho {
         }
     }
 
-    /// Decrement pipe reader/writer counters for all pipe fds in this table.
-    /// Called when this table is about to be REPLACED (not closed fd-by-fd).
-    /// The Arcs will be dropped without going through close_chirho, so the
-    /// pipe refcounts would be left inflated. This compensates.
-    pub fn dec_pipe_refcounts_chirho(&self) {
-        for slot_chirho in &self.fds_chirho {
-            if let Some(ref file_arc_chirho) = slot_chirho {
-                let file_guard_chirho = file_arc_chirho.lock();
-                let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
-                let is_fifo_chirho = (inode_guard_chirho.mode_chirho & 0o170000) == 0o010000;
-                if is_fifo_chirho {
-                    let flags_chirho = file_guard_chirho.flags_chirho;
-                    if let Some(ref fs_data_chirho) = inode_guard_chirho.fs_data_chirho {
-                        if let Some(pipe_arc_chirho) = fs_data_chirho
-                            .downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>()
-                        {
-                            let mut pipe_chirho = pipe_arc_chirho.lock();
-                            if flags_chirho & O_WRONLY_CHIRHO != 0 || flags_chirho & O_RDWR_CHIRHO != 0 {
-                                if pipe_chirho.writers_chirho > 0 {
-                                    pipe_chirho.writers_chirho -= 1;
-                                }
-                                if pipe_chirho.writers_chirho == 0 {
-                                    pipe_chirho.closed_write_chirho = true;
-                                }
-                            }
-                            if flags_chirho == O_RDONLY_CHIRHO {
-                                if pipe_chirho.readers_chirho > 0 {
-                                    pipe_chirho.readers_chirho -= 1;
-                                }
-                                if pipe_chirho.readers_chirho == 0 {
-                                    pipe_chirho.closed_read_chirho = true;
-                                }
-                            }
-                        }
-                    }
-                }
+    /// Retire every live descriptor before releasing this table's ownership.
+    ///
+    /// This must run outside task-list, task, scheduler, and global-fd-table
+    /// locks because closing pipe endpoints reaches File -> Inode -> Pipe.
+    pub fn retire_all_descriptors_chirho(&mut self) {
+        for fd_chirho in 0..self.fds_chirho.len() {
+            if self.fds_chirho[fd_chirho].is_some() {
+                let _ = self.close_chirho(fd_chirho);
             }
         }
+    }
+}
+
+impl Drop for FdTableChirho {
+    fn drop(&mut self) {
+        // Both kernel profiles use panic=abort, so this never runs during
+        // unwinding. It also must never acquire VFS locks: final ownership may
+        // be released beneath an unrelated lock. Record a missed explicit
+        // retirement using only an atomic, and report it from normal context.
+        if self.fds_chirho.iter().any(Option::is_some) {
+            saturating_atomic_increment_chirho(&UNRETIRED_FD_TABLE_DROP_COUNT_CHIRHO);
+        }
+    }
+}
+
+/// Report fd tables that bypassed explicit descriptor retirement.
+pub fn report_unretired_fd_table_drops_chirho() {
+    let dropped_count_chirho =
+        UNRETIRED_FD_TABLE_DROP_COUNT_CHIRHO.swap(0, Ordering::AcqRel);
+    if dropped_count_chirho != 0 {
+        report_pipe_reference_invariant_chirho(
+            "unretired-table-drop",
+            dropped_count_chirho,
+            0,
+            false,
+            false,
+        );
+    }
+}
+
+#[cfg(test)]
+fn run_pipe_descriptor_reference_regression_chirho() -> Result<(), &'static str> {
+    let (read_file_chirho, write_file_chirho) = crate::pipe_chirho::create_pipe_chirho();
+    let pipe_arc_chirho = pipe_endpoint_reference_chirho(&read_file_chirho)
+        .map(|pipe_state_chirho| pipe_state_chirho.0)
+        .ok_or("new pipe did not expose shared state")?;
+    let mut fd_table_chirho = FdTableChirho::new_chirho(16);
+    fd_table_chirho.fds_chirho[0] = Some(read_file_chirho);
+    fd_table_chirho.fds_chirho[1] = Some(write_file_chirho);
+
+    let duplicated_read_fd_chirho = fd_table_chirho
+        .dup_chirho(0)
+        .map_err(|_| "dup of read endpoint failed")?;
+    if duplicated_read_fd_chirho != 2 {
+        return Err("dup did not choose the lowest available descriptor");
+    }
+    {
+        let pipe_guard_chirho = pipe_arc_chirho.lock();
+        if pipe_guard_chirho.readers_chirho != 2 || pipe_guard_chirho.closed_read_chirho {
+            return Err("dup did not add a live reader reference");
+        }
+    }
+
+    fd_table_chirho
+        .close_chirho(0)
+        .map_err(|_| "close of original reader failed")?;
+    {
+        let pipe_guard_chirho = pipe_arc_chirho.lock();
+        if pipe_guard_chirho.readers_chirho != 1 || pipe_guard_chirho.closed_read_chirho {
+            return Err("closing the original invalidated its duplicate");
+        }
+    }
+
+    let payload_chirho = b"pipe-reference-chirho";
+    let write_result_chirho = {
+        let write_arc_chirho = fd_table_chirho
+            .get_chirho(1)
+            .ok_or("writer disappeared before live-reader write")?;
+        let mut write_guard_chirho = write_arc_chirho.lock();
+        write_guard_chirho
+            .ops_chirho
+            .write_chirho(&mut write_guard_chirho, payload_chirho)
+    };
+    if write_result_chirho != Ok(payload_chirho.len()) {
+        return Err("writer returned EPIPE while a duplicate reader was live");
+    }
+
+    let mut read_buffer_chirho = [0u8; 32];
+    let read_result_chirho = {
+        let read_arc_chirho = fd_table_chirho
+            .get_chirho(duplicated_read_fd_chirho)
+            .ok_or("duplicate reader disappeared")?;
+        let mut read_guard_chirho = read_arc_chirho.lock();
+        read_guard_chirho
+            .ops_chirho
+            .read_chirho(&mut read_guard_chirho, &mut read_buffer_chirho)
+    };
+    if read_result_chirho != Ok(payload_chirho.len())
+        || &read_buffer_chirho[..payload_chirho.len()] != payload_chirho
+    {
+        return Err("duplicate reader did not receive the written payload");
+    }
+
+    fd_table_chirho
+        .dup2_chirho(1, 3)
+        .map_err(|_| "dup2 of write endpoint failed")?;
+    fd_table_chirho
+        .close_chirho(1)
+        .map_err(|_| "close of original writer failed")?;
+    {
+        let pipe_guard_chirho = pipe_arc_chirho.lock();
+        if pipe_guard_chirho.writers_chirho != 1 || pipe_guard_chirho.closed_write_chirho {
+            return Err("closing the original invalidated its duplicate writer");
+        }
+    }
+    fd_table_chirho
+        .close_chirho(3)
+        .map_err(|_| "close of final writer failed")?;
+    let eof_result_chirho = {
+        let read_arc_chirho = fd_table_chirho
+            .get_chirho(duplicated_read_fd_chirho)
+            .ok_or("reader disappeared before EOF check")?;
+        let mut read_guard_chirho = read_arc_chirho.lock();
+        read_guard_chirho
+            .ops_chirho
+            .read_chirho(&mut read_guard_chirho, &mut read_buffer_chirho)
+    };
+    if eof_result_chirho != Ok(0) {
+        return Err("reader did not observe EOF after the final writer closed");
+    }
+
+    let (second_read_file_chirho, second_write_file_chirho) =
+        crate::pipe_chirho::create_pipe_chirho();
+    let second_pipe_arc_chirho = pipe_endpoint_reference_chirho(&second_read_file_chirho)
+        .map(|pipe_state_chirho| pipe_state_chirho.0)
+        .ok_or("second pipe did not expose shared state")?;
+    let mut second_fd_table_chirho = FdTableChirho::new_chirho(16);
+    second_fd_table_chirho.fds_chirho[0] = Some(second_read_file_chirho);
+    second_fd_table_chirho.fds_chirho[1] = Some(second_write_file_chirho);
+    second_fd_table_chirho
+        .dup2_chirho(0, 2)
+        .map_err(|_| "dup2 of second reader failed")?;
+    second_fd_table_chirho
+        .close_chirho(0)
+        .map_err(|_| "close of second original reader failed")?;
+
+    let live_reader_write_chirho = {
+        let write_arc_chirho = second_fd_table_chirho
+            .get_chirho(1)
+            .ok_or("second writer disappeared")?;
+        let mut write_guard_chirho = write_arc_chirho.lock();
+        write_guard_chirho
+            .ops_chirho
+            .write_chirho(&mut write_guard_chirho, b"R")
+    };
+    if live_reader_write_chirho != Ok(1) {
+        return Err("writer returned EPIPE before the final reader closed");
+    }
+    let mut one_byte_chirho = [0u8; 1];
+    {
+        let read_arc_chirho = second_fd_table_chirho
+            .get_chirho(2)
+            .ok_or("second duplicate reader disappeared")?;
+        let mut read_guard_chirho = read_arc_chirho.lock();
+        if read_guard_chirho
+            .ops_chirho
+            .read_chirho(&mut read_guard_chirho, &mut one_byte_chirho)
+            != Ok(1)
+        {
+            return Err("second duplicate reader did not drain its payload");
+        }
+    }
+    second_fd_table_chirho
+        .close_chirho(2)
+        .map_err(|_| "close of final reader failed")?;
+    {
+        let pipe_guard_chirho = second_pipe_arc_chirho.lock();
+        if pipe_guard_chirho.readers_chirho != 0 || !pipe_guard_chirho.closed_read_chirho {
+            return Err("final reader close did not publish broken-pipe state");
+        }
+    }
+    let broken_pipe_write_chirho = {
+        let write_arc_chirho = second_fd_table_chirho
+            .get_chirho(1)
+            .ok_or("second writer disappeared before EPIPE check")?;
+        let mut write_guard_chirho = write_arc_chirho.lock();
+        write_guard_chirho
+            .ops_chirho
+            .write_chirho(&mut write_guard_chirho, b"E")
+    };
+    if broken_pipe_write_chirho != Err(-crate::syscall_chirho::EPIPE_CHIRHO) {
+        return Err("writer did not return EPIPE after the final reader closed");
+    }
+
+    let (replacement_read_chirho, replacement_write_chirho) =
+        crate::pipe_chirho::create_pipe_chirho();
+    let replacement_pipe_arc_chirho = pipe_endpoint_reference_chirho(&replacement_read_chirho)
+        .map(|pipe_state_chirho| pipe_state_chirho.0)
+        .ok_or("replacement pipe did not expose shared state")?;
+    second_fd_table_chirho.fds_chirho[4] = Some(replacement_read_chirho);
+    second_fd_table_chirho.fds_chirho[5] = Some(replacement_write_chirho);
+    second_fd_table_chirho
+        .dup2_chirho(1, 4)
+        .map_err(|_| "dup2 over an occupied destination failed")?;
+    {
+        let pipe_guard_chirho = replacement_pipe_arc_chirho.lock();
+        if pipe_guard_chirho.readers_chirho != 0 || !pipe_guard_chirho.closed_read_chirho {
+            return Err("dup2 did not retire its occupied destination descriptor");
+        }
+    }
+
+    let mut cloned_fd_table_chirho = second_fd_table_chirho.clone_table_chirho();
+    cloned_fd_table_chirho.retire_all_descriptors_chirho();
+    fd_table_chirho.retire_all_descriptors_chirho();
+    second_fd_table_chirho.retire_all_descriptors_chirho();
+    if PIPE_REFERENCE_INVARIANT_COUNT_CHIRHO.load(Ordering::Relaxed) != 0 {
+        return Err("pipe accounting reported an invariant violation");
+    }
+    if UNRETIRED_FD_TABLE_DROP_COUNT_CHIRHO.load(Ordering::Relaxed) != 0 {
+        return Err("fd table bypassed explicit descriptor retirement");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod pipe_descriptor_reference_tests_chirho {
+    use super::run_pipe_descriptor_reference_regression_chirho;
+
+    #[test]
+    fn duplicate_close_eof_and_epipe_lifetimes_chirho() {
+        assert_eq!(run_pipe_descriptor_reference_regression_chirho(), Ok(()));
     }
 }

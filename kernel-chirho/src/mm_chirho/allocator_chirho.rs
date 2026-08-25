@@ -445,11 +445,12 @@ fn alloc_error_handler_chirho(layout_chirho: core::alloc::Layout) -> ! {
             while x86_64::instructions::port::Port::<u8>::new(0x3FD).read() & 0x20 == 0 {}
             x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'\n');
         }
-        // Mark task as zombie and yield to next task
-        {
-            let mut tg_chirho = task_arc_chirho.lock();
-            tg_chirho.state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
-        }
+        // Allocation-failure context must not recurse into VFS/pipe teardown.
+        // Mark the task and let the next ordinary syscall retire descriptors.
+        crate::process_chirho::exit_task_with_deferred_descriptor_retirement_chirho(
+            &task_arc_chirho,
+            137,
+        );
         // Yield to scheduler — since we're zombie, we won't be scheduled again
         crate::scheduler_chirho::schedule_chirho();
     }

@@ -715,8 +715,10 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                 // if user_fault_pid_chirho >= 4 && fault_addr_chirho.as_u64() == 0x2b33d { ... }
                 // Kill the process with SIGSEGV
                 if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
-                    task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
-                    task_chirho.lock().exit_code_chirho = 139; // SIGSEGV
+                    crate::process_chirho::exit_task_with_deferred_descriptor_retirement_chirho(
+                        &task_chirho,
+                        139,
+                    );
                 }
                 crate::scheduler_chirho::schedule_chirho();
                 return;
@@ -745,8 +747,10 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                         _stack_frame_chirho.instruction_pointer.as_u64(),
                     );
                     if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
-                        task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
-                        task_chirho.lock().exit_code_chirho = 139;
+                        crate::process_chirho::exit_task_with_deferred_descriptor_retirement_chirho(
+                            &task_chirho,
+                            139,
+                        );
                     }
                     crate::scheduler_chirho::schedule_chirho();
                     return;
@@ -758,8 +762,10 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                         _stack_frame_chirho.instruction_pointer.as_u64(),
                     );
                     if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
-                        task_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
-                        task_chirho.lock().exit_code_chirho = 139;
+                        crate::process_chirho::exit_task_with_deferred_descriptor_retirement_chirho(
+                            &task_chirho,
+                            139,
+                        );
                     }
                     crate::scheduler_chirho::schedule_chirho();
                     return;

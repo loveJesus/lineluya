@@ -1496,6 +1496,11 @@ pub unsafe fn init_syscalls_chirho() {
 /// Returns negative `-errno` on error, or the syscall-specific result on
 /// success.
 pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
+    // Exceptional exits (OOM/user faults) cannot safely close descriptors in
+    // their originating context. Retire them here before dispatching ordinary
+    // work; the atomic fast path is O(1) when nothing is pending.
+    crate::process_chirho::drain_deferred_fd_retirements_chirho();
+
     let syscall_nr_chirho = frame_chirho.rax_chirho;
     let arg0_chirho = frame_chirho.rdi_chirho;
     let arg1_chirho = frame_chirho.rsi_chirho;
@@ -3469,25 +3474,23 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         code_chirho
     );
 
-    // Mark the current task as zombie with the given exit code.
-    let pid_chirho = {
-        let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
-            Some(t_chirho) => t_chirho,
-            None => {
-                // No current task — fallback to halt (should not happen).
-                loop { x86_64::instructions::hlt(); }
-            }
-        };
-        let mut task_chirho = task_arc_chirho.lock();
-        task_chirho.exit_chirho(code_chirho);
-        let pid_chirho = task_chirho.pid_chirho;
-        crate::serial_debug_chirho!(
-            "[SYSCALL] exit: PID={} -> zombie (exit_code={})",
-            pid_chirho,
-            code_chirho
-        );
-        pid_chirho
+    let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
+        Some(task_arc_chirho) => task_arc_chirho,
+        None => {
+            // No current task — fallback to halt (should not happen).
+            loop { x86_64::instructions::hlt(); }
+        }
     };
+    let (pid_chirho, ppid_chirho) =
+        crate::process_chirho::exit_task_and_retire_descriptors_chirho(
+            &task_arc_chirho,
+            code_chirho,
+        );
+    crate::serial_debug_chirho!(
+        "[SYSCALL] exit: PID={} -> zombie (exit_code={})",
+        pid_chirho,
+        code_chirho
+    );
 
     // Remove from scheduler run queue.
     crate::scheduler_chirho::remove_task_chirho(pid_chirho);
@@ -3496,12 +3499,7 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
     // Deliver SIGCHLD to the parent process (A2-PROC-005).
     // Use the centralized signal delivery helper which also enqueues
     // SignalInfoChirho and wakes blocked parents.
-    {
-        let ppid_chirho = crate::task_chirho::find_task_by_pid_chirho(pid_chirho)
-            .map(|t_chirho| t_chirho.lock().ppid_chirho)
-            .unwrap_or(0);
-        crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
-    }
+    crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
 
     // Wake any parent sleeping in wait4 on the child-exit wait queue.
     // This unblocks the parent so it can reap this zombie child immediately
@@ -3610,29 +3608,17 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         caller_tgid_chirho
     );
 
-    // Terminate each thread: close fds, set ZombieChirho + exit code,
-    // remove from scheduler, deliver SIGCHLD to parent.
+    // Terminate each thread, retire its fd table outside the task lock,
+    // remove it from the scheduler, and deliver SIGCHLD to its parent.
     for &(pid_chirho, ppid_chirho) in &threads_chirho {
-        // Close all file descriptors before zombying. This properly
-        // decrements pipe reader/writer counts and sets closed_write,
-        // ensuring the parent can detect EOF on the pipe read end.
-        // Without this, PID 4's pipe write-end Arc stays alive (in
-        // the zombie's fd table), closed_write stays false, and the
-        // pipe data is never relayed to the SSH client.
+        // Transition and detach the whole fd table under the task lock, then
+        // retire every descriptor after releasing it. This is the single
+        // process-exit accounting path for ordinary context.
         if let Some(t_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) {
-            let mut t_chirho = t_arc_chirho.lock();
-            if let Some(ref mut fd_table_chirho) = t_chirho.fd_table_chirho {
-                for fd_idx_chirho in 0..fd_table_chirho.fds_chirho.len() {
-                    if fd_table_chirho.fds_chirho[fd_idx_chirho].is_some() {
-                        let _ = fd_table_chirho.close_chirho(fd_idx_chirho);
-                    }
-                }
-            }
-        }
-        // Mark zombie with exit code.
-        if let Some(t_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) {
-            let mut t_chirho = t_arc_chirho.lock();
-            t_chirho.exit_chirho(code_chirho);
+            crate::process_chirho::exit_task_and_retire_descriptors_chirho(
+                &t_arc_chirho,
+                code_chirho,
+            );
             crate::serial_debug_chirho!(
                 "[SYSCALL] exit_group: PID={} -> zombie (exit_code={})",
                 pid_chirho,
@@ -3676,7 +3662,7 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
     let parent_pid_chirho = threads_chirho.first().map(|&(_, pp)| pp).unwrap_or(0);
     crate::scheduler_chirho::remove_task_chirho(parent_pid_chirho);
     if let Some(t_chirho) = crate::task_chirho::find_task_by_pid_chirho(parent_pid_chirho) {
-        t_chirho.lock().exit_chirho(0);
+        crate::process_chirho::exit_task_and_retire_descriptors_chirho(&t_chirho, 0);
     }
     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
         let mut task_chirho = task_arc_chirho.lock();
@@ -5479,12 +5465,11 @@ fn sys_select_chirho(
                     // and refuses new SYNs on port 2222.
                     crate::net_chirho::send_fin_for_closewait_chirho(2222);
                     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-                        let ppid_chirho = task_arc_chirho.lock().ppid_chirho;
-                        {
-                            let mut tg_chirho = task_arc_chirho.lock();
-                            tg_chirho.state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
-                            tg_chirho.exit_code_chirho = 0;
-                        }
+                        let (_, ppid_chirho) =
+                            crate::process_chirho::exit_task_and_retire_descriptors_chirho(
+                                &task_arc_chirho,
+                                0,
+                            );
                         crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, sel_pid_chirho);
                         crate::scheduler_chirho::remove_task_chirho(sel_pid_chirho);
                         // Auto-reap: remove zombie from task list so PID slots

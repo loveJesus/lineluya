@@ -1665,16 +1665,21 @@ pub fn alloc_and_insert_fd_chirho(
         if insert_pid_chirho <= 1 {
             let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
             if let Some(ref mut global_table_chirho) = *global_guard_chirho {
-                if fd_chirho < global_table_chirho.fds_chirho.len() {
-                    global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
-                }
-                if fd_chirho < global_table_chirho.cloexec_chirho.len() {
-                    global_table_chirho.cloexec_chirho[fd_chirho] = initial_cloexec_chirho;
-                }
-                if let Some(p_chirho) = path_chirho {
-                    if fd_chirho < global_table_chirho.paths_chirho.len() {
-                        global_table_chirho.paths_chirho[fd_chirho] = Some(alloc::string::String::from(p_chirho));
-                    }
+                let mirror_path_chirho = path_chirho.map(alloc::string::String::from);
+                if let Err(mirror_error_chirho) = global_table_chirho
+                    .install_duplicate_at_chirho(
+                        fd_chirho,
+                        file_chirho,
+                        mirror_path_chirho,
+                        initial_cloexec_chirho,
+                        "global-mirror",
+                    )
+                {
+                    crate::serial_println_chirho!(
+                        "[FD-MIRROR-INVARIANT] install fd={} failed: {}",
+                        fd_chirho,
+                        mirror_error_chirho,
+                    );
                 }
             }
         }
@@ -1780,35 +1785,32 @@ pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 
     // Try current task's per-process table first.
     // Extract the result and file Arc, then drop the task lock before
     // taking the GLOBAL lock.
-    let task_dup_result_chirho: Option<Result<(usize, alloc::sync::Arc<spin::Mutex<FileChirho>>), i64>> =
+    let task_dup_result_chirho: Option<
+        Result<
+            (
+                usize,
+                alloc::sync::Arc<spin::Mutex<FileChirho>>,
+                Option<alloc::string::String>,
+            ),
+            i64,
+        >,
+    > =
         if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
             let mut task_guard_chirho = task_arc_chirho.lock();
             if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
-                if old_chirho == new_chirho {
-                    return if fd_table_chirho.get_chirho(old_chirho).is_some() {
-                        new_chirho as i64
-                    } else {
-                        -EBADF_CHIRHO
-                    };
-                }
-                let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
-                    Some(f_chirho) => f_chirho,
-                    None => return -EBADF_CHIRHO,
-                };
-                if new_chirho >= fd_table_chirho.fds_chirho.len() {
-                    return -EBADF_CHIRHO;
-                }
-                fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho.clone());
-                if new_chirho < fd_table_chirho.paths_chirho.len()
-                    && old_chirho < fd_table_chirho.paths_chirho.len()
-                {
-                    fd_table_chirho.paths_chirho[new_chirho] =
-                        fd_table_chirho.paths_chirho[old_chirho].clone();
-                }
-                if new_chirho < fd_table_chirho.cloexec_chirho.len() {
-                    fd_table_chirho.cloexec_chirho[new_chirho] = false;
-                }
-                Some(Ok((new_chirho, file_chirho)))
+                Some(fd_table_chirho.dup2_chirho(old_chirho, new_chirho).and_then(
+                    |fd_chirho| {
+                        let file_chirho = fd_table_chirho
+                            .get_chirho(fd_chirho)
+                            .ok_or(-EBADF_CHIRHO)?;
+                        let path_chirho = fd_table_chirho
+                            .paths_chirho
+                            .get(fd_chirho)
+                            .cloned()
+                            .flatten();
+                        Ok((fd_chirho, file_chirho, path_chirho))
+                    },
+                ))
             } else {
                 None
             }
@@ -1817,7 +1819,10 @@ pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 
             None
         };
 
-    if let Some(Ok((fd_chirho, file_chirho))) = task_dup_result_chirho {
+    if let Some(Err(error_chirho)) = task_dup_result_chirho.as_ref() {
+        return *error_chirho;
+    }
+    if let Some(Ok((fd_chirho, file_chirho, path_chirho))) = task_dup_result_chirho {
         // Mirror into global table ONLY for PID 0/1 (init/shell).
         // For PID >= 2, the per-process table is authoritative.
         // Mirroring dup2 to global for non-init PIDs overwrites fd entries
@@ -1829,11 +1834,20 @@ pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 
         if dup2_pid_chirho <= 1 {
             let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
             if let Some(ref mut global_table_chirho) = *global_guard_chirho {
-                if fd_chirho < global_table_chirho.fds_chirho.len() {
-                    global_table_chirho.fds_chirho[fd_chirho] = Some(file_chirho);
-                }
-                if fd_chirho < global_table_chirho.cloexec_chirho.len() {
-                    global_table_chirho.cloexec_chirho[fd_chirho] = false;
+                if let Err(mirror_error_chirho) = global_table_chirho
+                    .install_duplicate_at_chirho(
+                        fd_chirho,
+                        file_chirho,
+                        path_chirho,
+                        false,
+                        "dup2-global-mirror",
+                    )
+                {
+                    crate::serial_println_chirho!(
+                        "[FD-MIRROR-INVARIANT] dup2 fd={} failed: {}",
+                        fd_chirho,
+                        mirror_error_chirho,
+                    );
                 }
             }
         }
@@ -1845,25 +1859,10 @@ pub fn dup2_in_current_task_chirho(oldfd_chirho: u64, newfd_chirho: u64) -> i64 
         Some(t_chirho) => t_chirho,
         None => return -EBADF_CHIRHO,
     };
-    if old_chirho == new_chirho {
-        return if fd_table_chirho.get_chirho(old_chirho).is_some() {
-            new_chirho as i64
-        } else {
-            -EBADF_CHIRHO
-        };
+    match fd_table_chirho.dup2_chirho(old_chirho, new_chirho) {
+        Ok(fd_chirho) => fd_chirho as i64,
+        Err(error_chirho) => error_chirho,
     }
-    let file_chirho = match fd_table_chirho.get_chirho(old_chirho) {
-        Some(f_chirho) => f_chirho,
-        None => return -EBADF_CHIRHO,
-    };
-    if new_chirho >= fd_table_chirho.fds_chirho.len() {
-        return -EBADF_CHIRHO;
-    }
-    fd_table_chirho.fds_chirho[new_chirho] = Some(file_chirho);
-    if new_chirho < fd_table_chirho.cloexec_chirho.len() {
-        fd_table_chirho.cloexec_chirho[new_chirho] = false;
-    }
-    new_chirho as i64
 }
 
 /// `read(2)` -- read from a file descriptor using the VFS.
@@ -2072,14 +2071,75 @@ pub fn sys_close_real_chirho(fd_chirho: u64) -> i64 {
 ///
 /// A2-PROC-003: Uses per-process fd table first, then global fallback.
 pub fn sys_dup_chirho(oldfd_chirho: u64) -> i64 {
-    // Look up the file in the right table.
-    let file_chirho = match lookup_fd_chirho(oldfd_chirho) {
-        Some(f_chirho) => f_chirho,
-        None => return -EBADF_CHIRHO,
+    let old_chirho = oldfd_chirho as usize;
+    let task_dup_result_chirho: Option<
+        Result<
+            (
+                usize,
+                alloc::sync::Arc<spin::Mutex<FileChirho>>,
+                Option<alloc::string::String>,
+            ),
+            i64,
+        >,
+    > = if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+        let mut task_guard_chirho = task_arc_chirho.lock();
+        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+            Some(fd_table_chirho.dup_chirho(old_chirho).and_then(|fd_chirho| {
+                let file_chirho = fd_table_chirho
+                    .get_chirho(fd_chirho)
+                    .ok_or(-EBADF_CHIRHO)?;
+                let path_chirho = fd_table_chirho
+                    .paths_chirho
+                    .get(fd_chirho)
+                    .cloned()
+                    .flatten();
+                Ok((fd_chirho, file_chirho, path_chirho))
+            }))
+        } else {
+            None
+        }
+    } else {
+        None
     };
-    let path_chirho = get_fd_path_chirho(oldfd_chirho);
-    // Allocate new fd via per-process helper.
-    alloc_and_insert_fd_chirho(file_chirho, path_chirho.as_deref())
+
+    if let Some(Err(error_chirho)) = task_dup_result_chirho.as_ref() {
+        return *error_chirho;
+    }
+    if let Some(Ok((fd_chirho, file_chirho, path_chirho))) = task_dup_result_chirho {
+        let dup_pid_chirho = crate::task_chirho::current_task_chirho()
+            .map(|task_arc_chirho| task_arc_chirho.lock().pid_chirho)
+            .unwrap_or(0);
+        if dup_pid_chirho <= 1 {
+            let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+            if let Some(ref mut global_table_chirho) = *global_guard_chirho {
+                if let Err(mirror_error_chirho) = global_table_chirho
+                    .install_duplicate_at_chirho(
+                        fd_chirho,
+                        file_chirho,
+                        path_chirho,
+                        false,
+                        "dup-global-mirror",
+                    )
+                {
+                    crate::serial_println_chirho!(
+                        "[FD-MIRROR-INVARIANT] dup fd={} failed: {}",
+                        fd_chirho,
+                        mirror_error_chirho,
+                    );
+                }
+            }
+        }
+        return fd_chirho as i64;
+    }
+
+    let mut global_guard_chirho = GLOBAL_FD_TABLE_CHIRHO.lock();
+    let Some(ref mut global_table_chirho) = *global_guard_chirho else {
+        return -EBADF_CHIRHO;
+    };
+    match global_table_chirho.dup_chirho(old_chirho) {
+        Ok(fd_chirho) => fd_chirho as i64,
+        Err(error_chirho) => error_chirho,
+    }
 }
 
 /// `dup2(2)` -- duplicate a file descriptor to a specific number.

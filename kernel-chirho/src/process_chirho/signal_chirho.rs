@@ -869,7 +869,7 @@ pub fn current_has_deliverable_signal_chirho() -> bool {
 /// `true` if the task was terminated (caller should not return to userspace).
 /// `false` if no fatal signal is pending and normal return should continue.
 pub fn check_fatal_signals_on_return_chirho() -> bool {
-    let (pid_chirho, ppid_chirho, signo_opt_chirho) = {
+    let (task_arc_chirho, pid_chirho, ppid_chirho, signo_chirho, exit_code_chirho) = {
         let task_arc_chirho = match crate::task_chirho::current_task_chirho() {
             Some(t_chirho) => t_chirho,
             None => return false,
@@ -951,13 +951,11 @@ pub fn check_fatal_signals_on_return_chirho() -> bool {
                 return false;
             }
             DefaultActionChirho::TermChirho | DefaultActionChirho::CoreChirho => {
-                // Fatal signal — terminate the process.
+                // Return the fatal transition to ordinary context. Descriptor
+                // retirement must not run while this task lock is held.
                 let pid_chirho = task_chirho.pid_chirho;
                 let ppid_chirho = task_chirho.ppid_chirho;
-                // Set exit code to 128 + signo (standard Unix convention).
                 let exit_code_chirho = 128 + signo_chirho as i32;
-                task_chirho.exit_code_chirho = exit_code_chirho;
-                task_chirho.state_chirho = TaskStateChirho::ZombieChirho;
 
                 crate::serial_println_chirho!(
                     "[SIGNAL] PID {} killed by signal {} (exit_code={})",
@@ -966,35 +964,42 @@ pub fn check_fatal_signals_on_return_chirho() -> bool {
                     exit_code_chirho
                 );
 
-                (pid_chirho, ppid_chirho, Some(signo_chirho))
+                drop(task_chirho);
+                (
+                    task_arc_chirho,
+                    pid_chirho,
+                    ppid_chirho,
+                    signo_chirho,
+                    exit_code_chirho,
+                )
             }
         }
     };
 
-    // If we terminated the task, clean up outside the task lock.
-    if let Some(signo_chirho) = signo_opt_chirho {
-        // Remove from scheduler run queue.
-        crate::scheduler_chirho::remove_task_chirho(pid_chirho);
+    crate::process_chirho::exit_task_and_retire_descriptors_chirho(
+        &task_arc_chirho,
+        exit_code_chirho,
+    );
 
-        // Send SIGCHLD to parent.
-        deliver_sigchld_chirho(ppid_chirho, pid_chirho);
+    // Remove from scheduler run queue.
+    crate::scheduler_chirho::remove_task_chirho(pid_chirho);
 
-        // Wake any parent sleeping in wait4.
-        crate::process_chirho::wake_child_exit_waitqueue_chirho();
+    // Send SIGCHLD to parent.
+    deliver_sigchld_chirho(ppid_chirho, pid_chirho);
 
-        crate::serial_debug_chirho!(
-            "[SIGNAL] PID {} removed from scheduler after signal {}",
-            pid_chirho,
-            signo_chirho
-        );
+    // Wake any parent sleeping in wait4.
+    crate::process_chirho::wake_child_exit_waitqueue_chirho();
 
-        // Yield to let the scheduler pick the next task.
-        crate::scheduler_chirho::yield_current_chirho();
+    crate::serial_debug_chirho!(
+        "[SIGNAL] PID {} removed from scheduler after signal {}",
+        pid_chirho,
+        signo_chirho
+    );
 
-        return true;
-    }
+    // Yield to let the scheduler pick the next task.
+    crate::scheduler_chirho::yield_current_chirho();
 
-    false
+    true
 }
 
 // ============================================================================

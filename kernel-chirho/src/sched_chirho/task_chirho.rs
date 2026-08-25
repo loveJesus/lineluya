@@ -580,25 +580,6 @@ impl TaskChirho {
         }
     }
 
-    /// Terminate this task with the given exit code, transitioning it to
-    /// Zombie state.  The parent must call `wait()` to move it to Dead.
-    pub fn exit_chirho(&mut self, code_chirho: i32) {
-        self.exit_code_chirho = code_chirho;
-        self.state_chirho = TaskStateChirho::ZombieChirho;
-    }
-
-    /// Reap a zombie task, transitioning it to Dead.
-    ///
-    /// Returns the exit code, or `None` if the task is not a zombie.
-    pub fn reap_chirho(&mut self) -> Option<i32> {
-        if self.state_chirho == TaskStateChirho::ZombieChirho {
-            self.state_chirho = TaskStateChirho::DeadChirho;
-            Some(self.exit_code_chirho)
-        } else {
-            None
-        }
-    }
-
     /// Reset the time slice to the default value.  Called by the scheduler
     /// when the task is re-enqueued.
     pub fn reset_time_slice_chirho(&mut self) {

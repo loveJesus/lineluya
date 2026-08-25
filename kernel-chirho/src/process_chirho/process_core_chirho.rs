@@ -20,6 +20,13 @@
 
 extern crate alloc;
 
+#[path = "fd_lifecycle_chirho.rs"]
+mod fd_lifecycle_chirho;
+pub use fd_lifecycle_chirho::{
+    drain_deferred_fd_retirements_chirho, exit_task_and_retire_descriptors_chirho,
+    exit_task_with_deferred_descriptor_retirement_chirho,
+};
+
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -859,19 +866,38 @@ fn reap_child_chirho(
         }
     }
 
-    // Mark the child as Dead (fully reaped) and remove from TASK_LIST.
-    {
+    // Mark the child as Dead (fully reaped) and remove it from TASK_LIST.
+    // Move the removed Arc out first so Task/FdTable ownership is never
+    // released while TASK_LIST is held.
+    let (removed_task_chirho, fd_table_chirho) = {
         let mut task_list_chirho = TASK_LIST_CHIRHO.lock();
-        for task_arc_chirho in task_list_chirho.iter() {
-            let mut task_chirho = task_arc_chirho.lock();
-            if task_chirho.pid_chirho == reaped_pid_chirho {
+        let task_index_chirho = task_list_chirho
+            .iter()
+            .position(|task_arc_chirho| task_arc_chirho.lock().pid_chirho == reaped_pid_chirho);
+        if let Some(task_index_chirho) = task_index_chirho {
+            let fd_table_chirho = {
+                let mut task_chirho = task_list_chirho[task_index_chirho].lock();
                 task_chirho.state_chirho = TaskStateChirho::DeadChirho;
-                break;
-            }
+                task_chirho.fd_table_chirho.take()
+            };
+            (
+                Some(task_list_chirho.remove(task_index_chirho)),
+                fd_table_chirho,
+            )
+        } else {
+            (None, None)
         }
-        // Remove dead task from list so PID/context slots can be reused.
-        task_list_chirho.retain(|t| t.lock().pid_chirho != reaped_pid_chirho);
+    };
+    if let Some(mut fd_table_chirho) = fd_table_chirho {
+        fd_table_chirho.retire_all_descriptors_chirho();
+        // Ordinary exits detach their table before becoming reapable. A
+        // zombie that still owns one can only be an exceptional deferred
+        // exit, so reaping it also completes exactly one pending unit.
+        fd_lifecycle_chirho::complete_deferred_fd_retirement_chirho(
+            "reap-deferred-exit",
+        );
     }
+    drop(removed_task_chirho);
 
     // Remove the dead child from the scheduler (should already be
     // gone, but be safe).
@@ -1591,10 +1617,10 @@ pub fn kill_and_respawn_shell_chirho(reason_chirho: &str) -> ! {
                 "[PROCESS] PID {} is a daemon child — not respawning shell",
                 pid_chirho
             );
-            // Mark as zombie with exit code 128 + signal
+            // Exception handlers cannot safely acquire VFS locks. Mark this
+            // task for cold-path descriptor retirement by the next syscall.
             if let Some(task_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) {
-                task_arc_chirho.lock().state_chirho = crate::task_chirho::TaskStateChirho::ZombieChirho;
-                task_arc_chirho.lock().exit_code_chirho = 139; // SIGSEGV
+                exit_task_with_deferred_descriptor_retirement_chirho(&task_arc_chirho, 139);
             }
             // Yield to let the parent run
             crate::scheduler_chirho::yield_current_chirho();
@@ -1658,19 +1684,27 @@ fn preserve_fd_table_across_exec_chirho_impl(preserve_sockets_chirho: bool) {
         None => return,
     };
 
-    let global_snapshot_chirho = {
+    let task_needs_global_snapshot_chirho =
+        task_arc_chirho.lock().fd_table_chirho.is_none();
+    let global_snapshot_chirho = if task_needs_global_snapshot_chirho {
         let global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-        global_guard_chirho.as_ref().map(|fd_table_chirho| fd_table_chirho.clone_table_chirho())
+        global_guard_chirho
+            .as_ref()
+            .map(|fd_table_chirho| fd_table_chirho.clone_table_chirho())
+    } else {
+        None
     };
 
-    let global_mirror_chirho = {
+    let (current_pid_chirho, global_mirror_chirho) = {
         let mut task_guard_chirho = task_arc_chirho.lock();
         if task_guard_chirho.fd_table_chirho.is_none() {
             task_guard_chirho.fd_table_chirho = global_snapshot_chirho;
         }
 
+        let current_pid_chirho = task_guard_chirho.pid_chirho;
         let ppid_chirho = task_guard_chirho.ppid_chirho;
-        if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
+        let global_mirror_chirho =
+            if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
             let fd0_before_chirho = fd_table_chirho.fds_chirho.get(0).map(|s| s.is_some()).unwrap_or(false);
             let fd0_cloexec_chirho = fd_table_chirho.cloexec_chirho.get(0).copied().unwrap_or(false);
             if preserve_sockets_chirho {
@@ -1686,12 +1720,17 @@ fn preserve_fd_table_across_exec_chirho_impl(preserve_sockets_chirho: bool) {
                 );
             }
             let next_fd_chirho = fd_table_chirho.next_free_fd_chirho();
-            let mirror_table_chirho = fd_table_chirho.clone_table_chirho();
+            let mirror_table_chirho = if current_pid_chirho <= 1 {
+                Some(fd_table_chirho.clone_table_chirho())
+            } else {
+                None
+            };
             task_guard_chirho.next_fd_chirho = next_fd_chirho;
-            Some(mirror_table_chirho)
+            mirror_table_chirho
         } else {
             None
-        }
+        };
+        (current_pid_chirho, global_mirror_chirho)
     };
 
     // Only sync per-process → global for PID 0/1 (init shell).
@@ -1705,12 +1744,21 @@ fn preserve_fd_table_across_exec_chirho_impl(preserve_sockets_chirho: bool) {
     // child's fd layout. Other processes that fall through to the global
     // table then see stale pipe fds, causing wait_event to spin (pipe scan
     // finds "ready" pipes that belong to a dead process).
-    let current_pid_chirho = crate::task_chirho::current_task_chirho()
-        .map(|t| t.lock().pid_chirho).unwrap_or(0);
+    // Daemon PIDs (>= 2) must not even clone this compatibility mirror: a
+    // temporary counted fd table would otherwise be discarded immediately,
+    // perturbing pipe endpoint lifetime without ever serving a lookup.
     if current_pid_chirho <= 1 {
         if let Some(global_mirror_value_chirho) = global_mirror_chirho {
-            let mut global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
-            *global_guard_chirho = Some(global_mirror_value_chirho);
+            let old_global_mirror_chirho = {
+                let mut global_guard_chirho = crate::fs_chirho::GLOBAL_FD_TABLE_CHIRHO.lock();
+                core::mem::replace(
+                    &mut *global_guard_chirho,
+                    Some(global_mirror_value_chirho),
+                )
+            };
+            if let Some(mut old_global_mirror_chirho) = old_global_mirror_chirho {
+                old_global_mirror_chirho.retire_all_descriptors_chirho();
+            }
         }
     }
 }
