@@ -95,11 +95,16 @@ check_deps_chirho() {
         fi
     done
 
-    # Determine ext4 formatter
+    # Determine ext4 formatter.  Only the native loop-mount path needs one on
+    # the host; the Docker path formats inside the container, so do not make a
+    # missing host e2fsprogs a hard failure when Docker is available.
     if command -v mkfs.ext4 &>/dev/null; then
         MKFS_CMD_CHIRHO="mkfs.ext4"
     elif command -v mke2fs &>/dev/null; then
         MKFS_CMD_CHIRHO="mke2fs -t ext4"
+    elif command -v docker &>/dev/null; then
+        MKFS_CMD_CHIRHO=""
+        log_chirho "No host ext4 formatter - Docker will format inside the container."
     else
         err_chirho "No ext4 formatter found (mkfs.ext4 / mke2fs). Install e2fsprogs."
     fi
@@ -160,10 +165,14 @@ create_empty_image_chirho() {
         dd if=/dev/zero of="$IMAGE_PATH_CHIRHO" bs=1 count=0 seek="$size_bytes_chirho" 2>/dev/null
     fi
 
-    # Format as ext4 with label
-    $MKFS_CMD_CHIRHO -F -L "lineluya-vblk-chirho" "$IMAGE_PATH_CHIRHO"
-
-    log_chirho "Image formatted: $IMAGE_PATH_CHIRHO"
+    # Format as ext4 with label (skipped when only Docker can format: the
+    # container rebuilds and formats /tmp/disk.img itself, then copies it out)
+    if [[ -n "$MKFS_CMD_CHIRHO" ]]; then
+        $MKFS_CMD_CHIRHO -F -L "lineluya-vblk-chirho" "$IMAGE_PATH_CHIRHO"
+        log_chirho "Image formatted: $IMAGE_PATH_CHIRHO"
+    else
+        log_chirho "Image placeholder created: $IMAGE_PATH_CHIRHO (formatted by Docker)"
+    fi
 }
 
 # ============================================================================
@@ -177,10 +186,18 @@ populate_image_chirho() {
 
     mkdir -p "$MOUNT_DIR_CHIRHO"
 
-    # Mount the image (requires root on Linux; on macOS use hdiutil or Docker)
-    if [[ "$(uname)" == "Darwin" ]]; then
-        populate_image_darwin_chirho "$tarball_path_chirho"
+    # Docker is the canonical path on EVERY host, not just macOS: it is the
+    # only one that apk-installs the Lineluya package set (sqlite3, python3,
+    # dropbear, xorg-server, xterm, twm, mesa) into the rootfs.  The native
+    # Linux loop-mount path extracts the bare minirootfs and nothing else, so
+    # a disk built that way cannot run any program the kernel is tested
+    # against.  Prefer Docker; fall back to loop mount only without it.
+    if command -v docker &>/dev/null || [[ "$(uname)" == "Darwin" ]]; then
+        populate_image_docker_chirho "$tarball_path_chirho"
     else
+        log_chirho "WARNING: Docker not found - falling back to native loop mount."
+        log_chirho "WARNING: the resulting image will hold the BARE minirootfs only:"
+        log_chirho "WARNING: no sqlite3 / python3 / dropbear / xorg-server / xterm / twm / mesa."
         populate_image_linux_chirho "$tarball_path_chirho"
     fi
 }
@@ -204,38 +221,52 @@ populate_image_linux_chirho() {
     log_chirho "Image populated (Linux mount)."
 }
 
-populate_image_darwin_chirho() {
+populate_image_docker_chirho() {
     local tarball_path_chirho="$1"
 
-    # On macOS, ext4 mount is not natively supported.
-    # Strategy: use a temporary Docker container with ext4 tools.
+    # Populate the ext4 image inside a privileged Alpine container.  On macOS
+    # this is the only way (no native ext4 mount); on Linux it is still the
+    # preferred way, because the container's own apk installs the x86_64
+    # package set into the rootfs regardless of the host's arch or distro.
     if command -v docker &>/dev/null; then
-        log_chirho "Using Docker to populate ext4 image on macOS..."
+        log_chirho "Using Docker to populate ext4 image..."
 
         local abs_image_chirho
         abs_image_chirho="$(cd "$(dirname "$IMAGE_PATH_CHIRHO")" && pwd)/$(basename "$IMAGE_PATH_CHIRHO")"
         local abs_tarball_chirho
         abs_tarball_chirho="$(cd "$(dirname "$tarball_path_chirho")" && pwd)/$(basename "$tarball_path_chirho")"
 
-        # colima on macOS corrupts binary files via volume mounts and docker cp.
-        # Workaround: use docker exec to build, then pipe the image out via
-        # stdout using docker exec cat.
         log_chirho "Building ext4 image inside Docker container..."
 
         local cid_chirho
-        cid_chirho=$(docker create --privileged alpine:latest sleep 3600)
+        # Pin the builder container to the SAME Alpine branch as the minirootfs.
+        # 'alpine:latest' drifts: once it moved past 3.21 its apk-tools 3.x
+        # wrote ZERO-LENGTH files for every --root install, so the disk looked
+        # populated (paths present, /usr/bin full) while every binary was empty.
+        # Matching the branch also keeps musl and the packages on one ABI.
+        cid_chirho=$(docker create --privileged \
+            "alpine:${ALPINE_VERSION_CHIRHO}" sleep 3600)
         docker start "$cid_chirho" >/dev/null
 
         # Pipe the rootfs tarball into the container via docker exec
         cat "$abs_tarball_chirho" | docker exec -i "$cid_chirho" sh -c 'cat > /tmp/rootfs.tar.gz'
 
         # Run the build
-        docker exec "$cid_chirho" /bin/sh -c '
+        # The rootfs build runs as a real script FILE inside the container.
+        # Passing it as a single-quoted argument to `sh -c` silently truncated
+        # it: the apostrophes in the sample SQL ("VALUES (1, 'Hallelujah!...')")
+        # closed the outer quote, so everything after that point - including the
+        # final `sync` and `umount` - was parsed as stray arguments and never
+        # ran, and the image was copied out with an unflushed journal.
+        local script_path_chirho="$OUTPUT_DIR_CHIRHO/build-rootfs-chirho.sh"
+        cat > "$script_path_chirho" << 'BUILD_ROOTFS_SCRIPT_CHIRHO'
+
 set -e
 
 # Create a fresh ext4 image inside the container
-apk add --no-cache e2fsprogs >/dev/null 2>&1
-truncate -s 512M /tmp/disk.img
+# e2fsprogs-extra carries dumpe2fs, which the journal gate below depends on.
+apk add --no-cache e2fsprogs e2fsprogs-extra >/dev/null 2>&1
+truncate -s "${DISK_SIZE_INNER_CHIRHO:-512M}" /tmp/disk.img
 mkfs.ext4 -F -L "lineluya-vblk" /tmp/disk.img >/dev/null 2>&1
 
 mkdir -p /mnt-chirho
@@ -250,7 +281,7 @@ for d in dev proc sys tmp run; do
 done
 
 # /etc/inittab for BusyBox init
-cat > /mnt-chirho/etc/inittab << '\''INITTAB_CHIRHO'\''
+cat > /mnt-chirho/etc/inittab << 'INITTAB_CHIRHO'
 # For God so loved the world that he gave his only begotten Son,
 # that whoever believes in him should not perish but have eternal life. - John 3:16
 #
@@ -269,7 +300,7 @@ tty1::respawn:/sbin/getty 38400 tty1
 INITTAB_CHIRHO
 
 # /etc/fstab — VirtIO disk is /dev/vda
-cat > /mnt-chirho/etc/fstab << '\''FSTAB_CHIRHO'\''
+cat > /mnt-chirho/etc/fstab << 'FSTAB_CHIRHO'
 # For God so loved the world that he gave his only begotten Son,
 # that whoever believes in him should not perish but have eternal life. - John 3:16
 #
@@ -286,7 +317,7 @@ FSTAB_CHIRHO
 echo "lineluya-chirho" > /mnt-chirho/etc/hostname
 
 # resolv.conf
-cat > /mnt-chirho/etc/resolv.conf << '\''RESOLV_CHIRHO'\''
+cat > /mnt-chirho/etc/resolv.conf << 'RESOLV_CHIRHO'
 nameserver 8.8.8.8
 nameserver 1.1.1.1
 RESOLV_CHIRHO
@@ -341,9 +372,37 @@ apk --root /mnt-chirho --initdb \
 
 # loop.ko is injected after disk build via inject-loop-ko-chirho.sh
 
-# Verify installation
-ls /mnt-chirho/usr/bin/sqlite3 >/dev/null 2>&1 && echo "[DOCKER] sqlite3 INSTALLED" >&2 || echo "[DOCKER] sqlite3 MISSING" >&2
-ls /mnt-chirho/usr/bin/python3 >/dev/null 2>&1 && echo "[DOCKER] python3 INSTALLED" >&2 || echo "[DOCKER] python3 MISSING" >&2
+# Verify installation.  A plain "ls" passes on a zero-length file, which is
+# exactly how a broken apk extraction slipped through as INSTALLED before, so
+# require every binary to be present AND non-empty and fail the build if not.
+verify_failed_chirho=0
+for bin_chirho in \
+    /usr/bin/sqlite3 \
+    /usr/bin/python3 \
+    /usr/bin/mpg123 \
+    /usr/bin/twm \
+    /usr/bin/xterm \
+    /usr/bin/Xorg \
+    /usr/libexec/Xorg \
+    /usr/sbin/dropbear \
+    /bin/busybox
+do
+    if [ -s "/mnt-chirho$bin_chirho" ]; then
+        echo "[DOCKER] $bin_chirho OK ($(wc -c < "/mnt-chirho$bin_chirho") bytes)" >&2
+    elif [ -e "/mnt-chirho$bin_chirho" ]; then
+        echo "[DOCKER] $bin_chirho EMPTY (0 bytes) - apk extraction failed" >&2
+        verify_failed_chirho=1
+    else
+        echo "[DOCKER] $bin_chirho MISSING" >&2
+        verify_failed_chirho=1
+    fi
+done
+
+if [ "$verify_failed_chirho" -ne 0 ]; then
+    echo "[DOCKER] FATAL: rootfs verification failed - refusing to ship this disk." >&2
+    umount /mnt-chirho 2>/dev/null
+    exit 1
+fi
 
 echo "[DOCKER] P5 packages installed into rootfs." >&2
 
@@ -446,7 +505,7 @@ MP3DATA_CHIRHO
 echo "[DOCKER] /root/test-tone-chirho.mp3 created" >&2
 
 # Create a test Python script
-cat > /mnt-chirho/root/hello_chirho.py << '\''PYTEST_CHIRHO'\''
+cat > /mnt-chirho/root/hello_chirho.py << 'PYTEST_CHIRHO'
 # For God so loved the world that he gave his only begotten Son,
 # that whoever believes in him should not perish but have eternal life. - John 3:16
 print("Hallelujah! Python3 runs on Lineluya!")
@@ -454,7 +513,7 @@ print("For God so loved the world - John 3:16")
 PYTEST_CHIRHO
 
 # Create a test SQLite script
-cat > /mnt-chirho/root/test_chirho.sql << '\''SQLTEST_CHIRHO'\''
+cat > /mnt-chirho/root/test_chirho.sql << 'SQLTEST_CHIRHO'
 -- For God so loved the world that he gave his only begotten Son,
 -- that whoever believes in him should not perish but have eternal life. - John 3:16
 CREATE TABLE praise_chirho (id_chirho INTEGER PRIMARY KEY, msg_chirho TEXT);
@@ -464,10 +523,28 @@ SQLTEST_CHIRHO
 
 sync
 umount /mnt-chirho
-echo "[DOCKER] rootfs populated and configured."
+
+# A disk copied out with an unflushed journal carries needs_recovery, and a
+# kernel with no journal replay can then read stale or missing metadata.  This
+# is exactly what a truncated build script produced before, so gate on it.
+if ! command -v dumpe2fs >/dev/null 2>&1; then
+    echo "[DOCKER] FATAL: dumpe2fs missing - the journal gate cannot run." >&2
+    exit 1
+fi
+if dumpe2fs -h /tmp/disk.img 2>/dev/null | grep -q needs_recovery; then
+    echo "[DOCKER] FATAL: needs_recovery still set after umount - not shipping." >&2
+    exit 1
+fi
+
+echo "[DOCKER] rootfs populated and configured (journal clean)."
 
 echo "[DOCKER] Build complete."
-'
+BUILD_ROOTFS_SCRIPT_CHIRHO
+
+        docker cp "$script_path_chirho" \
+            "$cid_chirho:/tmp/build-rootfs-chirho.sh" >/dev/null
+        docker exec -e DISK_SIZE_INNER_CHIRHO="$DISK_SIZE_CHIRHO" \
+            "$cid_chirho" /bin/sh /tmp/build-rootfs-chirho.sh
         # Extract the finished image via docker cp (not pipe/cat which corrupts on macOS)
         log_chirho "Extracting disk image from container via docker cp..."
         docker cp "$cid_chirho:/tmp/disk.img" "$abs_image_chirho"
@@ -589,7 +666,9 @@ print_summary_chirho() {
     echo "  Root device:      /dev/vda (VirtIO-blk)"
     echo "  Hostname:         lineluya-chirho"
     echo ""
-    echo "  Pre-installed: sqlite3, python3, dropbear"
+    echo "  Pre-installed: sqlite3, python3, dropbear, mpg123,"
+    echo "                 xorg-server, xf86-video-fbdev, xterm, twm, mesa"
+    echo "                 (Docker path only - a loop-mount build has none of these)"
     echo ""
     echo "  QEMU usage:"
     echo "    qemu-system-x86_64 \\"

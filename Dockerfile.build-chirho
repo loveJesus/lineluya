@@ -10,8 +10,9 @@ RUN rustup install nightly-2026-03-10 \
     && rustup target add x86_64-unknown-none --toolchain nightly-2026-03-10
 
 # Pre-build the bootloader disk image tool (this takes ~30s and never changes)
-RUN mkdir -p /image-builder-chirho/src \
-    && printf '[package]\nname = "image-builder-chirho"\nversion = "0.1.0"\nedition = "2021"\n\n[[bin]]\nname = "image-builder-chirho"\npath = "src/main.rs"\n\n[dependencies]\nbootloader = "0.11"\n' > /image-builder-chirho/Cargo.toml \
+RUN set -o pipefail \
+    && mkdir -p /image-builder-chirho/src \
+    && printf '[package]\nname = "image-builder-chirho"\nversion = "0.1.0"\nedition = "2021"\n\n[[bin]]\nname = "image-builder-chirho"\npath = "src/main.rs"\n\n[dependencies]\nbootloader = "=0.11.15"\n' > /image-builder-chirho/Cargo.toml \
     && printf 'use std::path::PathBuf;\nfn main() {\n    let k = PathBuf::from(std::env::args().nth(1).expect("usage: image-builder <kernel>"));\n    let out = PathBuf::from("output-chirho");\n    std::fs::create_dir_all(&out).unwrap();\n    println!("BIOS...");\n    match bootloader::BiosBoot::new(&k).create_disk_image(&out.join("lineluya-bios-chirho.img")) {\n        Ok(()) => println!("BIOS OK"),\n        Err(e) => eprintln!("BIOS failed: {:?}", e),\n    }\n    println!("UEFI...");\n    match bootloader::UefiBoot::new(&k).create_disk_image(&out.join("lineluya-uefi-chirho.img")) {\n        Ok(()) => println!("UEFI OK"),\n        Err(e) => eprintln!("UEFI failed: {:?}", e),\n    }\n}\n' > /image-builder-chirho/src/main.rs \
     && cd /image-builder-chirho && cargo build --release 2>&1 | tail -3
 
