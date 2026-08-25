@@ -37,9 +37,16 @@ fi
 export DISPLAY=:0
 mkdir -p /tmp/.X11-unix
 
+# -config takes a RELATIVE name, deliberately. Xorg running with elevated
+# privileges REFUSES an absolute path:
+#   Invalid argument for -config - "/etc/X11/xorg.conf"
+#   With elevated privileges -config must specify a relative path
+# Xorg searches /etc/X11 itself, where the provisioner installs the file.
+# Naming it explicitly keeps the launcher intent visible rather than
+# relying on an implicit default.
 "$XORG_EXECUTABLE_CHIRHO" \
     :0 \
-    -config /etc/X11/xorg.conf \
+    -config xorg.conf \
     -ac \
     -noreset \
     -novtswitch \
