@@ -830,40 +830,6 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
         }
     }
 
-    // Create /etc/profile and /root/.profile on tmpfs.
-    // /etc/profile is overridden because Alpine's default profile runs
-    // `id -u` and `hostname` in a code path that our embedded BusyBox's ash
-    // triggers (no $BB_ASH_VERSION set). These fork+exec's are too slow
-    // during boot and stall the shell before dropbear starts.
-    {
-        let etc_profile_chirho = concat!(
-            "# Lineluya /etc/profile\n",
-            "export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\n",
-            "export PS1='lineluya# '\n",
-            "export HOME=/root\n",
-            "export TERM=linux\n",
-            "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
-            "# Start dropbear SSH daemon (once only, file-based guard)\n",
-            "if [ ! -f /tmp/.dropbear_started_chirho ]; then\n",
-            "  touch /tmp/.dropbear_started_chirho\n",
-            "  mkdir -p /var/run /var/log /tmp/.X11-unix\n",
-            "  /usr/sbin/dropbear -R -E -B -p 2222\n",
-            "  echo ''\n",
-            "  echo '  Lineluya v7.0 — For God so loved the world - John 3:16'\n",
-            "  echo '  SSH: ssh -p 2222 root@localhost'\n",
-            "  echo ''\n",
-            "  /usr/libexec/Xorg :0 vt7 -noreset &\n",
-            "  echo '  Xorg: starting in background'\n",
-            "fi\n",
-        );
-        tmpfs_chirho::write_tmpfs_file_chirho(
-            "/etc/profile",
-            etc_profile_chirho.as_bytes(),
-        );
-        // No /root/.profile needed — /etc/profile handles everything
-        serial_println_chirho!("[INIT] Created /etc/profile (dropbear daemon + shell)");
-    }
-
     // Load and execute the hello world binary
     serial_println_chirho!();
     serial_println_chirho!("Loading hello world ELF into userspace...");

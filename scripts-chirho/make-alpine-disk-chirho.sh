@@ -24,6 +24,7 @@ ALPINE_VERSION_CHIRHO="${ALPINE_VERSION_CHIRHO:-3.21}"
 ALPINE_MINOR_CHIRHO="${ALPINE_MINOR_CHIRHO:-0}"
 ALPINE_ARCH_CHIRHO="x86_64"
 DISK_SIZE_CHIRHO="${DISK_SIZE_CHIRHO:-1024M}"
+FILESYSTEM_LABEL_CHIRHO="lineluya-chirho"
 
 SCRIPT_DIR_CHIRHO="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR_CHIRHO="$(dirname "$SCRIPT_DIR_CHIRHO")"
@@ -31,11 +32,21 @@ OUTPUT_DIR_CHIRHO="$PROJECT_DIR_CHIRHO/target/alpine-virtio-chirho"
 IMAGE_PATH_CHIRHO="$OUTPUT_DIR_CHIRHO/alpine-virtio-chirho.img"
 ROOTFS_DIR_CHIRHO="$OUTPUT_DIR_CHIRHO/rootfs-chirho"
 MOUNT_DIR_CHIRHO="$OUTPUT_DIR_CHIRHO/mnt-chirho"
+ROOTFS_ASSET_DIR_CHIRHO="$SCRIPT_DIR_CHIRHO/rootfs-chirho"
+XGEARS_SOURCE_PATH_CHIRHO="$PROJECT_DIR_CHIRHO/userspace-chirho/x11-chirho/xgears_chirho.c"
+
+ACTIVE_DOCKER_CID_CHIRHO=""
+NATIVE_IMAGE_MOUNTED_CHIRHO=0
+NATIVE_DEV_MOUNTED_CHIRHO=0
+NATIVE_PROC_MOUNTED_CHIRHO=0
+ROOTFS_BUILD_MODE_CHIRHO="unknown-chirho"
 
 # Alpine download mirror
 MIRROR_URL_CHIRHO="https://dl-cdn.alpinelinux.org/alpine"
 TARBALL_NAME_CHIRHO="alpine-minirootfs-${ALPINE_VERSION_CHIRHO}.${ALPINE_MINOR_CHIRHO}-${ALPINE_ARCH_CHIRHO}.tar.gz"
 DOWNLOAD_URL_CHIRHO="${MIRROR_URL_CHIRHO}/v${ALPINE_VERSION_CHIRHO}/releases/${ALPINE_ARCH_CHIRHO}/${TARBALL_NAME_CHIRHO}"
+CHECKSUM_URL_CHIRHO="$DOWNLOAD_URL_CHIRHO.sha256"
+BUILD_MANIFEST_PATH_CHIRHO="$OUTPUT_DIR_CHIRHO/rootfs-build-manifest-chirho.txt"
 
 # ============================================================================
 # Argument parsing
@@ -85,12 +96,88 @@ err_chirho() {
     exit 1
 }
 
+run_as_root_chirho() {
+    if [[ "$EUID" -eq 0 ]]; then
+        "$@"
+    elif command -v sudo &>/dev/null; then
+        sudo "$@"
+    else
+        err_chirho "root privileges are required for: $*"
+    fi
+}
+
+sha256_file_chirho() {
+    local file_chirho="$1"
+
+    if command -v sha256sum &>/dev/null; then
+        sha256sum "$file_chirho" | cut -d' ' -f1
+    elif command -v shasum &>/dev/null; then
+        shasum -a 256 "$file_chirho" | cut -d' ' -f1
+    else
+        err_chirho "sha256sum or shasum is required"
+    fi
+}
+
+cleanup_resources_chirho() {
+    if [[ "$NATIVE_PROC_MOUNTED_CHIRHO" -eq 1 ]]; then
+        run_as_root_chirho umount "$MOUNT_DIR_CHIRHO/proc" 2>/dev/null || true
+        NATIVE_PROC_MOUNTED_CHIRHO=0
+    fi
+    if [[ "$NATIVE_DEV_MOUNTED_CHIRHO" -eq 1 ]]; then
+        run_as_root_chirho umount "$MOUNT_DIR_CHIRHO/dev" 2>/dev/null || true
+        NATIVE_DEV_MOUNTED_CHIRHO=0
+    fi
+    if [[ "$NATIVE_IMAGE_MOUNTED_CHIRHO" -eq 1 ]]; then
+        run_as_root_chirho umount "$MOUNT_DIR_CHIRHO" 2>/dev/null || true
+        NATIVE_IMAGE_MOUNTED_CHIRHO=0
+    fi
+    if [[ -n "$ACTIVE_DOCKER_CID_CHIRHO" ]]; then
+        docker stop "$ACTIVE_DOCKER_CID_CHIRHO" >/dev/null 2>&1 || true
+        docker rm "$ACTIVE_DOCKER_CID_CHIRHO" >/dev/null 2>&1 || true
+        ACTIVE_DOCKER_CID_CHIRHO=""
+    fi
+}
+
+stage_rootfs_build_inputs_chirho() {
+    # Workflow: spec-chirho/workflows-chirho/x11-bringup-chirho.md
+    local root_chirho="$1"
+    local stage_dir_chirho="$root_chirho/tmp/lineluya-rootfs-build-chirho"
+
+    run_as_root_chirho mkdir -p "$stage_dir_chirho"
+    run_as_root_chirho cp \
+        "$ROOTFS_ASSET_DIR_CHIRHO/provision-alpine-rootfs-chirho.sh" \
+        "$ROOTFS_ASSET_DIR_CHIRHO/profile-chirho" \
+        "$ROOTFS_ASSET_DIR_CHIRHO/start-lineluya-desktop-chirho.sh" \
+        "$ROOTFS_ASSET_DIR_CHIRHO/xorg-chirho.conf" \
+        "$XGEARS_SOURCE_PATH_CHIRHO" \
+        "$stage_dir_chirho/"
+}
+
 check_deps_chirho() {
     local missing_chirho=0
 
     for cmd_chirho in curl tar; do
         if ! command -v "$cmd_chirho" &>/dev/null; then
             echo "ERROR: Required command '$cmd_chirho' not found."
+            missing_chirho=1
+        fi
+    done
+
+    if ! command -v sha256sum &>/dev/null \
+        && ! command -v shasum &>/dev/null; then
+        echo "ERROR: Required SHA-256 tool (sha256sum or shasum) not found."
+        missing_chirho=1
+    fi
+
+    for asset_chirho in \
+        "$ROOTFS_ASSET_DIR_CHIRHO/provision-alpine-rootfs-chirho.sh" \
+        "$ROOTFS_ASSET_DIR_CHIRHO/profile-chirho" \
+        "$ROOTFS_ASSET_DIR_CHIRHO/start-lineluya-desktop-chirho.sh" \
+        "$ROOTFS_ASSET_DIR_CHIRHO/xorg-chirho.conf" \
+        "$XGEARS_SOURCE_PATH_CHIRHO"
+    do
+        if [[ ! -s "$asset_chirho" ]]; then
+            echo "ERROR: Required rootfs source '$asset_chirho' is missing or empty."
             missing_chirho=1
         fi
     done
@@ -109,9 +196,10 @@ check_deps_chirho() {
         err_chirho "No ext4 formatter found (mkfs.ext4 / mke2fs). Install e2fsprogs."
     fi
 
-    # Need mount/umount (via sudo on macOS/Linux) or a Docker fallback
-    if ! command -v sudo &>/dev/null; then
-        log_chirho "WARNING: sudo not available — will attempt unsudo mount or Docker fallback."
+    if [[ "$EUID" -ne 0 ]] \
+        && ! command -v sudo &>/dev/null \
+        && ! command -v docker &>/dev/null; then
+        err_chirho "native rootfs build needs root privileges or sudo"
     fi
 
     if [[ $missing_chirho -ne 0 ]]; then
@@ -125,18 +213,30 @@ check_deps_chirho() {
 
 download_rootfs_chirho() {
     local tarball_path_chirho="$OUTPUT_DIR_CHIRHO/$TARBALL_NAME_CHIRHO"
+    local checksum_path_chirho="$tarball_path_chirho.sha256"
+    local expected_sha256_chirho
+    local actual_sha256_chirho
 
-    if [[ -f "$tarball_path_chirho" ]]; then
+    if [[ ! -f "$tarball_path_chirho" ]]; then
+        log_chirho "Downloading Alpine minirootfs ${ALPINE_VERSION_CHIRHO}.${ALPINE_MINOR_CHIRHO} (${ALPINE_ARCH_CHIRHO})..."
+        log_chirho "  URL: $DOWNLOAD_URL_CHIRHO"
+
+        curl -fSL --progress-bar -o "$tarball_path_chirho" "$DOWNLOAD_URL_CHIRHO"
+        log_chirho "Download complete: $(du -h "$tarball_path_chirho" | cut -f1)"
+    else
         log_chirho "Tarball already cached: $tarball_path_chirho"
-        return
     fi
 
-    log_chirho "Downloading Alpine minirootfs ${ALPINE_VERSION_CHIRHO}.${ALPINE_MINOR_CHIRHO} (${ALPINE_ARCH_CHIRHO})..."
-    log_chirho "  URL: $DOWNLOAD_URL_CHIRHO"
-
-    curl -fSL --progress-bar -o "$tarball_path_chirho" "$DOWNLOAD_URL_CHIRHO"
-
-    log_chirho "Download complete: $(du -h "$tarball_path_chirho" | cut -f1)"
+    curl -fsSL -o "$checksum_path_chirho" "$CHECKSUM_URL_CHIRHO"
+    expected_sha256_chirho="$(cut -d' ' -f1 "$checksum_path_chirho")"
+    actual_sha256_chirho="$(sha256_file_chirho "$tarball_path_chirho")"
+    if [[ ! "$expected_sha256_chirho" =~ ^[0-9a-f]{64}$ ]]; then
+        err_chirho "Alpine checksum response is malformed"
+    fi
+    if [[ "$actual_sha256_chirho" != "$expected_sha256_chirho" ]]; then
+        err_chirho "Alpine minirootfs SHA-256 mismatch: expected $expected_sha256_chirho, got $actual_sha256_chirho"
+    fi
+    log_chirho "Verified immutable base rootfs SHA-256: $actual_sha256_chirho"
 }
 
 # ============================================================================
@@ -168,7 +268,7 @@ create_empty_image_chirho() {
     # Format as ext4 with label (skipped when only Docker can format: the
     # container rebuilds and formats /tmp/disk.img itself, then copies it out)
     if [[ -n "$MKFS_CMD_CHIRHO" ]]; then
-        $MKFS_CMD_CHIRHO -F -L "lineluya-vblk-chirho" "$IMAGE_PATH_CHIRHO"
+        $MKFS_CMD_CHIRHO -F -L "$FILESYSTEM_LABEL_CHIRHO" "$IMAGE_PATH_CHIRHO"
         log_chirho "Image formatted: $IMAGE_PATH_CHIRHO"
     else
         log_chirho "Image placeholder created: $IMAGE_PATH_CHIRHO (formatted by Docker)"
@@ -180,24 +280,21 @@ create_empty_image_chirho() {
 # ============================================================================
 
 populate_image_chirho() {
+    # Workflow: spec-chirho/workflows-chirho/x11-bringup-chirho.md
     local tarball_path_chirho="$OUTPUT_DIR_CHIRHO/$TARBALL_NAME_CHIRHO"
 
     log_chirho "Mounting image and extracting Alpine rootfs..."
 
     mkdir -p "$MOUNT_DIR_CHIRHO"
 
-    # Docker is the canonical path on EVERY host, not just macOS: it is the
-    # only one that apk-installs the Lineluya package set (sqlite3, python3,
-    # dropbear, xorg-server, xterm, twm, mesa) into the rootfs.  The native
-    # Linux loop-mount path extracts the bare minirootfs and nothing else, so
-    # a disk built that way cannot run any program the kernel is tested
-    # against.  Prefer Docker; fall back to loop mount only without it.
+    # Both paths invoke the same target-Alpine provisioner. Docker remains the
+    # portable path for macOS; dlpChirho uses the host-direct loop-mount path.
     if command -v docker &>/dev/null || [[ "$(uname)" == "Darwin" ]]; then
+        ROOTFS_BUILD_MODE_CHIRHO="docker-amd64-chirho"
         populate_image_docker_chirho "$tarball_path_chirho"
     else
-        log_chirho "WARNING: Docker not found - falling back to native loop mount."
-        log_chirho "WARNING: the resulting image will hold the BARE minirootfs only:"
-        log_chirho "WARNING: no sqlite3 / python3 / dropbear / xorg-server / xterm / twm / mesa."
+        ROOTFS_BUILD_MODE_CHIRHO="native-host-direct-chirho"
+        log_chirho "Docker not found - using the native host-direct loop-mount path."
         populate_image_linux_chirho "$tarball_path_chirho"
     fi
 }
@@ -205,17 +302,39 @@ populate_image_chirho() {
 populate_image_linux_chirho() {
     local tarball_path_chirho="$1"
 
-    sudo mount -o loop "$IMAGE_PATH_CHIRHO" "$MOUNT_DIR_CHIRHO"
+    for native_cmd_chirho in mount umount chroot; do
+        command -v "$native_cmd_chirho" &>/dev/null \
+            || err_chirho "native rootfs build requires $native_cmd_chirho"
+    done
+
+    run_as_root_chirho mount -o loop "$IMAGE_PATH_CHIRHO" "$MOUNT_DIR_CHIRHO"
+    NATIVE_IMAGE_MOUNTED_CHIRHO=1
 
     # Extract rootfs
-    sudo tar xzf "$tarball_path_chirho" -C "$MOUNT_DIR_CHIRHO"
+    run_as_root_chirho tar xzf "$tarball_path_chirho" -C "$MOUNT_DIR_CHIRHO"
 
     # Configure the rootfs while mounted
     configure_rootfs_chirho "$MOUNT_DIR_CHIRHO"
+    stage_rootfs_build_inputs_chirho "$MOUNT_DIR_CHIRHO"
+
+    run_as_root_chirho mount --bind /dev "$MOUNT_DIR_CHIRHO/dev"
+    NATIVE_DEV_MOUNTED_CHIRHO=1
+    run_as_root_chirho mount -t proc proc "$MOUNT_DIR_CHIRHO/proc"
+    NATIVE_PROC_MOUNTED_CHIRHO=1
+    run_as_root_chirho env ALPINE_BRANCH_CHIRHO="$ALPINE_VERSION_CHIRHO" \
+        chroot "$MOUNT_DIR_CHIRHO" \
+        /bin/sh /tmp/lineluya-rootfs-build-chirho/provision-alpine-rootfs-chirho.sh
+    run_as_root_chirho rm -rf \
+        "$MOUNT_DIR_CHIRHO/tmp/lineluya-rootfs-build-chirho"
 
     # Sync and unmount
     sync
-    sudo umount "$MOUNT_DIR_CHIRHO"
+    run_as_root_chirho umount "$MOUNT_DIR_CHIRHO/proc"
+    NATIVE_PROC_MOUNTED_CHIRHO=0
+    run_as_root_chirho umount "$MOUNT_DIR_CHIRHO/dev"
+    NATIVE_DEV_MOUNTED_CHIRHO=0
+    run_as_root_chirho umount "$MOUNT_DIR_CHIRHO"
+    NATIVE_IMAGE_MOUNTED_CHIRHO=0
     rmdir "$MOUNT_DIR_CHIRHO" 2>/dev/null || true
 
     log_chirho "Image populated (Linux mount)."
@@ -244,12 +363,17 @@ populate_image_docker_chirho() {
         # wrote ZERO-LENGTH files for every --root install, so the disk looked
         # populated (paths present, /usr/bin full) while every binary was empty.
         # Matching the branch also keeps musl and the packages on one ABI.
-        cid_chirho=$(docker create --privileged \
+        cid_chirho=$(docker create --platform linux/amd64 --privileged \
             "alpine:${ALPINE_VERSION_CHIRHO}" sleep 3600)
+        ACTIVE_DOCKER_CID_CHIRHO="$cid_chirho"
         docker start "$cid_chirho" >/dev/null
 
-        # Pipe the rootfs tarball into the container via docker exec
-        cat "$abs_tarball_chirho" | docker exec -i "$cid_chirho" sh -c 'cat > /tmp/rootfs.tar.gz'
+        docker cp "$abs_tarball_chirho" "$cid_chirho:/tmp/rootfs.tar.gz" >/dev/null
+        docker exec "$cid_chirho" mkdir -p /tmp/lineluya-rootfs-build-chirho
+        docker cp "$ROOTFS_ASSET_DIR_CHIRHO/." \
+            "$cid_chirho:/tmp/lineluya-rootfs-build-chirho/" >/dev/null
+        docker cp "$XGEARS_SOURCE_PATH_CHIRHO" \
+            "$cid_chirho:/tmp/lineluya-rootfs-build-chirho/xgears_chirho.c" >/dev/null
 
         # Run the build
         # The rootfs build runs as a real script FILE inside the container.
@@ -263,21 +387,44 @@ populate_image_docker_chirho() {
 
 set -e
 
+image_mounted_chirho=0
+dev_mounted_chirho=0
+proc_mounted_chirho=0
+
+cleanup_inner_build_chirho() {
+    if [ "$proc_mounted_chirho" -eq 1 ]; then
+        umount /mnt-chirho/proc 2>/dev/null || true
+        proc_mounted_chirho=0
+    fi
+    if [ "$dev_mounted_chirho" -eq 1 ]; then
+        umount /mnt-chirho/dev 2>/dev/null || true
+        dev_mounted_chirho=0
+    fi
+    if [ "$image_mounted_chirho" -eq 1 ]; then
+        umount /mnt-chirho 2>/dev/null || true
+        image_mounted_chirho=0
+    fi
+}
+
+trap cleanup_inner_build_chirho EXIT
+
 # Create a fresh ext4 image inside the container
 # e2fsprogs-extra carries dumpe2fs, which the journal gate below depends on.
 apk add --no-cache e2fsprogs e2fsprogs-extra >/dev/null 2>&1
 truncate -s "${DISK_SIZE_INNER_CHIRHO:-512M}" /tmp/disk.img
-mkfs.ext4 -F -L "lineluya-vblk" /tmp/disk.img >/dev/null 2>&1
+mkfs.ext4 -F -L "${FILESYSTEM_LABEL_INNER_CHIRHO:-lineluya-chirho}" \
+    /tmp/disk.img >/dev/null 2>&1
 
 mkdir -p /mnt-chirho
 mount -o loop /tmp/disk.img /mnt-chirho
+image_mounted_chirho=1
 
 tar xzf /tmp/rootfs.tar.gz -C /mnt-chirho
 rm /tmp/rootfs.tar.gz
 
 # Ensure required directories
-for d in dev proc sys tmp run; do
-    mkdir -p /mnt-chirho/$d
+for dir_chirho in dev proc sys tmp run; do
+    mkdir -p "/mnt-chirho/$dir_chirho"
 done
 
 # /etc/inittab for BusyBox init
@@ -332,94 +479,25 @@ if [ -f /mnt-chirho/etc/shadow ]; then
     sed -i "s|^root:.*:|root:::|" /mnt-chirho/etc/shadow
 fi
 
-# ---------------------------------------------------------------
-# P5: Pre-install Alpine packages for Lineluya testing
-# These bypass the need for networking (apk) inside the kernel.
-# ---------------------------------------------------------------
-echo "[DOCKER] Installing P5 packages into rootfs..." >&2
-
-# Install packages into the rootfs using the HOST apk (which matches
-# the container arch).  We use --allow-untrusted because the host keys
-# may not match the target repo version. We use --arch x86_64 to ensure
-# we get x86_64 packages even if running on ARM64.
-# Use the HOST repos (same Alpine version as container) with x86_64 arch.
-HOST_VER=$(cat /etc/alpine-release | cut -d. -f1-2)
-mkdir -p /mnt-chirho/etc/apk/keys
-cp -a /etc/apk/keys/* /mnt-chirho/etc/apk/keys/ 2>/dev/null || true
-
-cat > /tmp/repos-chirho << REPOS_CHIRHO
-https://dl-cdn.alpinelinux.org/alpine/v${HOST_VER}/main
-https://dl-cdn.alpinelinux.org/alpine/v${HOST_VER}/community
-REPOS_CHIRHO
-
-apk --root /mnt-chirho --initdb \
-    --arch x86_64 \
-    --allow-untrusted \
-    --repositories-file /tmp/repos-chirho \
-    add \
-    sqlite sqlite-libs \
-    python3 \
-    dropbear dropbear-scp \
-    mpg123 \
-    twm \
-    xterm \
-    xorg-server \
-    xf86-video-fbdev \
-    xkeyboard-config xkbcomp \
-    mesa-gl mesa-dri-gallium \
-    mesa-demos \
-    >&2 2>&1
+# Run the same target-Alpine provisioner used by dlpChirho's host-direct path.
+# The builder container is explicitly amd64, so the chroot executes the exact
+# x86_64 compiler and target binaries that will ship in the image.
+cp -a /tmp/lineluya-rootfs-build-chirho \
+    /mnt-chirho/tmp/lineluya-rootfs-build-chirho
+mount --bind /dev /mnt-chirho/dev
+dev_mounted_chirho=1
+mount -t proc proc /mnt-chirho/proc
+proc_mounted_chirho=1
+env ALPINE_BRANCH_CHIRHO="${ALPINE_BRANCH_CHIRHO:-3.21}" \
+    chroot /mnt-chirho \
+    /bin/sh /tmp/lineluya-rootfs-build-chirho/provision-alpine-rootfs-chirho.sh
+umount /mnt-chirho/proc
+proc_mounted_chirho=0
+umount /mnt-chirho/dev
+dev_mounted_chirho=0
+rm -rf /mnt-chirho/tmp/lineluya-rootfs-build-chirho
 
 # loop.ko is injected after disk build via inject-loop-ko-chirho.sh
-
-# Verify installation.  A plain "ls" passes on a zero-length file, which is
-# exactly how a broken apk extraction slipped through as INSTALLED before, so
-# require every binary to be present AND non-empty and fail the build if not.
-verify_failed_chirho=0
-for bin_chirho in \
-    /usr/bin/sqlite3 \
-    /usr/bin/python3 \
-    /usr/bin/mpg123 \
-    /usr/bin/twm \
-    /usr/bin/xterm \
-    /usr/bin/Xorg \
-    /usr/libexec/Xorg \
-    /usr/sbin/dropbear \
-    /bin/busybox
-do
-    if [ -s "/mnt-chirho$bin_chirho" ]; then
-        echo "[DOCKER] $bin_chirho OK ($(wc -c < "/mnt-chirho$bin_chirho") bytes)" >&2
-    elif [ -e "/mnt-chirho$bin_chirho" ]; then
-        echo "[DOCKER] $bin_chirho EMPTY (0 bytes) - apk extraction failed" >&2
-        verify_failed_chirho=1
-    else
-        echo "[DOCKER] $bin_chirho MISSING" >&2
-        verify_failed_chirho=1
-    fi
-done
-
-if [ "$verify_failed_chirho" -ne 0 ]; then
-    echo "[DOCKER] FATAL: rootfs verification failed - refusing to ship this disk." >&2
-    umount /mnt-chirho 2>/dev/null
-    exit 1
-fi
-
-echo "[DOCKER] P5 packages installed into rootfs." >&2
-
-# Create /etc/profile to auto-start dropbear SSH on shell login
-cat > /mnt-chirho/etc/profile << 'PROFILE_CHIRHO'
-# For God so loved the world that he gave his only begotten Son,
-# that whoever believes in him should not perish but have eternal life. - John 3:16
-
-# Auto-start dropbear SSH server on port 2222
-if [ ! -f /tmp/.dropbear_started ]; then
-    dropbear -p 2222 -B -R 2>/dev/null &
-    touch /tmp/.dropbear_started
-    echo "[SSH] Dropbear started on port 2222"
-fi
-PROFILE_CHIRHO
-chmod 644 /mnt-chirho/etc/profile
-echo "[DOCKER] /etc/profile created (auto-starts dropbear)" >&2
 
 # Create a tiny test MP3 for HDA/mpg123 playback validation
 base64 -d > /mnt-chirho/root/test-tone-chirho.mp3 << 'MP3DATA_CHIRHO'
@@ -523,6 +601,7 @@ SQLTEST_CHIRHO
 
 sync
 umount /mnt-chirho
+image_mounted_chirho=0
 
 # A disk copied out with an unflushed journal carries needs_recovery, and a
 # kernel with no journal replay can then read stale or missing metadata.  This
@@ -539,11 +618,15 @@ fi
 echo "[DOCKER] rootfs populated and configured (journal clean)."
 
 echo "[DOCKER] Build complete."
+trap - EXIT
 BUILD_ROOTFS_SCRIPT_CHIRHO
 
         docker cp "$script_path_chirho" \
             "$cid_chirho:/tmp/build-rootfs-chirho.sh" >/dev/null
-        docker exec -e DISK_SIZE_INNER_CHIRHO="$DISK_SIZE_CHIRHO" \
+        docker exec \
+            -e DISK_SIZE_INNER_CHIRHO="$DISK_SIZE_CHIRHO" \
+            -e FILESYSTEM_LABEL_INNER_CHIRHO="$FILESYSTEM_LABEL_CHIRHO" \
+            -e ALPINE_BRANCH_CHIRHO="$ALPINE_VERSION_CHIRHO" \
             "$cid_chirho" /bin/sh /tmp/build-rootfs-chirho.sh
         # Extract the finished image via docker cp (not pipe/cat which corrupts on macOS)
         log_chirho "Extracting disk image from container via docker cp..."
@@ -552,6 +635,7 @@ BUILD_ROOTFS_SCRIPT_CHIRHO
         # Clean up container
         docker stop "$cid_chirho" >/dev/null 2>&1 || true
         docker rm "$cid_chirho" >/dev/null 2>&1 || true
+        ACTIVE_DOCKER_CID_CHIRHO=""
 
         log_chirho "Image populated via Docker ($(du -h "$abs_image_chirho" | cut -f1))."
     else
@@ -574,8 +658,13 @@ configure_rootfs_chirho() {
     local root_chirho="$1"
     local sudo_prefix_chirho=""
 
-    # Use sudo if the target is owned by root
-    if [[ -d "$root_chirho/bin" ]] && [[ "$(stat -f '%u' "$root_chirho/bin" 2>/dev/null || stat -c '%u' "$root_chirho/bin" 2>/dev/null)" == "0" ]]; then
+    # Use sudo only when the caller is not already root and the target is
+    # root-owned. dlpChirho invokes this script directly as root.
+    if [[ "$EUID" -ne 0 ]] \
+        && [[ -d "$root_chirho/bin" ]] \
+        && [[ "$(stat -f '%u' "$root_chirho/bin" 2>/dev/null || stat -c '%u' "$root_chirho/bin" 2>/dev/null)" == "0" ]]; then
+        command -v sudo &>/dev/null \
+            || err_chirho "rootfs configuration needs sudo for $root_chirho"
         sudo_prefix_chirho="sudo"
     fi
 
@@ -654,6 +743,42 @@ RESOLV_EOF_CHIRHO
 # ============================================================================
 
 print_summary_chirho() {
+    local tarball_path_chirho="$OUTPUT_DIR_CHIRHO/$TARBALL_NAME_CHIRHO"
+    local source_revision_chirho
+    local source_dirty_chirho
+    local base_rootfs_sha256_chirho
+    local final_image_sha256_chirho
+    local xgears_source_sha256_chirho
+
+    if git -C "$PROJECT_DIR_CHIRHO" rev-parse --is-inside-work-tree \
+        >/dev/null 2>&1; then
+        source_revision_chirho="$(git -C "$PROJECT_DIR_CHIRHO" rev-parse HEAD)"
+        if git -C "$PROJECT_DIR_CHIRHO" diff --quiet \
+            && git -C "$PROJECT_DIR_CHIRHO" diff --cached --quiet \
+            && [[ -z "$(git -C "$PROJECT_DIR_CHIRHO" ls-files --others --exclude-standard)" ]]; then
+            source_dirty_chirho="false"
+        else
+            source_dirty_chirho="true"
+        fi
+    else
+        source_revision_chirho="unknown-chirho"
+        source_dirty_chirho="unknown-chirho"
+    fi
+    base_rootfs_sha256_chirho="$(sha256_file_chirho "$tarball_path_chirho")"
+    final_image_sha256_chirho="$(sha256_file_chirho "$IMAGE_PATH_CHIRHO")"
+    xgears_source_sha256_chirho="$(sha256_file_chirho "$XGEARS_SOURCE_PATH_CHIRHO")"
+
+    {
+        echo "source_revision_chirho=$source_revision_chirho"
+        echo "source_dirty_chirho=$source_dirty_chirho"
+        echo "rootfs_build_mode_chirho=$ROOTFS_BUILD_MODE_CHIRHO"
+        echo "alpine_release_chirho=${ALPINE_VERSION_CHIRHO}.${ALPINE_MINOR_CHIRHO}"
+        echo "alpine_arch_chirho=$ALPINE_ARCH_CHIRHO"
+        echo "base_rootfs_sha256_chirho=$base_rootfs_sha256_chirho"
+        echo "xgears_source_sha256_chirho=$xgears_source_sha256_chirho"
+        echo "final_image_sha256_chirho=$final_image_sha256_chirho"
+    } > "$BUILD_MANIFEST_PATH_CHIRHO"
+
     echo ""
     echo "============================================================"
     echo "  Lineluya Alpine VirtIO-blk Disk Image (P2-005)"
@@ -663,12 +788,15 @@ print_summary_chirho() {
     echo "  Architecture:     $ALPINE_ARCH_CHIRHO"
     echo "  Image size:       $DISK_SIZE_CHIRHO"
     echo "  Image path:       $IMAGE_PATH_CHIRHO"
+    echo "  Build manifest:   $BUILD_MANIFEST_PATH_CHIRHO"
+    echo "  Base SHA-256:     $base_rootfs_sha256_chirho"
+    echo "  Image SHA-256:    $final_image_sha256_chirho"
     echo "  Root device:      /dev/vda (VirtIO-blk)"
     echo "  Hostname:         lineluya-chirho"
     echo ""
     echo "  Pre-installed: sqlite3, python3, dropbear, mpg123,"
-    echo "                 xorg-server, xf86-video-fbdev, xterm, twm, mesa"
-    echo "                 (Docker path only - a loop-mount build has none of these)"
+    echo "                 xorg-server, xf86-video-fbdev, xterm, twm, mesa,"
+    echo "                 repository-built /usr/bin/xgears-chirho"
     echo ""
     echo "  QEMU usage:"
     echo "    qemu-system-x86_64 \\"
@@ -701,4 +829,5 @@ main_chirho() {
     print_summary_chirho
 }
 
+trap cleanup_resources_chirho EXIT
 main_chirho "$@"

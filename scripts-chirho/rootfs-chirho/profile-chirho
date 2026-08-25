@@ -1,0 +1,28 @@
+# For God so loved the world, that he gave his only begotten Son, that whosoever
+# believeth in him should not perish, but have everlasting life. — John 3:16 (KJV)
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PS1='lineluya# '
+export HOME=/root
+export SHELL=/bin/sh
+export TERM=linux
+export DISPLAY=:0
+export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib
+
+mkdir -p /var/run /var/log /tmp/.X11-unix
+
+DROPBEAR_GUARD_CHIRHO=/tmp/.dropbear-started-chirho
+if mkdir "$DROPBEAR_GUARD_CHIRHO" 2>/dev/null; then
+    if /usr/sbin/dropbear -R -E -B -p 2222; then
+        echo "[SSH] Dropbear started on guest port 2222"
+    else
+        echo "[SSH] FATAL: Dropbear failed to start" >&2
+        rmdir "$DROPBEAR_GUARD_CHIRHO" 2>/dev/null || true
+    fi
+fi
+
+if [ -x /usr/local/sbin/start-lineluya-desktop-chirho.sh ]; then
+    /usr/local/sbin/start-lineluya-desktop-chirho.sh &
+else
+    echo "[DESKTOP] FATAL: rootfs launcher is missing" >&2
+fi

@@ -12,7 +12,6 @@
 
 #define WINDOW_WIDTH_CHIRHO 400U
 #define WINDOW_HEIGHT_CHIRHO 300U
-#define FRAME_NS_CHIRHO 16666666ULL
 #define FPS_REPORT_NS_CHIRHO 2000000000ULL
 #define ROTATION_SAMPLES_CHIRHO 64
 #define FIXED_SCALE_CHIRHO 1024
@@ -255,9 +254,6 @@ static void draw_rotating_rectangle_chirho(XgearsStateChirho *state_chirho) {
         &fill_rectangles_chirho[1]
     );
 
-    /* Flush every 4th frame to batch X11 ops into fewer writev calls */
-    if (state_chirho->total_frames_chirho % 4 == 3) {
-}
 }
 
 static void report_fps_if_needed_chirho(XgearsStateChirho *state_chirho) {
@@ -311,14 +307,6 @@ static void report_frame_count_chirho(XgearsStateChirho *state_chirho) {
     }
 }
 
-static void sleep_for_next_frame_chirho(void) {
-    struct timespec sleep_time_chirho;
-
-    sleep_time_chirho.tv_sec = 0;
-    sleep_time_chirho.tv_nsec = (long) FRAME_NS_CHIRHO;
-    nanosleep(&sleep_time_chirho, NULL);
-}
-
 static void flush_if_needed_chirho(XgearsStateChirho *state_chirho) {
     if (state_chirho->connection_chirho == NULL) {
         return;
@@ -351,6 +339,53 @@ static xcb_screen_t *find_screen_chirho(
 
     iterator_chirho = xcb_setup_roots_iterator(setup_chirho);
     return iterator_chirho.data;
+}
+
+static int probe_x_server_chirho(int require_window_manager_chirho) {
+    /* Workflow: spec-chirho/workflows-chirho/x11-bringup-chirho.md */
+    xcb_connection_t *connection_chirho;
+    xcb_screen_t *screen_chirho;
+    int preferred_screen_chirho;
+    int ready_chirho;
+
+    preferred_screen_chirho = 0;
+    connection_chirho = xcb_connect(NULL, &preferred_screen_chirho);
+    if (connection_chirho == NULL
+        || xcb_connection_has_error(connection_chirho) != 0) {
+        if (connection_chirho != NULL) {
+            xcb_disconnect(connection_chirho);
+        }
+        return 1;
+    }
+
+    screen_chirho = find_screen_chirho(connection_chirho, preferred_screen_chirho);
+    if (screen_chirho == NULL) {
+        xcb_disconnect(connection_chirho);
+        return 1;
+    }
+
+    ready_chirho = 1;
+    if (require_window_manager_chirho) {
+        xcb_get_window_attributes_cookie_t cookie_chirho;
+        xcb_get_window_attributes_reply_t *reply_chirho;
+
+        cookie_chirho = xcb_get_window_attributes(
+            connection_chirho,
+            screen_chirho->root
+        );
+        reply_chirho = xcb_get_window_attributes_reply(
+            connection_chirho,
+            cookie_chirho,
+            NULL
+        );
+        ready_chirho = reply_chirho != NULL
+            && (reply_chirho->all_event_masks
+                & XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT) != 0;
+        free(reply_chirho);
+    }
+
+    xcb_disconnect(connection_chirho);
+    return ready_chirho ? 0 : 1;
 }
 
 static int init_xgears_state_chirho(XgearsStateChirho *state_chirho) {
@@ -527,8 +562,24 @@ static void destroy_xgears_state_chirho(XgearsStateChirho *state_chirho) {
     state_chirho->screen_chirho = NULL;
 }
 
-int main(void) {
+int main(int argc_chirho, char **argv_chirho) {
     XgearsStateChirho state_chirho;
+
+    if (argc_chirho == 2
+        && strcmp(argv_chirho[1], "--probe-server-chirho") == 0) {
+        return probe_x_server_chirho(0);
+    }
+    if (argc_chirho == 2
+        && strcmp(argv_chirho[1], "--probe-window-manager-chirho") == 0) {
+        return probe_x_server_chirho(1);
+    }
+    if (argc_chirho != 1) {
+        fprintf(
+            stderr,
+            "usage: xgears-chirho [--probe-server-chirho|--probe-window-manager-chirho]\n"
+        );
+        return 2;
+    }
 
     if (!init_xgears_state_chirho(&state_chirho)) {
         return 1;
