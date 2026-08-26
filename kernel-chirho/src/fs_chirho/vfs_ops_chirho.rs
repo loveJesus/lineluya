@@ -446,15 +446,7 @@ fn clone_fs_data_chirho(
 pub fn resolve_path_chirho(
     path_chirho: &str,
 ) -> Result<(Arc<Mutex<InodeChirho>>, &'static dyn FileOpsChirho), i64> {
-    let result_chirho = resolve_path_depth_chirho(path_chirho, 0);
-    if result_chirho.is_err() && (path_chirho.contains("sbin") || path_chirho.contains("dropbear")) {
-        crate::serial_println_chirho!(
-            "[VFS] resolve_path FAILED for '{}': err={}",
-            path_chirho,
-            result_chirho.as_ref().err().unwrap_or(&0)
-        );
-    }
-    result_chirho
+    resolve_path_depth_chirho(path_chirho, 0)
 }
 
 /// Linux ELOOP — too many levels of symbolic links.
@@ -486,23 +478,12 @@ fn resolve_path_depth_chirho(
         .filter(|s_chirho| !s_chirho.is_empty())
         .collect();
 
-    let debug_resolve_chirho = path_chirho.contains("dropbear");
-
     // Check mount points -- find the longest matching mount
     let mut mount_prefix_len_chirho: usize = 0;
     let mut current_sb_chirho: Option<Arc<Mutex<SuperblockChirho>>> = None;
 
     {
         let mounts_chirho = MOUNT_TABLE_CHIRHO.lock();
-        if debug_resolve_chirho {
-            crate::serial_debug_chirho!(
-                "[VFS-DBG] mount table has {} entries for path '{}'",
-                mounts_chirho.len(), path_chirho
-            );
-            for (i_chirho, m_chirho) in mounts_chirho.iter().enumerate() {
-                crate::serial_debug_chirho!("[VFS-DBG]   mount[{}] = '{}'", i_chirho, m_chirho.path_chirho);
-            }
-        }
         for mount_chirho in mounts_chirho.iter() {
             let mount_path_chirho = &mount_chirho.path_chirho;
             // Special case: "/" matches all paths but is the shortest
@@ -526,13 +507,6 @@ fn resolve_path_depth_chirho(
                 current_sb_chirho = Some(mount_chirho.superblock_chirho.clone());
             }
         }
-    }
-
-    if debug_resolve_chirho {
-        crate::serial_debug_chirho!(
-            "[VFS-DBG] mount walk result: prefix_len={}, has_sb={}",
-            mount_prefix_len_chirho, current_sb_chirho.is_some()
-        );
     }
 
     // Determine starting inode and which components to walk
@@ -617,13 +591,6 @@ fn resolve_path_depth_chirho(
     for (idx_chirho, component_chirho) in remaining_components_chirho.iter().enumerate() {
         let is_last_chirho = idx_chirho == remaining_components_chirho.len() - 1;
 
-        if debug_resolve_chirho {
-            crate::serial_debug_chirho!(
-                "[VFS-DBG] resolve '{}': walking component [{}]='{}' (is_last={})",
-                path_chirho, idx_chirho, component_chirho, is_last_chirho,
-            );
-        }
-
         // Try live tmpfs walk first
         let live_child_chirho: Option<Arc<Mutex<InodeChirho>>> = {
             let inode_guard_chirho = current_inode_chirho.lock();
@@ -652,13 +619,6 @@ fn resolve_path_depth_chirho(
         };
 
         if let Some(child_arc_chirho) = live_child_chirho {
-            if debug_resolve_chirho {
-                crate::serial_debug_chirho!(
-                    "[VFS-DBG] tmpfs live walk FOUND '{}' (mode={:#o})",
-                    component_chirho,
-                    child_arc_chirho.lock().mode_chirho
-                );
-            }
             // Check if this child is a mount point
             if !is_last_chirho {
                 let mut child_path_chirho = String::from("/");
@@ -753,15 +713,6 @@ fn resolve_path_depth_chirho(
                 Ok(child_inode_chirho) => {
                     // Symlink following: if the inode is a symlink, read
                     // the target and recursively resolve it.
-                    // Trace: log when a symlink IS or ISN'T detected
-                    if component_chirho.contains("readline") || component_chirho.contains("ncurses") || component_chirho.contains("libmd") || component_chirho.contains("libbsd") || component_chirho.contains("libbrotli") {
-                        crate::serial_println_chirho!(
-                            "[VFS-SYMLINK-CHECK] component='{}' mode={:#o} is_symlink={}",
-                            component_chirho,
-                            child_inode_chirho.mode_chirho,
-                            is_symlink_chirho(child_inode_chirho.mode_chirho),
-                        );
-                    }
                     if is_symlink_chirho(child_inode_chirho.mode_chirho) {
                         // S_IFLNK
                         if let Ok(target_chirho) = child_inode_chirho.ops_chirho.readlink_chirho(&child_inode_chirho) {
@@ -849,12 +800,6 @@ fn resolve_path_depth_chirho(
                                     }
                                 }
                             }
-                            if debug_resolve_chirho && result_chirho.is_none() {
-                                crate::serial_debug_chirho!(
-                                    "[VFS-DBG] ext4 fallback: no ext4 root mount found ({} mounts checked)",
-                                    mounts_chirho.len()
-                                );
-                            }
                             result_chirho
                         };
                         if let Some(ext4_inode_chirho) = ext4_root_chirho {
@@ -863,12 +808,6 @@ fn resolve_path_depth_chirho(
                                 ig_chirho.ops_chirho.lookup_chirho(&ig_chirho, component_chirho)
                             };
                             if let Ok(child_chirho) = ext4_lookup_chirho {
-                                if debug_resolve_chirho {
-                                    crate::serial_debug_chirho!(
-                                        "[VFS-DBG] ext4 fallback found '{}'",
-                                        component_chirho
-                                    );
-                                }
                                 let fs_data_clone_chirho = clone_fs_data_chirho(&child_chirho.fs_data_chirho);
                                 current_inode_chirho = Arc::new(Mutex::new(InodeChirho {
                                     ino_chirho: child_chirho.ino_chirho,
@@ -1214,16 +1153,7 @@ pub fn sys_openat_chirho(
         raw_pathname_chirho
     };
 
-    // Log which file is being opened.
     crate::log_fs_chirho!("OPEN {}", &pathname_chirho);
-    // Verbose logging for PID 4+ (SSH session children)
-    {
-        let open_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if open_pid_chirho >= 4 {
-            crate::serial_println_chirho!("[OPEN-PID{}] {}", open_pid_chirho, &pathname_chirho);
-        }
-    }
 
     // Legacy in-memory compatibility for auth and dynamic-loader lookup.
     // Desktop launch policy and Xorg configuration deliberately fall through
@@ -1565,17 +1495,6 @@ pub fn alloc_and_insert_fd_chirho(
         None
     };
 
-    // Trace fd=9+ allocation for PID 3 (pipe relay debug)
-    if let Some(fd_chirho) = task_result_chirho {
-        let trace_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if trace_pid_chirho == 3 && fd_chirho >= 9 {
-            crate::serial_println_chirho!(
-                "[FD-ALLOC] pid=3 fd={} allocated in per-process table",
-                fd_chirho,
-            );
-        }
-    }
     if let Some(fd_chirho) = task_result_chirho {
         // Mirror into global table ONLY for PID 0/1 (init/shell).
         // For PID >= 2, the per-process table is the sole owner of the Arc.
@@ -1634,36 +1553,13 @@ pub fn alloc_and_insert_fd_chirho(
 ///
 /// A2-PROC-003: Per-process close.
 pub fn close_fd_chirho(fd_chirho: u64) -> i64 {
-    // Trace ALL close(9) calls to find who removes PID 3's pipe fd
-    if fd_chirho == 9 {
-        let (trace_pid_chirho, table_ptr_chirho) = crate::task_chirho::current_task_chirho()
-            .map(|t| {
-                let tg = t.lock();
-                let ptr = tg.fd_table_chirho.as_ref()
-                    .map(|fdt| fdt.fds_chirho.as_ptr() as u64).unwrap_or(0);
-                (tg.pid_chirho, ptr)
-            }).unwrap_or((0, 0));
-        crate::serial_println_chirho!(
-            "[CLOSE9] pid={} closing fd=9 table_ptr={:#x}",
-            trace_pid_chirho, table_ptr_chirho,
-        );
-    }
     let mut closed_in_task_chirho = false;
     // Close in current task's per-process table first.
     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
         let mut task_guard_chirho = task_arc_chirho.lock();
-        let pid_close_chirho = task_guard_chirho.pid_chirho;
         if let Some(ref mut fd_table_chirho) = task_guard_chirho.fd_table_chirho {
-            let had_fd_chirho = fd_table_chirho.get_chirho(fd_chirho as usize).is_some();
             if fd_table_chirho.close_chirho(fd_chirho as usize).is_ok() {
                 closed_in_task_chirho = true;
-            }
-            // Diagnostic: trace PID 2 close(7) to debug heap corruption
-            if false && pid_close_chirho == 2 && fd_chirho >= 5 {
-                crate::serial_println_chirho!(
-                    "[CLOSE-DIAG] pid=2 close({}) had_fd={} closed_ok={}",
-                    fd_chirho, had_fd_chirho, closed_in_task_chirho,
-                );
             }
         }
     }
@@ -1844,20 +1740,6 @@ pub fn sys_read_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho: 
                         return -EFAULT_CHIRHO;
                     }
                 }
-                // ELF header read logging (disabled — was causing kernel heap pressure)
-                if false && n_chirho >= 64 && kernel_buf_chirho[0] == 0x7f && kernel_buf_chirho[1] == b'E' {
-                    let rd_pid_chirho = crate::task_chirho::current_task_chirho()
-                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                    if rd_pid_chirho >= 7 {
-                        let e_type_chirho = u16::from_le_bytes([kernel_buf_chirho[16], kernel_buf_chirho[17]]);
-                        let e_phnum_chirho = u16::from_le_bytes([kernel_buf_chirho[56], kernel_buf_chirho[57]]);
-                        let e_phoff_chirho = u64::from_le_bytes(kernel_buf_chirho[32..40].try_into().unwrap_or([0;8]));
-                        crate::serial_println_chirho!(
-                            "[READ-ELF] pid={} fd={} n={} e_type={} e_phoff={:#x} e_phnum={}",
-                            rd_pid_chirho, fd_chirho, n_chirho, e_type_chirho, e_phoff_chirho, e_phnum_chirho,
-                        );
-                    }
-                }
                 return n_chirho as i64;
             }
             Err(-11) if is_blocking_pipe_chirho && retry_count_chirho < MAX_BLOCKING_RETRIES_CHIRHO => {
@@ -1909,19 +1791,6 @@ pub fn sys_write_real_chirho(fd_chirho: u64, buf_addr_chirho: u64, count_chirho:
     // Write through the file ops
     let bytes_written_chirho = {
         let mut file_guard_chirho = file_arc_chirho.lock();
-        // Diagnostic: trace write dispatch for PID 13 fd=4
-        {
-            let wr_pid_chirho = crate::task_chirho::current_task_chirho()
-                .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
-            if wr_pid_chirho == 13 && fd_chirho == 4 {
-                let inode_mode_chirho = file_guard_chirho.inode_chirho.lock().mode_chirho;
-                crate::serial_println_chirho!(
-                    "[WRITE-REAL] pid=13 fd=4 count={} inode_mode={:#o} flags={:#x}",
-                    capped_write_chirho, inode_mode_chirho, file_guard_chirho.flags_chirho,
-                );
-            }
-        }
-
         // O_APPEND: seek to end of file before writing
         if file_guard_chirho.flags_chirho & crate::vfs_chirho::O_APPEND_CHIRHO != 0 {
             let size_chirho = file_guard_chirho.inode_chirho.lock().size_chirho;
