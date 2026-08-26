@@ -761,9 +761,11 @@ pub fn sys_sigaltstack_chirho(_ss_chirho: u64, _old_ss_chirho: u64) -> i64 {
 /// * `parent_pid_chirho` — PID of the parent process to receive SIGCHLD.
 /// * `child_pid_chirho`  — PID of the exiting child (for the SignalInfo sender field).
 pub fn deliver_sigchld_chirho(parent_pid_chirho: u64, child_pid_chirho: u64) {
-    if parent_pid_chirho == 0 {
-        return; // init has no parent to notify
-    }
+    // NO ppid==0 sentinel. PID 0 is a REAL task here — it is the user login
+    // shell — so treating 0 as "no parent" silently dropped SIGCHLD for every
+    // child the boot shell forked, which is why it never reaped them and why
+    // the re-exec workaround existed to fake progress. The lookup below
+    // already handles a genuinely absent parent.
 
     if let Some(parent_arc_chirho) = find_task_by_pid_chirho(parent_pid_chirho) {
         let mut parent_chirho = parent_arc_chirho.lock();

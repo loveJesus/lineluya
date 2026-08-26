@@ -1183,7 +1183,7 @@ pub static PRNG_STATE_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
 /// PID of the process that called listen() (0 = no daemon yet).
 /// The shell never calls listen(); dropbear does. Storing the PID lets us
-/// distinguish the two even though both have ppid=0 from exit_group re-exec.
+/// distinguish the two when both report ppid=0.
 static DAEMON_LISTENER_PID_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
 /// Called from sys_listen to record which PID is the daemon.
@@ -3318,6 +3318,13 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
         code_chirho
     );
 
+    // Release the task Arc BEFORE scheduling away. This function never
+    // returns, so its frame never unwinds and this local would never drop:
+    // reap can remove the task from TASK_LIST and CURRENT_TASK can move on,
+    // yet the suspended Arc would keep the TaskChirho allocation alive
+    // forever. pid/ppid are already extracted above.
+    drop(task_arc_chirho);
+
     // Remove from scheduler run queue.
     crate::scheduler_chirho::remove_task_chirho(pid_chirho);
     remove_epoll_entries_for_pid_chirho(pid_chirho);
@@ -3332,50 +3339,31 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
     // instead of polling.  (A2-PROC-001: WaitQueueChirho replaces poll loop.)
     crate::process_chirho::wake_child_exit_waitqueue_chirho();
 
-    // Yield to parent (real fork) or re-launch shell (fallback).
+    // Single zombie handoff: give the CPU to whoever can make progress. The
+    // task is already dequeued with SIGCHLD delivered, so nothing resumes it.
     crate::serial_debug_chirho!("[SYSCALL] exit: PID={} zombie, yielding", pid_chirho);
     crate::scheduler_chirho::yield_current_chirho();
-    crate::serial_println_chirho!("[SYSCALL] exit: no parent, re-launching shell");
 
-    // Re-load BusyBox as ash shell
-    let shell_argv_chirho = [
-        alloc::string::String::from("sh"),
-    ];
-    let shell_envp_chirho = [
-        alloc::string::String::from("HOME=/root"),
-        alloc::string::String::from("PATH=/bin:/sbin:/usr/bin:/usr/sbin"),
-        alloc::string::String::from("TERM=linux"),
-        alloc::string::String::from("PS1=lineluya# "),
-        alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
-        alloc::string::String::from("SHELL=/bin/sh"),
-        alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
-        alloc::string::String::from("PYTHONHOME=/usr"),
-        alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
-    ];
-    let loaded_chirho = match crate::exec_chirho::load_elf_into_memory_chirho(
-        crate::exec_chirho::BUSYBOX_ELF_CHIRHO
-    ) {
-        Ok(l_chirho) => l_chirho,
-        Err(_e_chirho) => {
-            crate::serial_println_chirho!(
-                "[SYSCALL] exit: failed to reload shell ELF — halting"
-            );
-            loop { x86_64::instructions::hlt(); }
-        }
-    };
-
-    crate::syscall_chirho::set_brk_chirho(loaded_chirho.brk_addr_chirho);
-
-    let user_rsp_chirho = crate::exec_chirho::setup_user_stack_with_args_chirho(
-        &loaded_chirho,
-        &shell_argv_chirho,
-        &shell_envp_chirho,
+    // Control must never arrive here: a Zombie continuation was resumed, or
+    // scheduler state vanished. Say so ONCE, unconditionally, before halting.
+    // A silent HLT makes a violated invariant indistinguishable from any other
+    // hang — this line is the loud failing input for the nonreturning
+    // contract, not a temporary trace.
+    crate::serial_println_chirho!(
+        "[EXIT-INVARIANT] PID={} resumed after yield_current_chirho on the exit path",
+        pid_chirho
     );
-
-    crate::exec_chirho::jump_to_userspace_chirho(
-        loaded_chirho.entry_point_chirho,
-        user_rsp_chirho,
-    );
+    // The task is a zombie: dequeued, SIGCHLD delivered, parent woken. It must
+    // never execute again, so halt if control ever comes back here.
+    //
+    // What stood here re-loaded BusyBox and jumped to userspace. Its own
+    // message read "no parent", but nothing ever tested for a parent — it ran
+    // after EVERY exit that returned from the yield above, resurrecting a shell
+    // in the corpse's context and masking whatever allowed a zombie to be
+    // scheduled at all.
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 /// `exit_group(2)` implementation (A2-PROC-006).
@@ -3383,8 +3371,8 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
 /// Terminates **all** threads in the current thread group (same `tgid_chirho`).
 /// For each thread: sets it to `ZombieChirho`, records the exit code, and
 /// removes it from the scheduler run queue.  SIGCHLD is delivered to the
-/// parent of each terminated thread.  The current workaround then re-execs
-/// the shell in the exiting task's context instead of returning to `wait4`.
+/// parent of each terminated thread, which then reaps the zombie through
+/// `wait4`.  Every user task takes that one path regardless of its PID.
 fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
     crate::serial_debug_chirho!(
         "[SYSCALL] exit_group({}) -- terminating thread group (A2-PROC-006)",
@@ -3460,110 +3448,44 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, pid_chirho);
     }
 
-    // For daemon children (PID >= 3 — dropbear SSH exec, etc.):
-    // Just yield to let the parent (dropbear) read pipe output and
-    // handle the child exit via wait4. Do NOT kill the parent or
-    // re-exec a shell — that destroys the SSH pipeline.
-    let caller_pid_chirho = threads_chirho.first().map(|&(p, _)| p).unwrap_or(0);
-    if caller_pid_chirho >= 3 {
-        crate::serial_println_chirho!(
-            "[SYSCALL] exit_group: PID {} is daemon child — zombie, waiting for parent reap",
-            caller_pid_chirho
-        );
-        // Wake parent in case it's blocked on wait4 or select.
-        crate::process_chirho::wake_child_exit_waitqueue_chirho();
-        // Do NOT remove from TASK_LIST — the zombie must stay so the
-        // parent can call waitpid(-1, WNOHANG) to reap it and decrement
-        // its internal connection counter. Without this, dropbear's
-        // SIGCHLD handler gets -ECHILD, never decrements maxconns,
-        // and stops forking after 5 sessions.
-        crate::scheduler_chirho::schedule_chirho();
-        loop {
-            x86_64::instructions::hlt();
-        }
-    }
+    // Release the thread-list buffer BEFORE scheduling away, for the same
+    // reason: this path never returns, so the frame never unwinds and every
+    // exit_group would permanently leak this Vec's heap allocation. Separate
+    // concern from fd and page-table retirement; it belongs to bounded growth.
+    drop(threads_chirho);
 
-    // Shell re-exec workaround for PID 1/2 (boot shell): kill the parent
-    // shell and re-exec a fresh shell in the exiting task's context.
-    let parent_pid_chirho = threads_chirho.first().map(|&(_, pp)| pp).unwrap_or(0);
-    crate::scheduler_chirho::remove_task_chirho(parent_pid_chirho);
-    if let Some(t_chirho) = crate::task_chirho::find_task_by_pid_chirho(parent_pid_chirho) {
-        crate::process_chirho::exit_task_and_retire_descriptors_chirho(&t_chirho, 0);
-    }
-    let mut displaced_address_space_chirho = None;
-    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-        let mut task_chirho = task_arc_chirho.lock();
-        let pid_chirho = task_chirho.pid_chirho;
-        task_chirho.sid_chirho = pid_chirho;
-        task_chirho.pgid_chirho = pid_chirho;
-        task_chirho.ppid_chirho = 0;
-        task_chirho.state_chirho = crate::task_chirho::TaskStateChirho::RunningChirho;
-        task_chirho.exit_code_chirho = 0;
-        // DETACH, never assign None outright. None means exactly one thing —
-        // "intentionally runs on the boot PML4" — which the CR3 switch below
-        // does make true, but the displaced handle still owns a real tree.
-        // Dropping it here leaked that tree on every re-exec, the same leak
-        // class this slice closed everywhere else.
-        displaced_address_space_chirho = task_chirho.page_table_root_chirho.take();
-    }
-    // Switch back to boot PML4 before exec_init
-    let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
-    if boot_pml4_chirho.as_u64() != 0 {
-        unsafe { crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho); }
-    }
-    // CR3 is off the old tree and no task lock is held, so the displaced space
-    // can be retired. retire_chirho independently re-reads CR3 and refuses an
-    // active root, so this ordering is enforced by the API, not by this comment.
-    if let Some(old_address_space_chirho) = displaced_address_space_chirho {
-        if let Err(retire_error_chirho) = old_address_space_chirho.retire_chirho() {
-            crate::serial_println_chirho!(
-                "[EXIT-GROUP] displaced address space not retired: {:?}",
-                retire_error_chirho.reason_chirho,
-            );
-        }
-    }
-    crate::exec_chirho::exec_init_chirho();
-
-    // Unreachable — exec_init jumps to userspace. Fallback below is
-    // for the case where exec_init returns (shouldn't happen).
-    let shell_argv_chirho = [
-        alloc::string::String::from("sh"),
-    ];
-    let shell_envp_chirho = [
-        alloc::string::String::from("HOME=/root"),
-        alloc::string::String::from("PATH=/bin:/sbin:/usr/bin:/usr/sbin"),
-        alloc::string::String::from("TERM=linux"),
-        alloc::string::String::from("PS1=lineluya# "),
-        alloc::string::String::from("LD_LIBRARY_PATH=/lib:/usr/lib"),
-        alloc::string::String::from("SHELL=/bin/sh"),
-        alloc::string::String::from("PYTHONDONTWRITEBYTECODE=1"),
-        alloc::string::String::from("PYTHONHOME=/usr"),
-        alloc::string::String::from("PYTHONPATH=/usr/lib/python3.12"),
-    ];
-    let loaded_chirho = match crate::exec_chirho::load_elf_into_memory_chirho(
-        crate::exec_chirho::BUSYBOX_ELF_CHIRHO
-    ) {
-        Ok(l_chirho) => l_chirho,
-        Err(_e_chirho) => {
-            crate::serial_println_chirho!(
-                "[SYSCALL] exit_group: failed to reload shell ELF — halting"
-            );
-            loop { x86_64::instructions::hlt(); }
-        }
-    };
-
-    crate::syscall_chirho::set_brk_chirho(loaded_chirho.brk_addr_chirho);
-
-    let user_rsp_chirho = crate::exec_chirho::setup_user_stack_with_args_chirho(
-        &loaded_chirho,
-        &shell_argv_chirho,
-        &shell_envp_chirho,
+    // EVERY user task takes this path. The thread group is a zombie with
+    // SIGCHLD already delivered, so wake the parent and stop running. There is
+    // no numeric role left in process exit.
+    //
+    // This was gated on `caller_pid_chirho >= 3`; anything below fell through
+    // to a workaround that killed the exiting task's PARENT and re-exec'd a
+    // shell in the corpse's context. Since the user shell actually runs as
+    // PID 0, and PID 1 is an unscheduled kernel placeholder, that branch caught
+    // an ordinary successful `mkdir -p` child from the boot profile and
+    // destroyed its parent for it. Inferring "init" from a PID threshold was
+    // the error; removing the threshold is the fix.
+    //
+    // Do NOT remove from TASK_LIST — the zombie must stay so the parent can
+    // waitpid(-1, WNOHANG) and reap it. Without that, dropbear's SIGCHLD
+    // handler gets -ECHILD, never decrements maxconns, and stops forking after
+    // 5 sessions.
+    crate::serial_debug_chirho!(
+        "[SYSCALL] exit_group: PID={} zombie, awaiting parent reap",
+        caller_pid_chirho
     );
+    crate::process_chirho::wake_child_exit_waitqueue_chirho();
+    crate::scheduler_chirho::schedule_chirho();
 
-    crate::exec_chirho::jump_to_userspace_chirho(
-        loaded_chirho.entry_point_chirho,
-        user_rsp_chirho,
+    // Same nonreturning contract as sys_exit_chirho: reaching this point means
+    // schedule_chirho returned into a Zombie. Fail loudly rather than wedge.
+    crate::serial_println_chirho!(
+        "[EXIT-INVARIANT] PID={} resumed after schedule_chirho on the exit_group path",
+        caller_pid_chirho
     );
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 /// `brk(2)` implementation — per-process program break (A2-AUDIT-003).
