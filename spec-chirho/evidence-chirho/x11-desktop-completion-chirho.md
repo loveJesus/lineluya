@@ -161,11 +161,67 @@ destroy helper has zero callers and deliberately cannot release shared COW
 leaves. The repair must encode address-space and per-leaf ownership, not enlarge
 the frame pool or rely on teardown call-site discipline.
 
+## MM ownership primitives, isolated proof Chirho
+
+Commit `0cbac45304bae6b30269ff7d8550d661b43f6e4c` landed the primitive half of
+that repair. Follow-up `b8ab5a33fa9f7ee2775f14619f446a7a6347dd89` tightened
+the typed fork API so `clone_user_address_space_chirho` requires a borrowed live
+`AddressSpaceHandleChirho`, not a naked physical root. The implementation adds:
+
+- one preallocated flat `AtomicU32` mapping count per allocator-owned physical
+  frame, with unmanaged sentinels for holes and device memory;
+- one atomic owner-and-retirement gate per address-space handle, making a
+  concurrent share and last-owner retirement mutually exclusive;
+- atomic-only handle `Drop`, explicit cold retirement, and API-level refusal to
+  retire the boot root or currently installed CR3;
+- transactional PTE publication, fork cloning, COW replacement, unmap, and
+  clone-failure cleanup; and
+- an intrusive allocation-free physical-frame free list for the COW and
+  retirement release paths.
+
+The host-executable pure-logic suite passed 7/7, including counter underflow
+clamping, unmanaged holes, duplicate lifetime, retirement-versus-clone
+exclusion, shared-owner last retirement, and the exact parent-fork,
+child-COW, unmap, and final-exit reference sequence. The local pinned-nightly
+x86 release build completed in 4.03 seconds with zero warnings.
+
+An isolated fresh build on dlpChirho produced:
+
+- kernel ELF SHA-256:
+  `af675d48a8bdab29f3c5f9090ee06c5dbc3d9fc7fa35838721a0eaa5f64ad0b1`;
+- BIOS image SHA-256:
+  `83f5099aeafc9c98b19b05d67cd0c4f8027b617630afc3d4dc73a8633e2857ab`;
+- immutable base-rootfs SHA-256:
+  `245267fdde2951f9cf73d1376a2d9669bb80c16c4b67361c533c477326e15204`;
+  and
+- serial-log SHA-256:
+  `49ebe2b15d22f4123d3f698c9988114915cb0486b34e5c46c66cd5cee7782005`.
+
+The 90-second native-KVM smoke used `qemu64`, 1 GiB, two vCPUs, and loopback
+port 2448. It emitted exactly one ownership initializer:
+
+```text
+[MM-OWNERSHIP] slots=262108 managed=260916 initial_user_mappings=0
+```
+
+The run reached PID 62 with `[MM-UNMAP]` ownership errors 0, `[PT-CLONE]`
+failures 0, `[COW]` errors 0, panics 0, and OOM 0. It then reached the same
+known `LeafFrameExhaustedChirho` and unhandled page-fault wall as the untouched
+baseline, which reached PID 67. This is intentionally **not** a leak-fix claim:
+the runtime artifact still used raw `TaskChirho` roots, so no lifecycle caller
+could invoke the new retirement API. It proves the primitives run cleanly up to
+the dependent wall and preserves that wall as the discriminator for lifecycle
+wiring.
+
+The bounded raw log is retained outside Git under
+`target/evidence-chirho/x11-desktop-chirho/26-08-25_mm-ownership-primitives-0aFJbZ-chirho/`.
+
 ## Open acceptance work Chirho
 
 - repair and causally prove the PID-2 SIGCHLD/SYSRET return-target fault;
-- replace raw page-table ownership with a refcounted handle, O(1) leaf-frame
-  accounting, CR3-checked explicit retirement, and lifecycle wiring;
+- wire the landed address-space handle into `TaskChirho` and every exec, fork,
+  `CLONE_VM`, exit, and reap path, then prove repeated cycles reclaim roots and
+  last-reference leaves without `LeafFrameExhaustedChirho`;
 - remove `WAIT4-FAST` plus the kernel-supplied fallback keymap as one coherent
   xkbcomp authenticity repair;
 - capture the physical after-frame and verify meaningful pixel changes after
