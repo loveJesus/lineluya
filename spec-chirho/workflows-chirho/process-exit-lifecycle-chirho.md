@@ -145,10 +145,17 @@ from the scheduler, calls `schedule_chirho`, and can then `return 0` — with **
 That is a numeric-role exit decision, exactly the class the rule above forbids,
 and it is live. It belongs to the later PID-policy slice.
 
-`sys_select_chirho` also fabricates timeout-zero on two paths
-(`% 100 == 99` at ~4978 and ~4993) — the same defect repaired in `poll`, still
-unrepaired here. One of them sits three lines under a comment reading
-"DON'T return 0".
+`sys_select_chirho` also fabricates timeout-zero on **three** paths — the same
+defect repaired in `poll`, still unrepaired here:
+
+| Site | Trigger | Why it is fabricated |
+| --- | --- | --- |
+| ~4978 | every 100th call, after X11_READY, for service PIDs | no deadline consulted |
+| ~4993 | every 100th iteration | sits three lines under a comment reading "DON'T return 0" |
+| ~5068 | an out-of-band scan finds pipe data | comment calls it "no fds ready, timeout expired" though no deadline was checked — and the pipe need not be in the caller's `readfds` at all |
+
+The third is the worst of them: it reports a timeout to a caller whose watched
+descriptors were never consulted.
 
 Wider: **69 load-bearing PID gates across 8 kernel files** make boot behaviour
 depend on process launch order.

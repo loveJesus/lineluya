@@ -753,8 +753,9 @@ pub fn sys_sigaltstack_chirho(_ss_chirho: u64, _old_ss_chirho: u64) -> i64 {
 
 /// Send SIGCHLD to a parent process when a child exits.
 ///
-/// Called from the exit paths (which already set the pending bit) and also
-/// wakes blocked parents so they can reap via `wait4`.
+/// Called from the exit paths. Sets the parent's pending SIGCHLD bit itself,
+/// queues the `SignalInfoChirho`, and wakes blocked parents so they can reap
+/// via `wait4`. No caller sets that bit beforehand.
 ///
 /// There is deliberately NO `parent_pid == 0` sentinel: PID 0 is a real task
 /// here, the user login shell. See the workflow for what that sentinel cost.
