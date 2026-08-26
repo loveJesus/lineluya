@@ -1515,64 +1515,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
     // Track last syscall for post-mortem debugging
     LAST_SYSCALL_NR_CHIRHO.store(syscall_nr_chirho, core::sync::atomic::Ordering::Relaxed);
 
-    // Trace PID 5 syscalls to find what blocks after select
-    {
-        let trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if trace_pid_chirho == 5 {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static P5_SC_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let cnt_chirho = P5_SC_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho >= 50 && cnt_chirho < 100 {
-                crate::serial_println_chirho!(
-                    "[P5-SYSCALL] #{} nr={} a0={:#x} a1={:#x}",
-                    cnt_chirho, syscall_nr_chirho, arg0_chirho, arg1_chirho,
-                );
-            }
-        }
-    }
 
-    // Log X11 client syscalls (first 50 per PID)
-    {
-        let trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if trace_pid_chirho == 13 || trace_pid_chirho == 14 {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static XCLI13_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            static XCLI14_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let cnt_ref_chirho = if trace_pid_chirho == 13 { &XCLI13_CHIRHO } else { &XCLI14_CHIRHO };
-            let c_chirho = cnt_ref_chirho.fetch_add(1, Ordering::Relaxed);
-            if c_chirho < 700 || c_chirho % 5000 == 0 {
-                crate::serial_println_chirho!(
-                    "[XCLI-SC] pid={} #{} nr={}({}) a0={:#x}",
-                    trace_pid_chirho, c_chirho, syscall_nr_chirho,
-                    syscall_name_chirho(syscall_nr_chirho), arg0_chirho,
-                );
-            }
-        }
-        if trace_pid_chirho == 5 {
-            static P5_CNT_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-            let cnt_chirho = P5_CNT_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            // Log last 20 syscalls (after the initial ~1500 init syscalls)
-            // Log every 100th syscall + all after 1400
-            // Trace 50 syscalls AFTER any recvmsg on accepted fd (>= 13)
-            {
-                static P5_TRACE_START_CHIRHO: core::sync::atomic::AtomicU64 =
-                    core::sync::atomic::AtomicU64::new(u64::MAX);
-                if syscall_nr_chirho == 47 && arg0_chirho >= 13 {
-                    P5_TRACE_START_CHIRHO.store(cnt_chirho, core::sync::atomic::Ordering::Relaxed);
-                }
-                let ts_chirho = P5_TRACE_START_CHIRHO.load(core::sync::atomic::Ordering::Relaxed);
-                if cnt_chirho % 10000 == 0
-                    || (cnt_chirho >= ts_chirho && cnt_chirho < ts_chirho + 50)
-                {
-                crate::serial_println_chirho!(
-                    "[P5-SC] #{} nr={}({}) fd={} a1={:#x}",
-                    cnt_chirho, syscall_nr_chirho,
-                    syscall_name_chirho(syscall_nr_chirho), arg0_chirho, arg1_chirho,
-                );
-            }
-            }
-        }
-    }
 
     // Log all syscalls from PID >= 2 (dropbear + children) to trace fork flow
     static POST_ACCEPT_ARMED_CHIRHO: core::sync::atomic::AtomicBool =
@@ -1600,30 +1543,6 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         crate::serial_debug_chirho!("[POST-ACCEPT] nr={}({})", syscall_nr_chirho, name_chirho);
     }
 
-    // Trace PID 3's read/select for pipe relay + session teardown debug
-    {
-        let trace_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if trace_pid_chirho == 3 && (syscall_nr_chirho == SYS_READ_CHIRHO || syscall_nr_chirho == 23) {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static P3FD_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let cnt_chirho = P3FD_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if cnt_chirho < 100 {
-                if syscall_nr_chirho == 23 {
-                    // select: log nfds + readfds_ptr + timeout
-                    crate::serial_println_chirho!(
-                        "[P3-IO] #{} select nfds={} rfds={:#x} wfds={:#x} tmo={:#x}",
-                        cnt_chirho, arg0_chirho, arg1_chirho, arg2_chirho, arg4_chirho,
-                    );
-                } else {
-                    crate::serial_println_chirho!(
-                        "[P3-IO] #{} read(fd={})",
-                        cnt_chirho, arg0_chirho,
-                    );
-                }
-            }
-        }
-    }
 
     // Trace twm/xterm (PIDs 8,9) ALL syscalls for X11 debugging
     {
@@ -1652,30 +1571,6 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 "[XORG-WRITE] nr={} fd={} a1={:#x} a2={:#x}",
                 syscall_nr_chirho, arg0_chirho, arg1_chirho, arg2_chirho,
             );
-        }
-    }
-    // Trace PID 7 (Xorg) syscalls to find what blocks after epoll
-    {
-        let disp_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if disp_pid_chirho == 7 {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static P7SC_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let sc_chirho = P7SC_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            // Log wider range to capture accept→read→writev on client fds
-            if (sc_chirho >= 960 && sc_chirho < 1100)
-                || (sc_chirho >= 2000 && sc_chirho < 2100)
-                || sc_chirho % 50000 == 0
-            {
-                if syscall_nr_chirho == 16 { // ioctl
-                    crate::serial_println_chirho!(
-                        "[P7-SC] #{} IOCTL fd={} cmd={:#x} arg={:#x}", sc_chirho, arg0_chirho, arg1_chirho, arg2_chirho,
-                    );
-                } else {
-                    crate::serial_println_chirho!(
-                        "[P7-SC] #{} nr={} a0={:#x}", sc_chirho, syscall_nr_chirho, arg0_chirho,
-                    );
-                }
-            }
         }
     }
 
@@ -1712,41 +1607,8 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 // connection to fd=0). Socket reads must go through
                 // recvfrom to detect CloseWait EOF, not VFS read.
                 let fd0_is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(0);
-                {
-                    let rp_chirho = crate::task_chirho::current_task_chirho()
-                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                    if rp_chirho == 3 {
-                        use core::sync::atomic::{AtomicU64, Ordering};
-                        static FD0S_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                        let cnt_chirho = FD0S_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                        if cnt_chirho < 5 || (cnt_chirho > 30 && cnt_chirho < 35) {
-                            let sock_idx_chirho = crate::net_chirho::socket_idx_from_fd_pub_chirho(0)
-                                .unwrap_or(9999);
-                            crate::serial_println_chirho!(
-                                "[P3-FD0] #{} is_socket={} sock_idx={}",
-                                cnt_chirho, fd0_is_sock_chirho, sock_idx_chirho,
-                            );
-                        }
-                    }
-                }
                 if fd0_is_sock_chirho {
                     let recv_result_chirho = crate::net_chirho::sys_recvfrom_chirho(0, arg1_chirho, arg2_chirho, 0, 0, 0);
-                    // Trace PID 3's fd=0 socket read result for session teardown debug
-                    {
-                        let rp_chirho = crate::task_chirho::current_task_chirho()
-                            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                        if rp_chirho == 3 && recv_result_chirho <= 0 {
-                            use core::sync::atomic::{AtomicU64, Ordering};
-                            static RF0_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                            let cnt_chirho = RF0_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                            if cnt_chirho < 20 {
-                                crate::serial_println_chirho!(
-                                    "[P3-RD0] #{} read(fd=0) socket → {}",
-                                    cnt_chirho, recv_result_chirho,
-                                );
-                            }
-                        }
-                    }
                     recv_result_chirho
                 } else {
                 let has_vfs_stdin_chirho = crate::task_chirho::current_task_chirho()
@@ -1780,43 +1642,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                 }
                 } // close else (non-socket fd=0)
             } else if crate::net_chirho::is_socket_fd_chirho(arg0_chirho) {
-                // Log PID 3's read fd after SIGCHLD processing
-                {
-                    let rd_pid_chirho = crate::task_chirho::current_task_chirho()
-                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                    if rd_pid_chirho == 3 {
-                        use core::sync::atomic::{AtomicU64, Ordering};
-                        static RD3_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                        let cnt_chirho = RD3_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                        if cnt_chirho > 25 && cnt_chirho < 35 {
-                            crate::serial_println_chirho!(
-                                "[P3-RD] #{} fd={} (socket)",
-                                cnt_chirho, arg0_chirho,
-                            );
-                        }
-                    }
-                }
                 // Socket fd → recvfrom
                 crate::net_chirho::sys_recvfrom_chirho(
                     arg0_chirho, arg1_chirho, arg2_chirho, 0, 0, 0,
                 )
             } else {
-                // Trace PID 3's non-socket reads (show which fd)
-                {
-                    let rd_pid_chirho = crate::task_chirho::current_task_chirho()
-                        .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                    if rd_pid_chirho == 3 {
-                        use core::sync::atomic::{AtomicU64, Ordering};
-                        static RD3V_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                        let cnt_chirho = RD3V_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                        if cnt_chirho > 25 && cnt_chirho < 35 {
-                            crate::serial_println_chirho!(
-                                "[P3-RD] #{} fd={} (vfs)",
-                                cnt_chirho, arg0_chirho,
-                            );
-                        }
-                    }
-                }
                 {
                     let rd_pid_chirho = crate::task_chirho::current_task_chirho()
                         .map(|t| t.lock().pid_chirho).unwrap_or(0);
@@ -4932,57 +4762,6 @@ fn sys_select_chirho(
     // Check if any socket has pending data by polling the network.
     crate::net_chirho::poll_network_chirho();
 
-    // GPT-directed: check if select's copy_to_user corrupts PID 2's stack
-    {
-        static SELECT_DBG_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        let caller_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho)
-            .unwrap_or(0);
-        if caller_pid_chirho == 2 {
-            let cnt_chirho = SELECT_DBG_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            // Log select args + stack proximity for PID 2
-            if cnt_chirho < 5 {
-                // Get user RSP from the SyscallFrame via current task
-                let user_rsp_chirho = crate::task_chirho::current_task_chirho()
-                    .map(|t| t.lock().user_rsp_chirho)
-                    .unwrap_or(0);
-                let rfds_on_stack_chirho = readfds_ptr_chirho != 0
-                    && readfds_ptr_chirho > user_rsp_chirho.saturating_sub(0x2000)
-                    && readfds_ptr_chirho < user_rsp_chirho.saturating_add(0x200);
-                let timeout_on_stack_chirho = timeout_ptr_chirho != 0
-                    && timeout_ptr_chirho > user_rsp_chirho.saturating_sub(0x2000)
-                    && timeout_ptr_chirho < user_rsp_chirho.saturating_add(0x200);
-                crate::serial_println_chirho!(
-                    "[SELECT-STACK] #{} nfds={} rfds={:#x} wfds={:#x} tmo={:#x} ursp={:#x} rfds_stk={} tmo_stk={}",
-                    cnt_chirho, nfds_chirho, readfds_ptr_chirho, writefds_ptr_chirho,
-                    timeout_ptr_chirho, user_rsp_chirho,
-                    rfds_on_stack_chirho, timeout_on_stack_chirho,
-                );
-                // set_size is computed later - log it after
-            }
-            if cnt_chirho < 5 {
-                crate::serial_println_chirho!(
-                    "[SELECT-PID2] #{} nfds={} readfds_ptr={:#x} writefds_ptr={:#x}",
-                    cnt_chirho, nfds_chirho, readfds_ptr_chirho, writefds_ptr_chirho,
-                );
-                if readfds_ptr_chirho != 0 && nfds_chirho > 0 {
-                    let sz_chirho = core::cmp::min(16, ((nfds_chirho as usize + 7) / 8));
-                    let mut tmp_chirho = [0u8; 16];
-                    let _ = crate::uaccess_chirho::copy_from_user_chirho(&mut tmp_chirho[..sz_chirho], readfds_ptr_chirho, sz_chirho);
-                    for fd_chirho in 0..core::cmp::min(nfds_chirho as usize, 16) {
-                        if tmp_chirho[fd_chirho / 8] & (1 << (fd_chirho % 8)) != 0 {
-                            let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
-                            let has_data_chirho = crate::net_chirho::socket_has_data_chirho(fd_chirho as u64);
-                            crate::serial_println_chirho!(
-                                "[SELECT-PID2]   fd={} sock={} data={}",
-                                fd_chirho, is_sock_chirho, has_data_chirho,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     // Read the fd_set once from userspace for both initial check and re-check loop.
     let mut fds_buf_chirho = [0u8; 128];
