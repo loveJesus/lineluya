@@ -760,6 +760,12 @@ pub fn sys_sigaltstack_chirho(_ss_chirho: u64, _old_ss_chirho: u64) -> i64 {
 ///
 /// * `parent_pid_chirho` — PID of the parent process to receive SIGCHLD.
 /// * `child_pid_chirho`  — PID of the exiting child (for the SignalInfo sender field).
+/// Deliver SIGCHLD to a child's parent.
+///
+/// There is deliberately NO `parent_pid == 0` sentinel: PID 0 is a real task
+/// here, the user login shell. See the workflow for what that sentinel cost.
+///
+/// Workflow: spec-chirho/workflows-chirho/process-exit-lifecycle-chirho.md
 pub fn deliver_sigchld_chirho(parent_pid_chirho: u64, child_pid_chirho: u64) {
     // NO ppid==0 sentinel. PID 0 is a REAL task here — it is the user login
     // shell — so treating 0 as "no parent" silently dropped SIGCHLD for every

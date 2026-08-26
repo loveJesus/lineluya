@@ -3368,6 +3368,8 @@ fn sys_exit_chirho(code_chirho: i32) -> i64 {
 
 /// `exit_group(2)` implementation (A2-PROC-006).
 ///
+/// Workflow: spec-chirho/workflows-chirho/process-exit-lifecycle-chirho.md
+///
 /// Terminates **all** threads in the current thread group (same `tgid_chirho`).
 /// For each thread: sets it to `ZombieChirho`, records the exit code, and
 /// removes it from the scheduler run queue.  SIGCHLD is delivered to the
@@ -4244,6 +4246,8 @@ fn poll_deadline_expired_chirho(deadline_chirho: Option<u64>) -> bool {
 
 /// Readiness for ONE descriptor, derived from the OBJECT installed at it.
 ///
+/// Workflow: spec-chirho/workflows-chirho/process-exit-lifecycle-chirho.md
+///
 /// Readiness is never a property of the descriptor NUMBER and never of the
 /// process asking. fd 0 used to be special-cased by number and answered with
 /// console state, so a pipe or socket dup2'd onto fd 0 was told about the
@@ -4383,6 +4387,8 @@ fn poll_scan_pollfds_chirho(pollfds_chirho: &mut [PollfdChirho]) -> i64 {
 }
 
 /// `poll(2)`.
+///
+/// Workflow: spec-chirho/workflows-chirho/process-exit-lifecycle-chirho.md
 ///
 /// Blocks until a descriptor is ready or the timeout expires. A negative
 /// timeout blocks indefinitely and never returns 0.
