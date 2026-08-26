@@ -145,17 +145,37 @@ from the scheduler, calls `schedule_chirho`, and can then `return 0` — with **
 That is a numeric-role exit decision, exactly the class the rule above forbids,
 and it is live. It belongs to the later PID-policy slice.
 
-`sys_select_chirho` also fabricates timeout-zero on **three** paths — the same
-defect repaired in `poll`, still unrepaired here:
+### `sys_select` has no timeout representation at all
 
-| Site | Trigger | Why it is fabricated |
-| --- | --- | --- |
-| ~4978 | every 100th call, after X11_READY, for service PIDs | no deadline consulted |
-| ~4993 | every 100th iteration | sits three lines under a comment reading "DON'T return 0" |
-| ~5068 | an out-of-band scan finds pipe data | comment calls it "no fds ready, timeout expired" though no deadline was checked — and the pipe need not be in the caller's `readfds` at all |
+This is the root fact, and listing fabricated returns without it invites another
+miss — which is exactly what happened twice while writing this document, first
+"two" sites and then "three".
 
-The third is the worst of them: it reports a timeout to a caller whose watched
-descriptors were never consulted.
+Across the whole function (~4512–5116) `timeout_ptr_chirho` appears in precisely
+two places: the parameter, and line ~4965, where `if timeout_ptr_chirho == 0 {}`
+has an **empty body**. The `timeval` is never copied, never decoded, no deadline
+is ever computed, and elapsed time is never consulted anywhere.
+
+So every empty return is fabricated *by construction*, not by oversight at
+individual sites. Repairing this is not patching four returns; it is giving
+`select` a deadline in the first place, as `poll` now has. The four normal ones:
+
+| Site | Trigger |
+| --- | --- |
+| ~4978 | every 100th call, after X11_READY, for service PIDs |
+| ~4993 | every 100th iteration — three lines under a comment reading "DON'T return 0" |
+| ~5068 | an out-of-band scan finds pipe data; its own comment calls this "no fds ready, timeout expired" |
+| ~5114 | fallthrough after a fixed `0..500_000` iteration loop |
+
+At ~5068 the caller's descriptors **were** scanned at function entry, but are not
+rechecked after the halt before an unrelated pipe triggers the zero — and that
+pipe need not be one the caller asked about.
+
+A fifth empty return at ~5096 follows the forced-exit path and belongs to the
+resumed-Zombie edge above, not to this table.
+
+The loop bound is `500_000`; the comment at ~4966 calls it "the 50k HLT poll
+loop".
 
 Wider: **69 load-bearing PID gates across 8 kernel files** make boot behaviour
 depend on process launch order.
