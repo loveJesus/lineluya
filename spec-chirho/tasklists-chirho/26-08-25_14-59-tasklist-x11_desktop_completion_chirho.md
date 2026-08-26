@@ -34,6 +34,10 @@ serial marker does not close a phase whose gate requires a cohort.
 
 - [ ] Add a guest regression for pipe-redirected fd-0 `readv(2)` plus a control
       case for genuine console fd 0.
+- [ ] Delete the parent-PID `3..=7` `WAIT4-FAST` path that SIGKILLs xkbcomp and
+      fabricates status zero; retain actual wait/reap semantics for every PID.
+- [ ] Remove the kernel-preloaded `/tmp/server-0.xkm` fallback and prove the
+      keymap consumed by Xorg was produced by the real xkbcomp process.
 - [ ] Produce a milestone timeline from Xorg exec through xkbcomp exit/reap,
       display bind, and first epoll wait.
 - [ ] Split the first remaining hit/miss divergence with one bounded,

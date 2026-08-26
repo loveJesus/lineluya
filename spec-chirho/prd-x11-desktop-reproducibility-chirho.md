@@ -36,6 +36,14 @@ proved that this is not yet reproducible from the repository pipeline:
 - both TSS writers addressed the `Lazy` wrapper instead of the initialized TSS.
 - xkbcomp inherited a pipe on fd 0, but `readv(2)` incorrectly sent all fd-0
   reads to the console. Xorg then slept in `wait4(2)` waiting for xkbcomp.
+- `wait4(2)` still has a numeric-parent-PID `3..=7` fast path that sends
+  SIGKILL to xkbcomp, writes a fabricated zero exit status, and returns success.
+  The evidence-bearing boots did not execute it, but source correctness cannot
+  depend on Xorg luckily landing outside that range.
+- the kernel preloads a fallback `/tmp/server-0.xkm` from compiled-in bytes.
+  That is the paired half of fabricated xkbcomp success: killing the compiler
+  and supplying its expected output from kernel memory crosses the same
+  authenticity boundary as kernel-generated X11 replies.
 - after repairing those causes, one observed long run reached
   `XORG-MAIN-LOOP`, woke two genuinely sleeping clients, and both reconnects
   returned zero. Other runs did not reach the same point, so the branch is
@@ -113,11 +121,16 @@ proved that this is not yet reproducible from the repository pipeline:
 13. Default, trace-free behavior must pass. A temporary bounded trace may split
     one hypothesis, then it is removed before the final cohort.
 14. Scheduler, interrupt, exception, and fault paths must not acquire a lock
-    that the suspended or interrupted context may already hold. The four
-    observed forms—scheduler-to-VFS traversal, timer-to-scheduler lookup,
-    descriptor teardown under `TASK_LIST_CHIRHO`, and demand-fault page-table
-    allocation under the frame allocator—are one lock-recursion defect class,
-    not isolated special cases.
+   that the suspended or interrupted context may already hold. The four
+   observed forms—scheduler-to-VFS traversal, timer-to-scheduler lookup,
+   descriptor teardown under `TASK_LIST_CHIRHO`, and demand-fault page-table
+   allocation under the frame allocator—are one lock-recursion defect class,
+   not isolated special cases.
+15. `wait4(2)` reports the child's real lifecycle result. It never kills a
+    child, fabricates status zero, or selects behavior from a parent PID range.
+16. xkbcomp's keymap output is produced by the real userspace compiler from
+    material rootfs inputs. The kernel does not preload `server-0.xkm` or any
+    substitute compiler output.
 
 ## Functional requirements Chirho
 
@@ -160,6 +173,9 @@ proved that this is not yet reproducible from the repository pipeline:
   Xorg's accepted endpoint.
 - `x11_kernel_007_chirho`: no X11 or desktop branch in a generic syscall,
   scheduler, VFS, exec, or socket path is selected by numeric PID.
+- `x11_kernel_008_chirho`: Xorg observes xkbcomp's genuine exit status and
+  consumes output produced by that userspace process; no wait4 fast path or
+  kernel-supplied fallback keymap can manufacture success.
 
 ### Desktop behavior Chirho
 
@@ -187,6 +203,8 @@ proved that this is not yet reproducible from the repository pipeline:
   the production kernel.
 - Kernel-synthetic `/etc/profile`/desktop launch content and duplicate-Xorg exec
   blocking are replaced by rootfs policy and generic process semantics.
+- Numeric-PID `wait4(2)` kill/fake-success policy and the kernel-preloaded
+  `/tmp/server-0.xkm` fallback are absent.
 - No X11 readiness, client selection, fork allowance, or trace depends on PID
   ranges such as `>= 5`, `3..=7`, `8..=9`, or `13..=14`.
 - Temporary `[XORG-ENTRY]`, `[XORG-SC]`, `[CTX-*]`, and equivalent diagnostic
@@ -213,7 +231,8 @@ proved that this is not yet reproducible from the repository pipeline:
 At least one bounded diagnostic boot must prove all of the following without
 kernel-created X11 replies:
 
-- display bind, real Xorg wait entry, and xkbcomp exit/reap;
+- display bind, real Xorg wait entry, and genuine xkbcomp exit/reap/output with
+  no wait4 fabrication or kernel-supplied fallback keymap;
 - an early client sleeping and waking, plus a post-ready client not parking;
 - server-to-client bytes originating from Xorg's accepted socket;
 - attributable twm and xterm connections and `CreateWindow` traffic;

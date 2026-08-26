@@ -9,14 +9,15 @@ attempts, mutates the hashed base rootfs, selects successful runs after a
 failure, or treats serial volume as a milestone.
 
 The default is acceptance-strict: a clean identified revision, `qemu64`, KVM,
-no temporary trace markers, and a maximum 400-second timeout. Exploratory runs
+no temporary trace markers or known synthetic xkbcomp policy in source, and a
+maximum 400-second timeout. Exploratory runs
 may explicitly set `REQUIRE_CLEAN_SOURCE_CHIRHO=0` or
 `REQUIRE_TRACE_FREE_CHIRHO=0`; the resulting metadata marks dirty source as
 ineligible for acceptance.
 
 ```mermaid
 flowchart TD
-    source_gate_chirho{Clean identified revision?}
+    source_gate_chirho{Clean revision and forbidden-source scan empty?}
     artifact_gate_chirho{Kernel and base rootfs exist?}
     kvm_gate_chirho{Native KVM and qemu64?}
     cohort_hash_chirho[Hash source-controlled assets and immutable artifacts]
@@ -84,6 +85,11 @@ flowchart TD
 - A failure stops the cohort immediately. The next manual cohort starts from
   attempt one after the first divergence is understood; the runner never fills
   a five-run table by skipping a failed attempt.
+- The trace-free preflight scans kernel Rust source for the maintained
+  temporary-marker inventory, the `WAIT4-FAST`/`GPF-HLT-SKIP` policy markers,
+  and the kernel-supplied `server-0.xkm` fallback before QEMU starts. Runtime
+  checks remain necessary because stable invariant guards are allowed to exist
+  in source but must never fire.
 - Gate E uses the same runner only after a separate rebuild from the same
   identified source revision. It must point at the newly produced artifacts,
   not reuse the Gate D binaries.

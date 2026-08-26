@@ -72,6 +72,14 @@ The xterm child opened `/dev/pts/0`, executed `/bin/sh`, emitted the marker,
 and executed its final login shell. Its absence in the preceding 180-second run was
 timeout censoring, not evidence of a permanent PTY or fork defect.
 
+Source review later found a numeric-PID `WAIT4-FAST` path that can SIGKILL
+xkbcomp and fabricate status zero, plus a kernel-preloaded fallback
+`/tmp/server-0.xkm`. Neither may remain in the final source. They do not taint
+the retained claims above: `WAIT4-FAST` occurred zero times in this log and in
+the three other evidence-bearing logs independently checked on 2026-08-25, so
+the recorded xkbcomp exit zero and pipe-lifetime result were genuine. That
+non-execution was luck from Xorg's observed PID, not acceptable architecture.
+
 ### Framebuffer boundary Chirho
 
 - Before screenshot SHA-256:
@@ -98,6 +106,8 @@ timeout censoring, not evidence of a permanent PTY or fork defect.
 ## Open acceptance work Chirho
 
 - repair and causally prove the PID-2 SIGCHLD/SYSRET return-target fault;
+- remove `WAIT4-FAST` plus the kernel-supplied fallback keymap as one coherent
+  xkbcomp authenticity repair;
 - capture the physical after-frame and verify meaningful pixel changes after
   mapped client frames (the physical before-capture path is runtime-proven);
 - remove temporary PID- and X11-specific diagnostic windows;

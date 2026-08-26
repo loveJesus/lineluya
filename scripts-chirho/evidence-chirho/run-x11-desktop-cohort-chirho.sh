@@ -41,6 +41,21 @@ REQUIRE_CLEAN_SOURCE_CHIRHO="${REQUIRE_CLEAN_SOURCE_CHIRHO:-1}"
 REQUIRE_TRACE_FREE_CHIRHO="${REQUIRE_TRACE_FREE_CHIRHO:-1}"
 KEEP_SCRATCH_CHIRHO="${KEEP_SCRATCH_CHIRHO:-0}"
 
+# These names come from source blocks whose own comments identify them as
+# temporary, one-shot, PID-specific, or hypothesis-directed traces. Stable
+# milestones such as X11-BRINGUP, X11-WAIT, XORG-MAIN-LOOP, and TICK-SKIP are
+# deliberately absent.
+TEMPORARY_TRACE_NAMES_CHIRHO='XORG-ENTRY|XORG-SC|CTX-PRE|CTX-POST|PIPE-REF|PF-PID[0-9]+|PF-STACK|CON-SPIN|SCHED-TRACE|SCHED-DROP'
+TEMPORARY_TRACE_NAMES_CHIRHO+='|X11-REQ|X11-WRITE|XORG-WRITE|X11-RECVFROM13|X11-RECVMSG13|FS-RETURN|PID2-SEL|PID2-RSP'
+TEMPORARY_TRACE_NAMES_CHIRHO+='|P3-[A-Z0-9_-]+|P5-[A-Z0-9_-]+|P7-[A-Z0-9_-]+|POLL13|SELECT-P3|SELECT-PID2|PID5-SELECT|PID5-SELECT-FD'
+TEMPORARY_TRACE_NAMES_CHIRHO+='|SIG-DBG|WE3|FCNTL-P3|CLOSE9|FD4-HAS-DATA|RD6-VFS|WRITE1-TRACE|TRAP-34B|RSP-8|EXEC-TRACE|TICK-TRACE'
+TEMPORARY_TRACE_NAMES_CHIRHO+='|UNIX-POLL-TRACE|UNIX-RECVFROM-TRACE|UNIX-RECVMSG-TRACE|UNIX-SELECT-TRACE|UNIX-RECV'
+TEMPORARY_TRACE_NAMES_CHIRHO+='|EXT4-DBG|EXT4-RD|EXT4-DIR-FAIL|EXT4-LEGACY|POLL-DBG|VFS-DBG|MOUNT-DBG|RELAY-DBG'
+TEMPORARY_TRACE_NAMES_CHIRHO+='|EP0-RESUME|EP0-YIELD|EP7-COUNT|EP7-HLT|EPOLL-RET7|EPOLL-X11-HOT|EPOLL-YIELD0|READ-FD0|DUP2|WV-TRACE'
+FORBIDDEN_POLICY_MARKER_NAMES_CHIRHO='WAIT4-FAST|GPF-HLT-SKIP'
+FORBIDDEN_SOURCE_LITERAL_PATTERN_CHIRHO='/tmp/server-0\.xkm|XKM_DEFAULT_CHIRHO'
+RUNTIME_FAILURE_MARKER_NAMES_CHIRHO='SYSRET-GUARD|WAIT4-FAST|GPF-HLT-SKIP|PRELOAD-SKIP|FD-MIRROR-INVARIANT|FD-RETIRE-INVARIANT|PIPE-REF-INVARIANT'
+
 SOURCE_REVISION_CHIRHO=""
 COHORT_ID_CHIRHO="${COHORT_ID_CHIRHO:-}"
 COHORT_DIR_CHIRHO=""
@@ -82,7 +97,7 @@ git_chirho() {
 
 require_unsigned_integer_chirho() {
     case "$2" in
-        0|[1-9][0-9]*) ;;
+        0|[1-9]|[1-9][0-9]*) ;;
         *) fatal_chirho "$1 must be an unsigned decimal integer without leading zeros, got '$2'" ;;
     esac
 }
@@ -309,14 +324,14 @@ all_runtime_milestones_present_chirho() {
 fatal_serial_line_chirho() {
     local serial_log_chirho="$1"
     first_pattern_chirho \
-        '^\[PF\] |!!! PAGE FAULT|kernel panic|panicked at|general protection fault|\bGPF\b|double fault|invalid opcode|LeafFrameExhaustedChirho|allocator halt|out of memory|OOM kill|invalid[-_ ]context|CTX-REJECT|UART.*storm|IRQ4.*storm' \
+        "^\\[($RUNTIME_FAILURE_MARKER_NAMES_CHIRHO)\\]|^\\[PF\\] |!!! PAGE FAULT|kernel panic|panicked at|general protection fault|\\bGPF\\b|double fault|invalid.?opcode|LeafFrameExhaustedChirho|allocator halt|out of memory|OOM kill|invalid[-_ ]context|CTX-REJECT|UART.*storm|IRQ4.*storm" \
         "$serial_log_chirho"
 }
 
 temporary_trace_count_chirho() {
     local serial_log_chirho="$1"
     count_pattern_chirho \
-        '^\[(XORG-ENTRY|XORG-SC|CTX-PRE|CTX-POST|PIPE-REF|PF-PID[0-9]+|CON-SPIN|SCHED-TRACE|X11-REQ|X11-WRITE)' \
+        "^\\[($TEMPORARY_TRACE_NAMES_CHIRHO)\\]" \
         "$serial_log_chirho"
 }
 
@@ -742,6 +757,9 @@ main_chirho() {
     local source_status_chirho
     local source_short_chirho
     local cohort_metadata_chirho
+    local forbidden_source_file_chirho
+    local forbidden_source_count_chirho
+    local forbidden_source_scan_status_chirho
     local dirty_patch_chirho
     local dirty_patch_hash_chirho="clean_chirho"
     local attempt_number_chirho
@@ -806,12 +824,34 @@ main_chirho() {
 
     cohort_metadata_chirho="$COHORT_DIR_CHIRHO/cohort-metadata-chirho.txt"
     : >"$cohort_metadata_chirho"
+    forbidden_source_file_chirho="$COHORT_DIR_CHIRHO/forbidden-source-markers-chirho.txt"
+    if grep -R -nE --include='*.rs' \
+        "(\"\\[($TEMPORARY_TRACE_NAMES_CHIRHO|$FORBIDDEN_POLICY_MARKER_NAMES_CHIRHO)\\]|$FORBIDDEN_SOURCE_LITERAL_PATTERN_CHIRHO)" \
+        "$PROJECT_DIR_CHIRHO/kernel-chirho/src" \
+        >"$forbidden_source_file_chirho"; then
+        forbidden_source_scan_status_chirho=0
+    else
+        forbidden_source_scan_status_chirho=$?
+        [ "$forbidden_source_scan_status_chirho" -eq 1 ] \
+            || fatal_chirho "forbidden-source scan failed with status $forbidden_source_scan_status_chirho"
+    fi
+    forbidden_source_count_chirho="$(wc -l <"$forbidden_source_file_chirho" | tr -d ' ')"
+    append_metadata_chirho "$cohort_metadata_chirho" "source_revision_chirho" "$SOURCE_REVISION_CHIRHO"
+    append_metadata_chirho "$cohort_metadata_chirho" "forbidden_source_marker_count_chirho" "$forbidden_source_count_chirho"
+    append_metadata_chirho "$cohort_metadata_chirho" "forbidden_source_marker_sha256_chirho" "$(hash_file_chirho "$forbidden_source_file_chirho")"
+    if [ "$REQUIRE_TRACE_FREE_CHIRHO" = "1" ] && [ "$forbidden_source_count_chirho" -ne 0 ]; then
+        append_metadata_chirho "$cohort_metadata_chirho" "cohort_result_chirho" "fail_chirho"
+        fatal_chirho "trace-free source gate found $forbidden_source_count_chirho forbidden marker(s); see $forbidden_source_file_chirho"
+    fi
     BASE_ROOTFS_HASH_CHIRHO="$(hash_file_chirho "$BASE_ROOTFS_CHIRHO")"
     KERNEL_IMAGE_HASH_CHIRHO="$(hash_file_chirho "$KERNEL_IMAGE_CHIRHO")"
     append_metadata_chirho "$cohort_metadata_chirho" "cohort_id_chirho" "$COHORT_ID_CHIRHO"
-    append_metadata_chirho "$cohort_metadata_chirho" "source_revision_chirho" "$SOURCE_REVISION_CHIRHO"
     append_metadata_chirho "$cohort_metadata_chirho" "source_dirty_patch_sha256_chirho" "$dirty_patch_hash_chirho"
-    append_metadata_chirho "$cohort_metadata_chirho" "acceptance_eligible_chirho" "$([ -z "$source_status_chirho" ] && echo 1 || echo 0)"
+    append_metadata_chirho "$cohort_metadata_chirho" "acceptance_source_eligible_chirho" \
+        "$([ -z "$source_status_chirho" ] \
+            && [ "$REQUIRE_TRACE_FREE_CHIRHO" = "1" ] \
+            && [ "$forbidden_source_count_chirho" -eq 0 ] \
+            && echo 1 || echo 0)"
     append_metadata_chirho "$cohort_metadata_chirho" "run_count_chirho" "$RUN_COUNT_CHIRHO"
     append_metadata_chirho "$cohort_metadata_chirho" "cpu_model_chirho" "$CPU_MODEL_CHIRHO"
     append_metadata_chirho "$cohort_metadata_chirho" "memory_chirho" "$MEMORY_CHIRHO"
