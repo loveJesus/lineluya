@@ -44,7 +44,8 @@ pub use address_space_chirho::{
     PageTableRetireErrorChirho, UserMappingRegistrationErrorChirho,
 };
 pub use address_space_build_chirho::{
-    clone_page_table_chirho, clone_user_address_space_chirho,
+    clone_boot_user_address_space_chirho, clone_page_table_chirho,
+    clone_user_address_space_chirho,
     create_user_address_space_chirho, create_user_page_table_chirho,
     try_clone_page_table_chirho, AddressSpaceBuildErrorChirho,
     PageTableCloneErrorChirho,

@@ -106,6 +106,7 @@ pub fn create_user_page_table_chirho() -> Option<PhysAddr> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressSpaceBuildErrorChirho {
+    BootRootUnavailableChirho,
     RootFrameExhaustedChirho,
     CloneChirho(PageTableCloneErrorChirho),
     HandleAllocationFailedChirho,
@@ -120,6 +121,12 @@ pub fn create_user_address_space_chirho(
 ) -> Result<AddressSpaceHandleChirho, AddressSpaceBuildErrorChirho> {
     let root_phys_chirho = create_user_page_table_chirho()
         .ok_or(AddressSpaceBuildErrorChirho::RootFrameExhaustedChirho)?;
+    own_new_user_address_space_chirho(root_phys_chirho)
+}
+
+fn own_new_user_address_space_chirho(
+    root_phys_chirho: PhysAddr,
+) -> Result<AddressSpaceHandleChirho, AddressSpaceBuildErrorChirho> {
     if let Some(handle_chirho) =
         AddressSpaceHandleChirho::try_from_new_root_chirho(root_phys_chirho)
     {
@@ -210,14 +217,25 @@ pub fn clone_user_address_space_chirho(
     let root_phys_chirho =
         try_clone_page_table_chirho(source_address_space_chirho.root_phys_chirho())
             .map_err(AddressSpaceBuildErrorChirho::CloneChirho)?;
-    if let Some(handle_chirho) =
-        AddressSpaceHandleChirho::try_from_new_root_chirho(root_phys_chirho)
-    {
-        return Ok(handle_chirho);
+    own_new_user_address_space_chirho(root_phys_chirho)
+}
+
+/// Clone the boot PML4's user mappings into a newly owned address space.
+///
+/// Early init tasks run directly on the boot root and therefore have no
+/// [`AddressSpaceHandleChirho`] to borrow. Keeping the raw boot root inside
+/// this constructor prevents lifecycle call sites from acquiring a general
+/// raw-root-to-owner escape hatch. The caller marks the boot mappings COW
+/// before invoking this function.
+pub fn clone_boot_user_address_space_chirho(
+) -> Result<AddressSpaceHandleChirho, AddressSpaceBuildErrorChirho> {
+    let boot_root_chirho = get_boot_pml4_chirho();
+    if boot_root_chirho.as_u64() == 0 {
+        return Err(AddressSpaceBuildErrorChirho::BootRootUnavailableChirho);
     }
-    address_space_chirho::retire_unowned_page_table_chirho(root_phys_chirho)
-        .map_err(AddressSpaceBuildErrorChirho::CleanupChirho)?;
-    Err(AddressSpaceBuildErrorChirho::HandleAllocationFailedChirho)
+    let root_phys_chirho = try_clone_page_table_chirho(boot_root_chirho)
+        .map_err(AddressSpaceBuildErrorChirho::CloneChirho)?;
+    own_new_user_address_space_chirho(root_phys_chirho)
 }
 
 fn clone_table_level_chirho(

@@ -17,6 +17,9 @@ flowchart TD
     replace_leaf_chirho -->|no| live_space_chirho[Live owned address space]
     release_replaced_chirho --> live_space_chirho
 
+    boot_scan_chirho --> boot_parent_chirho[Early init runs on raw boot PML4]
+    boot_parent_chirho --> boot_clone_chirho[Boot-only constructor clones into a fresh owned handle]
+    boot_clone_chirho --> clone_tree_chirho
     live_space_chirho --> fork_kind_chirho{Clone operation}
     fork_kind_chirho -->|CLONE_VM| share_handle_chirho[Atomically clone address-space handle]
     fork_kind_chirho -->|fork| clone_tree_chirho[Copy page-table levels and retain every shared leaf]
@@ -49,6 +52,8 @@ flowchart TD
 Enforced invariants:
 
 - one atomic word arbitrates handle clone versus last-owner retirement;
+- only the boot-specific constructor accepts the unowned boot source, and it
+  exposes no raw-root parameter to lifecycle callers;
 - `retire_chirho` refuses the PML4 currently installed in CR3;
 - mapping, fork, COW, unmap, and retirement all use the same flat leaf counter;
 - managed-counter underflow clamps at zero and returns an error;
