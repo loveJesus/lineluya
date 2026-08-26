@@ -251,33 +251,6 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
     // Save the syscall number before dispatch overwrites rax with the result.
     let syscall_nr_chirho = frame_chirho.rax_chirho;
 
-    // Syscall counter — print every 1000th to show progress without flooding serial
-    {
-        use core::sync::atomic::{AtomicU64, Ordering};
-        static SC_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-        let count_chirho = SC_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-        if count_chirho % 1000 == 0 {
-            crate::serial_println_chirho!("[SC#{}] nr={}", count_chirho, syscall_nr_chirho);
-        }
-    }
-
-    // GPT-directed debug: verify KERNEL_STACK_TOP matches current task
-    {
-        use core::sync::atomic::{AtomicBool, Ordering};
-        static CHECKED_CHIRHO: AtomicBool = AtomicBool::new(false);
-        let current_kstack_top_chirho = kernel_stack_top_chirho();
-        if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
-            let expected_chirho = task_chirho.lock().kernel_stack_chirho;
-            if current_kstack_top_chirho != expected_chirho && !CHECKED_CHIRHO.swap(true, Ordering::Relaxed) {
-                let pid_chirho = task_chirho.lock().pid_chirho;
-                crate::serial_println_chirho!(
-                    "[KSTACK-MISMATCH] pid={} KERNEL_STACK_TOP={:#x} task.kernel_stack={:#x} nr={}",
-                    pid_chirho, current_kstack_top_chirho, expected_chirho, syscall_nr_chirho,
-                );
-            }
-        }
-    }
-
     let result_chirho = crate::syscall_chirho::syscall_dispatch_chirho(frame_chirho);
 
     // Validate that RCX (user return address) wasn't corrupted by the dispatch.

@@ -72,14 +72,14 @@ STRUCTURAL_FORBIDDEN_MARKER_PATTERN_CHIRHO='(^|[-_])(TRACE|DBG|DIAG)([-_]|$)|(^|
 # in a logging-adapter definition, so marker-site counts cannot constrain new
 # log_net_chirho! call sites. Rules are checked only after forbidden classifiers.
 STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO='AUDIO|main_chirho.rs=1;COW|mm_chirho/pagetable_chirho.rs=9;DHCP|net_chirho/net_core_chirho.rs=9'
-STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';EXEC|process_chirho/exec_chirho.rs=36,process_chirho/process_core_chirho.rs=4;EXIT-INVARIANT|syscall_chirho.rs=2'
+STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';EXEC|process_chirho/exec_chirho.rs=36,process_chirho/process_core_chirho.rs=4;EXIT-INVARIANT|syscall_chirho.rs=2;SYSRET-GUARD|arch_chirho/syscall_entry_chirho.rs=1'
 STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';FB|main_chirho.rs=1;FD-MIRROR-INVARIANT|fs_chirho/vfs_ops_chirho.rs=3;FD-RETIRE-INVARIANT|process_chirho/fd_lifecycle_chirho.rs=1'
 STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';FORK-OK|syscall_chirho.rs=1;INIT|main_chirho.rs=8;KO|subsys_chirho/ko_loader_chirho.rs=95'
 STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';MM-OWNERSHIP|mm_chirho/mmap_chirho.rs=1;MM-UNMAP|mm_chirho/mmap_chirho.rs=1;MOUNT|fs_chirho/ext4_chirho.rs=1,syscall_chirho.rs=12'
 STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';OK|arch_chirho/wasm32_chirho/mod.rs=7,console_chirho/dmesg_chirho.rs=1,console_chirho/pty_chirho.rs=1,drivers_chirho/fb_device_chirho.rs=1,fs_chirho/vfs_ops_chirho.rs=1,main_chirho.rs=21,mm_chirho/mmap_chirho.rs=1,net_chirho/net_core_chirho.rs=1'
-STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';PF|arch_chirho/interrupts_chirho.rs=7;PIPE-REF-INVARIANT|fs_chirho/vfs_chirho.rs=1;PRELOAD-SKIP|main_chirho.rs=3'
+STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';PF|arch_chirho/interrupts_chirho.rs=7;PIPE-REF-INVARIANT|fs_chirho/vfs_chirho.rs=1;PRELOAD-SKIP|main_chirho.rs=3;SYSCALL-ENTRY|arch_chirho/syscall_entry_chirho.rs=3'
 STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';PROCESS|process_chirho/process_core_chirho.rs=37,syscall_chirho.rs=1;PT-CLONE|mm_chirho/address_space_build_chirho.rs=1;PTMX-OPEN|fs_chirho/vfs_ops_chirho.rs=1'
-STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';REAP-INVARIANT|process_chirho/process_core_chirho.rs=1;RECV-NOMAP|net_chirho/net_core_chirho.rs=1;TASK|sched_chirho/task_chirho.rs=1;TICK-SKIP|sched_chirho/scheduler_chirho.rs=1'
+STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';REAP-INVARIANT|process_chirho/process_core_chirho.rs=1;RECV-NOMAP|net_chirho/net_core_chirho.rs=1;SCHED-CLASS|sched_chirho/scheduler_chirho.rs=1;TASK|sched_chirho/task_chirho.rs=1;TICK-SKIP|sched_chirho/scheduler_chirho.rs=1'
 STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';X11-BRINGUP|x11_chirho/x11_bringup_chirho.rs=1;X11-WAIT|net_chirho/net_core_chirho.rs=2;XORG-MAIN-LOOP|x11_chirho/x11_bringup_chirho.rs=1;XORG-WAKE|x11_chirho/x11_bringup_chirho.rs=1'
 STABLE_SOURCE_MARKER_LOCATION_RULES_CHIRHO+=';heap|fs_chirho/procfs_chirho.rs=1;stack|fs_chirho/procfs_chirho.rs=1'
 
@@ -98,7 +98,7 @@ DEBUG_GATED_SERIAL_EMITTER_RULES_CHIRHO+=';log_drv_chirho|console_chirho/serial_
 # newline separators. All other unmarked serial-emitter calls fail closed.
 STABLE_UNMARKED_SERIAL_EMITTER_RULES_CHIRHO='fb_println_chirho|main_chirho.rs=10'
 RUNTIME_FAILURE_MARKER_NAMES_CHIRHO='SYSRET-GUARD|WAIT4-FAST|GPF-HLT-SKIP|PRELOAD-SKIP|FD-MIRROR-INVARIANT|FD-RETIRE-INVARIANT|PIPE-REF-INVARIANT|RECV-NOMAP'
-RUNTIME_FAILURE_MARKER_NAMES_CHIRHO+='|PT-CLONE|COW|MM-UNMAP|TASK'
+RUNTIME_FAILURE_MARKER_NAMES_CHIRHO+='|PT-CLONE|COW|MM-UNMAP|SCHED-CLASS|TASK'
 
 SOURCE_REVISION_CHIRHO=""
 COHORT_ID_CHIRHO="${COHORT_ID_CHIRHO:-}"

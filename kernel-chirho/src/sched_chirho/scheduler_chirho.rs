@@ -93,7 +93,6 @@ static X11_RENDER_TASK_OVERFLOW_REPORTED_CHIRHO: AtomicBool = AtomicBool::new(fa
 static TICK_LOCK_MISS_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
 /// Limited trace for times the timer observes no current task.
-static TICK_IDLE_TRACE_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // External assembly routine for context switching
@@ -886,16 +885,6 @@ pub fn schedule_tick_chirho() {
         if scheduler_chirho.remaining_ticks_chirho == 0 {
             scheduler_chirho.need_resched_chirho = true;
             NEED_RESCHED_ATOMIC_CHIRHO.store(true, Ordering::Release);
-        }
-    } else {
-        let idle_count_chirho =
-            TICK_IDLE_TRACE_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
-        if idle_count_chirho < 16 {
-            crate::serial_println_chirho!(
-                "[TICK-IDLE] tick={} no_current_pid cnt={}",
-                tick_count_chirho,
-                idle_count_chirho,
-            );
         }
     }
 }

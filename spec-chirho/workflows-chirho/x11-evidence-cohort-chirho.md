@@ -161,6 +161,11 @@ rtk env \
   bash scripts-chirho/evidence-chirho/run-x11-desktop-cohort-chirho.sh
 ```
 
+The classifier requires `rg` with PCRE2 (`-P`) support in addition to the
+runner's checked shell/coreutils tools. The 2026-08-26 dlpChirho host was
+provisioned with Debian's `ripgrep` 14.1.1 package after the executable gate
+failed before QEMU when that dependency was absent.
+
 Disabling the two requirements makes this an exploratory inventory command,
 not an acceptance pass. Leave `REQUIRE_TRACE_FREE_CHIRHO=1` to prove that a
 nonzero inventory exits unsuccessfully before any QEMU process starts.
@@ -177,5 +182,40 @@ With zero emitter-definition, exception-rule, or synthetic-keymap failures, the
 resulting 314 failed predicates make trace-free status explicitly RED. A source
 behavior may violate more than one predicate, so 314 is not a count of unique
 runtime traces.
+
+The first ownership-scoped cleanup removes five completed probes from
+`syscall_entry_chirho.rs`, `task_chirho.rs`, and `scheduler_chirho.rs`:
+`[SC#]`, `[KSTACK-MISMATCH]`, `[ITR]`, `[ITR-NOTFOUND]`, and `[TICK-IDLE]`.
+It retains `[SYSRET-GUARD]` and `[SCHED-CLASS]` as location-locked invariants
+that fail the runtime cohort if they fire, and classifies the exact
+debug-serial-gated `[SYSCALL-ENTRY]` sites instead of treating compiled-out
+output as runtime evidence. The post-slice source classifier reports 226
+markers (34 stable, 16 structurally forbidden, 13 known forbidden, and 163
+unclassified), 630 unconditional-emitter calls (536 marked and 94 unmarked),
+and the same 30 bypasses. The resulting 306 failed predicates are the expected
+eight-step reduction from 314 and remain explicitly RED.
+
+The isolated current-head discriminator
+`trace-cleanup-current-head-kvm-20260826-chirho` used revision `cabdab8` plus
+the recorded five-file dirty patch
+`d825d3e867cf8a7cd42efd51a0cbe47fc1aeca9055dfa0e64ba3dcc0f887cca7`.
+The isolated dlpChirho kernel source matched the Mac source byte-for-byte, the
+pinned build completed with zero warnings, and the source preflight reproduced
+306 failures. Its one frozen KVM attempt was not selected or retried: Xorg
+entered its event loop at 16 seconds, returned an authentic setup reply at 17
+seconds, twm owned `SubstructureRedirect` at 55 seconds, and xgears emitted five
+FPS samples beginning at 95 seconds. The attempt remained RED at 180 seconds
+because xterm opened `/dev/ptmx` but never reached the PTY-shell marker. All five
+removed markers, `[SYSRET-GUARD]`, `[SCHED-CLASS]`, and the debug-gated
+`[SYSCALL-ENTRY]` marker were absent; QEMU stderr was empty. This proves only
+that the completed-probe deletion preserves the measured path. It is not a Gate
+D desktop pass and it does not establish trace freedom: 306 source failures and
+577 runtime temporary-trace matches remain.
+
+Two independent pre-slice dlpChirho logs, `/root/boot_exit_final_chirho.log`
+and `/root/boot_poll_final_chirho.log`, each report the same `ptmx=2` and
+`XTERM-PTY=0` signature. They establish that the PTY-shell boundary predates
+this cleanup rather than being introduced by the deleted probes.
+
 These numbers are a frozen checkpoint, not a substitute for rerunning the
 executable preflight after each owner's attributable cleanup slice.

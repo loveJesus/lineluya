@@ -595,31 +595,8 @@ pub fn is_task_runnable_chirho(pid_chirho: u64) -> bool {
             state_chirho,
             TaskStateChirho::ReadyChirho | TaskStateChirho::RunningChirho
         );
-        if pid_chirho >= 8 && !runnable_chirho {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static ITR_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let c_chirho = ITR_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if c_chirho < 5 {
-                crate::serial_println_chirho!(
-                    "[ITR] pid={} state={:?} runnable={}",
-                    pid_chirho, state_chirho, runnable_chirho,
-                );
-            }
-        }
         runnable_chirho
     } else {
-        // PID not found in TASK_LIST!
-        if pid_chirho >= 8 {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static NF_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let nf_chirho = NF_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if nf_chirho < 10 {
-                crate::serial_println_chirho!(
-                    "[ITR-NOTFOUND] pid={} NOT in TASK_LIST (list_len={})",
-                    pid_chirho, list_chirho.len(),
-                );
-            }
-        }
         false
     }
 }
