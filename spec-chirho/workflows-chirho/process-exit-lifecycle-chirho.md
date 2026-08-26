@@ -11,6 +11,10 @@ The governing rule: **no exit decision may be made from a PID value.** PID is an
 identity, not a role. Every numeric role test that lived on this path
 misclassified something.
 
+That rule is the target, **not yet the state of the code.** `exit` and
+`exit_group` now satisfy it; `sys_select` does not. Read the RED section before
+treating any of this as green.
+
 ## Blocking contract (precondition for everything below)
 
 `poll(2)` must never manufacture a timeout. A negative timeout means "block
@@ -72,7 +76,10 @@ leaves the predicate decorative exactly where it matters.
 
 ## Exit
 
-One path, every task, no numeric role.
+One path for `exit` and `exit_group` — but **not yet for every route out of a
+task.** See the RED section below: `sys_select` can still terminate a task from
+inside a numeric PID test. The diagram describes the unified path, not a
+property the whole kernel currently holds.
 
 ```mermaid
 flowchart TD
@@ -89,7 +96,7 @@ flowchart TD
     exit_reaped_chirho --> reap_find_chirho["Parent wait4 finds the zombie"]
     reap_find_chirho --> reap_detach_chirho["Detach fd table and address-space handle UNDER the task lock"]
     reap_detach_chirho --> reap_retire_chirho["Retire both OUTSIDE TASK_LIST and scheduler locks"]
-    reap_retire_chirho --> reap_remove_chirho["Remove from TASK_LIST; PID becomes free"]
+    reap_retire_chirho --> reap_remove_chirho["Remove from TASK_LIST; PID stays retired — never reused"]
 ```
 
 Two rules on this diagram are load-bearing:
@@ -126,6 +133,27 @@ corpse's context.
 | `ppid == 0` SIGCHLD sentinel | "init has no parent to notify" | PID 0 is the login shell; this was the blocker under all of the above |
 
 ## RED — open, not fixed
+
+### `sys_select` still exits tasks by PID
+
+`sys_select_chirho` carries a forced-exit path gated on `sel_pid_chirho >= 3`
+plus socket `CloseWait` (`syscall_chirho.rs` ~5005–5096). It calls
+`exit_task_and_retire_descriptors_chirho`, delivers SIGCHLD, removes the task
+from the scheduler, calls `schedule_chirho`, and can then `return 0` — with **no
+`EXIT-INVARIANT` line**, so a resumed continuation there is silent.
+
+That is a numeric-role exit decision, exactly the class the rule above forbids,
+and it is live. It belongs to the later PID-policy slice.
+
+`sys_select_chirho` also fabricates timeout-zero on two paths
+(`% 100 == 99` at ~4978 and ~4993) — the same defect repaired in `poll`, still
+unrepaired here. One of them sits three lines under a comment reading
+"DON'T return 0".
+
+Wider: **69 load-bearing PID gates across 8 kernel files** make boot behaviour
+depend on process launch order.
+
+### Context-slot aliasing
 
 `BOOT_SLOT_CHIRHO` computes `MAX_PIDS_CHIRHO - 1` = **127** while its own
 comment claims **63** and calls it "never used as a real PID". Real PID 127
