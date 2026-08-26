@@ -1587,17 +1587,6 @@ fn activate_per_process_pt_chirho() {
 /// SIGCHLD to the parent, and respawns the shell.
 ///
 /// This function never returns.
-/// Re-exec the shell in the current task context.
-///
-/// Used by wait4 after reaping a child — avoids returning through the
-/// corrupted parent stack frame by directly re-executing the shell binary.
-pub fn relaunch_shell_chirho() -> ! {
-    crate::serial_println_chirho!("[PROCESS] relaunch_shell: re-exec /bin/sh");
-    let argv_chirho = [alloc::string::String::from("sh")];
-    let envp_chirho = [alloc::string::String::from("HOME=/root")];
-    exec_shell_with_args_chirho(&argv_chirho, &envp_chirho)
-}
-
 pub fn kill_and_respawn_shell_chirho(reason_chirho: &str) -> ! {
     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
         let pid_chirho = task_arc_chirho.lock().pid_chirho;
