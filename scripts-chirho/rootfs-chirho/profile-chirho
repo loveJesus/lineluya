@@ -21,7 +21,26 @@ if mkdir "$DROPBEAR_GUARD_CHIRHO" 2>/dev/null; then
     fi
 fi
 
-if [ -x /usr/local/sbin/start-lineluya-desktop-chirho.sh ]; then
+# Every /bin/sh -l reads this file, and xterm starts a login shell which then
+# execs ANOTHER login shell — so an unconditional launch here fired the launcher
+# once per login shell, not once per boot. Observed four launcher execs (PIDs
+# 14, 29, 33, 37) in a 400s run: one at boot, then more as xterm's shell chain
+# and its respawn each re-read /etc/profile.
+#
+# The launcher's own `mkdir` guard is atomic and stayed authoritative, so this
+# never produced a duplicate Xorg — but it did churn processes and violates the
+# single-launch gate. Skipping when the guard already exists stops a login shell
+# from invoking a launcher that is only going to exit 0.
+#
+# Deliberately NOT a replacement for the launcher's guard: it still does the
+# atomic mkdir, and still rmdir's on its failure path, so a genuine launcher
+# failure is retried by the next login shell. Two shells racing this test can
+# still both exec the launcher; the launcher's mkdir remains what makes at most
+# one of them proceed.
+DESKTOP_GUARD_CHIRHO=/tmp/.lineluya-desktop-started-chirho
+if [ -d "$DESKTOP_GUARD_CHIRHO" ]; then
+    :
+elif [ -x /usr/local/sbin/start-lineluya-desktop-chirho.sh ]; then
     /usr/local/sbin/start-lineluya-desktop-chirho.sh &
 else
     echo "[DESKTOP] FATAL: rootfs launcher is missing" >&2
