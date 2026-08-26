@@ -1099,6 +1099,27 @@ pub fn deliver_one_signal_on_return_chirho(
                 mask_chirho,
                 restorer_chirho,
             } => {
+                // Validate the target stack range BEFORE mutating ANY state.
+                //
+                // The dequeue and mask-widening below are not reversible here
+                // (there is no enqueue counterpart), so committing them first
+                // and discovering a bad frame afterwards would silently lose the
+                // signal AND leave blocked_chirho widened — stranding future
+                // signals. Checking first means an unusable stack costs us
+                // nothing: the signal stays pending and the mask untouched.
+                let probe_rsp_chirho = (frame_chirho.rsp_chirho
+                    - core::mem::size_of::<RtSigframeChirho>() as u64) & !0xF;
+                if crate::uaccess_chirho::validate_user_range_chirho(
+                    probe_rsp_chirho,
+                    core::mem::size_of::<RtSigframeChirho>(),
+                ).is_err() {
+                    crate::serial_println_chirho!(
+                        "[SIGNAL] sig {} to PID {}: unusable sigframe stack {:#x} — left pending",
+                        signo_chirho, task_chirho.pid_chirho, probe_rsp_chirho,
+                    );
+                    continue;
+                }
+
                 // Dequeue the signal.
                 task_chirho.pending_signals_chirho &= !(1u64 << signo_chirho);
                 task_chirho
@@ -1139,10 +1160,51 @@ pub fn deliver_one_signal_on_return_chirho(
                     signo_chirho: signo_chirho as u64,
                 };
 
-                // Write sigframe to user stack (task lock released).
-                let dst_chirho = new_rsp_chirho as *mut RtSigframeChirho;
-                unsafe {
-                    core::ptr::write_volatile(dst_chirho, sigframe_chirho);
+                // Write the sigframe to the user stack through the VALIDATED
+                // uaccess path, not a raw pointer.
+                //
+                // This used to be `write_volatile` straight at new_rsp_chirho,
+                // with no range check and no guarantee the target task's page
+                // table was the active CR3. That is worth removing on its own
+                // merits — an unchecked kernel write to a user address is a
+                // hazard whether or not it has fired.
+                //
+                // HARDENING, NOT A DIAGNOSED ROOT CAUSE, AND NARROWER THAN IT
+                // LOOKS: copy_to_user_chirho validates only that the address
+                // RANGE is canonical and non-overflowing, then does a raw copy.
+                // It does NOT prove the pages are mapped and writable, does NOT
+                // check that the target task's page table is the active CR3, and
+                // cannot confirm the bytes landed — there are no fault-fixup
+                // tables. So a boot logging zero refusals shows the RANGE was
+                // fine; it does not prove the write succeeded.
+                // The mechanism actually proven is single-owner signal delivery;
+                // see the note in syscall_chirho.rs.
+                //
+                // The refusal still matters: redirecting execution with an
+                // unwritten frame would hand userspace a stack that does not
+                // contain what rt_sigreturn expects. Dropping the signal is
+                // survivable; resuming on a fabricated frame is not. The signal
+                // is already dequeued above, so returning cannot spin.
+                let sigframe_bytes_chirho = unsafe {
+                    core::slice::from_raw_parts(
+                        &sigframe_chirho as *const RtSigframeChirho as *const u8,
+                        frame_size_chirho as usize,
+                    )
+                };
+                if let Err(err_chirho) = crate::uaccess_chirho::copy_to_user_chirho(
+                    new_rsp_chirho,
+                    sigframe_bytes_chirho,
+                    frame_size_chirho as usize,
+                ) {
+                    crate::serial_println_chirho!(
+                        "[SIGNAL] REFUSED sig {} to PID {}: sigframe write to {:#x} failed ({:?}) — not redirecting",
+                        signo_chirho, sig_pid_chirho, new_rsp_chirho, err_chirho,
+                    );
+                    // `return`, not `continue`: the task lock was moved by the
+                    // drop above, so the loop cannot legally take another pass.
+                    // false == "no signal delivered", which is accurate. The
+                    // signal is already dequeued, so this cannot spin.
+                    return false;
                 }
 
                 // Redirect execution to the signal handler.

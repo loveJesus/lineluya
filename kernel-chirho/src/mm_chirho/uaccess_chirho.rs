@@ -98,7 +98,17 @@ pub fn is_user_address_chirho(addr_chirho: u64, len_chirho: u64) -> bool {
 }
 
 /// Internal helper: validate and return an error-typed result.
-fn validate_user_range_chirho(
+/// Check that `[user_addr, user_addr+len)` is a canonical, non-overflowing
+/// user-space range.
+///
+/// Public so callers can validate BEFORE committing irreversible state. Signal
+/// delivery needs exactly that: it dequeues the signal and widens the blocked
+/// mask with no way to undo either, so it must know the destination is sane
+/// before it mutates anything.
+///
+/// This checks the RANGE ONLY. It does not prove the pages are mapped or
+/// writable, and does not verify the active page table.
+pub fn validate_user_range_chirho(
     addr_chirho: u64,
     len_chirho: usize,
 ) -> Result<(), UaccessErrorChirho> {

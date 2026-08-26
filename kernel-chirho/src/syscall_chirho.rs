@@ -2883,30 +2883,25 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         }
     }
 
-    // Deliver pending signals before returning to user mode.
-    // CRITICAL for Xorg: after sigprocmask unblocks SIGUSR1, the pending
-    // signal must be delivered NOW (before SYSRET). Without this, the process
-    // returns to a busy-wait loop and the signal is never delivered because
-    // we only checked signals in select/poll, not on every syscall return.
-    let delivered_chirho = crate::signal_chirho::deliver_one_signal_on_return_chirho(frame_chirho);
-
-    // Debug: trace PID 5 returning from syscall to catch freezes
-    {
-        let dbg_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|t| t.lock().pid_chirho).unwrap_or(0);
-        if dbg_pid_chirho == 5 {
-            use core::sync::atomic::{AtomicU64, Ordering};
-            static P5_RET_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let cnt_chirho = P5_RET_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if false && cnt_chirho > 1530 { // Disabled: serial flooding starves other PIDs
-                crate::serial_println_chirho!(
-                    "[P5-RET] #{} nr={} r={} sig={} rcx={:#x} r11={:#x}",
-                    cnt_chirho, syscall_nr_chirho, result_chirho,
-                    delivered_chirho, frame_chirho.rcx_chirho, frame_chirho.r11_chirho,
-                );
-            }
-        }
-    }
+    // Signal delivery deliberately does NOT happen here. There is exactly ONE
+    // owner, in the syscall wrapper, and it runs strictly AFTER the RCX
+    // corruption guard.
+    //
+    // Delivering here created a self-defeating sequence:
+    //   1. this call set frame.rcx = handler AND frame.rsp = sigframe;
+    //   2. the wrapper's guard saw rcx != saved_rcx, called that "corrupted",
+    //      and restored frame.rcx — undoing a LEGITIMATE redirect;
+    //   3. it did NOT restore frame.rsp, so the task returned to its ORIGINAL
+    //      return address with the stack pointer left at the pushed sigframe;
+    //   4. the wrapper then delivered again, on already-dequeued state.
+    // Step 3 is the damaging one: a half-reverted frame. Later returns pop from
+    // a shifted stack and jump to whatever they find, which is the observed
+    // instruction-fetch fault at a bogus RIP.
+    //
+    // The guard's own comment already noted that sched_yield "INTENTIONALLY
+    // modifies RCX" and allowlisted nr 24 and 15. Signal delivery is the same
+    // category and was never added — so the fix is not another allowlist entry,
+    // it is having a single owner the guard cannot race.
 
     result_chirho
 }
