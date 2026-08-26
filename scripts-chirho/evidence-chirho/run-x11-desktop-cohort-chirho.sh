@@ -1158,7 +1158,12 @@ run_attempt_chirho() {
         fatal_line_chirho="kernel image hash changed during attempt"
     fi
 
-    launcher_count_chirho="$(count_pattern_chirho '\[EXEC\] pid=[0-9]+ path="/usr/local/sbin/start-lineluya-desktop-chirho.sh"' "$serial_log_chirho")"
+    # Count the unconditional shebang identity, not the generic pid/path trace.
+    # The latter is currently emitted only for PID >= 10, so it hid the genuine
+    # boot-time PID-7 launch and made launcher cardinality depend on boot order.
+    # An explicit `sh script` invocation emits no shebang record and therefore
+    # fails closed as count zero; invocation style and this gate must move together.
+    launcher_count_chirho="$(count_pattern_chirho "\\[EXEC\\] shebang: interp='[^']+' script='/usr/local/sbin/start-lineluya-desktop-chirho.sh'" "$serial_log_chirho")"
     xorg_launch_count_chirho="$(count_pattern_chirho '\[DESKTOP\] Xorg launched' "$serial_log_chirho")"
     client_launch_count_chirho="$(count_pattern_chirho '\[DESKTOP\] clients launched:' "$serial_log_chirho")"
     synthesis_count_chirho="$(count_pattern_chirho 'X11-INJECT|X11-EVENT-INJECT|X11-BATCH|X11-REASSEM' "$serial_log_chirho")"

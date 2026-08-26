@@ -81,6 +81,10 @@ serial marker does not close a phase whose gate requires a cohort.
 - [x] Prove `xgears-chirho` execs from the generated disk, creates/maps a
       window, renders nonzero frames, and prints measured FPS.
 - [ ] Capture framebuffer before/after evidence showing mapped client output.
+      An exploratory `a93d209` boot captured recognizable twm-managed
+      `xgears-chirho` geometry from both QEMU and byte-identical physical VRAM
+      at 369 seconds, but acceptance remains open until the same proof comes
+      from a newly provisioned rootfs after temporary-trace cleanup.
 - [x] Verify no success evidence came from preload logs, synthetic protocol
       bytes, a manual rootfs edit, or a stale prior image.
 
@@ -157,6 +161,9 @@ serial marker does not close a phase whose gate requires a cohort.
 - [x] Bind every host forward to `127.0.0.1` and use a unique per-run port.
 - [x] Use an immutable hashed base rootfs and unique per-run writable scratch.
 - [x] Record source, kernel, rootfs, image, configuration, and log hashes.
+- [x] Make launcher cardinality use the unconditional material-script shebang
+      record, never a PID-conditioned exec trace. The corrected discriminator
+      counts five launches before the profile fix and one after it.
 - [ ] Complete one authentic bounded instrumented proof boot.
 - [ ] Complete five consecutive trace-free native-KVM boots from one artifact,
       each satisfying the entire desktop gate within 400 seconds.

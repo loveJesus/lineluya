@@ -364,6 +364,36 @@ Serial line count is retained only as metadata. It is never a success gate.
 - Keep the final cohort plus the first useful divergent log. Retire redundant
   raw logs so evidence growth stays bounded.
 
+## Exploratory framebuffer discriminator Chirho
+
+Revision `a93d209` completed one native-KVM `qemu64` discriminator against a
+cleanly rebuilt kernel and an isolated rootfs whose `/etc/profile` bytes match
+that revision. The prediction was frozen before boot: if the prior black frame
+was captured before twm completed initialization, a capture after the xterm PTY
+marker plus a 60-second settle would contain recognizable, non-uniform client
+output; an all-value-10 frame would falsify that explanation.
+
+The result confirmed the timing explanation. Xorg entered its main loop at 16
+seconds, twm owned `SubstructureRedirect` at 55 seconds, the first measured FPS
+line arrived at 95 seconds, the xterm PTY shell marker arrived at 309 seconds,
+and the physical framebuffer was captured at 369 seconds. The 2,764,800-byte
+frame changed in 442,503 byte positions and contained 2,371,839 bytes of value
+10, 383,025 bytes of value 0, and 9,936 bytes of value 255. Its raw physical
+capture hash, `38da6228aeccad7d5fd406941e46abef52b56ca49c38641ab9b55905efd32853`,
+exactly matches the payload hash of QEMU's independent PPM screendump. Manual
+review shows twm window furniture and `xgears-chirho`'s axes and rotating
+rectangle geometry. The fbdev mapping and ShadowFB conversion path therefore
+render real client output; the earlier uniform-black captures were premature.
+
+This run is deliberately **not** Gate C or Gate D acceptance evidence. The
+rootfs was an isolated copy with one source-matching profile replacement rather
+than a newly provisioned pipeline artifact, source preflight remained RED at
+306 failures, and 803 temporary-trace lines were emitted. The runner also
+recorded a false `launcher_count_0_chirho` divergence because it used a
+PID-gated exec trace; the preserved log contains exactly one unconditional
+launcher shebang record. The gate implementation is being corrected, and the
+visual proof must be repeated from a source-provisioned artifact after cleanup.
+
 ## Work sequence Chirho
 
 1. Completed in `9893b82` and `dfaa3c6`: object-based `poll(2)` readiness and
@@ -375,8 +405,9 @@ Serial line count is retained only as metadata. It is never a success gate.
    25; lower PID churn does not repair the separate context-slot defect.
 2. Obtain the process-topology disposition and repair bounded context-slot
    ownership so boot state and real tasks cannot alias or exceed the table.
-3. Re-run the authentic desktop path and close the framebuffer-output proof
-   without temporary traces or synthesized evidence.
+3. Completed the bounded exploratory framebuffer discriminator above. Repeat
+   the same semantic image proof from a source-provisioned artifact after
+   temporary-trace cleanup before closing Gate C.
 4. Remove remaining completed diagnostics and numeric workload heuristics;
    repair or replace the red bare-metal test gate with an executable gate.
 5. Run the 5/5 trace-free native-KVM cohort, independent rebuild confirmation,

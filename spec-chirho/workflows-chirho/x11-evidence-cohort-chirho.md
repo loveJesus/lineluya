@@ -103,6 +103,13 @@ flowchart TD
 - A failure stops the cohort immediately. The next manual cohort starts from
   attempt one after the first divergence is understood; the runner never fills
   a five-run table by skipping a failed attempt.
+- Evidence gates must not depend on a record whose emission is conditioned on a
+  PID or numeric PID range. Launcher cardinality therefore counts the exact,
+  unconditional shebang record for the material launcher instead of the
+  generic `[EXEC] pid=N path=...` record, which is currently emitted only for
+  PID 10 and above. The old PID-gated count reported four launches while the
+  same preserved log contains five launcher shebang records; on the fixed
+  profile, it reported zero while the one real PID-7 shebang record remained.
 - The trace-free preflight extracts every bracketed token beginning with an
   alphabetic character that starts a Rust string in `kernel-chirho/src`.
   TRACE/DBG/DIAG segments and PID-numbered windows are structurally forbidden
