@@ -18,6 +18,7 @@ debug_serial = []            # serial_debug_chirho!() prints to serial
 # Remove "debug_serial" from default for production builds
 
 [dependencies]
+kernel-core-chirho = { path = "../kernel-core-chirho" }
 bootloader_api = "0.11"
 x86_64 = { version = "0.15", features = ["instructions"] }
 spin = "0.9"

@@ -94,9 +94,21 @@ serial marker does not close a phase whose gate requires a cohort.
       progress to the already-known address-space exhaustion wall.
 - [ ] Remove temporary `[XORG-ENTRY]`, `[XORG-SC]`, `[CTX-*]`, PID-specific,
       and equivalent completed diagnostics from the final build.
-- [ ] Replace raw `Option<PhysAddr>` task address-space ownership with a
-      refcounted handle, O(1) per-frame leaf ownership, CR3-safe explicit
-      retirement, and executable clone/COW/unmap/exit regressions.
+- [x] Add a preallocated O(1) per-physical-frame ownership table and route
+      managed user-PTE publication, fork clone, COW, and unmap through it.
+- [x] Add the refcounted address-space handle primitive whose `Drop` performs
+      atomic accounting only, plus explicit last-owner retirement that refuses
+      the boot root and currently active CR3.
+- [x] Execute the host-testable owner/leaf regressions, including the exact
+      parent-fork, child-COW, unmap, and last-owner-exit sequence.
+- [x] KVM-smoke the MM primitives through the known raw-lifecycle exhaustion
+      wall with zero ownership-accounting errors; do not call that wall fixed.
+- [ ] Replace raw `Option<PhysAddr>` in `TaskChirho`, wire exec/fork/
+      `CLONE_VM`/exit/reap to the handle, and prove obsolete roots retire only
+      after switching CR3.
+- [ ] Prove repeated lifecycle cycles reuse page-table and last-reference leaf
+      frames without `LeafFrameExhaustedChirho`, double-free, or active-root
+      retirement.
 - [ ] Make render-task registry capacity/overflow behavior explicit while
       retaining O(1), lock-free scheduler lookup.
 - [x] Update the X11 workflow Mermaid diagram to match the final rootfs,

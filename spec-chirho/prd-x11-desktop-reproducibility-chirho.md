@@ -131,6 +131,15 @@ proved that this is not yet reproducible from the repository pipeline:
 16. xkbcomp's keymap output is produced by the real userspace compiler from
     material rootfs inputs. The kernel does not preload `server-0.xkm` or any
     substitute compiler output.
+17. A task owns its user address space through a refcounted handle, never a raw
+    `PhysAddr`. `CLONE_VM` clones the handle, handle `Drop` performs atomic
+    accounting only, and the final owner retires the tree explicitly after
+    switching away. The retirement API refuses the boot root and active CR3.
+18. Every managed user-leaf PTE publish, fork clone, COW replacement, unmap,
+    and address-space retirement updates one preallocated O(1) per-frame
+    counter. The COW fault path allocates no ownership metadata, unmanaged
+    device frames never enter the RAM free list, and a frame is reusable only
+    after its last genuine mapping disappears.
 
 ## Functional requirements Chirho
 
@@ -176,6 +185,10 @@ proved that this is not yet reproducible from the repository pipeline:
 - `x11_kernel_008_chirho`: Xorg observes xkbcomp's genuine exit status and
   consumes output produced by that userspace process; no wait4 fast path or
   kernel-supplied fallback keymap can manufacture success.
+- `x11_kernel_009_chirho`: repeated exec, fork/COW, `CLONE_VM`, unmap, exit,
+  and reap cycles retire obsolete user page-table trees and leaf references
+  without freeing an active CR3, double-freeing a shared leaf, or exhausting
+  the physical-frame allocator through leaked ownership.
 
 ### Desktop behavior Chirho
 
@@ -220,6 +233,8 @@ proved that this is not yet reproducible from the repository pipeline:
 - The test gate is green. The current `cargo test --no-run` duplicate-`core`
   failure must either be repaired or replaced by an explicitly approved,
   executable bare-metal test gate; it cannot be silently reported as passing.
+- Executable regressions cover address-space owner sharing/retirement and the
+  exact parent-fork, child-COW, unmap, and last-owner-exit leaf-count sequence.
 - The rootfs build proves `/usr/bin/xgears-chirho` exists, is executable, is the
   expected x86_64 ELF, and has all declared runtime dependencies.
 - The source revision and artifact hashes used below are recorded.

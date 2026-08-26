@@ -10,6 +10,8 @@
 
 extern crate alloc;
 
+pub mod frame_ownership_chirho;
+
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// Architecture abstraction — each target implements this.

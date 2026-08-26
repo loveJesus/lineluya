@@ -792,9 +792,7 @@ fn map_anonymous_pages_chirho(
     prot_chirho: u32,
 ) -> Result<(), i64> {
     use crate::syscall_chirho::ENOMEM_CHIRHO;
-    use x86_64::structures::paging::{
-        FrameAllocator, Mapper, Page, Size4KiB,
-    };
+    use x86_64::structures::paging::FrameAllocator;
     use x86_64::VirtAddr;
 
     let flags_chirho = prot_to_page_flags_chirho(prot_chirho);
@@ -803,49 +801,10 @@ fn map_anonymous_pages_chirho(
 
     for i_chirho in 0..num_pages_chirho {
         let page_addr_chirho = addr_chirho + i_chirho * PAGE_SIZE_CHIRHO;
-        let page_chirho: Page<Size4KiB> =
-            Page::containing_address(VirtAddr::new(page_addr_chirho));
 
-        // Check if the page is already mapped. If so, update flags and reuse.
-        {
-            let (cr3_am_chirho, _) = x86_64::registers::control::Cr3::read();
-            let already_mapped_chirho = crate::pagetable_chirho::walk_page_table_chirho(
-                cr3_am_chirho.start_address(),
-                VirtAddr::new(page_addr_chirho),
-            ).map(|pte_ptr_chirho| unsafe {
-                (*pte_ptr_chirho).flags().contains(
-                    x86_64::structures::paging::PageTableFlags::PRESENT
-                )
-            }).unwrap_or(false);
-
-            if already_mapped_chirho {
-                // Page exists from a previous process (shared boot PML4).
-                // MUST zero it — stale data from xterm/shell libraries
-                // corrupts musl's mallocng metadata (Xorg 0x2b33d crash).
-                let (cr3_uf_chirho, _) = x86_64::registers::control::Cr3::read();
-                if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                    cr3_uf_chirho.start_address(),
-                    VirtAddr::new(page_addr_chirho),
-                ) {
-                    let po_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-                    unsafe {
-                        let phys_chirho = (*pte_ptr_chirho).addr().as_u64();
-                        // Zero the frame via physical memory offset
-                        core::ptr::write_bytes(
-                            (phys_chirho + po_chirho) as *mut u8, 0,
-                            PAGE_SIZE_CHIRHO as usize,
-                        );
-                        (*pte_ptr_chirho).set_addr(
-                            (*pte_ptr_chirho).addr(), flags_chirho,
-                        );
-                    }
-                    x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
-                }
-                continue;
-            }
-        }
-
-        // Allocate a physical frame for a genuinely new page.
+        // Always publish a fresh zeroed leaf. Reusing and zeroing an existing
+        // mapping can corrupt another address space that still references the
+        // same COW frame.
         let frame_chirho = {
             let mut alloc_lock_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
             match alloc_lock_chirho.as_mut() {
@@ -857,56 +816,28 @@ fn map_anonymous_pages_chirho(
             }
         };
 
-        // For PID >= 3: map directly via CR3-based map_page_in_pt_chirho
-        // (no GLOBAL_MAPPER). For PID 0-2: use GLOBAL_MAPPER (boot PT).
         let frame_phys_chirho = frame_chirho.start_address().as_u64();
-        let mapping_pid_chirho = crate::task_chirho::current_task_chirho()
-            .and_then(|t| t.try_lock().map(|g| g.pid_chirho)).unwrap_or(0);
-        if mapping_pid_chirho >= 2 {
-            let (cr3_map_chirho, _) = x86_64::registers::control::Cr3::read();
-            if crate::pagetable_chirho::map_page_in_pt_chirho(
-                cr3_map_chirho.start_address(),
-                page_addr_chirho, frame_phys_chirho, flags_chirho,
-            ).is_err() {
-                continue;
-            }
-            x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
-            // Zero-fill via physical identity mapping (avoids PF on user addr)
-            let po_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-            unsafe {
-                core::ptr::write_bytes(
-                    (frame_phys_chirho + po_chirho) as *mut u8, 0,
-                    PAGE_SIZE_CHIRHO as usize,
-                );
-            }
-        } else {
-            // PID 0-2: use GLOBAL_MAPPER (boot PT hierarchy)
-            x86_64::instructions::interrupts::disable();
-            unsafe { crate::mm_chirho::reinit_mapper_for_current_cr3_chirho(); }
-            let result_chirho = {
-                let mut ml_chirho = GLOBAL_MAPPER_CHIRHO.lock();
-                match ml_chirho.as_mut() {
-                    Some(m_chirho) => {
-                        let mut al_chirho = GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
-                        match al_chirho.as_mut() {
-                            Some(a_chirho) => unsafe {
-                                m_chirho.map_to(page_chirho, frame_chirho, flags_chirho, a_chirho)
-                            },
-                            None => return Err(-ENOMEM_CHIRHO),
-                        }
-                    }
-                    None => return Err(-ENOMEM_CHIRHO),
-                }
-            };
-            x86_64::instructions::interrupts::enable();
-            match result_chirho {
-                Ok(f_chirho) => f_chirho.flush(),
-                Err(_) => continue,
-            }
-            unsafe {
-                core::ptr::write_bytes(page_addr_chirho as *mut u8, 0, PAGE_SIZE_CHIRHO as usize);
-            }
+        let physical_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+        unsafe {
+            core::ptr::write_bytes(
+                (frame_phys_chirho + physical_offset_chirho) as *mut u8,
+                0,
+                PAGE_SIZE_CHIRHO as usize,
+            );
         }
+        let (cr3_map_chirho, _) = x86_64::registers::control::Cr3::read();
+        if crate::pagetable_chirho::map_page_in_pt_chirho(
+            cr3_map_chirho.start_address(),
+            page_addr_chirho,
+            frame_phys_chirho,
+            flags_chirho,
+        )
+        .is_err()
+        {
+            crate::mm_chirho::deallocate_frame_chirho(frame_chirho);
+            return Err(-ENOMEM_CHIRHO);
+        }
+        x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
     }
 
     Ok(())
@@ -914,39 +845,26 @@ fn map_anonymous_pages_chirho(
 
 /// Unmap pages from the page tables.
 ///
-/// Failures are silently ignored — the VMA is removed regardless (matching
-/// Linux's `munmap` best-effort approach for the page tables).
+/// An absent mapping is harmless. Ownership-accounting failures remain loud;
+/// silently clearing them would turn an underflow into later use-after-free.
 fn unmap_pages_chirho(addr_chirho: u64, len_chirho: u64) {
-    use x86_64::structures::paging::{Mapper, Page, Size4KiB};
     use x86_64::VirtAddr;
 
     let num_pages_chirho = len_chirho / PAGE_SIZE_CHIRHO;
-    let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
 
-    // Unmap pages via CR3-based PT walk (no GLOBAL_MAPPER).
     let (cr3_unmap_chirho, _) = x86_64::registers::control::Cr3::read();
-    {
-        for i_chirho in 0..num_pages_chirho {
-            let page_addr_chirho = addr_chirho + i_chirho * PAGE_SIZE_CHIRHO;
-            if let Some(pte_ptr_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                cr3_unmap_chirho.start_address(),
-                VirtAddr::new(page_addr_chirho),
-            ) {
-                // Zero the physical frame before unmapping to prevent
-                // stale heap metadata from corrupting future allocations.
-                // This fixes the Xorg crash: musl's realloc does
-                // mmap+memcpy+munmap, and if the freed frame is reused
-                // by a later mmap, stale chunk headers cause corruption.
-                unsafe {
-                    let phys_addr_chirho = (*pte_ptr_chirho).addr().as_u64();
-                    if phys_addr_chirho != 0 {
-                        let kernel_va_chirho = phys_addr_chirho + phys_off_chirho;
-                        core::ptr::write_bytes(kernel_va_chirho as *mut u8, 0, 4096);
-                    }
-                    (*pte_ptr_chirho).set_unused();
-                }
-                x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
-            }
+    for i_chirho in 0..num_pages_chirho {
+        let page_addr_chirho = addr_chirho + i_chirho * PAGE_SIZE_CHIRHO;
+        if let Err(unmap_error_chirho) = crate::pagetable_chirho::unmap_user_page_chirho(
+            cr3_unmap_chirho.start_address(),
+            VirtAddr::new(page_addr_chirho),
+        ) {
+            crate::serial_println_chirho!(
+                "[MM-UNMAP] ownership error addr={:#x}: {:?}",
+                page_addr_chirho,
+                unmap_error_chirho,
+            );
+            break;
         }
     }
 }
@@ -956,7 +874,6 @@ fn unmap_pages_chirho(addr_chirho: u64, len_chirho: u64) {
 /// For each page in the range, if it is currently mapped, we update its flags
 /// to match `prot_chirho`.
 fn update_page_protection_chirho(addr_chirho: u64, len_chirho: u64, prot_chirho: u32) {
-    use x86_64::structures::paging::{Mapper, Page, Size4KiB};
     use x86_64::VirtAddr;
 
     let flags_chirho = prot_to_page_flags_chirho(prot_chirho);
@@ -971,7 +888,20 @@ fn update_page_protection_chirho(addr_chirho: u64, len_chirho: u64, prot_chirho:
             VirtAddr::new(page_addr_chirho),
         ) {
             unsafe {
-                (*pte_ptr_chirho).set_addr((*pte_ptr_chirho).addr(), flags_chirho);
+                let old_flags_chirho = (*pte_ptr_chirho).flags();
+                let mut effective_flags_chirho = flags_chirho;
+                if old_flags_chirho.contains(
+                    x86_64::structures::paging::PageTableFlags::BIT_9,
+                ) {
+                    effective_flags_chirho.insert(
+                        x86_64::structures::paging::PageTableFlags::BIT_9,
+                    );
+                    effective_flags_chirho.remove(
+                        x86_64::structures::paging::PageTableFlags::WRITABLE,
+                    );
+                }
+                (*pte_ptr_chirho)
+                    .set_addr((*pte_ptr_chirho).addr(), effective_flags_chirho);
             }
             x86_64::instructions::tlb::flush(VirtAddr::new(page_addr_chirho));
         }
@@ -982,9 +912,10 @@ fn update_page_protection_chirho(addr_chirho: u64, len_chirho: u64, prot_chirho:
 fn prot_to_page_flags_chirho(prot_chirho: u32) -> x86_64::structures::paging::PageTableFlags {
     use x86_64::structures::paging::PageTableFlags;
 
-    // PROT_NONE: page must NOT be present — any access triggers fault
+    // PROT_NONE retains USER_ACCESSIBLE as ownership metadata while clearing
+    // PRESENT. The physical leaf remains owned until munmap or retirement.
     if prot_chirho == PROT_NONE_CHIRHO {
-        return PageTableFlags::empty();
+        return PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
     }
 
     let mut flags_chirho = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
@@ -1018,10 +949,16 @@ use x86_64::structures::paging::{OffsetPageTable, PhysFrame, Size4KiB, FrameAllo
 pub struct GlobalFrameAllocatorChirho {
     next_frame_index_chirho: usize,
     memory_regions_chirho: &'static bootloader_api::info::MemoryRegions,
-    /// Free list of previously-deallocated frames available for reuse.
-    /// Checked before bumping the index, so freed frames are recycled.
-    free_list_chirho: alloc::vec::Vec<PhysFrame<Size4KiB>>,
+    /// Intrusive list of previously-deallocated frames available for reuse.
+    ///
+    /// The first word of each free frame stores the next physical address.
+    /// This makes both COW release and cold address-space retirement O(1)
+    /// without allocating while the frame-allocator lock is held.
+    free_head_chirho: Option<PhysFrame<Size4KiB>>,
+    free_count_chirho: usize,
 }
+
+const FREE_LIST_END_CHIRHO: u64 = u64::MAX;
 
 impl GlobalFrameAllocatorChirho {
     /// Create a new global frame allocator from the bootloader memory
@@ -1033,25 +970,54 @@ impl GlobalFrameAllocatorChirho {
         Self {
             next_frame_index_chirho: start_index_chirho,
             memory_regions_chirho,
-            free_list_chirho: alloc::vec::Vec::new(),
+            free_head_chirho: None,
+            free_count_chirho: 0,
         }
     }
 
     /// Return a frame to the free list for reuse.
     pub fn deallocate_frame_chirho(&mut self, frame_chirho: PhysFrame<Size4KiB>) {
-        self.free_list_chirho.push(frame_chirho);
+        // Workflow: spec-chirho/workflows-chirho/address-space-lifecycle-chirho.md
+        let next_phys_chirho = self
+            .free_head_chirho
+            .map(|head_chirho| head_chirho.start_address().as_u64())
+            .unwrap_or(FREE_LIST_END_CHIRHO);
+        let frame_virt_chirho = frame_chirho.start_address().as_u64()
+            + crate::pagetable_chirho::phys_mem_offset_chirho();
+        unsafe {
+            (frame_virt_chirho as *mut u64).write(next_phys_chirho);
+        }
+        self.free_head_chirho = Some(frame_chirho);
+        self.free_count_chirho = self.free_count_chirho.saturating_add(1);
     }
 
     /// Number of frames on the free list.
     pub fn free_count_chirho(&self) -> usize {
-        self.free_list_chirho.len()
+        self.free_count_chirho
+    }
+
+    pub fn memory_regions_chirho(
+        &self,
+    ) -> &'static bootloader_api::info::MemoryRegions {
+        self.memory_regions_chirho
     }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocatorChirho {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         // Prefer recycled frames from the free list.
-        if let Some(frame_chirho) = self.free_list_chirho.pop() {
+        if let Some(frame_chirho) = self.free_head_chirho {
+            let frame_virt_chirho = frame_chirho.start_address().as_u64()
+                + crate::pagetable_chirho::phys_mem_offset_chirho();
+            let next_phys_chirho = unsafe { (frame_virt_chirho as *const u64).read() };
+            self.free_head_chirho = if next_phys_chirho == FREE_LIST_END_CHIRHO {
+                None
+            } else {
+                Some(PhysFrame::containing_address(PhysAddr::new(
+                    next_phys_chirho,
+                )))
+            };
+            self.free_count_chirho = self.free_count_chirho.saturating_sub(1);
             return Some(frame_chirho);
         }
 
@@ -1113,8 +1079,24 @@ pub unsafe fn init_mm_chirho(
     mapper_chirho: OffsetPageTable<'static>,
     frame_allocator_chirho: GlobalFrameAllocatorChirho,
 ) {
+    let memory_regions_chirho = frame_allocator_chirho.memory_regions_chirho();
     *GLOBAL_MAPPER_CHIRHO.lock() = Some(mapper_chirho);
     *GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock() = Some(frame_allocator_chirho);
+    let ownership_stats_chirho = crate::pagetable_chirho::init_leaf_frame_ownership_chirho(
+        memory_regions_chirho,
+    )
+    .expect("physical leaf ownership table initialization failed");
+    let registered_mappings_chirho =
+        crate::pagetable_chirho::register_existing_user_mappings_chirho(
+            crate::pagetable_chirho::get_boot_pml4_chirho(),
+        )
+        .expect("existing user mapping ownership registration failed");
+    crate::serial_println_chirho!(
+        "[MM-OWNERSHIP] slots={} managed={} initial_user_mappings={}",
+        ownership_stats_chirho.slot_count_chirho,
+        ownership_stats_chirho.managed_frame_count_chirho,
+        registered_mappings_chirho,
+    );
     crate::serial_println_chirho!("[OK] MM subsystem initialized");
 }
 
