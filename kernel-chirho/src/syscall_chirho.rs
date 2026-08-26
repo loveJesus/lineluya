@@ -3490,6 +3490,7 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
     if let Some(t_chirho) = crate::task_chirho::find_task_by_pid_chirho(parent_pid_chirho) {
         crate::process_chirho::exit_task_and_retire_descriptors_chirho(&t_chirho, 0);
     }
+    let mut displaced_address_space_chirho = None;
     if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
         let mut task_chirho = task_arc_chirho.lock();
         let pid_chirho = task_chirho.pid_chirho;
@@ -3498,12 +3499,28 @@ fn sys_exit_group_chirho(code_chirho: i32) -> i64 {
         task_chirho.ppid_chirho = 0;
         task_chirho.state_chirho = crate::task_chirho::TaskStateChirho::RunningChirho;
         task_chirho.exit_code_chirho = 0;
-        task_chirho.page_table_root_chirho = None;
+        // DETACH, never assign None outright. None means exactly one thing —
+        // "intentionally runs on the boot PML4" — which the CR3 switch below
+        // does make true, but the displaced handle still owns a real tree.
+        // Dropping it here leaked that tree on every re-exec, the same leak
+        // class this slice closed everywhere else.
+        displaced_address_space_chirho = task_chirho.page_table_root_chirho.take();
     }
     // Switch back to boot PML4 before exec_init
     let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
     if boot_pml4_chirho.as_u64() != 0 {
         unsafe { crate::pagetable_chirho::switch_page_table_chirho(boot_pml4_chirho); }
+    }
+    // CR3 is off the old tree and no task lock is held, so the displaced space
+    // can be retired. retire_chirho independently re-reads CR3 and refuses an
+    // active root, so this ordering is enforced by the API, not by this comment.
+    if let Some(old_address_space_chirho) = displaced_address_space_chirho {
+        if let Err(retire_error_chirho) = old_address_space_chirho.retire_chirho() {
+            crate::serial_println_chirho!(
+                "[EXIT-GROUP] displaced address space not retired: {:?}",
+                retire_error_chirho.reason_chirho,
+            );
+        }
     }
     crate::exec_chirho::exec_init_chirho();
 
