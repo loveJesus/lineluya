@@ -1935,7 +1935,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         },
         SYS_ACCESS_CHIRHO => sys_faccessat_real_chirho(-100, arg0_chirho, arg1_chirho as u32, 0),
         SYS_PIPE_CHIRHO => crate::pipe_chirho::sys_pipe_chirho(arg0_chirho),
-        SYS_SELECT_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
+        SYS_SELECT_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho, SelectTimeoutFormatChirho::TimevalChirho),
         SYS_SCHED_YIELD_CHIRHO => {
             // Restore the preempted RIP: the trampoline saved the
             // interrupted user RIP in the task struct. Set RCX in the
@@ -2446,7 +2446,7 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
         },
 
         // pselect6 / ppoll
-        SYS_PSELECT6_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho),
+        SYS_PSELECT6_CHIRHO => sys_select_chirho(arg0_chirho as i32, arg1_chirho, arg2_chirho, arg3_chirho, arg4_chirho, SelectTimeoutFormatChirho::TimespecChirho),
         SYS_PPOLL_CHIRHO => sys_ppoll_chirho(arg0_chirho, arg1_chirho as u32, arg2_chirho, arg3_chirho, arg4_chirho),
 
         // --- Phase 8+9: sendfile, splice, tee, vmsplice, copy_file_range ---
@@ -4503,24 +4503,77 @@ fn sys_poll_chirho(
     ready_count_chirho
 }
 
-/// `select(2)` implementation.
+/// Highest descriptor `select`/`pselect6` can actually report on.
 ///
-/// Checks which file descriptors are ready for I/O. For socket fds
-/// with pending connections/data, reports POLLIN. For regular files
-/// and pipes, always reports ready. For listening sockets with no
-/// pending connections, blocks (yields CPU) until timeout.
+/// This is the writefds bitmap capacity (16 bytes), the tightest of the three
+/// buffers involved, so it is the honest ceiling for the call as a whole. The
+/// readfds buffer is wider (128 bytes) and the process fd table wider still —
+/// that mismatch is RED on `sys_select_chirho`, not something this constant
+/// fixes. Its job is to keep every descriptor scan bounded.
+const SELECT_MAX_FDS_CHIRHO: usize = 128;
+
+/// Which timeout ABI the caller's timeout pointer uses.
+///
+/// `select(2)` and `pselect6(2)` share this implementation but NOT their
+/// timeout layout, and the difference is a factor of 1000. Reading a `timespec`
+/// as a `timeval` turns a 1 ms pselect6 wait into a 1 s one and rejects every
+/// value at or above 1 ms outright. While the timeout was ignored entirely this
+/// could not be observed; honouring it makes the distinction load-bearing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectTimeoutFormatChirho {
+    /// `select(2)`: `struct timeval { tv_sec, tv_usec }`.
+    TimevalChirho,
+    /// `pselect6(2)`: `struct timespec { tv_sec, tv_nsec }`.
+    TimespecChirho,
+}
+
+/// `select(2)` and `pselect6(2)`.
+///
+/// Workflow: spec-chirho/workflows-chirho/process-exit-lifecycle-chirho.md
+///
+/// Timeout contract, sharing `poll`'s deadline primitive: a NULL `timeout`
+/// blocks indefinitely and MUST NEVER return 0; an all-zero timeout performs a
+/// single non-blocking scan; a positive timeout may return 0 only once its
+/// deadline has genuinely passed, measured against the timer-ISR tick counter.
+/// Every yield inside the blocking loop is an internal scheduler handoff and
+/// must not escape as a return value. Read and write readiness are derived at
+/// the same moment on entry and on every retry, and the caller's sets are
+/// rewritten only at an actual return.
+///
+/// RED, and NOT repaired by the timeout work — do not read the contract above as
+/// covering these:
+/// - readiness itself is still identity-based here. `fd_is_read_ready_chirho`
+///   branches on `fd_chirho == 0`, consults `is_interactive_shell_chirho()`,
+///   probes the raw UART LSR and hardcodes TCP port 2222. `poll` had all four
+///   removed; `select` did not. Object-derived readiness is a poll property, not
+///   yet a kernel-wide one.
+/// - `exceptfds` is ignored entirely.
+/// - `pselect6`'s signal-mask argument is ignored, so it does not atomically
+///   swap the mask for the duration of the wait — its entire reason to exist.
+/// - fds at or above `SELECT_MAX_FDS_CHIRHO` are invisible even though the fd
+///   table holds more, and an oversized `nfds` is clamped rather than refused.
 fn sys_select_chirho(
     nfds_chirho: i32,
     readfds_ptr_chirho: u64,
     writefds_ptr_chirho: u64,
     _exceptfds_chirho: u64,
     timeout_ptr_chirho: u64,
+    timeout_format_chirho: SelectTimeoutFormatChirho,
 ) -> i64 {
     if nfds_chirho < 0 {
         return -EINVAL_CHIRHO;
     }
-    // Note: no early-exit on need_resched here (caused boot hang).
-    // The early-return at iteration 50 in the HLT loop handles this.
+    // Every descriptor scan below is bounded by SELECT_MAX_FDS_CHIRHO. `nfds` is
+    // caller-supplied and otherwise unbounded, and the blocking loop re-runs
+    // those scans on every iteration — an unbounded scan inside an unbounded
+    // wait. Clamping keeps the hot path bounded; refusing an oversized nfds
+    // outright would change behaviour for existing callers and belongs to the
+    // capacity slice named RED above.
+    // Note: no early-exit on need_resched here (caused boot hang). The blocking
+    // loop yields on every iteration, which is the handoff this would have been
+    // for. (It used to say "the early-return at iteration 50 in the HLT loop
+    // handles this" — that return was one of the fabricated zeros, and it is
+    // gone.)
 
     // Diagnostic: log PID 3's select nfds to understand pipe relay issue
     {
@@ -4539,21 +4592,89 @@ fn sys_select_chirho(
         }
     }
 
-    // Handle writefds: connected TCP sockets are always writable.
-    // Dropbear needs this to flush SSH packets after encrypting.
-    let mut write_ready_total_chirho: i64 = 0;
-    if writefds_ptr_chirho != 0 && nfds_chirho > 0 {
-        let sz_chirho = core::cmp::min(16, ((nfds_chirho as usize + 7) / 8));
-        let mut wfds_chirho = [0u8; 16];
-        let _ = crate::uaccess_chirho::copy_from_user_chirho(
-            &mut wfds_chirho[..sz_chirho], writefds_ptr_chirho, sz_chirho,
-        );
-        let mut result_wfds_chirho = [0u8; 16];
+    // POSIX select(2) argument validation and the timeout deadline. Both belong
+    // BEFORE any readiness work: a caller holding a ready descriptor AND a
+    // malformed timeout must still get EINVAL/EFAULT rather than success, and a
+    // finite deadline must be measured from entry, not from wherever the scan
+    // happened to finish.
+    //
+    // This contract did not exist here at all. `timeout_ptr_chirho` reached the
+    // parameter list and one `if ptr == 0 {}` with an EMPTY body, so no `timeval`
+    // was ever read and no deadline ever computed — every empty return out of
+    // this call was fabricated BY CONSTRUCTION, and {5, 0} was indistinguishable
+    // from NULL. `poll` was repaired for the same defect, so this reuses its
+    // primitive rather than inventing a second deadline.
+    //
+    // NULL means block indefinitely and MUST NEVER return 0. {0, 0} means a
+    // single non-blocking scan, so a deadline of "now" is exactly right.
+    let select_deadline_chirho: Option<u64> = if timeout_ptr_chirho == 0 {
+        None
+    } else {
+        let mut tv_buf_chirho = [0u8; 16];
+        if crate::uaccess_chirho::copy_from_user_chirho(
+            &mut tv_buf_chirho,
+            timeout_ptr_chirho,
+            16,
+        )
+        .is_err()
+        {
+            return -EFAULT_CHIRHO;
+        }
+        let tv_sec_chirho =
+            i64::from_le_bytes(tv_buf_chirho[0..8].try_into().unwrap_or([0u8; 8]));
+        // Second field: microseconds for select's timeval, nanoseconds for
+        // pselect6's timespec. Same offset, same width, different scale.
+        let subsec_chirho =
+            i64::from_le_bytes(tv_buf_chirho[8..16].try_into().unwrap_or([0u8; 8]));
+        let (subsec_limit_chirho, subsec_per_ms_chirho) = match timeout_format_chirho {
+            SelectTimeoutFormatChirho::TimevalChirho => (1_000_000i64, 1_000u64),
+            SelectTimeoutFormatChirho::TimespecChirho => (1_000_000_000i64, 1_000_000u64),
+        };
+        // POSIX: tv_sec >= 0, and the sub-second field is in [0, one second).
+        if tv_sec_chirho < 0 || !(0..subsec_limit_chirho).contains(&subsec_chirho) {
+            return -EINVAL_CHIRHO;
+        }
+        // Ticks are ~1 ms (TICK_PERIOD_NS_CHIRHO), matching sys_poll_chirho.
+        // Round a sub-millisecond remainder UP so a nonzero timeout can never
+        // collapse into the all-zero single-scan case.
+        let timeout_ms_chirho = (tv_sec_chirho as u64)
+            .saturating_mul(1000)
+            .saturating_add((subsec_chirho as u64).div_ceil(subsec_per_ms_chirho));
+        Some(crate::scheduler_chirho::tick_count_chirho().saturating_add(timeout_ms_chirho))
+    };
+
+    // writefds: copy the REQUESTED set in once — what the caller asked about
+    // does not change — and re-derive readiness from it on entry and on every
+    // retry. Deriving it once and copying the RESULT straight back to user
+    // memory (which is what this did) had two defects: a write fd that became
+    // ready after the first scan was invisible for the rest of the call, and the
+    // caller's set was overwritten before the syscall had decided to return.
+    let wsz_chirho = if writefds_ptr_chirho != 0 && nfds_chirho > 0 {
+        core::cmp::min(16, (nfds_chirho as usize + 7) / 8)
+    } else {
+        0
+    };
+    let mut wfds_req_chirho = [0u8; 16];
+    if wsz_chirho > 0
+        && crate::uaccess_chirho::copy_from_user_chirho(
+            &mut wfds_req_chirho[..wsz_chirho],
+            writefds_ptr_chirho,
+            wsz_chirho,
+        )
+        .is_err()
+    {
+        return -EFAULT_CHIRHO;
+    }
+
+    // Connected TCP sockets are writable; dropbear needs this to flush SSH
+    // packets after encrypting. One scan, used by entry and every retry alike.
+    let scan_write_ready_chirho = |out_wfds_chirho: &mut [u8; 16]| -> i64 {
+        *out_wfds_chirho = [0u8; 16];
         let mut write_ready_count_chirho: i64 = 0;
-        for fd_chirho in 0..core::cmp::min(nfds_chirho as usize, 128) {
+        for fd_chirho in 0..core::cmp::min(nfds_chirho as usize, SELECT_MAX_FDS_CHIRHO) {
             let byte_chirho = fd_chirho / 8;
             let bit_chirho = fd_chirho % 8;
-            if byte_chirho < sz_chirho && (wfds_chirho[byte_chirho] & (1 << bit_chirho)) != 0 {
+            if byte_chirho < wsz_chirho && (wfds_req_chirho[byte_chirho] & (1 << bit_chirho)) != 0 {
                 // Check if this fd is a connected socket (always writable for TCP)
                 let fd_val_chirho = fd_chirho as u64;
                 if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
@@ -4566,7 +4687,7 @@ fn sys_select_chirho(
                         Some(crate::net_chirho::SocketStateChirho::ConnectedChirho)
                     );
                     if is_connected_chirho {
-                        result_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
+                        out_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
                         write_ready_count_chirho += 1;
                     }
                 } else {
@@ -4578,7 +4699,7 @@ fn sys_select_chirho(
                         let mode_chirho = file_arc_chirho.lock().inode_chirho.lock().mode_chirho;
                         let is_regular_chirho = (mode_chirho & 0o170000) == 0o100000;
                         if is_regular_chirho {
-                            result_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
+                            out_wfds_chirho[byte_chirho] |= 1 << bit_chirho;
                             write_ready_count_chirho += 1;
                         }
                         // Pipes/ttys: only writable when buffer has space (assume yes for now)
@@ -4587,15 +4708,24 @@ fn sys_select_chirho(
                 }
             }
         }
-        let _ = crate::uaccess_chirho::copy_to_user_chirho(
-            writefds_ptr_chirho, &result_wfds_chirho[..sz_chirho], sz_chirho,
-        );
-        write_ready_total_chirho = write_ready_count_chirho;
-        // If writefds had ready fds, we can return early if no readfds are requested.
-        if readfds_ptr_chirho == 0 && write_ready_count_chirho > 0 {
-            return write_ready_count_chirho;
+        write_ready_count_chirho
+    };
+
+    // Copy-out helpers. select(2) reports its answer by REWRITING the caller's
+    // sets, so they may only be touched once the call has decided to return —
+    // and on every return, including a timeout, where POSIX requires the output
+    // sets to be empty.
+    let copy_out_write_chirho = |bits_chirho: &[u8; 16]| -> Result<(), ()> {
+        if wsz_chirho == 0 {
+            return Ok(());
         }
-    }
+        crate::uaccess_chirho::copy_to_user_chirho(
+            writefds_ptr_chirho,
+            &bits_chirho[..wsz_chirho],
+            wsz_chirho,
+        )
+        .map_err(|_| ())
+    };
 
     // Check if any socket has pending data by polling the network.
     crate::net_chirho::poll_network_chirho();
@@ -4616,7 +4746,7 @@ fn sys_select_chirho(
     };
 
     let readfds_has_tcp_listener_chirho = if set_size_chirho > 0 {
-        (0..nfds_chirho as usize).any(|fd_chirho| {
+        (0..core::cmp::min(nfds_chirho as usize, SELECT_MAX_FDS_CHIRHO)).any(|fd_chirho| {
             let byte_idx_chirho = fd_chirho / 8;
             let bit_idx_chirho = fd_chirho % 8;
             byte_idx_chirho < set_size_chirho
@@ -4754,103 +4884,22 @@ fn sys_select_chirho(
         }
     };
 
-    let count_ready_fds_chirho = |fds_buf_chirho: &[u8; 128], set_size_chirho: usize,
-                                   nfds_chirho: i32| -> i64 {
-        let mut count_chirho: i64 = 0;
-        let select_pid_chirho = crate::task_chirho::current_task_chirho()
-            .map(|task_arc_chirho| task_arc_chirho.lock().pid_chirho)
-            .unwrap_or(0);
-        if select_pid_chirho == 5 {
-            use core::sync::atomic::{AtomicU64, Ordering as SelectOrd};
-            static PID5_SELECT_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let trace_idx_chirho =
-                PID5_SELECT_TRACE_COUNT_CHIRHO.fetch_add(1, SelectOrd::Relaxed);
-            if trace_idx_chirho < 16 {
-                let byte0_chirho = fds_buf_chirho.get(0).copied().unwrap_or(0);
-                let byte1_chirho = fds_buf_chirho.get(1).copied().unwrap_or(0);
-                crate::serial_println_chirho!(
-                    "[PID5-SELECT] #{} nfds={} set_size={} bytes=[{:#04x},{:#04x}]",
-                    trace_idx_chirho,
-                    nfds_chirho,
-                    set_size_chirho,
-                    byte0_chirho,
-                    byte1_chirho,
-                );
-                for fd_chirho in 0..nfds_chirho as usize {
-                    let byte_idx_chirho = fd_chirho / 8;
-                    let bit_idx_chirho = fd_chirho % 8;
-                    if byte_idx_chirho >= set_size_chirho
-                        || (fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho)) == 0
-                    {
-                        continue;
-                    }
-                    let lookup_file_chirho =
-                        crate::fs_chirho::lookup_fd_chirho(fd_chirho as u64);
-                    let (mode_chirho, ino_chirho) =
-                        if let Some(file_arc_chirho) = lookup_file_chirho.as_ref() {
-                            let file_guard_chirho = file_arc_chirho.lock();
-                            let inode_guard_chirho = file_guard_chirho.inode_chirho.lock();
-                            (inode_guard_chirho.mode_chirho, inode_guard_chirho.ino_chirho)
-                        } else {
-                            (0, 0)
-                        };
-                    let is_socket_chirho =
-                        crate::net_chirho::is_socket_fd_chirho(fd_chirho as u64);
-                    crate::serial_println_chirho!(
-                        "[PID5-SELECT-FD] fd={} lookup={} mode={:#o} ino={} is_socket={}",
-                        fd_chirho,
-                        lookup_file_chirho.is_some(),
-                        mode_chirho,
-                        ino_chirho,
-                        is_socket_chirho,
-                    );
-                }
-            }
-        }
-        if select_pid_chirho == 11 {
-            use core::sync::atomic::{AtomicU64, Ordering as SelectOrd};
-            static PID11_SELECT_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let trace_idx_chirho =
-                PID11_SELECT_TRACE_COUNT_CHIRHO.fetch_add(1, SelectOrd::Relaxed);
-            if trace_idx_chirho < 16 {
-                let byte0_chirho = fds_buf_chirho.get(0).copied().unwrap_or(0);
-                let byte1_chirho = fds_buf_chirho.get(1).copied().unwrap_or(0);
-                crate::serial_println_chirho!(
-                    "[PID11-SELECT] #{} nfds={} set_size={} bytes=[{:#04x},{:#04x}]",
-                    trace_idx_chirho,
-                    nfds_chirho,
-                    set_size_chirho,
-                    byte0_chirho,
-                    byte1_chirho,
-                );
-            }
-        }
-        for fd_chirho in 0..nfds_chirho as usize {
-            let byte_idx_chirho = fd_chirho / 8;
-            let bit_idx_chirho = fd_chirho % 8;
-            if byte_idx_chirho < set_size_chirho
-                && fds_buf_chirho[byte_idx_chirho] & (1 << bit_idx_chirho) != 0
-                && fd_is_read_ready_chirho(fd_chirho)
-            {
-                count_chirho += 1;
-            }
-        }
-        // REMOVED: scanning pipe fds beyond nfds. This caused select
-        // to return immediately when PID 2 had inherited pipe fds with
-        // closed write ends, preventing the blocking poll loop from ever
-        // executing (no network polling → SSH never works).
-        count_chirho
-    };
+    // DELETED: count_ready_fds_chirho, a SECOND read-readiness scan used only to
+    // choose the ready branch while a different scan built the answer. The two
+    // could disagree — the pipe-priority adjustment lives in one and not the
+    // other — which is exactly the "divergent readiness copies" defect the
+    // blocking contract names. One predicate now serves both.
 
-    // Helper: scan fds_buf for ready sockets, build output fd_set, return count.
-    // Also scans pipe fds BEYOND nfds to work around dropbear's nfds=1 bug
-    // where it monitors only the connection fd but not the child's pipe fds.
-    let write_ready_fds_chirho = |fds_buf_chirho: &[u8; 128], set_size_chirho: usize,
-                                   nfds_chirho: i32, readfds_ptr_chirho: u64| -> i64 {
+    // The ONE read-readiness scan. Builds the result bits and returns the count
+    // WITHOUT touching user memory, so entry and every retry can decide from a
+    // single pass instead of scanning once to choose a branch and again to build
+    // the answer — which, across the explicit yield between them, could report 0
+    // ready descriptors with no deadline expired: the fabricated zero again.
+    let scan_read_ready_chirho = |result_fds_chirho: &mut [u8; 128]| -> i64 {
         let mut out_fds_chirho = [0u8; 128];
         let mut count_chirho: i64 = 0;
         // Scan user-requested fds (0..nfds)
-        for fd_chirho in 0..nfds_chirho as usize {
+        for fd_chirho in 0..core::cmp::min(nfds_chirho as usize, SELECT_MAX_FDS_CHIRHO) {
             let byte_idx_chirho = fd_chirho / 8;
             let bit_idx_chirho = fd_chirho % 8;
             if byte_idx_chirho < set_size_chirho
@@ -4873,26 +4922,12 @@ fn sys_select_chirho(
                 }
             }
         }
-        // Scan pipe fds beyond nfds
-        let actual_nfds_chirho = nfds_chirho as usize;
-        // NOTE: pipe fds beyond nfds are NOT auto-included in readfds.
-        // Writing bits beyond nfds would overflow the user's readfds buffer
-        // (which is only (nfds+7)/8 bytes), causing stack/heap corruption
-        // (the "ssh-ed25" crash from earlier). The pipe relay must happen
-        // through dropbear's channel readfd monitoring (ses.maxfd), not
-        // through kernel-side select extension.
-        // DELETED: pipe scan beyond nfds.
-        // Was a workload-specific workaround that injected spurious "ready"
-        // fds into select's result set. Violated PRD rule: "No new workload-
-        // specific behavior in generic syscall." Caused dropbear parent to
-        // receive unexpected ready fds after fork, sending it down a cleanup
-        // path that double-freed a buffer (rax="ssh-ed25" in heap metadata).
-        let out_size_chirho = if count_chirho > 0 {
-            // Write enough bytes to cover all set bits (at least set_size, up to 2)
-            core::cmp::max(set_size_chirho, 2)
-        } else {
-            set_size_chirho
-        };
+        // MUST NOT COME BACK: a scan of pipe fds BEYOND nfds. It injected
+        // descriptors the caller never asked about into the result set, and
+        // writing bits above nfds overran the caller's fd_set — only
+        // (nfds+7)/8 bytes — which is the "ssh-ed25" heap corruption. The pipe
+        // relay belongs in dropbear's own readfd monitoring, not in a kernel
+        // extension to select.
         // Pipe-priority: if BOTH a socket fd AND a pipe fd with data are
         // ready, suppress the socket fd for this iteration. This forces
         // dropbear's channelio to read the pipe (child exec output) BEFORE
@@ -4918,35 +4953,43 @@ fn sys_select_chirho(
                 }
             }
         }
-        if count_chirho > 0 && readfds_ptr_chirho != 0 {
-            // Diagnostic: dump readfds bytes for PID 3 when fd 9 is set
-            {
-                let dump_pid_chirho = crate::task_chirho::current_task_chirho()
-                    .map(|t| t.lock().pid_chirho).unwrap_or(0);
-                if dump_pid_chirho == 3 && nfds_chirho >= 10 {
-                    crate::serial_println_chirho!(
-                        "[READFDS-DUMP] pid=3 nfds={} out_size={} bytes=[{:#04x},{:#04x}] count={}",
-                        nfds_chirho, out_size_chirho,
-                        out_fds_chirho[0], out_fds_chirho[1], count_chirho,
-                    );
-                }
-            }
-            if crate::uaccess_chirho::copy_to_user_chirho(
-                readfds_ptr_chirho, &out_fds_chirho[..out_size_chirho], out_size_chirho,
-            ).is_err() {
-                return -EFAULT_CHIRHO;
-            }
-        }
+        *result_fds_chirho = out_fds_chirho;
         count_chirho
     };
 
-    let ready_count_chirho = count_ready_fds_chirho(
-        &fds_buf_chirho,
-        set_size_chirho,
-        nfds_chirho,
-    );
+    // Copy the read result out. Separate from the scan on purpose: the scan must
+    // be callable to DECIDE without touching user memory, and the copy must
+    // happen only once the call has committed to returning. Fusing them is what
+    // let a readfds copy-out land before the yield, and let `-EFAULT` travel home
+    // in the same i64 channel as the descriptor count, where a caller adding the
+    // write count turned -14 into -13.
+    //
+    // Copies EXACTLY the number of bytes the caller's nfds implies. This used to
+    // widen to `max(set_size, 2)` on a ready fd "to cover all set bits", but the
+    // scan only ever sets bits below nfds, so the extra byte carried nothing —
+    // and for nfds <= 8 the derived size is 1, so it wrote one byte past a
+    // minimal direct-syscall fd_set, contradicting the no-overflow rule above.
+    let copy_out_read_chirho = |bits_chirho: &[u8; 128]| -> Result<(), ()> {
+        if readfds_ptr_chirho == 0 || set_size_chirho == 0 {
+            return Ok(());
+        }
+        crate::uaccess_chirho::copy_to_user_chirho(
+            readfds_ptr_chirho,
+            &bits_chirho[..set_size_chirho],
+            set_size_chirho,
+        )
+        .map_err(|_| ())
+    };
 
-    if ready_count_chirho > 0 || write_ready_total_chirho > 0 {
+    // Entry pass: read and write readiness derived ONCE, at the same moment, from
+    // the caller's own requested sets. The counts decided on are the counts
+    // reported; nothing below re-derives readiness.
+    let mut rfds_out_chirho = [0u8; 128];
+    let mut wfds_out_chirho = [0u8; 16];
+    let read_ready_total_chirho = scan_read_ready_chirho(&mut rfds_out_chirho);
+    let write_ready_total_chirho = scan_write_ready_chirho(&mut wfds_out_chirho);
+
+    if read_ready_total_chirho > 0 || write_ready_total_chirho > 0 {
         // Yield on every select return for service PIDs so a select-heavy
         // daemon cannot keep winning while sibling services are already
         // sitting runnable in the queue.
@@ -4956,42 +4999,34 @@ fn sys_select_chirho(
                 crate::scheduler_chirho::yield_current_chirho();
             }
         }
-        let read_count_chirho = write_ready_fds_chirho(&fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho);
-        read_count_chirho + write_ready_total_chirho
+        if copy_out_read_chirho(&rfds_out_chirho).is_err()
+            || copy_out_write_chirho(&wfds_out_chirho).is_err()
+        {
+            return -EFAULT_CHIRHO;
+        }
+        read_ready_total_chirho + write_ready_total_chirho
     } else {
-        // Indefinite blocking: use the 50k HLT poll loop.
-        // Each iteration halts (enabling interrupts), timer fires and
-        // polls VirtIO-net, then we manually poll and re-check fds.
-        if timeout_ptr_chirho == 0 {
-            // Fall through to the 50k HLT poll loop below.
-        }
-
-        // After X11_READY, return 0 immediately for service PIDs every 100th
-        // call to give other tasks a chance via the idle loop / trampoline.
-        if crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire) {
-            let sel_pid_entry_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-            if sel_pid_entry_chirho >= 2 {
-                use core::sync::atomic::{AtomicU64, Ordering};
-                static SEL6_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                let sc_chirho = SEL6_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                if sc_chirho % 100 == 99 {
-                    return 0; // Force return to user space
+        // Each iteration halts (enabling interrupts), the timer fires and polls
+        // VirtIO-net, then readiness is re-derived from the objects behind the
+        // caller's descriptors. The yields inside this loop are INTERNAL
+        // scheduler handoffs: none of them may leak out as a return value, which
+        // is precisely how this call came to answer a timeout it never measured.
+        loop {
+            if poll_deadline_expired_chirho(select_deadline_chirho) {
+                // Earned, not fabricated. Unreachable for a NULL timeout.
+                // POSIX: on timeout the output sets are empty, so say so rather
+                // than leaving the caller's requested bits standing.
+                if copy_out_read_chirho(&[0u8; 128]).is_err()
+                    || copy_out_write_chirho(&[0u8; 16]).is_err()
+                {
+                    return -EFAULT_CHIRHO;
                 }
+                return 0;
             }
-        }
-        for _attempt_chirho in 0..500_000u32 {
             x86_64::instructions::interrupts::enable_and_hlt();
             crate::net_chirho::poll_network_chirho();
-            // PID 2's blocking select loop can otherwise monopolize the CPU
-            // and keep runnable sibling services (PIDs 3-6) from ever being
-            // popped. Yield on every blocking iteration once we are in the
-            // service PID range.
-            // Yield every iteration. DON'T return 0 — just keep
-            // looping so other tasks get real CPU slices.
-            // Check for data every 100 yields (~100 schedule cycles).
-            if _attempt_chirho % 100 == 99 {
-                return 0; // Return periodically to re-enter from user space
-            }
+            // A select-heavy daemon would otherwise monopolise the CPU and keep
+            // runnable siblings from ever being popped, so yield every iteration.
             crate::scheduler_chirho::yield_current_chirho();
 
             if crate::signal_chirho::current_has_deliverable_signal_chirho() {
@@ -5061,46 +5096,63 @@ fn sys_select_chirho(
                         }
                     }
                     if pipe_has_data_chirho {
-                        // Don't force-exit yet — let the event loop drain the pipe.
-                        // Return 0 (no fds ready, timeout expired) to let dropbear
-                        // continue its loop. The next iteration will check again.
+                        // Don't force-exit yet — hand the CPU to the child so it
+                        // can finish producing, then FALL THROUGH to the
+                        // readiness scan at the bottom of this loop.
+                        //
+                        // Returning 0 here claimed a timeout that had not
+                        // elapsed, triggered by an out-of-band pipe the caller
+                        // need not have asked about. But `continue` would be
+                        // worse: this loop is the only thing that reports
+                        // readiness back to dropbear's event loop, so skipping
+                        // the scan would leave the pipe undrained, keep
+                        // pipe_has_data true forever, and hang the session
+                        // instead of ending it. Falling through reports the
+                        // pipe as ready if the caller actually asked about it,
+                        // and keeps waiting on its own deadline if not.
                         maybe_yield_to_runnable_child_chirho();
+                    } else {
+                        crate::serial_println_chirho!(
+                            "[SELECT] PID {} session over (CloseWait) → send FIN + zombie",
+                            sel_pid_chirho,
+                        );
+                        // Send TCP FIN to properly close the connection.
+                        // Without this, SLiRP keeps the old connection half-open
+                        // and refuses new SYNs on port 2222.
+                        crate::net_chirho::send_fin_for_closewait_chirho(2222);
+                        if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
+                            let (_, ppid_chirho) =
+                                crate::process_chirho::exit_task_and_retire_descriptors_chirho(
+                                    &task_arc_chirho,
+                                    0,
+                                );
+                            crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, sel_pid_chirho);
+                            crate::scheduler_chirho::remove_task_chirho(sel_pid_chirho);
+                            // Auto-reap: remove zombie from task list so PID slots
+                            // are freed for new SSH sessions. Without this, zombies
+                            // accumulate (PID 2 may not call wait4 promptly) and
+                            // Do NOT remove from TASK_LIST — parent needs
+                            // waitpid to find the zombie and reap it (decrement
+                            // dropbear's connection counter). reap_child removes
+                            // from TASK_LIST when wait4 is called.
+                            crate::scheduler_chirho::schedule_chirho();
+                        }
                         return 0;
                     }
-
-                    crate::serial_println_chirho!(
-                        "[SELECT] PID {} session over (CloseWait) → send FIN + zombie",
-                        sel_pid_chirho,
-                    );
-                    // Send TCP FIN to properly close the connection.
-                    // Without this, SLiRP keeps the old connection half-open
-                    // and refuses new SYNs on port 2222.
-                    crate::net_chirho::send_fin_for_closewait_chirho(2222);
-                    if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
-                        let (_, ppid_chirho) =
-                            crate::process_chirho::exit_task_and_retire_descriptors_chirho(
-                                &task_arc_chirho,
-                                0,
-                            );
-                        crate::signal_chirho::deliver_sigchld_chirho(ppid_chirho, sel_pid_chirho);
-                        crate::scheduler_chirho::remove_task_chirho(sel_pid_chirho);
-                        // Auto-reap: remove zombie from task list so PID slots
-                        // are freed for new SSH sessions. Without this, zombies
-                        // accumulate (PID 2 may not call wait4 promptly) and
-                        // Do NOT remove from TASK_LIST — parent needs
-                        // waitpid to find the zombie and reap it (decrement
-                        // dropbear's connection counter). reap_child removes
-                        // from TASK_LIST when wait4 is called.
-                        crate::scheduler_chirho::schedule_chirho();
-                    }
-                    return 0;
                 }
             }
 
-            let count_chirho = write_ready_fds_chirho(
-                &fds_buf_chirho, set_size_chirho, nfds_chirho, readfds_ptr_chirho,
-            );
-            if count_chirho > 0 {
+            // Retry pass: BOTH sets derived ONCE, exactly as on entry. Deriving
+            // only readfds here made a write fd that became ready after entry
+            // invisible for the rest of the call — permanently so under a NULL
+            // timeout, where the loop has no other way out. Deriving readfds
+            // twice around the yield below would reintroduce the fabricated
+            // zero, so the counts decided here are the counts returned.
+            let mut rfds_retry_chirho = [0u8; 128];
+            let mut wfds_retry_chirho = [0u8; 16];
+            let read_count_chirho = scan_read_ready_chirho(&mut rfds_retry_chirho);
+            let write_count_chirho = scan_write_ready_chirho(&mut wfds_retry_chirho);
+            if read_count_chirho > 0 || write_count_chirho > 0 {
                 // Yield for daemon PIDs (>= 6) to let fork children run.
                 // Xorg (PID 6) calls select in a tight loop — without
                 // yielding here, PIDs 8-11 (twm/xterm) never get CPU.
@@ -5108,10 +5160,14 @@ fn sys_select_chirho(
                 if hlt_ret_pid_chirho >= 6 {
                     crate::scheduler_chirho::yield_current_chirho();
                 }
-                return count_chirho;
+                if copy_out_read_chirho(&rfds_retry_chirho).is_err()
+                    || copy_out_write_chirho(&wfds_retry_chirho).is_err()
+                {
+                    return -EFAULT_CHIRHO;
+                }
+                return read_count_chirho + write_count_chirho;
             }
         }
-        0
     }
 }
 

@@ -17,19 +17,44 @@ treating any of this as green.
 
 ## Blocking contract (precondition for everything below)
 
-`poll(2)` must never manufacture a timeout. A negative timeout means "block
-indefinitely" and may not return `0`; `0` means a single non-blocking scan; a
-positive timeout may return `0` only once its deadline has genuinely passed,
-measured against the timer-ISR tick counter.
+**No blocking call may manufacture a timeout.** "Block indefinitely" (a negative
+`poll` timeout, a NULL `select` `timeval`) may not return `0`; a zero timeout
+means a single non-blocking scan; a positive timeout may return `0` only once its
+deadline has genuinely passed, measured against the timer-ISR tick counter.
+
+`poll` and `select` share one primitive, `poll_deadline_expired_chirho`. A second
+deadline implementation would be a second place to get this wrong, and both calls
+were wrong here in different ways before they shared it.
 
 This mattered far beyond `poll`. When it returned `0` to an indefinite wait,
 BusyBox read that impossible result as the end of its line-edit wait and exited
 cleanly — which is what the exit-path workarounds below were built to paper over.
 
-Readiness is a property of the **object** behind a descriptor, never of the
-descriptor NUMBER and never of the polling process. One predicate serves the
-first pass and every retry pass; divergent readiness copies are the defect,
-because an object can then be ready to one pass and invisible to another.
+`select` was worse than `poll` had been: it did not implement the timeout at all.
+`timeout_ptr_chirho` reached only the parameter list and one `if ptr == 0 {}`
+with an empty body, so no `timeval` was ever read and no deadline ever existed.
+Every empty return it produced was fabricated *by construction* — `{5, 0}` and
+`NULL` were indistinguishable to it. It now decodes the `timeval`, converts to
+ticks, and blocks on the shared predicate.
+
+**In `poll`**, readiness is a property of the **object** behind a descriptor,
+never of the descriptor NUMBER and never of the polling process. One predicate
+serves the first pass and every retry pass; divergent readiness copies are the
+defect, because an object can then be ready to one pass and invisible to another.
+
+That sentence is scoped deliberately. It is a property of `poll` after `9893b82`,
+**not a kernel-wide rule, and it is false of `select`**, whose
+`fd_is_read_ready_chirho` still branches on `fd_chirho == 0`, consults
+`is_interactive_shell_chirho()`, probes the raw UART LSR and hardcodes TCP port
+2222 — every construct the poll slice removed. The timeout repair did not touch
+it. See RED below.
+
+Sharing a deadline primitive is not the same as sharing a readiness predicate,
+and writing the second claim while only the first was true is the mistake this
+document has now made twice: first "no exit decision may be made from a PID
+value" as a rule when it was a property of two repaired functions, then this one
+a paragraph away. What is repaired belongs in the past tense of the function that
+was repaired; what is still open belongs in RED.
 
 ```mermaid
 flowchart TD
@@ -131,51 +156,126 @@ corpse's context.
 | `exit_group` `PID < 3` split | Treat PID 1/2 as the boot shell | The shell is PID 0; it caught an ordinary `mkdir -p` child and destroyed its parent |
 | `wait4` fast path (`parent_pid` 3..=7) | Avoid a "slow" xkbcomp | xkbcomp was broken, not slow; this SIGKILLed it and fabricated exit status 0 |
 | `ppid == 0` SIGCHLD sentinel | "init has no parent to notify" | PID 0 is the login shell; this was the blocker under all of the above |
+| `select`'s four fabricated zeros | Hand the CPU to other tasks from inside a blocking wait | There was no deadline to expire, so each one reported a timeout that could not have elapsed. The handoffs were real; only their escape as a return value was the lie |
+
+The `select` row is four sites, and each one's yield was kept:
+
+| Site | Was | Is |
+| --- | --- | --- |
+| every 100th call after X11_READY, service PIDs | `return 0` | deleted — the loop below already yields every iteration, so it was redundant as well as false |
+| every 100th loop iteration | `return 0`, three lines under a comment reading "DON'T return 0" | deleted — the `yield_current_chirho` on the next line is the handoff |
+| out-of-band pipe scan finds data | `return 0`, its own comment calling this "no fds ready, timeout expired" | `maybe_yield_to_runnable_child_chirho()` then `continue` — the child still gets the CPU, the caller is no longer told its deadline passed |
+| fallthrough past `0..500_000` | `0` | loop is now deadline-bounded; expiry returns `0` at the top, where it is earned |
+
+Two empty returns remain in the function: the earned deadline expiry, and the
+forced-exit Zombie edge below.
+
+Four further contract defects were repaired alongside, each surfaced by review
+rather than by the original change:
+
+| Defect | Why it mattered |
+| --- | --- |
+| `timeval` decoded only after the first readiness scan | A caller holding a ready fd AND a malformed timeout got success instead of `EINVAL`/`EFAULT`, and a finite deadline started late. Parsing and validation now happen at entry, before any readiness work |
+| `tv_usec` bounds unchecked above | POSIX requires `0 <= tv_usec < 1_000_000`; only negatives were rejected |
+| writefds derived once and copied back immediately | A write fd that became ready after entry was invisible for the rest of the call — permanently so once the loop became deadline-bounded rather than capped at 500,000 iterations — and the caller's set was overwritten before the call had decided to return. Both sets are now derived at the same moment on entry and on every retry, and copied only at an actual return |
+| timeout returned 0 without emptying the output sets | The caller saw count 0 with its own requested bits still standing. Both sets are now emptied on the timeout path |
+
+The `pselect6` ABI split came from the same review. `SYS_PSELECT6_CHIRHO`
+dispatches into this function, but its timeout is a `timespec` in NANOseconds,
+not a `timeval` in microseconds. While the timeout was ignored this was
+invisible; honouring it made one parser serve two ABIs, which would have rejected
+every pselect6 wait of 1 ms or longer with `EINVAL` and stretched shorter ones by
+1000x. `SelectTimeoutFormatChirho` now names which layout the caller used.
+
+The `readfds` copy-out also widened to `max(set_size, 2)` bytes on a ready fd,
+one byte past a minimal direct-syscall `fd_set` for `nfds <= 8`, contradicting
+the no-overflow rule stated a few lines above it. It copies exactly `set_size`.
+
+## Evidence for the select timeout repair
+
+Two QEMU boots, identical invocation, differing only in the kernel: HEAD
+(`5ace807`) versus the repair. Both on a non-destructive qcow2 overlay of the
+Alpine disk so the reference image is untouched.
+
+| | baseline `5ace807` | repaired |
+| --- | --- | --- |
+| `SYS_SELECT` (nr=23) calls | 33, still climbing when killed | 2 |
+| serial lines | 350, still growing | 270, settled at the shell prompt |
+| panics / faults / `EXIT-INVARIANT` | 0 | 0 |
+| `[INIT]` / `[OK]` / `[EXEC]` / `[SSH]` / `[AUDIO]` / `[FB]` milestones | identical | identical |
+
+The spin is the finding. Baseline dropbear re-enters `select` over and over —
+each fabricated `0` telling it "nothing ready, timeout expired", so it loops.
+The repaired kernel enters `select` once and blocks. The two trace tags that
+disappear, `[PID5-SELECT]` and `[PID5-SELECT-FD]`, both lived inside the deleted
+duplicate predicate; nothing else changed shape.
+
+`Done(1)` appears in BOTH logs — a second dropbear failing with "Address in use"
+because the first already holds 2222. Pre-existing boot-script behaviour, not a
+regression.
+
+### What this does NOT prove
+
+Neither boot reaches Xorg, so the desktop path is unexercised here. More
+importantly, **the timeout arithmetic itself is unproven**: this evidence shows a
+NULL-timeout wait now blocks instead of spinning, and says nothing about whether
+a finite `timeval` expires at the right tick, whether `{0, 0}` scans exactly
+once, or whether the `pselect6` `timespec` conversion is correct. Those need a
+direct discriminator — no fds, a known nonzero timeout, tick delta measured at or
+beyond the rounded deadline, plus a late-ready fd waking before a longer
+deadline — and a run on native KVM rather than Mac TCG, which has masked
+scheduling behaviour on this project before.
+
+Until that exists, treat the timeout contract as **implemented and reviewed, not
+yet demonstrated**. It is RED below, deliberately, even though the code is
+landed.
+
+### RED — the timeout gate is unproven
+
+No regression test pins any of the contract above. A future change can silently
+restore a fabricated zero and every check that exists here would still pass.
 
 ## RED — open, not fixed
+
+### `select` readiness is still identity-based
+
+`fd_is_read_ready_chirho` branches on `fd_chirho == 0`, consults
+`is_interactive_shell_chirho()`, probes the raw UART LSR at port `0x3FD`, and
+hardcodes TCP port 2222. These are the constructs `9893b82` removed from `poll`.
+The timeout repair shares `poll_deadline_expired_chirho`; it does **not** share
+poll's readiness predicate, and nothing in the blocking contract above should be
+read as saying otherwise.
 
 ### `sys_select` still exits tasks by PID
 
 `sys_select_chirho` carries a forced-exit path gated on `sel_pid_chirho >= 3`
-plus socket `CloseWait` (`syscall_chirho.rs` ~5005–5096). It calls
-`exit_task_and_retire_descriptors_chirho`, delivers SIGCHLD, removes the task
-from the scheduler, calls `schedule_chirho`, and can then `return 0` — with **no
-`EXIT-INVARIANT` line**, so a resumed continuation there is silent.
+plus socket `CloseWait`. It calls `exit_task_and_retire_descriptors_chirho`,
+delivers SIGCHLD, removes the task from the scheduler, calls `schedule_chirho`,
+and can then `return 0` — with **no `EXIT-INVARIANT` line**, so a resumed
+continuation there is silent.
 
 That is a numeric-role exit decision, exactly the class the rule above forbids,
 and it is live. It belongs to the later PID-policy slice.
 
-### `sys_select` has no timeout representation at all
+### `select` capacity is capped, not sized
 
-This is the root fact, and listing fabricated returns without it invites another
-miss — which is exactly what happened twice while writing this document, first
-"two" sites and then "three".
+`SELECT_MAX_FDS_CHIRHO` is 128 — the writefds bitmap capacity, the tightest of
+the three buffers involved. The readfds buffer holds 1024 bits and the process fd
+table more still, so descriptors at or above 128 are simply invisible to
+`select`. An oversized `nfds` is clamped rather than refused, so a caller gets a
+silent partial answer instead of `EINVAL`.
 
-Across the whole function (~4512–5116) `timeout_ptr_chirho` appears in precisely
-two places: the parameter, and line ~4965, where `if timeout_ptr_chirho == 0 {}`
-has an **empty body**. The `timeval` is never copied, never decoded, no deadline
-is ever computed, and elapsed time is never consulted anywhere.
+The clamp is real and load-bearing: `nfds` is caller-supplied and unbounded,
+every scan is O(nfds) with per-fd lock acquisition, and the blocking loop re-runs
+those scans on every iteration. Unbounded scan inside an unbounded wait. Sizing
+all three buffers to one honest ceiling is the repair; the clamp only stops the
+bleeding.
 
-So every empty return is fabricated *by construction*, not by oversight at
-individual sites. Repairing this is not patching four returns; it is giving
-`select` a deadline in the first place, as `poll` now has. The four normal ones:
+### `exceptfds` and the `pselect6` signal mask are ignored
 
-| Site | Trigger |
-| --- | --- |
-| ~4978 | every 100th call, after X11_READY, for service PIDs |
-| ~4993 | every 100th iteration — three lines under a comment reading "DON'T return 0" |
-| ~5068 | an out-of-band scan finds pipe data; its own comment calls this "no fds ready, timeout expired" |
-| ~5114 | fallthrough after a fixed `0..500_000` iteration loop |
-
-At ~5068 the caller's descriptors **were** scanned at function entry, but are not
-rechecked after the halt before an unrelated pipe triggers the zero — and that
-pipe need not be one the caller asked about.
-
-A fifth empty return at ~5096 follows the forced-exit path and belongs to the
-resumed-Zombie edge above, not to this table.
-
-The loop bound is `500_000`; the comment at ~4966 calls it "the 50k HLT poll
-loop".
+`_exceptfds_chirho` is accepted and discarded. `pselect6`'s sixth argument, the
+signal mask it is supposed to swap atomically for the duration of the wait, is
+never read — which is the entire reason `pselect6` exists as a separate call.
 
 Wider: **69 load-bearing PID gates across 8 kernel files** make boot behaviour
 depend on process launch order.
