@@ -86,7 +86,7 @@ serial marker does not close a phase whose gate requires a cohort.
       and equivalent completed diagnostics from the final build.
 - [ ] Make render-task registry capacity/overflow behavior explicit while
       retaining O(1), lock-free scheduler lookup.
-- [ ] Update the X11 workflow Mermaid diagram to match the final rootfs,
+- [x] Update the X11 workflow Mermaid diagram to match the final rootfs,
       socket, waitqueue, and protocol-authenticity paths.
 - [ ] Update version/headline documentation to contain only newly measured
       xgears and full-desktop results.
@@ -98,10 +98,10 @@ serial marker does not close a phase whose gate requires a cohort.
 
 ## Reproducibility and release gates Chirho
 
-- [ ] Make the smoke runner fail fast on a busy port or QEMU startup failure.
-- [ ] Bind every host forward to `127.0.0.1` and use a unique per-run port.
-- [ ] Use an immutable hashed base rootfs and unique per-run writable scratch.
-- [ ] Record source, kernel, rootfs, image, configuration, and log hashes.
+- [x] Make the smoke runner fail fast on a busy port or QEMU startup failure.
+- [x] Bind every host forward to `127.0.0.1` and use a unique per-run port.
+- [x] Use an immutable hashed base rootfs and unique per-run writable scratch.
+- [x] Record source, kernel, rootfs, image, configuration, and log hashes.
 - [ ] Complete one authentic bounded instrumented proof boot.
 - [ ] Complete five consecutive trace-free native-KVM boots from one artifact,
       each satisfying the entire desktop gate within 400 seconds.

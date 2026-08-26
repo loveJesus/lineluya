@@ -81,15 +81,25 @@ timeout censoring, not evidence of a permanent PTY or fork defect.
 - Visual inspection shows the before image as the green framebuffer console
   and the after image as black. A changed screenshot hash therefore does not
   yet prove visibly mapped client output.
-- The next harness revision captures the physical framebuffer bytes via HMP
-  `pmemsave`, using the physical address and byte length parsed from the guest
-  boot log. That direct proof has not run yet and remains an open gate.
+- The repository evidence runner now captures physical framebuffer bytes via
+  HMP `pmemsave`, using the physical address and byte length parsed from the
+  guest boot log. A bounded 25-second plumbing run on the known-red artifact
+  captured physical address `0xfd000000`, exactly 2,764,800 BGR bytes, raw
+  SHA-256 `c76f7f43a8bf7647ef4551e7f3f6a128d87d3c26bc6178213893e4bd2c5358b4`,
+  and PPM SHA-256
+  `4a41718714d995b2a59c962843f28e75ef60dc8fc2fa9aa62dfd3d97b8f776e4`.
+  Mechanical conversion visibly reproduces the green Lineluya console and the
+  material `[DESKTOP] Xorg launched` line. Its serial SHA-256 is
+  `05011285a855c37fc2bd0b9b638d82694a29fa86d20e0d986e74c44e3984a4c3`.
+  This proves the capture range and runner plumbing only: the run was dirty,
+  stopped at 25 seconds, and correctly failed first at `xkbcomp_exec_chirho`.
+  A physical after-frame showing mapped client output remains an open gate.
 
 ## Open acceptance work Chirho
 
 - repair and causally prove the PID-2 SIGCHLD/SYSRET return-target fault;
-- run the direct physical-framebuffer capture and verify meaningful pixel
-  changes after mapped client frames;
+- capture the physical after-frame and verify meaningful pixel changes after
+  mapped client frames (the physical before-capture path is runtime-proven);
 - remove temporary PID- and X11-specific diagnostic windows;
 - restore an executable regression-test gate;
 - build a committed trace-free artifact and complete an unselected 5/5 cohort;
