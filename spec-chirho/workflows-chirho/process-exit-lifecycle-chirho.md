@@ -26,7 +26,14 @@ deadline has genuinely passed, measured against the timer-ISR tick counter.
 deadline implementation would be a second place to get this wrong, and both calls
 were wrong here in different ways before they shared it.
 
-**Precedence, on every pass: READY, then SIGNAL, then earned TIMEOUT.**
+**Precedence on the ordinary return path: READY, then SIGNAL, then earned
+TIMEOUT.**
+
+Scoped deliberately, and the scope is not a formality: the forced-exit edge below
+runs after the sleep and BEFORE the pass's readiness scan, and can return `0`
+without reaching it. So this is the rule for a normal `select` return, not an
+invariant of every trip through the loop — and a directed test using an ordinary
+descriptor proves the former, never the latter.
 
 Ready first, because Linux returns `retval > 0` without ever consulting
 `signal_pending`. Signal before timeout, because `core_sys_select` tests
@@ -300,6 +307,12 @@ continuation there is silent.
 
 That is a numeric-role exit decision, exactly the class the rule above forbids,
 and it is live. It belongs to the later PID-policy slice.
+
+It also sits INSIDE the wait loop's precedence path — after the sleep, before the
+pass's readiness scan — so it can pre-empt a descriptor that became ready during
+that same sleep. That is why the precedence rule above is scoped to the ordinary
+return path rather than stated of every pass. Moving this edge out of the loop is
+part of removing it, not a separate tidy-up.
 
 ### `select` capacity is capped, not sized
 

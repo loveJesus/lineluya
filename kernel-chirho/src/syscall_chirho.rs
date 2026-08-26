@@ -5012,7 +5012,15 @@ fn sys_select_chirho(
         // scheduler handoffs: none of them may leak out as a return value, which
         // is precisely how this call came to answer a timeout it never measured.
         loop {
-            // PRECEDENCE, every pass: READY, then SIGNAL, then earned TIMEOUT.
+            // PRECEDENCE on the ordinary return path: READY, then SIGNAL, then
+            // earned TIMEOUT.
+            //
+            // "Ordinary" is load-bearing. The CloseWait forced-exit block below
+            // runs after the sleep and BEFORE this pass's scan, and can tear the
+            // task down and return 0 without ever reaching it. That edge is RED
+            // in the workflow and belongs to the PID-policy slice; until it moves
+            // out of this path, the precedence below describes the normal return,
+            // not literally every pass through the loop.
             //
             // Ready comes first because Linux returns retval > 0 without ever
             // consulting signal_pending. Signal comes before the timeout because
