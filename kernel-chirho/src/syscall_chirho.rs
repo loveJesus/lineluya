@@ -2117,10 +2117,11 @@ pub fn syscall_dispatch_chirho(frame_chirho: &mut SyscallFrameChirho) -> i64 {
                             crate::signal_chirho::SignalActionChirho::HandlerChirho { .. })
                     })
                     .unwrap_or(false);
-                // Allow fork — xkbcomp child runs in background.
-                // Pre-compiled /tmp/server-0.xkm is already on tmpfs.
-                // wait4 fast-path returns immediately so Xorg reads the
-                // pre-compiled file without waiting for the slow child.
+                // Allow fork — the xkbcomp child runs in the background and
+                // is waited on normally. The wait4 fast path that used to
+                // SIGKILL it and fabricate exit status 0, and the kernel-embedded
+                // keymap it fell back to, are both gone: xkbcomp now really runs
+                // and really compiles the keymap.
                 {
                     let result_chirho = crate::process_chirho::sys_fork_chirho(frame_chirho);
                     if result_chirho > 0 {

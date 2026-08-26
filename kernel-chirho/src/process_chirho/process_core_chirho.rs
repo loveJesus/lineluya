@@ -351,18 +351,39 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
         // If parent has one, clone it with COW. Otherwise create a fresh
         // PT (copies boot PML4 entries) — the child gets its own address
         // space so the parent's post-fork stack writes don't corrupt it.
-        let child_pt_root_chirho = match parent_chirho.page_table_root_chirho {
-            Some(parent_pml4_chirho) => {
+        let child_pt_root_chirho = match parent_chirho.page_table_root_chirho.as_ref() {
+            Some(parent_address_space_chirho) => {
                 // Mark parent's writable user pages as COW before cloning.
                 // Without this, parent and child share physical frames
                 // WITHOUT COW protection — child writes corrupt parent's
                 // musl linker GOT/data, causing GPF in the parent.
-                let cow_count_chirho = crate::pagetable_chirho::mark_user_pages_cow_chirho(parent_pml4_chirho);
+                let cow_count_chirho = crate::pagetable_chirho::mark_user_pages_cow_chirho(
+                    parent_address_space_chirho.root_phys_chirho(),
+                );
                 crate::serial_debug_chirho!(
                     "[FORK] Marked {} per-process PT pages as COW for child",
                     cow_count_chirho,
                 );
-                crate::pagetable_chirho::clone_page_table_chirho(parent_pml4_chirho)
+                // Typed clone: the child gets its OWN handle; leaves are
+                // retained through the shared frame ownership table.
+                //
+                // NOT `.ok()`. None means exactly one thing here — "runs on the
+                // boot PML4 intentionally" — so collapsing a clone FAILURE into
+                // None would hand the child a silently wrong address space with
+                // unowned lifetime, which is the defect this type exists to make
+                // unrepresentable. A failure is a failed fork.
+                match crate::pagetable_chirho::clone_user_address_space_chirho(
+                    parent_address_space_chirho,
+                ) {
+                    Ok(child_address_space_chirho) => child_address_space_chirho,
+                    Err(clone_error_chirho) => {
+                        crate::serial_println_chirho!(
+                            "[FORK] address-space clone failed: {:?} — fork refused",
+                            clone_error_chirho,
+                        );
+                        return -ENOMEM_CHIRHO;
+                    }
+                }
             }
             None => {
                 // Parent runs on boot PML4. Use COW to protect shared pages:
@@ -378,15 +399,34 @@ pub fn sys_fork_chirho(frame_chirho: &SyscallFrameChirho) -> i64 {
                     "[FORK] Marked {} boot PML4 user pages as COW, cloning for child",
                     cow_count_chirho,
                 );
-                crate::pagetable_chirho::clone_page_table_chirho(boot_pml4_chirho)
+                // Boot-root source: typed, boot-only constructor. It accepts no
+                // PhysAddr at all, so the raw-root habit cannot leak back in
+                // through the path init's children actually take.
+                match crate::pagetable_chirho::clone_boot_user_address_space_chirho() {
+                    Ok(child_address_space_chirho) => child_address_space_chirho,
+                    Err(clone_error_chirho) => {
+                        crate::serial_println_chirho!(
+                            "[FORK] boot address-space clone failed: {:?} — fork refused",
+                            clone_error_chirho,
+                        );
+                        return -ENOMEM_CHIRHO;
+                    }
+                }
             }
         };
+        // Every forked child OWNS an address space; None is reserved for kernel
+        // tasks that intentionally run on the boot tables.
+        let child_pt_root_chirho = Some(child_pt_root_chirho);
 
         debug_log_fork_frame_chirho(
             "fork",
             child_pid_chirho,
             frame_chirho,
-            child_pt_root_chirho,
+            // Borrow the root for the diagnostic; the handle itself is about to
+            // be moved into the child TaskChirho and must not be consumed here.
+            child_pt_root_chirho
+                .as_ref()
+                .map(|child_address_space_chirho| child_address_space_chirho.root_phys_chirho()),
         );
 
         TaskChirho {
@@ -564,18 +604,60 @@ pub fn sys_clone_chirho(
         // Clone page table: CLONE_VM shares the address space (thread),
         // otherwise clone with COW.
         let child_pt_root_chirho = if (flags_chirho & CLONE_VM_CHIRHO) != 0 {
-            // Threads share the parent's page table.
-            parent_chirho.page_table_root_chirho
+            // Threads SHARE one address space. try_share_chirho takes another
+            // owner reference on the SAME control record — it does not copy a
+            // root address, so a later retire by one thread cannot tear down an
+            // address space the other is still executing on.
+            match parent_chirho.page_table_root_chirho.as_ref() {
+                // A share FAILURE must not become None. None here would mean
+                // "thread runs on the boot PML4", which is a different address
+                // space from the one it is supposed to share with its peer.
+                Some(parent_address_space_chirho) => {
+                    match parent_address_space_chirho.try_share_chirho() {
+                        Ok(shared_address_space_chirho) => Some(shared_address_space_chirho),
+                        Err(share_error_chirho) => {
+                            crate::serial_println_chirho!(
+                                "[CLONE] CLONE_VM share failed: {:?} — clone refused",
+                                share_error_chirho,
+                            );
+                            return -ENOMEM_CHIRHO;
+                        }
+                    }
+                }
+                // Parent genuinely runs on the boot tables; the thread shares
+                // that, and None is the correct, intentional value.
+                None => None,
+            }
         } else {
             // Fork: clone with COW.
-            match parent_chirho.page_table_root_chirho {
-                Some(parent_pml4_chirho) => {
-                    crate::pagetable_chirho::clone_page_table_chirho(parent_pml4_chirho)
+            match parent_chirho.page_table_root_chirho.as_ref() {
+                Some(parent_address_space_chirho) => {
+                    match crate::pagetable_chirho::clone_user_address_space_chirho(
+                        parent_address_space_chirho,
+                    ) {
+                        Ok(child_address_space_chirho) => Some(child_address_space_chirho),
+                        Err(clone_error_chirho) => {
+                            crate::serial_println_chirho!(
+                                "[CLONE] address-space clone failed: {:?} — clone refused",
+                                clone_error_chirho,
+                            );
+                            return -ENOMEM_CHIRHO;
+                        }
+                    }
                 }
                 None => {
                     let boot_pml4_chirho = crate::pagetable_chirho::get_boot_pml4_chirho();
                     let _ = crate::pagetable_chirho::mark_user_pages_cow_chirho(boot_pml4_chirho);
-                    crate::pagetable_chirho::clone_page_table_chirho(boot_pml4_chirho)
+                    match crate::pagetable_chirho::clone_boot_user_address_space_chirho() {
+                        Ok(child_address_space_chirho) => Some(child_address_space_chirho),
+                        Err(clone_error_chirho) => {
+                            crate::serial_println_chirho!(
+                                "[CLONE] boot address-space clone failed: {:?} — clone refused",
+                                clone_error_chirho,
+                            );
+                            return -ENOMEM_CHIRHO;
+                        }
+                    }
                 }
             }
         };
@@ -584,7 +666,11 @@ pub fn sys_clone_chirho(
             "clone",
             child_pid_chirho,
             frame_chirho,
-            child_pt_root_chirho,
+            // Borrow the root for the diagnostic; the handle itself is about to
+            // be moved into the child TaskChirho and must not be consumed here.
+            child_pt_root_chirho
+                .as_ref()
+                .map(|child_address_space_chirho| child_address_space_chirho.root_phys_chirho()),
         );
 
         TaskChirho {
@@ -686,35 +772,7 @@ pub fn sys_wait4_chirho(
         None => return -ECHILD_CHIRHO,
     };
 
-    // Fast-path: kill xkbcomp child immediately. Pre-compiled /tmp/server-0.xkm exists.
-    // Xorg falls back to the pre-compiled file when xkbcomp "succeeds" instantly.
-    if parent_pid_chirho >= 3 && parent_pid_chirho <= 7 && pid_chirho > 0 && (options_chirho & WNOHANG_CHIRHO) == 0 {
-        crate::serial_println_chirho!(
-            "[WAIT4-FAST] PID {} wait4({}) → kill child + fake success",
-            parent_pid_chirho, pid_chirho,
-        );
-        // Kill the child to free CPU (xkbcomp isn't needed).  The fake success
-        // returned below is deliberate, but a SIGKILL that did not land means
-        // the child is still burning CPU - report it rather than drop it.
-        if let Err(errno_chirho) =
-            crate::signal_chirho::send_signal_chirho(pid_chirho as u64, 9)
-        {
-            crate::serial_println_chirho!(
-                "[WAIT4-FAST] SIGKILL to PID {} failed (errno {}) - child may still run",
-                pid_chirho,
-                errno_chirho,
-            );
-        }
-        if wstatus_chirho != 0 {
-            let status_chirho: i32 = 0;
-            let _ = crate::uaccess_chirho::copy_to_user_chirho(
-                wstatus_chirho,
-                &status_chirho.to_ne_bytes(),
-                4,
-            );
-        }
-        return pid_chirho as i64;
-    }
+
 
     // -----------------------------------------------------------------------
     // Helper closure: scan the task list for a matching zombie child.
@@ -869,23 +927,32 @@ fn reap_child_chirho(
     // Mark the child as Dead (fully reaped) and remove it from TASK_LIST.
     // Move the removed Arc out first so Task/FdTable ownership is never
     // released while TASK_LIST is held.
-    let (removed_task_chirho, fd_table_chirho) = {
+    let (removed_task_chirho, fd_table_chirho, reaped_address_space_chirho) = {
         let mut task_list_chirho = TASK_LIST_CHIRHO.lock();
         let task_index_chirho = task_list_chirho
             .iter()
             .position(|task_arc_chirho| task_arc_chirho.lock().pid_chirho == reaped_pid_chirho);
         if let Some(task_index_chirho) = task_index_chirho {
-            let fd_table_chirho = {
+            let (fd_table_chirho, address_space_chirho) = {
                 let mut task_chirho = task_list_chirho[task_index_chirho].lock();
                 task_chirho.state_chirho = TaskStateChirho::DeadChirho;
-                task_chirho.fd_table_chirho.take()
+                // DETACH the address space here, under the task lock, so the
+                // removed Arc below cannot carry it. Handle Drop performs
+                // accounting only and never frees, so a handle that rides out
+                // on the dropped Task leaks its whole tree — that is why the
+                // conversion alone left LeafFrameExhausted in place.
+                (
+                    task_chirho.fd_table_chirho.take(),
+                    task_chirho.page_table_root_chirho.take(),
+                )
             };
             (
                 Some(task_list_chirho.remove(task_index_chirho)),
                 fd_table_chirho,
+                address_space_chirho,
             )
         } else {
-            (None, None)
+            (None, None, None)
         }
     };
     if let Some(mut fd_table_chirho) = fd_table_chirho {
@@ -898,6 +965,68 @@ fn reap_child_chirho(
         );
     }
     drop(removed_task_chirho);
+
+    // Retire the reaped child's address space.
+    //
+    // This is the safe point the lifecycle contract asks for: the child is Dead
+    // and off the scheduler, CR3 belongs to the reaper, and TASK_LIST/task/
+    // global locks are all released. retire_chirho re-reads CR3 itself and
+    // refuses an active tree, so that ordering is enforced rather than assumed.
+    if let Some(child_address_space_chirho) = reaped_address_space_chirho {
+        // NOTE: retire_chirho itself rebinds the mapper off this root between
+        // its active-CR3 check and its bound-mapper gate, so no rebind is needed
+        // here. The rule belongs to the type, not to each call site — a
+        // call-site version was written and removed for exactly that reason.
+        match child_address_space_chirho.retire_chirho() {
+            Ok(retire_stats_chirho) => {
+                crate::serial_debug_chirho!(
+                    "[REAP] PID {} address space retired: {} leaves, {} tables",
+                    reaped_pid_chirho,
+                    retire_stats_chirho.leaf_frames_freed_chirho,
+                    retire_stats_chirho.table_frames_freed_chirho,
+                );
+            }
+            Err(retire_error_chirho) => {
+                // SharedOwners is NORMAL for a CLONE_VM thread: a peer still
+                // owns the space. Dropping the returned handle performs the one
+                // atomic decrement, and the last owner out retires it. Anything
+                // else is worth seeing.
+                match retire_error_chirho.reason_chirho {
+                    crate::pagetable_chirho::AddressSpaceRetireReasonChirho::SharedOwnersChirho {
+                        owners_chirho,
+                    } => {
+                        crate::serial_debug_chirho!(
+                            "[REAP] PID {} address space still shared by {} owner(s)",
+                            reaped_pid_chirho, owners_chirho,
+                        );
+                    }
+                    other_reason_chirho => {
+                        // INVARIANT FAILURE, reported loudly rather than
+                        // parked in a growing queue.
+                        //
+                        // A reaped task is Dead and off the scheduler, so CR3
+                        // cannot be on its tree and no other refusal reason
+                        // should be reachable here. If this ever fires the tree
+                        // does leak, but it leaks VISIBLY with the pid and the
+                        // reason, which is strictly better than a silent drop.
+                        //
+                        // A global Vec of refused handles was tried and removed:
+                        // a persistent refusal would grow it without bound and
+                        // the drain would walk every parked tree in one pass —
+                        // precisely the unbounded-growth class this project
+                        // forbids. The durable fix is exit-time retirement with
+                        // the handle left in the Task and a bounded cursor
+                        // drain; that is the next slice, not a queue here.
+                        crate::serial_println_chirho!(
+                            "[REAP-INVARIANT] PID {} address space refused ({:?}) — TREE LEAKED",
+                            reaped_pid_chirho, other_reason_chirho,
+                        );
+                        drop(retire_error_chirho.handle_chirho);
+                    }
+                }
+            }
+        }
+    }
 
     // Remove the dead child from the scheduler (should already be
     // gone, but be safe).
@@ -1280,8 +1409,32 @@ fn sys_execve_prefixed_chirho(
     // was shared; with per-process fresh PTs, every exec is clean.
     let is_embedded_static_exec_chirho = false; // disabled — all execs are authoritative
     {
-        // Create fresh per-process PT
-        if let Some(pt_root_chirho) = crate::pagetable_chirho::create_user_page_table_chirho() {
+        // Create a fresh per-process address space (typed and OWNED).
+        //
+        // exec displaces whatever the task was running on. That displaced space
+        // was previously dropped on the floor — leaking on EVERY exec, not only
+        // at reap, which is what exhausted leaf frames at PID 67. It is now
+        // captured and retired explicitly, AFTER CR3 has moved off it and
+        // outside the task lock, per the address-space lifecycle contract.
+        // `match`, not `if let Ok`. A bare `if let Ok` is the same defect as
+        // `.ok()`: on failure exec would skip authoritative replacement and
+        // carry on into ELF loading atop the OLD address space, reporting
+        // success while running the new image with the wrong lifetime.
+        let new_address_space_chirho =
+            match crate::pagetable_chirho::create_user_address_space_chirho() {
+                Ok(created_address_space_chirho) => created_address_space_chirho,
+                Err(create_error_chirho) => {
+                    crate::serial_println_chirho!(
+                        "[EXEC] address-space create failed: {:?} — exec refused",
+                        create_error_chirho,
+                    );
+                    return -ENOMEM_CHIRHO;
+                }
+            };
+        {
+            let pt_root_chirho = new_address_space_chirho.root_phys_chirho();
+            let mut new_address_space_slot_chirho = Some(new_address_space_chirho);
+            let mut displaced_address_space_chirho = None;
             // Store in task + reset MM to fresh state + clear FS/GS bases.
             // FS/GS MUST be cleared: after fork, the child inherits the parent's
             // FS base (musl TLS pointer). If exec doesn't clear it, the new
@@ -1289,7 +1442,10 @@ fn sys_execve_prefixed_chirho(
             // which now points into BSS — causing spurious a_crash (HLT/GPF).
             if let Some(task_arc_chirho) = crate::task_chirho::current_task_chirho() {
                 let mut tg_chirho = task_arc_chirho.lock();
-                tg_chirho.page_table_root_chirho = Some(pt_root_chirho);
+                if let Some(installed_space_chirho) = new_address_space_slot_chirho.take() {
+                    displaced_address_space_chirho =
+                        tg_chirho.page_table_root_chirho.replace(installed_space_chirho);
+                }
                 tg_chirho.mm_chirho = Some(alloc::sync::Arc::new(spin::Mutex::new(
                     crate::mm_chirho::MmChirho::new_chirho(),
                 )));
@@ -1316,6 +1472,24 @@ fn sys_execve_prefixed_chirho(
             // Switch CR3 to fresh PT — mapper follows via reinit
             unsafe {
                 crate::pagetable_chirho::switch_page_table_chirho(pt_root_chirho);
+            }
+
+            // CR3 is now off the old tree and no task lock is held, so the
+            // displaced space can be retired. retire_chirho independently
+            // re-reads CR3 and refuses an active root, so this ordering is
+            // enforced by the API rather than by this comment.
+            if let Some(old_address_space_chirho) = displaced_address_space_chirho.take() {
+                if let Err(retire_error_chirho) = old_address_space_chirho.retire_chirho() {
+                    crate::serial_println_chirho!(
+                        "[EXEC] displaced address space not retired: {:?}",
+                        retire_error_chirho.reason_chirho,
+                    );
+                }
+            }
+            // Nothing consumed the new space (no current task) - retire rather
+            // than let Drop record an unretired last handle.
+            if let Some(unused_space_chirho) = new_address_space_slot_chirho.take() {
+                let _ = unused_space_chirho.retire_chirho();
             }
             crate::serial_debug_chirho!(
                 "[PROCESS] execve: authoritative — fresh PT {:#x}, CR3 switched",
@@ -1556,7 +1730,11 @@ fn activate_per_process_pt_chirho() {
         Some(t_chirho) => t_chirho,
         None => return,
     };
-    let pt_root_chirho = task_arc_chirho.lock().page_table_root_chirho;
+    let pt_root_chirho = task_arc_chirho
+        .lock()
+        .page_table_root_chirho
+        .as_ref()
+        .map(|handle_chirho| handle_chirho.root_phys_chirho());
 
     if let Some(pml4_phys_chirho) = pt_root_chirho {
         // Ensure preemption trampoline is in boot PML4 before mirroring.

@@ -803,15 +803,18 @@ fn kernel_main_chirho(boot_info_chirho: &'static mut BootInfo) -> ! {
             serial_println_chirho!("[INIT] Warmed ext4 page cache: {} files", warmed_chirho);
         }
 
-        // Pre-compiled XKB keymap — xkbcomp takes 10+ minutes to load
-        // libraries via VirtIO-blk. Write the pre-compiled keymap so Xorg
-        // finds it immediately without needing to fork+exec xkbcomp.
-        static XKM_DEFAULT_CHIRHO: &[u8] = include_bytes!("xkm_default_chirho.bin");
-        tmpfs_chirho::write_tmpfs_file_chirho("/tmp/server-0.xkm", XKM_DEFAULT_CHIRHO);
-        serial_println_chirho!(
-            "[INIT] Pre-compiled XKB keymap written to /tmp/server-0.xkm ({} bytes)",
-            XKM_DEFAULT_CHIRHO.len(),
-        );
+        // The kernel no longer supplies a pre-compiled XKB keymap.
+        //
+        // It used to embed a pre-compiled keymap blob and drop it on tmpfs
+        // where Xorg would find it "immediately without needing to fork+exec
+        // xkbcomp", justified by "xkbcomp takes 10+ minutes". That
+        // justification was false: xkbcomp was not slow, it was BROKEN — readv
+        // routed its piped stdin to the console, and pipe descriptor accounting
+        // gave it a truncated keymap. With those fixed it execs and exits 0 in
+        // ~35s. Together with the removed wait4 fast path (which SIGKILLed
+        // xkbcomp and fabricated exit status 0) this was the kernel quietly
+        // supplying a compiler's output while lying that the compiler ran —
+        // exactly the circular evidence the PRD forbids.
 
         // Preload critical X11 font files from ext4 to tmpfs for fast loading.
         // Without this, each OpenFont reads .pcf.gz from VirtIO-blk (~200ms each).

@@ -495,7 +495,12 @@ fn arch_prepare_switch_chirho(old_pid_chirho: Option<u64>, next_pid_chirho: u64)
             .find(|t_chirho| t_chirho.lock().pid_chirho == next_pid_chirho)
             .map(|t_chirho| {
                 let task_guard_chirho = t_chirho.lock();
-                task_guard_chirho.page_table_root_chirho
+                // Take the ROOT, not the handle: the handle is owned by the task
+                // and must not be moved out of the guard for a CR3 switch.
+                task_guard_chirho
+                    .page_table_root_chirho
+                    .as_ref()
+                    .map(|handle_chirho| handle_chirho.root_phys_chirho())
             })
             .unwrap_or(None)
     };

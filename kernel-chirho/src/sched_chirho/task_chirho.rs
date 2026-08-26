@@ -14,7 +14,7 @@
 //! - Global task tracking via [`CURRENT_TASK_CHIRHO`] and [`TASK_LIST_CHIRHO`].
 //! - PID allocation via an atomic counter ([`allocate_pid_chirho`]).
 //! - Factory methods for kernel and user tasks ([`TaskChirho::new_kernel_chirho`],
-//!   [`TaskChirho::new_user_chirho`]).
+//!   [`TaskChirho::new_kernel_chirho`]).
 //! - [`init_tasking_chirho`] — bootstrap the tasking subsystem (PID 0 idle +
 //!   PID 1 init).
 
@@ -286,7 +286,14 @@ pub struct TaskChirho {
     /// Physical address of this process's PML4 (top-level page table).
     /// `None` for kernel tasks that share the kernel page tables.
     /// User tasks get their own PML4 allocated at creation/exec time.
-    pub page_table_root_chirho: Option<PhysAddr>,
+    /// Owned address space, or None for kernel tasks sharing the boot tables.
+    ///
+    /// This is a HANDLE, not a raw root. A PhysAddr cannot express sharing, so
+    /// CLONE_VM aliasing one made ownership ambiguous by construction and every
+    /// correctness argument rested on call-site discipline. The handle makes
+    /// double-destroy unrepresentable: sharing goes through try_share_chirho,
+    /// teardown through retire_chirho, and Drop only decrements.
+    pub page_table_root_chirho: Option<crate::pagetable_chirho::AddressSpaceHandleChirho>,
 
     /// Per-process memory descriptor (VMAs, brk, mmap state).
     /// `None` for kernel tasks. User tasks get their own MM at creation;
@@ -454,84 +461,6 @@ impl TaskChirho {
         }
     }
 
-    /// Create a new **user-space** task.
-    ///
-    /// User tasks will eventually transition to ring 3 via `sysretq` or
-    /// `iretq`.  The caller must supply a user-space stack pointer.
-    ///
-    /// # Arguments
-    ///
-    /// * `name_chirho`       — human-readable name.
-    /// * `entry_point_chirho` — user-mode entry address (e.g., `_start`).
-    /// * `user_stack_chirho`  — top of the user-space stack.
-    pub fn new_user_chirho(
-        name_chirho: &str,
-        entry_point_chirho: u64,
-        user_stack_chirho: u64,
-    ) -> Self {
-        let pid_chirho = allocate_pid_chirho();
-        let stack_chirho = allocate_kernel_stack_chirho(DEFAULT_KERNEL_STACK_SIZE_CHIRHO);
-        let stack_top_chirho = stack_chirho + DEFAULT_KERNEL_STACK_SIZE_CHIRHO as u64;
-
-        let mut context_chirho = CpuContextChirho::zero_chirho();
-        // For a user task the `rip` in the saved context points to the
-        // kernel-side trampoline that will `sysretq`/`iretq` to user space.
-        // For now we store the user entry point directly; the actual
-        // ring-3-transition mechanism will be implemented in the scheduler /
-        // syscall module.
-        context_chirho.rip_chirho = entry_point_chirho;
-        context_chirho.rsp_chirho = stack_top_chirho;
-        context_chirho.rflags_chirho = 0x200; // IF
-
-        // Allocate a per-process page table for user tasks.
-        let pt_root_chirho = crate::pagetable_chirho::create_user_page_table_chirho();
-
-        Self {
-            pid_chirho,
-            tgid_chirho: pid_chirho,
-            ppid_chirho: 0,
-            exe_path_chirho: [0u8; 128],
-            exe_path_len_chirho: 0,
-            state_chirho: TaskStateChirho::ReadyChirho,
-            exit_code_chirho: 0,
-            context_chirho,
-            kernel_stack_chirho: stack_top_chirho,
-            kernel_stack_size_chirho: DEFAULT_KERNEL_STACK_SIZE_CHIRHO,
-            user_rsp_chirho: user_stack_chirho,
-            preempted_rip_chirho: 0,
-            preempt_stale_chirho: 0,
-            fork_count_chirho: 0,
-            page_table_root_chirho: pt_root_chirho,
-            mm_chirho: Some(alloc::sync::Arc::new(spin::Mutex::new(
-                crate::mm_chirho::MmChirho::new_chirho(),
-            ))),
-            next_fd_chirho: 3, // 0=stdin, 1=stdout, 2=stderr pre-allocated
-            fd_table_chirho: Some(crate::vfs_chirho::FdTableChirho::new_chirho(256)),
-            priority_chirho: DEFAULT_PRIORITY_CHIRHO,
-            time_slice_chirho: DEFAULT_TIME_SLICE_CHIRHO,
-            // User tasks start as root for now; a proper credential model
-            // will set these from the parent or from exec.
-            uid_chirho: 0,
-            gid_chirho: 0,
-            euid_chirho: 0,
-            egid_chirho: 0,
-            saved_uid_chirho: 0,
-            saved_gid_chirho: 0,
-            supplementary_groups_chirho: Vec::new(),
-            comm_chirho: make_comm_chirho(name_chirho),
-            fs_base_chirho: 0,
-            gs_base_chirho: 0,
-            signal_mask_chirho: 0,
-            pending_signals_chirho: 0,
-            signal_state_chirho: crate::signal_chirho::SignalStateChirho::new_chirho(),
-            brk_chirho: 0,
-            brk_start_chirho: 0,
-            cwd_chirho: alloc::string::String::from("/"),
-            sid_chirho: pid_chirho,
-            pgid_chirho: pid_chirho,
-            controlling_tty_chirho: None,
-        }
-    }
 
     // -- Accessors ----------------------------------------------------------
 
@@ -812,10 +741,24 @@ pub fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
     );
 
     // Map pages using the global mapper + frame allocator.
-    let mut mg_chirho = crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.lock();
+    // Acquire through lock_current_mapper_chirho: it reads CR3 and rebinds the
+    // OffsetPageTable if the bound root differs. The raw static is private now,
+    // so a stale-root mapping cannot be reintroduced by reaching for .lock().
+    let mut mg_chirho = crate::mm_chirho::lock_current_mapper_chirho();
     let mut ag_chirho = crate::mm_chirho::GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock();
 
-    if let (Some(mapper_chirho), Some(alloc_chirho)) = (mg_chirho.as_mut(), ag_chirho.as_mut()) {
+    // expect, not `if let`. Falling through with either global uninitialized
+    // returned base_vaddr_chirho having mapped and zeroed NOTHING, so the first
+    // use of that stack faulted far from the cause — the same secondary-fault
+    // shape as the ignored map_to below. Every caller requires an initialized MM
+    // subsystem and there is no viable Task to return on an unmapped stack.
+    {
+        let mapper_chirho = mg_chirho
+            .as_mut()
+            .expect("kernel stack allocation before the page mapper is initialized");
+        let alloc_chirho = ag_chirho
+            .as_mut()
+            .expect("kernel stack allocation before the frame allocator is initialized");
         use x86_64::structures::paging::{
             FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
         };
@@ -828,16 +771,30 @@ pub fn allocate_kernel_stack_chirho(size_chirho: usize) -> u64 {
             let page_chirho: Page<Size4KiB> =
                 Page::containing_address(VirtAddr::new(page_addr_chirho));
 
-            if let Some(frame_chirho) = alloc_chirho.allocate_frame() {
-                let _ = unsafe {
-                    mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
-                }
-                .map(|flush_chirho| flush_chirho.flush());
-
-                // No need to map in per-process PT — kernel stacks are in
-                // the upper half (PML4[256+]) which is shared automatically
-                // by all page tables via create_user_page_table_chirho.
+            // Both failures below used to be discarded, and the zeroing pass
+            // ran regardless. That is how an unmapped kernel stack became a
+            // memset into an absent page — a secondary fault far from the
+            // cause, instead of an error at the cause.
+            let frame_chirho = match alloc_chirho.allocate_frame() {
+                Some(frame_chirho) => frame_chirho,
+                None => panic!(
+                    "kernel stack page {:#x} (page {} of {}): no frame available",
+                    page_addr_chirho, i_chirho, num_pages_chirho,
+                ),
+            };
+            match unsafe {
+                mapper_chirho.map_to(page_chirho, frame_chirho, flags_chirho, alloc_chirho)
+            } {
+                Ok(flush_chirho) => flush_chirho.flush(),
+                Err(map_error_chirho) => panic!(
+                    "kernel stack page {:#x} (page {} of {}) map_to failed: {:?}",
+                    page_addr_chirho, i_chirho, num_pages_chirho, map_error_chirho,
+                ),
             }
+
+            // No need to map in per-process PT — kernel stacks are in
+            // the upper half (PML4[256+]) which is shared automatically
+            // by all page tables via create_user_page_table_chirho.
         }
 
         // Zero the stack.

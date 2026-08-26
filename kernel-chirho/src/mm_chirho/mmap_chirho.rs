@@ -22,6 +22,7 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -1051,7 +1052,63 @@ pub fn deallocate_frame_chirho(frame_chirho: PhysFrame<Size4KiB>) {
 }
 
 /// Global page table mapper.  Set during kernel init.
-pub static GLOBAL_MAPPER_CHIRHO: Mutex<Option<OffsetPageTable<'static>>> = Mutex::new(None);
+static GLOBAL_MAPPER_CHIRHO: Mutex<Option<OffsetPageTable<'static>>> = Mutex::new(None);
+
+/// Physical PML4 currently borrowed by [`GLOBAL_MAPPER_CHIRHO`].
+///
+/// An `OffsetPageTable` contains a mutable reference into this root. Address-
+/// space retirement must therefore treat this root as live even if CR3 has
+/// already moved elsewhere. Tracking the binding makes a stale scheduler
+/// rebind fail loudly instead of freeing a page-table tree behind a live
+/// mutable mapper.
+static GLOBAL_MAPPER_ROOT_PHYS_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Return the PML4 currently borrowed by the global mapper.
+pub fn global_mapper_root_phys_chirho() -> Option<x86_64::PhysAddr> {
+    let root_phys_chirho = GLOBAL_MAPPER_ROOT_PHYS_CHIRHO.load(Ordering::Acquire);
+    (root_phys_chirho != 0).then(|| x86_64::PhysAddr::new(root_phys_chirho))
+}
+
+unsafe fn mapper_for_current_cr3_chirho() -> (OffsetPageTable<'static>, u64) {
+    use x86_64::registers::control::Cr3;
+    use x86_64::structures::paging::PageTable;
+    use x86_64::VirtAddr;
+
+    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
+    let pml4_phys_chirho = Cr3::read().0.start_address().as_u64();
+    let pml4_virt_chirho = pml4_phys_chirho + phys_offset_chirho;
+    let pml4_table_chirho: &'static mut PageTable =
+        &mut *(pml4_virt_chirho as *mut PageTable);
+    (
+        OffsetPageTable::new(pml4_table_chirho, VirtAddr::new(phys_offset_chirho)),
+        pml4_phys_chirho,
+    )
+}
+
+/// Lock a mapper that is guaranteed to target the PML4 currently in CR3.
+///
+/// Scheduler context switches load CR3 in assembly, after Rust has stopped
+/// running with the kernel FS base. Rebinding there would require executing
+/// Rust with the restored task's user FS base. Instead, every mapper consumer
+/// enters through this function: acquisition checks the authoritative CR3 and
+/// repairs a stale binding under the same lock before exposing the mapper.
+/// Keeping the raw static private makes bypassing this invariant impossible
+/// outside this module.
+pub fn lock_current_mapper_chirho(
+) -> spin::MutexGuard<'static, Option<OffsetPageTable<'static>>> {
+    let current_root_phys_chirho = x86_64::registers::control::Cr3::read()
+        .0
+        .start_address()
+        .as_u64();
+    let mut mapper_guard_chirho = GLOBAL_MAPPER_CHIRHO.lock();
+    if GLOBAL_MAPPER_ROOT_PHYS_CHIRHO.load(Ordering::Acquire) != current_root_phys_chirho {
+        let (current_mapper_chirho, rebound_root_phys_chirho) =
+            unsafe { mapper_for_current_cr3_chirho() };
+        *mapper_guard_chirho = Some(current_mapper_chirho);
+        GLOBAL_MAPPER_ROOT_PHYS_CHIRHO.store(rebound_root_phys_chirho, Ordering::Release);
+    }
+    mapper_guard_chirho
+}
 
 /// Flag: set to true during exec's ELF loading (load_segment_chirho).
 /// When true, mmap always unmaps inherited COW pages instead of reusing
@@ -1081,6 +1138,13 @@ pub unsafe fn init_mm_chirho(
 ) {
     let memory_regions_chirho = frame_allocator_chirho.memory_regions_chirho();
     *GLOBAL_MAPPER_CHIRHO.lock() = Some(mapper_chirho);
+    GLOBAL_MAPPER_ROOT_PHYS_CHIRHO.store(
+        x86_64::registers::control::Cr3::read()
+            .0
+            .start_address()
+            .as_u64(),
+        Ordering::Release,
+    );
     *GLOBAL_FRAME_ALLOCATOR_CHIRHO.lock() = Some(frame_allocator_chirho);
     let ownership_stats_chirho = crate::pagetable_chirho::init_leaf_frame_ownership_chirho(
         memory_regions_chirho,
@@ -1114,23 +1178,9 @@ pub unsafe fn init_mm_chirho(
 ///
 /// The current CR3 must point to a valid PML4 with kernel mappings.
 pub unsafe fn reinit_mapper_for_current_cr3_chirho() {
-    use x86_64::registers::control::Cr3;
-    use x86_64::structures::paging::PageTable;
-    use x86_64::VirtAddr;
-
-    let phys_offset_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-    let (pml4_frame_chirho, _flags_chirho) = Cr3::read();
-    let pml4_phys_chirho = pml4_frame_chirho.start_address().as_u64();
-    let pml4_virt_chirho = pml4_phys_chirho + phys_offset_chirho;
-    let pml4_table_chirho: &'static mut PageTable =
-        &mut *(pml4_virt_chirho as *mut PageTable);
-
-    let new_mapper_chirho = OffsetPageTable::new(
-        pml4_table_chirho,
-        VirtAddr::new(phys_offset_chirho),
-    );
-
+    let (new_mapper_chirho, pml4_phys_chirho) = mapper_for_current_cr3_chirho();
     *GLOBAL_MAPPER_CHIRHO.lock() = Some(new_mapper_chirho);
+    GLOBAL_MAPPER_ROOT_PHYS_CHIRHO.store(pml4_phys_chirho, Ordering::Release);
 }
 
 // ============================================================================

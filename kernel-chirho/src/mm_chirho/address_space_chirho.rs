@@ -352,6 +352,23 @@ impl AddressSpaceHandleChirho {
             });
         }
 
+        // A scheduler switch loads CR3 in assembly, so the global mapper may
+        // still borrow the retired task's now-inactive root. Acquire through
+        // the current-root API before testing the second liveness gate: this
+        // safely ends that stale borrow in normal task context and prevents a
+        // harmless refusal from becoming a permanent tree leak.
+        drop(crate::mm_chirho::lock_current_mapper_chirho());
+        if crate::mm_chirho::global_mapper_root_phys_chirho() == Some(root_phys_chirho) {
+            record_chirho
+                .owners_chirho
+                .cancel_retirement_chirho()
+                .expect("address-space retirement gate changed while refusing active mapper root");
+            return Err(AddressSpaceRetireErrorChirho {
+                handle_chirho: self,
+                reason_chirho: AddressSpaceRetireReasonChirho::ActiveMapperRootChirho,
+            });
+        }
+
         let stats_chirho = match retire_page_table_tree_chirho(root_phys_chirho) {
             Ok(stats_chirho) => stats_chirho,
             Err(tree_error_chirho) => {
@@ -439,6 +456,7 @@ pub enum AddressSpaceRetireReasonChirho {
     NotLiveChirho,
     SharedOwnersChirho { owners_chirho: u32 },
     ActiveCr3Chirho,
+    ActiveMapperRootChirho,
     BootRootChirho,
     PageTableChirho(PageTableRetireErrorChirho),
 }

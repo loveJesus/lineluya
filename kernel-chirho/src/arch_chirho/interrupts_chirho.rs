@@ -530,7 +530,7 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
                     {
                         if is_present_chirho {
                             let page_chirho: Page<Size4KiB> = Page::containing_address(fault_addr_chirho);
-                            if let Some(ref mut mapper_chirho) = *crate::mm_chirho::GLOBAL_MAPPER_CHIRHO.lock() {
+                            if let Some(ref mut mapper_chirho) = *crate::mm_chirho::lock_current_mapper_chirho() {
                                 match unsafe { mapper_chirho.update_flags(page_chirho, rw_flags_chirho) } {
                                     Ok(flush_chirho) => flush_chirho.flush(),
                                     Err(map_error_chirho) => {
@@ -916,7 +916,9 @@ extern "x86-interrupt" fn general_protection_fault_handler_chirho(
             let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
             let (cr3_raw_chirho, _) = x86_64::registers::control::Cr3::read();
             let pt_root_chirho = crate::task_chirho::current_task_chirho()
-                .map(|t| t.lock().page_table_root_chirho)
+                .map(|t| t.lock().page_table_root_chirho
+                        .as_ref()
+                        .map(|h_chirho| h_chirho.root_phys_chirho()))
                 .unwrap_or(None);
             let fs_base_chirho = unsafe {
                 x86_64::registers::model_specific::Msr::new(0xC000_0100).read()
@@ -1230,7 +1232,6 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
 
     // GPT-directed watchpoint: check for stack corruption before timer IRET
     if was_user_mode_chirho {
-        crate::syscall_entry_chirho::check_stack_watch_chirho("timer-iret");
     }
 
     // GPT-directed: restore user FS/GS base before returning from interrupt
