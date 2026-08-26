@@ -103,6 +103,31 @@ non-execution was luck from Xorg's observed PID, not acceptable architecture.
   stopped at 25 seconds, and correctly failed first at `xkbcomp_exec_chirho`.
   A physical after-frame showing mapped client output remains an open gate.
 
+## Paired net-trace-removal discriminator Chirho
+
+Removing the owned net-core diagnostic scaffolding deleted 537 lines of
+PID-specific checks, bounded payload previews, trace counters, trace-only lock
+acquisitions, and relay-log allocation. The resulting kernel built on
+dlpChirho with pinned nightly `2026-03-10` in 25.60 seconds with zero warnings.
+
+This is exploratory evidence, not an acceptance run. A same-base pair used
+commit `1f0d2b7`, the same immutable rootfs
+`245267fdde2951f9cf73d1376a2d9669bb80c16c4b67361c533c477326e15204`,
+native KVM, `qemu64`, 1 GiB, two vCPUs, and 60-second bounds:
+
+| Variant Chirho | BIOS SHA-256 Chirho | Serial SHA-256 Chirho | Progress Chirho | First divergence Chirho |
+|---|---|---|---|---|
+| baseline `1f0d2b7` | `1e686dec42688dedcda255a3c687051d35abe2fe32c65e1f0fe6cf025a1184e0` | `ec5f498e91d8173f586ffd72bbf89b3f304546469498442595f75186a4ea2173` | Xorg launch 11 s; bind 12 s; xkbcomp exec 38 s | 53 s, 4,898 lines: `LeafFrameExhaustedChirho` at `0x7fffbdffe000` |
+| same source plus net trace removal | `3de2fe96e038c81497a9596faa05e05ae92afb726d5eecbd6c9192df71ab027c` | `bef69cb6c467367ce0dcc6c88f089e458e91fc364846e2339ab6b541520e6690` | Xorg launch 11 s; bind 13 s; xkbcomp exec 35 s | 55 s, 4,910 lines: `LeafFrameExhaustedChirho` at `0x7fffbdffe000` |
+
+Both logs end after PID 67 executes `/usr/bin/mkdir`, maps the preemption
+trampoline, and exhausts the finite leaf-frame pool at the same demand-map
+address. This causally rules out the net trace removal as the source of that
+specific wall; it does not prove later X11 behavior because neither run reached
+xkbcomp exit or `XORG-MAIN-LOOP`. The two raw logs and metadata are retained in
+the ignored bounded directory
+`target/evidence-chirho/x11-desktop-chirho/net-trace-removal-pair-20260825-chirho/`.
+
 ## Open acceptance work Chirho
 
 - repair and causally prove the PID-2 SIGCHLD/SYSRET return-target fault;

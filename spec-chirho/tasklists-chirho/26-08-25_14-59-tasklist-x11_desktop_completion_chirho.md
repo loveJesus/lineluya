@@ -86,6 +86,9 @@ serial marker does not close a phase whose gate requires a cohort.
 
 ## Cleanup and quality gates Chirho
 
+- [x] Remove net-core PID/X11 payload traces, trace-only lock acquisition,
+      relay diagnostics, and framebuffer sampling; prove a zero-warning build
+      and the same first runtime wall as the untouched baseline.
 - [ ] Remove temporary `[XORG-ENTRY]`, `[XORG-SC]`, `[CTX-*]`, PID-specific,
       and equivalent completed diagnostics from the final build.
 - [ ] Make render-task registry capacity/overflow behavior explicit while
