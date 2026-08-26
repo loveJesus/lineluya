@@ -34,9 +34,9 @@ serial marker does not close a phase whose gate requires a cohort.
 
 - [ ] Add a guest regression for pipe-redirected fd-0 `readv(2)` plus a control
       case for genuine console fd 0.
-- [ ] Delete the parent-PID `3..=7` `WAIT4-FAST` path that SIGKILLs xkbcomp and
+- [x] Delete the parent-PID `3..=7` `WAIT4-FAST` path that SIGKILLs xkbcomp and
       fabricates status zero; retain actual wait/reap semantics for every PID.
-- [ ] Remove the kernel-preloaded `/tmp/server-0.xkm` fallback and prove the
+- [x] Remove the kernel-preloaded `/tmp/server-0.xkm` fallback and prove the
       keymap consumed by Xorg was produced by the real xkbcomp process.
 - [ ] Produce a milestone timeline from Xorg exec through xkbcomp exit/reap,
       display bind, and first epoll wait.
@@ -103,12 +103,13 @@ serial marker does not close a phase whose gate requires a cohort.
       parent-fork, child-COW, unmap, and last-owner-exit sequence.
 - [x] KVM-smoke the MM primitives through the known raw-lifecycle exhaustion
       wall with zero ownership-accounting errors; do not call that wall fixed.
-- [ ] Replace raw `Option<PhysAddr>` in `TaskChirho`, wire exec/fork/
+- [x] Replace raw `Option<PhysAddr>` in `TaskChirho`, wire exec/fork/
       `CLONE_VM`/exit/reap to the handle, and prove obsolete roots retire only
       after switching CR3.
-- [ ] Prove repeated lifecycle cycles reuse page-table and last-reference leaf
+- [x] Prove repeated lifecycle cycles reuse page-table and last-reference leaf
       frames without `LeafFrameExhaustedChirho`, double-free, or active-root
-      retirement.
+      retirement. The bounded discriminator reached 119 genuine reaps without
+      those failures; the separate context-slot capacity failure remains red.
 - [x] Make render-task registry capacity/overflow behavior explicit while
       retaining O(1), lock-free scheduler lookup.
 - [ ] Replace the scheduler's numeric `pid >= 12` SSH/late-child time-slice
@@ -123,6 +124,32 @@ serial marker does not close a phase whose gate requires a cohort.
 - [ ] Repair the Cargo bare-metal test gate or obtain explicit approval for an
       executable replacement; do not label the current duplicate-`core`
       failure green.
+
+## Newly exposed lifecycle blockers Chirho
+
+- [x] Make `poll(2)` derive readiness from the open object and TTY line
+      discipline, not task name, listener PID, or raw UART status.
+- [x] Honour `poll(2)` timeouts: a negative timeout never returns zero, zero is
+      a single scan, and a positive timeout returns zero only after its real
+      tick deadline. Internal scheduler handoff must not leak out as a fake
+      userspace timeout. Commit `9893b82` passed a 150-second native-KVM
+      discriminator with Xorg main-loop entry, 3,000 xgears frames, max PID 26,
+      and zero panic, primary page-fault, invalid-context, or leaf-exhaustion
+      markers; the numeric exit workaround remained deliberately in scope.
+- [x] Delete both BusyBox re-launch paths after the poll repair: the
+      `sys_exit_chirho` post-yield fallback and the `exit_group(2)` PID-under-3
+      split. Every user task must use one zombie/SIGCHLD/wait/reap lifecycle.
+      Commit `dfaa3c6` also removed the `ppid == 0` SIGCHLD sentinel that had
+      stranded the real PID-0 shell. Its frozen 150-second KVM discriminator
+      launched exactly one login shell, reaped PID 2 with status zero, reached
+      3,000 xgears frames, and emitted zero `[EXIT-INVARIANT]` or fatal markers;
+      maximum observed PID was 25, not a context-capacity proof.
+- [ ] Obtain L.J.'s explicit process-topology disposition: make the real user
+      init PID 1, or deliberately retain a user shell in PID 0. Do not infer
+      init/shell authority from a numeric PID threshold.
+- [ ] Separate boot-context storage from bounded task-context slots. Allocate,
+      validate, and release an owned slot independently of monotonic PID; a
+      real PID must never alias the boot slot or index beyond the table.
 
 ## Reproducibility and release gates Chirho
 

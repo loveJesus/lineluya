@@ -58,6 +58,21 @@ proved that this is not yet reproducible from the repository pipeline:
   path.
 - `vfs_ops_chirho.rs` synthesizes `/etc/profile` and launches the demo stack
   from kernel memory. The repository rootfs, not VFS, must own launch policy.
+- the boot shell executes in PID 0 while PID 1 is an unscheduled kernel
+  placeholder. The first profile child is therefore PID 2; its normal
+  `mkdir(1)` exit was misclassified as a boot-shell exit, killed PID 0, and
+  re-execed PID 2 as a shell. The generic SIGCHLD helper compounded that
+  misclassification by treating `ppid == 0` as "no parent" even though PID 0
+  is the live user shell; children could exit, but the shell was never notified
+  to reap them.
+- `poll(2)` ignored its timeout contract and returned zero after its fifth
+  internal scheduler handoff, even for timeout `-1`. BusyBox consequently
+  exited its login shell without ever reading stdin, and the numeric-PID
+  re-exec workaround hid that generic defect.
+- task contexts are stored in a fixed table indexed directly by monotonic PID,
+  with the last task slot also used as the boot-context slot. PID 127 silently
+  aliases boot state; PIDs 128 and later fail loudly. PID identity and bounded
+  context-slot ownership must be separated rather than moving the limit.
 
 ## Product boundary Chirho
 
@@ -140,6 +155,20 @@ proved that this is not yet reproducible from the repository pipeline:
     counter. The COW fault path allocates no ownership metadata, unmanaged
     device frames never enter the RAM free list, and a frame is reusable only
     after its last genuine mapping disappears.
+19. `poll(2)` readiness derives from the open file, socket, pipe, or TTY line
+    discipline. It never derives from a process name, listener PID, or raw UART
+    register after the IRQ path has drained that register. A negative timeout
+    cannot return zero; scheduler handoff is internal and is not a fabricated
+    userspace timeout.
+20. A boot context is not stored in a task slot, and a monotonic PID is not a
+    context-array index. Bounded context storage has explicit ownership and
+    release, validates the current owner before switching, and refuses task
+    creation before publishing a task that has no context slot.
+21. Process exit has one zombie/SIGCHLD/wait/reap lifecycle for every user
+    task. Parent existence is established by task lookup, not by treating PID
+    zero as a sentinel. An exiting continuation cannot re-exec userspace, and
+    every owner retained in its nonreturning kernel frame is released before
+    the final scheduler handoff.
 
 ## Functional requirements Chirho
 
@@ -189,6 +218,17 @@ proved that this is not yet reproducible from the repository pipeline:
   and reap cycles retire obsolete user page-table trees and leaf references
   without freeing an active CR3, double-freeing a shared leaf, or exhausting
   the physical-frame allocator through leaked ownership.
+- `x11_kernel_010_chirho`: blocking `poll(2)` on the console waits for the same
+  line-discipline readiness that `read(2)` consumes; timeout `-1` cannot report
+  zero, and a zero result for a positive timeout is reported only after the
+  measured deadline.
+- `x11_kernel_011_chirho`: task creation either acquires a uniquely owned
+  context slot or fails before the task becomes visible. PID growth, task reap,
+  and the boot context cannot alias or select a null/stale context.
+- `x11_kernel_012_chirho`: `exit(2)` and `exit_group(2)` converge on genuine
+  zombie publication, SIGCHLD delivery, parent wake, and `wait4(2)` reap for
+  every PID. No exiting task kills its parent, reloads BusyBox, or jumps back to
+  userspace, and an impossible resumed-Zombie continuation fails loudly.
 
 ### Desktop behavior Chirho
 
@@ -220,6 +260,8 @@ proved that this is not yet reproducible from the repository pipeline:
   `/tmp/server-0.xkm` fallback are absent.
 - No X11 readiness, client selection, fork allowance, or trace depends on PID
   ranges such as `>= 5`, `3..=7`, `8..=9`, or `13..=14`.
+- No exit, re-launch, or init policy depends on whether a PID is below or above
+  a numeric threshold.
 - Temporary `[XORG-ENTRY]`, `[XORG-SC]`, `[CTX-*]`, and equivalent diagnostic
   windows are gone. Stable milestone logs may remain if bounded and truthful.
 - Touched X11 state is centralized rather than adding more code to the two
@@ -227,8 +269,9 @@ proved that this is not yet reproducible from the repository pipeline:
 
 ### Gate B — build and static quality Chirho
 
-- `cargo +nightly build --release` succeeds with zero warnings on the
-  authoritative x86_64 host.
+- `cargo build --release` succeeds with zero warnings on the authoritative
+  x86_64 host while honoring the repository's pinned `rust-toolchain.toml`.
+  A floating `+nightly` override is not accepted as equivalent evidence.
 - `git diff --check` succeeds.
 - The test gate is green. The current `cargo test --no-run` duplicate-`core`
   failure must either be repaired or replaced by an explicitly approved,
@@ -323,18 +366,21 @@ Serial line count is retained only as metadata. It is never a success gate.
 
 ## Work sequence Chirho
 
-1. Integrate local commit `93a918b` with remote `e9e95f1` without reverting the
-   `TCP-SEND-NOSEG` lock release or `-EAGAIN_CHIRHO` result.
-2. Finish and archive the in-flight 3x400-second cohort, compare one known
-   main-loop hit with misses, then remove `[XORG-ENTRY]` before rebuilding.
-3. Make Xorg event-loop entry deterministic through generic blocking, fd,
-   process, VFS, and socket semantics.
-4. Delete kernel-side X11 protocol injection and repair the generic AF_UNIX or
-   epoll behavior it was masking.
-5. Move desktop launch/configuration out of VFS and into the rootfs pipeline.
-6. Build and install `xgears-chirho` from repository-owned userspace source.
-7. Prove twm, xterm, PTY shell, framebuffer output, and xgears end to end.
-8. Remove diagnostics, update workflows and claims, and run all hard gates.
+1. Completed in `9893b82` and `dfaa3c6`: object-based `poll(2)` readiness and
+   real timeout semantics are live; both numeric-PID shell re-launch paths and
+   the `ppid == 0` SIGCHLD sentinel are gone. The frozen 150-second native-KVM
+   discriminator launched one login shell, genuinely reaped PID 2 with status
+   zero, reached authentic Xorg/twm/xgears progress through 3,000 frames, and
+   emitted zero exit-invariant or fatal markers. Its maximum observed PID was
+   25; lower PID churn does not repair the separate context-slot defect.
+2. Obtain the process-topology disposition and repair bounded context-slot
+   ownership so boot state and real tasks cannot alias or exceed the table.
+3. Re-run the authentic desktop path and close the framebuffer-output proof
+   without temporary traces or synthesized evidence.
+4. Remove remaining completed diagnostics and numeric workload heuristics;
+   repair or replace the red bare-metal test gate with an executable gate.
+5. Run the 5/5 trace-free native-KVM cohort, independent rebuild confirmation,
+   combined-v9 proof, and publish only the newly measured evidence.
 
 ## Decision checkpoints Chirho
 
