@@ -164,7 +164,7 @@ The `select` row is four sites, and each one's yield was kept:
 | --- | --- | --- |
 | every 100th call after X11_READY, service PIDs | `return 0` | deleted — the loop below already yields every iteration, so it was redundant as well as false |
 | every 100th loop iteration | `return 0`, three lines under a comment reading "DON'T return 0" | deleted — the `yield_current_chirho` on the next line is the handoff |
-| out-of-band pipe scan finds data | `return 0`, its own comment calling this "no fds ready, timeout expired" | `maybe_yield_to_runnable_child_chirho()` then `continue` — the child still gets the CPU, the caller is no longer told its deadline passed |
+| out-of-band pipe scan finds data | `return 0`, its own comment calling this "no fds ready, timeout expired" | `maybe_yield_to_runnable_child_chirho()` and then FALL THROUGH to the one readiness scan. Not `continue`: this loop is the only thing that reports readiness back to dropbear's event loop, so skipping the scan would leave the pipe undrained, keep `pipe_has_data` true forever, and hang the session instead of ending it |
 | fallthrough past `0..500_000` | `0` | loop is now deadline-bounded; expiry returns `0` at the top, where it is earned |
 
 Two empty returns remain in the function: the earned deadline expiry, and the
@@ -199,14 +199,23 @@ Alpine disk so the reference image is untouched.
 
 | | baseline `5ace807` | repaired |
 | --- | --- | --- |
-| `SYS_SELECT` (nr=23) calls | 33, still climbing when killed | 2 |
-| serial lines | 350, still growing | 270, settled at the shell prompt |
+| `SYS_SELECT` entries (exact `nr=23 `) | 34, still climbing when killed | 1 |
+| serial lines | 352, still growing when killed | 270, settled at the shell prompt |
 | panics / faults / `EXIT-INVARIANT` | 0 | 0 |
 | `[INIT]` / `[OK]` / `[EXEC]` / `[SSH]` / `[AUDIO]` / `[FB]` milestones | identical | identical |
 
-The spin is the finding. Baseline dropbear re-enters `select` over and over —
-each fabricated `0` telling it "nothing ready, timeout expired", so it loops.
-The repaired kernel enters `select` once and blocks. The two trace tags that
+The spin is the finding. Baseline dropbear re-enters `select` 34 times and was
+still going when the process was killed, so that number is a floor, not a total.
+The repaired process entered `select` ONCE and did not re-enter for the rest of
+the observation window.
+
+What the artifact does NOT say is which timeout that one call passed. The
+`[TWM-SC]` trace prints only `a0`-`a2`; `select`'s timeout is `a4`, and no trace
+prints it. So "it blocked on a NULL timeout" is a statement about the code path,
+not about this run. The run shows one entry instead of 34 and no re-entry while
+observed. That is the claim the evidence carries.
+
+The two trace tags that
 disappear, `[PID5-SELECT]` and `[PID5-SELECT-FD]`, both lived inside the deleted
 duplicate predicate; nothing else changed shape.
 
@@ -214,11 +223,18 @@ duplicate predicate; nothing else changed shape.
 because the first already holds 2222. Pre-existing boot-script behaviour, not a
 regression.
 
+The first version of this table said "33 -> 2", from `grep -c 'nr=23'` — a
+substring that also matches `nr=231`, exit_group, present once in each log, and
+taken at a mid-run snapshot rather than the final one. Exact counts on the final
+logs are 34 -> 1. Same narrow-pattern-for-a-broad-claim failure as the max-PID
+figures corrected in `1f7fcb3`; the corrected direction is stronger than the
+wrong one was.
+
 ### What this does NOT prove
 
 Neither boot reaches Xorg, so the desktop path is unexercised here. More
-importantly, **the timeout arithmetic itself is unproven**: this evidence shows a
-NULL-timeout wait now blocks instead of spinning, and says nothing about whether
+importantly, **the timeout arithmetic itself is unproven**: this evidence shows
+the repeated re-entry is gone, and says nothing about whether
 a finite `timeval` expires at the right tick, whether `{0, 0}` scans exactly
 once, or whether the `pselect6` `timespec` conversion is correct. Those need a
 direct discriminator — no fds, a known nonzero timeout, tick delta measured at or
