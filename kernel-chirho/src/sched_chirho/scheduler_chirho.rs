@@ -80,6 +80,15 @@ static GLOBAL_TICK_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
 static X11_RENDER_TASK_BITS_CHIRHO: [AtomicU64; X11_RENDER_TASK_WORD_COUNT_CHIRHO] =
     [const { AtomicU64::new(0) }; X11_RENDER_TASK_WORD_COUNT_CHIRHO];
 
+/// Number of X11/render classifications refused because the boot-lifetime PID
+/// lies outside the fixed bitset. Saturation keeps the diagnostic bounded even
+/// if a broken launcher creates tasks forever.
+static X11_RENDER_TASK_OVERFLOW_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
+
+/// Emit one stable diagnostic for a capacity episode rather than one serial
+/// line per refused task.
+static X11_RENDER_TASK_OVERFLOW_REPORTED_CHIRHO: AtomicBool = AtomicBool::new(false);
+
 /// Limited scheduler lock contention trace from the timer path.
 static TICK_LOCK_MISS_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
@@ -185,20 +194,66 @@ pub struct RunQueueChirho {
 /// `InodeChirho`, or socket locks. A suspended task may own any of them, so
 /// inspecting its descriptor graph while selecting it can self-deadlock before
 /// the context switch begins.
-pub fn mark_x11_render_task_chirho(pid_chirho: u64) {
-    let pid_index_chirho = pid_chirho as usize;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum X11RenderTaskMarkOutcomeChirho {
+    MarkedChirho,
+    AlreadyMarkedChirho,
+    CapacityExceededChirho {
+        pid_chirho: u64,
+        capacity_chirho: usize,
+    },
+}
+
+pub fn mark_x11_render_task_chirho(pid_chirho: u64) -> X11RenderTaskMarkOutcomeChirho {
+    // Workflow: spec-chirho/workflows-chirho/x11-bringup-chirho.md
+    let Ok(pid_index_chirho) = usize::try_from(pid_chirho) else {
+        return record_x11_render_task_overflow_chirho(pid_chirho);
+    };
     if pid_index_chirho >= MAX_TASKS_CHIRHO {
-        return;
+        return record_x11_render_task_overflow_chirho(pid_chirho);
     }
 
     let word_index_chirho = pid_index_chirho / 64;
     let bit_index_chirho = pid_index_chirho % 64;
-    X11_RENDER_TASK_BITS_CHIRHO[word_index_chirho]
-        .fetch_or(1u64 << bit_index_chirho, Ordering::Relaxed);
+    let bit_chirho = 1u64 << bit_index_chirho;
+    let previous_word_chirho =
+        X11_RENDER_TASK_BITS_CHIRHO[word_index_chirho].fetch_or(bit_chirho, Ordering::Relaxed);
+    if previous_word_chirho & bit_chirho == 0 {
+        X11RenderTaskMarkOutcomeChirho::MarkedChirho
+    } else {
+        X11RenderTaskMarkOutcomeChirho::AlreadyMarkedChirho
+    }
+}
+
+fn record_x11_render_task_overflow_chirho(pid_chirho: u64) -> X11RenderTaskMarkOutcomeChirho {
+    let _ = X11_RENDER_TASK_OVERFLOW_COUNT_CHIRHO.fetch_update(
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |overflow_count_chirho| Some(overflow_count_chirho.saturating_add(1)),
+    );
+    if !X11_RENDER_TASK_OVERFLOW_REPORTED_CHIRHO.swap(true, Ordering::AcqRel) {
+        crate::serial_println_chirho!(
+            "[SCHED-CLASS] X11 render registry capacity exceeded: pid={} capacity={} (task remains unboosted)",
+            pid_chirho,
+            MAX_TASKS_CHIRHO,
+        );
+    }
+    X11RenderTaskMarkOutcomeChirho::CapacityExceededChirho {
+        pid_chirho,
+        capacity_chirho: MAX_TASKS_CHIRHO,
+    }
+}
+
+/// Total number of render classifications refused by the fixed boot-lifetime
+/// PID bitset. The value saturates instead of wrapping.
+pub fn x11_render_task_overflow_count_chirho() -> u64 {
+    X11_RENDER_TASK_OVERFLOW_COUNT_CHIRHO.load(Ordering::Acquire)
 }
 
 fn is_x11_render_task_chirho(pid_chirho: u64) -> bool {
-    let pid_index_chirho = pid_chirho as usize;
+    let Ok(pid_index_chirho) = usize::try_from(pid_chirho) else {
+        return false;
+    };
     if pid_index_chirho >= MAX_TASKS_CHIRHO {
         return false;
     }

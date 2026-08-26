@@ -109,8 +109,11 @@ serial marker does not close a phase whose gate requires a cohort.
 - [ ] Prove repeated lifecycle cycles reuse page-table and last-reference leaf
       frames without `LeafFrameExhaustedChirho`, double-free, or active-root
       retirement.
-- [ ] Make render-task registry capacity/overflow behavior explicit while
+- [x] Make render-task registry capacity/overflow behavior explicit while
       retaining O(1), lock-free scheduler lookup.
+- [ ] Replace the scheduler's numeric `pid >= 12` SSH/late-child time-slice
+      boost with an explicit workload class; do not let a timing policy depend
+      on cumulative boot order.
 - [x] Update the X11 workflow Mermaid diagram to match the final rootfs,
       socket, waitqueue, and protocol-authenticity paths.
 - [ ] Update version/headline documentation to contain only newly measured

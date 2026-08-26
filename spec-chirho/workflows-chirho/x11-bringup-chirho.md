@@ -34,6 +34,10 @@ flowchart TD
     wake_chirho[unblock_task_chirho marks clients Ready and requeues]
     retry_chirho[Woken client retries AF_UNIX connect]
     return_chirho[Return connect result to userspace]
+    classify_chirho[Mark connected endpoint owners as render tasks]
+    capacity_chirho{PID fits fixed render bitset?}
+    boost_chirho[O(1) lock-free scheduler lookup applies render slice]
+    overflow_chirho[Count saturation-safe overflow and log once; task stays unboosted]
     epoll_return_chirho[Return epoll result to Xorg]
 
     profile_chirho --> guard_chirho
@@ -44,7 +48,9 @@ flowchart TD
     probe_chirho --> wm_probe_chirho --> clients_chirho
     clients_chirho --> connect_chirho
     connect_chirho --> connect_ok_chirho
-    connect_ok_chirho -- yes --> return_chirho
+    connect_ok_chirho -- yes --> classify_chirho --> capacity_chirho
+    capacity_chirho -- yes --> boost_chirho --> return_chirho
+    capacity_chirho -- no --> overflow_chirho --> return_chirho
     connect_ok_chirho -- no --> x11_path_chirho
     x11_path_chirho -- no --> return_chirho
     x11_path_chirho -- yes --> accepting_chirho
@@ -61,6 +67,12 @@ The readiness log is one-shot, but the waiting-PID drain is not latched. A
 client may park after Xorg's first wait, so every later Xorg wait must drain the
 queue. `X11_READY_CHIRHO` remains only as a temporary console-trace input; it is
 not readiness authority.
+
+Render classification is a boot-lifetime, fixed-capacity PID bitset. Scheduler
+lookup remains O(1) and lock-free. A PID outside its 1,024-slot capacity does
+not change connect semantics and does not alias another task: it remains on the
+default time slice, increments a saturating counter, and emits one stable
+diagnostic for the boot.
 
 Production proof gate: the KVM serial log must show Xorg's executable-identified
 event-loop entry, authentic XCB setup success, twm ownership, and successful
