@@ -23,9 +23,17 @@ fi
 
 # Every /bin/sh -l reads this file, and xterm starts a login shell which then
 # execs ANOTHER login shell — so an unconditional launch here fired the launcher
-# once per login shell, not once per boot. Observed four launcher execs (PIDs
-# 14, 29, 33, 37) in a 400s run: one at boot, then more as xterm's shell chain
-# and its respawn each re-read /etc/profile.
+# once per login shell, not once per boot. A 400s run showed FIVE launcher execs
+# — unconditional shebang records at log lines 336, 439, 4163, 4208 and 4258 —
+# one at boot, then more as xterm's login-shell chain and its respawn each
+# re-read /etc/profile.
+#
+# It was first reported as FOUR, and that undercount is worth keeping here. The
+# '[EXEC] pid=N path' trace it was counted from fires only for pid >= 10, and the
+# initial boot launcher is PID 7 — so the very launch this guard exists to make
+# unique was the one the instrument could not see. Counting the unconditional
+# shebang record instead gives five. No gate may key on a record emitted under a
+# PID condition.
 #
 # The launcher's own `mkdir` guard is atomic and stayed authoritative, so this
 # never produced a duplicate Xorg — but it did churn processes and violates the
