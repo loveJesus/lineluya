@@ -205,10 +205,11 @@ fn flush_source_after_clone_chirho(source_pml4_phys_chirho: PhysAddr) {
 
 /// Clone COW mappings and immediately wrap the new root in its owner type.
 pub fn clone_user_address_space_chirho(
-    source_pml4_phys_chirho: PhysAddr,
+    source_address_space_chirho: &AddressSpaceHandleChirho,
 ) -> Result<AddressSpaceHandleChirho, AddressSpaceBuildErrorChirho> {
-    let root_phys_chirho = try_clone_page_table_chirho(source_pml4_phys_chirho)
-        .map_err(AddressSpaceBuildErrorChirho::CloneChirho)?;
+    let root_phys_chirho =
+        try_clone_page_table_chirho(source_address_space_chirho.root_phys_chirho())
+            .map_err(AddressSpaceBuildErrorChirho::CloneChirho)?;
     if let Some(handle_chirho) =
         AddressSpaceHandleChirho::try_from_new_root_chirho(root_phys_chirho)
     {
