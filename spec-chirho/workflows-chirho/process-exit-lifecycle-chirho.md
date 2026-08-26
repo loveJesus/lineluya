@@ -26,6 +26,14 @@ deadline has genuinely passed, measured against the timer-ISR tick counter.
 deadline implementation would be a second place to get this wrong, and both calls
 were wrong here in different ways before they shared it.
 
+**An empty result never outranks a pending signal.** Linux checks
+`signal_pending` in `core_sys_select` BEFORE accepting a zero from `do_select`,
+so a signal already pending on entry beats an all-zero timeout, and a signal
+arriving alongside a finite expiry beats the expiry. A READY result does outrank
+a signal — descriptors that are actually ready are reported, as Linux returns
+`retval > 0` without consulting `signal_pending`. Introducing a deadline without
+this precedence converts both interrupt cases into a plain `0`.
+
 This mattered far beyond `poll`. When it returned `0` to an indefinite wait,
 BusyBox read that impossible result as the end of its line-edit wait and exited
 cleanly — which is what the exit-path workarounds below were built to paper over.
@@ -179,6 +187,7 @@ rather than by the original change:
 | `tv_usec` bounds unchecked above | POSIX requires `0 <= tv_usec < 1_000_000`; only negatives were rejected |
 | writefds derived once and copied back immediately | A write fd that became ready after entry was invisible for the rest of the call — permanently so once the loop became deadline-bounded rather than capped at 500,000 iterations — and the caller's set was overwritten before the call had decided to return. Both sets are now derived at the same moment on entry and on every retry, and copied only at an actual return |
 | timeout returned 0 without emptying the output sets | The caller saw count 0 with its own requested bits still standing. Both sets are now emptied on the timeout path |
+| the new deadline check preceded the signal check | A signal pending on entry with an all-zero timeout returned 0, and a signal concurrent with a finite expiry lost to the expiry. The deadline was a return boundary the existing EINTR path could not see past. Signal is tested first now |
 
 The `pselect6` ABI split came from the same review. `SYS_PSELECT6_CHIRHO`
 dispatches into this function, but its timeout is a `timespec` in NANOseconds,
@@ -295,6 +304,28 @@ never read — which is the entire reason `pselect6` exists as a separate call.
 
 Wider: **69 load-bearing PID gates across 8 kernel files** make boot behaviour
 depend on process launch order.
+
+### `poll` cannot be interrupted by a signal at all
+
+Surfaced from two directions at once: while repairing select's ordering, and
+independently by `claude_chirho`, who owns the poll slice, confirmed it predates
+the select work and logged it as progress row 745. **Not touched here** —
+`select` stays bisectable, and a behaviour change to `poll` needs L.J.'s
+authority and a desktop gate, not a drive-by edit from an adjacent slice.
+
+Neither blocking loop in `sys_poll_chirho` tests for a deliverable signal:
+
+- the `nfds == 0` sleep primitive loops on the deadline alone and then returns 0;
+- the main wait loop breaks only on deadline expiry or readiness.
+
+For a finite timeout this delays signal delivery until the wait ends. For an
+INFINITE timeout there is no deadline, so neither loop can end on anything but
+readiness — `poll(-1)` with nothing ever ready is uninterruptible, and
+`poll(NULL, 0, -1)` is an uninterruptible sleep. Linux returns `-ERESTARTNOHAND`
+from both.
+
+`select` now tests the signal first on every pass. `poll` shares the deadline
+primitive with it but not this precedence.
 
 ### Context-slot aliasing
 

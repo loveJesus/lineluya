@@ -5012,6 +5012,19 @@ fn sys_select_chirho(
         // scheduler handoffs: none of them may leak out as a return value, which
         // is precisely how this call came to answer a timeout it never measured.
         loop {
+            // An EMPTY result must never outrank a pending signal. Linux checks
+            // signal_pending in `core_sys_select` BEFORE accepting a zero from
+            // `do_select`, so a signal already pending on entry beats an all-zero
+            // timeout, and a signal arriving alongside a finite expiry beats the
+            // expiry. Checking the deadline first — which is what the new return
+            // boundary did — silently converted both of those into a plain 0.
+            //
+            // A READY result still outranks a signal: descriptors that are
+            // actually ready are reported, exactly as Linux returns retval > 0
+            // without consulting signal_pending. That path returned above.
+            if crate::signal_chirho::current_has_deliverable_signal_chirho() {
+                return -EINTR_CHIRHO;
+            }
             if poll_deadline_expired_chirho(select_deadline_chirho) {
                 // Earned, not fabricated. Unreachable for a NULL timeout.
                 // POSIX: on timeout the output sets are empty, so say so rather
