@@ -617,69 +617,11 @@ extern "x86-interrupt" fn page_fault_handler_chirho(
             if page_vaddr_chirho < 0x100000 {
                 let rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
                 let rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
-                // Dump user registers for crash analysis
-                let saved_rbp_chirho: u64;
-                unsafe { core::arch::asm!("mov {}, rbp", out(reg) saved_rbp_chirho); }
                 crate::serial_println_chirho!(
                     "[PF] NULL deref: pid={} addr={:#x} rip={:#x} rsp={:#x} — killing",
                     user_fault_pid_chirho,
                     fault_addr_chirho.as_u64(), rip_chirho, rsp_chirho,
                 );
-                // Read user stack values to find RDI (corrupted pointer)
-                {
-                    let po_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-                    let (cr3_d_chirho, _) = x86_64::registers::control::Cr3::read();
-                    // User's RSP has the return state. Walk stack for context.
-                    for off_chirho in 0..8u64 {
-                        let saddr_chirho = rsp_chirho + off_chirho * 8;
-                        if let Some(pte_chirho) = crate::pagetable_chirho::walk_page_table_chirho(
-                            cr3_d_chirho.start_address(),
-                            x86_64::VirtAddr::new(saddr_chirho & !0xFFF),
-                        ) {
-                            let phys_chirho = unsafe { (*pte_chirho).addr().as_u64() };
-                            if phys_chirho != 0 {
-                                let val_chirho = unsafe {
-                                    *((phys_chirho + po_chirho + (saddr_chirho & 0xFFF)) as *const u64)
-                                };
-                                crate::serial_println_chirho!(
-                                    "[PF-STACK] rsp+{:#x} = {:#018x}",
-                                    off_chirho * 8, val_chirho,
-                                );
-                            }
-                        }
-                    }
-                }
-                // User stack dump via page table walk (reads user pages
-                // through physical memory offset)
-                let phys_off_chirho = crate::pagetable_chirho::phys_mem_offset_chirho();
-                let (cr3_pf_chirho, _) = x86_64::registers::control::Cr3::read();
-                // Helper: read u64 from user virtual address via PT walk
-                let read_user_u64_chirho = |uva_chirho: u64| -> Option<u64> {
-                    let pte_chirho = crate::pagetable_chirho::walk_page_table_chirho(
-                        cr3_pf_chirho.start_address(),
-                        x86_64::VirtAddr::new(uva_chirho & !0xFFF),
-                    )?;
-                    let phys_chirho = unsafe { (*pte_chirho).addr().as_u64() };
-                    let kva_chirho = phys_chirho + phys_off_chirho + (uva_chirho & 0xFFF);
-                    Some(unsafe { core::ptr::read_volatile(kva_chirho as *const u64) })
-                };
-                // Dump 20 stack entries
-                for i_chirho in 0..20u64 {
-                    if let Some(val_chirho) = read_user_u64_chirho(rsp_chirho + i_chirho * 8) {
-                        if val_chirho != 0 {
-                            crate::serial_println_chirho!(
-                                "[PF]   [rsp+{:#04x}] = {:#018x}",
-                                i_chirho * 8, val_chirho,
-                            );
-                        }
-                    }
-                }
-                // For Xorg crash debugging: halt ONLY for PID >= 5
-                // (skip boot processes that also hit NULL deref)
-                // GDB halt for Xorg crash debugging (enable with -s flag):
-                // GDB halt + user stack dump (disabled for normal operation):
-                // Enable by uncommenting when debugging with QEMU -s flag
-                // if user_fault_pid_chirho >= 4 && fault_addr_chirho.as_u64() == 0x2b33d { ... }
                 // Kill the process with SIGSEGV
                 if let Some(task_chirho) = crate::task_chirho::current_task_chirho() {
                     crate::process_chirho::exit_task_with_deferred_descriptor_retirement_chirho(
@@ -1131,43 +1073,6 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
     let interrupted_cs_chirho = _stack_frame_chirho.code_segment.0;
     let was_user_mode_chirho = (interrupted_cs_chirho & 0x3) == 3;
 
-    // Log PID 5 timer state for preemption debugging
-    {
-        let dbg_any_pid_chirho =
-            crate::scheduler_chirho::try_current_pid_chirho().unwrap_or(0);
-        if dbg_any_pid_chirho == 5 {
-            use core::sync::atomic::{AtomicU64, Ordering as KOrd};
-            static P5_ANY_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let acnt_chirho = P5_ANY_CNT_CHIRHO.fetch_add(1, KOrd::Relaxed);
-            if acnt_chirho % 200 == 0 {
-                crate::serial_println_chirho!(
-                    "[P5-ANY] tick={} user={} rip={:#x}",
-                    acnt_chirho, was_user_mode_chirho,
-                    _stack_frame_chirho.instruction_pointer.as_u64(),
-                );
-            }
-        }
-    }
-    if was_user_mode_chirho {
-        let dbg_pid_chirho =
-            crate::scheduler_chirho::try_current_pid_chirho().unwrap_or(0);
-        if dbg_pid_chirho == 5 {
-            use core::sync::atomic::{AtomicU64, Ordering as DebugOrd};
-            static P5_TIMER_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-            let tcnt_chirho = P5_TIMER_CNT_CHIRHO.fetch_add(1, DebugOrd::Relaxed);
-            if tcnt_chirho % 200 == 0 {
-                let nr_chirho = crate::scheduler_chirho::need_resched_chirho();
-                let pr_chirho = crate::task_chirho::current_task_chirho()
-                    .map(|t| t.lock().preempted_rip_chirho).unwrap_or(0);
-                let rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
-                crate::serial_println_chirho!(
-                    "[P5-TIMER] tick={} need_resched={} preempted_rip={:#x} rip={:#x}",
-                    tcnt_chirho, nr_chirho, pr_chirho, rip_chirho,
-                );
-            }
-        }
-    }
-
     // User-mode preemption trampoline: saves user RAX in task struct
     // (not on user stack) to avoid corrupting user stack state.
     // PID 5-only trampoline preemption. Full preemption for all PIDs
@@ -1187,33 +1092,6 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
         // where RAX clobber from the trampoline breaks fork() return.
         if current_pid_chirho >= 5 {
             let user_rip_chirho = _stack_frame_chirho.instruction_pointer.as_u64();
-            let user_rsp_chirho = _stack_frame_chirho.stack_pointer.as_u64();
-
-            // One-shot debug: log call context when PID 4+ is at a low boot address
-            // (below user binary region at 0x400000 — indicates corrupted jump target)
-            if current_pid_chirho >= 4 && user_rip_chirho < 0x400000 && user_rip_chirho > 0x1000 {
-                use core::sync::atomic::{AtomicBool, Ordering};
-                static LOGGED_CHIRHO: AtomicBool = AtomicBool::new(false);
-                if !LOGGED_CHIRHO.swap(true, Ordering::Relaxed) {
-                    crate::serial_println_chirho!(
-                        "[TRAP-34B] pid={} rip={:#x} rsp={:#x}",
-                        current_pid_chirho, user_rip_chirho, user_rsp_chirho,
-                    );
-                    // Read return addresses from user stack
-                    for i_chirho in 0..4u64 {
-                        let addr_chirho = user_rsp_chirho + i_chirho * 8;
-                        if addr_chirho > 0x7fff00000000 && addr_chirho < 0x800000000000 {
-                            let val_chirho = unsafe {
-                                core::ptr::read_volatile(addr_chirho as *const u64)
-                            };
-                            crate::serial_println_chirho!(
-                                "[TRAP-34B]   [rsp+{}]={:#x}",
-                                i_chirho * 8, val_chirho,
-                            );
-                        }
-                    }
-                }
-            }
 
             // Skip if already IN the trampoline page (avoid recursive push).
             let in_trampoline_chirho = user_rip_chirho >= USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO
@@ -1249,24 +1127,6 @@ extern "x86-interrupt" fn timer_interrupt_handler_chirho(
             if already_preempted_chirho {
                 // Skip — let the pending preemption complete first
             } else {
-
-            // Diagnostic: verify trampoline bytes before redirecting
-            if current_pid_chirho == 4 {
-                use core::sync::atomic::{AtomicBool, Ordering as DiagOrd};
-                static DIAG_DONE_CHIRHO: AtomicBool = AtomicBool::new(false);
-                if !DIAG_DONE_CHIRHO.swap(true, DiagOrd::Relaxed) {
-                    // Read first 8 bytes at trampoline address
-                    // Expected: b8 18 00 00 00 0f 05 c3 (mov eax,24; syscall; ret)
-                    let tramp_ptr_chirho = USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO as *const u64;
-                    let tramp_bytes_chirho = unsafe { core::ptr::read_volatile(tramp_ptr_chirho) };
-                    crate::serial_println_chirho!(
-                        "[TRAMP-DIAG] pid=4 rip={:#x} trampoline@{:#x} bytes={:#018x} (expect 0xc3050f000018b8)",
-                        user_rip_chirho,
-                        USER_PREEMPT_TRAMPOLINE_VADDR_CHIRHO,
-                        tramp_bytes_chirho,
-                    );
-                }
-            }
 
             // Verify trampoline page is mapped in current PT before redirecting.
             // After fork/exec, the per-process PT might not have the trampoline.
