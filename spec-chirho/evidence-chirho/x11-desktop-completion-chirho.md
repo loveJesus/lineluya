@@ -128,9 +128,44 @@ xkbcomp exit or `XORG-MAIN-LOOP`. The two raw logs and metadata are retained in
 the ignored bounded directory
 `target/evidence-chirho/x11-desktop-chirho/net-trace-removal-pair-20260825-chirho/`.
 
+## Scheduler, syscall-return, and waitqueue trace cleanup Chirho
+
+An isolated follow-up removed scheduler decision/drop windows, PID-specific
+syscall-return probes, and PID-specific waitqueue traces. The exact dirty patch
+over base `c97041d` had SHA-256
+`862f64664e619c44b45117bbb07ee2836dfb2b8459d4f978583d3c39d4305758`.
+The pinned-nightly release build completed in 14.24 seconds with zero warnings.
+
+A 60-second native-KVM smoke used `qemu64`, 1 GiB, two vCPUs, loopback port
+2447, and the same immutable rootfs `245267fd…`. The kernel ELF was
+`a567971e…`, the BIOS image was `2d4d70ca…`, and the 3,586-line serial log was
+`a6730b26…`. None of the removed markers appeared. The run reached xkbcomp and
+then hit the already-known fatal:
+
+```text
+[PF] kernel demand map failed for 0x7fffbdffe000: LeafFrameExhaustedChirho
+```
+
+This is a regression smoke only, not desktop evidence. It proves that removing
+those probes did not introduce an earlier scheduler/syscall-return wall; it
+does not prove later behavior because `XORG-MAIN-LOOP` remained absent. The
+expanded trace-free source preflight reports 72 remaining forbidden lines, so
+the acceptance gate remains deliberately red. Raw bounded metadata and serial
+output are retained under
+`target/evidence-chirho/x11-desktop-chirho/scheduler-waitqueue-trace-cleanup-20260825-chirho/`.
+
+Source audit of the fatal found a stronger lifecycle defect: Task stores a raw
+`Option<PhysAddr>` page-table root, each exec replaces and loses the old root,
+`CLONE_VM` aliases that raw root across Tasks, and the existing page-table
+destroy helper has zero callers and deliberately cannot release shared COW
+leaves. The repair must encode address-space and per-leaf ownership, not enlarge
+the frame pool or rely on teardown call-site discipline.
+
 ## Open acceptance work Chirho
 
 - repair and causally prove the PID-2 SIGCHLD/SYSRET return-target fault;
+- replace raw page-table ownership with a refcounted handle, O(1) leaf-frame
+  accounting, CR3-checked explicit retirement, and lifecycle wiring;
 - remove `WAIT4-FAST` plus the kernel-supplied fallback keymap as one coherent
   xkbcomp authenticity repair;
 - capture the physical after-frame and verify meaningful pixel changes after

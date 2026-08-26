@@ -89,8 +89,14 @@ serial marker does not close a phase whose gate requires a cohort.
 - [x] Remove net-core PID/X11 payload traces, trace-only lock acquisition,
       relay diagnostics, and framebuffer sampling; prove a zero-warning build
       and the same first runtime wall as the untouched baseline.
+- [x] Remove scheduler decision/drop traces, syscall-return PID-2 probes, and
+      waitqueue PID-2/PID-3 probes; prove a zero-warning build and bounded KVM
+      progress to the already-known address-space exhaustion wall.
 - [ ] Remove temporary `[XORG-ENTRY]`, `[XORG-SC]`, `[CTX-*]`, PID-specific,
       and equivalent completed diagnostics from the final build.
+- [ ] Replace raw `Option<PhysAddr>` task address-space ownership with a
+      refcounted handle, O(1) per-frame leaf ownership, CR3-safe explicit
+      retirement, and executable clone/COW/unmap/exit regressions.
 - [ ] Make render-task registry capacity/overflow behavior explicit while
       retaining O(1), lock-free scheduler lookup.
 - [x] Update the X11 workflow Mermaid diagram to match the final rootfs,

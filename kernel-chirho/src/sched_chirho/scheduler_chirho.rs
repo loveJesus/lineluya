@@ -80,23 +80,11 @@ static GLOBAL_TICK_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
 static X11_RENDER_TASK_BITS_CHIRHO: [AtomicU64; X11_RENDER_TASK_WORD_COUNT_CHIRHO] =
     [const { AtomicU64::new(0) }; X11_RENDER_TASK_WORD_COUNT_CHIRHO];
 
-/// Limited scheduler tick trace for debugging PID 4 post-yield starvation.
-static TICK_TRACE_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
-
 /// Limited scheduler lock contention trace from the timer path.
 static TICK_LOCK_MISS_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
 
 /// Limited trace for times the timer observes no current task.
 static TICK_IDLE_TRACE_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
-
-/// Limited high-PID scheduler trace for X11/fork-chain debugging.
-static SCHED_TRACE_COUNTER_CHIRHO: AtomicU64 = AtomicU64::new(0);
-
-/// Only trace scheduler activity once user-space helper chains are active.
-const SCHED_TRACE_PID_FLOOR_CHIRHO: u64 = 5;
-
-/// Hard cap so scheduler tracing does not flood the serial log.
-const SCHED_TRACE_LIMIT_CHIRHO: u64 = 256;
 
 // ---------------------------------------------------------------------------
 // External assembly routine for context switching
@@ -186,23 +174,6 @@ pub struct RunQueueChirho {
     /// Flag indicating that a reschedule is needed.  This is the lock-protected
     /// counterpart of [`NEED_RESCHED_ATOMIC_CHIRHO`]; both are kept in sync.
     need_resched_chirho: bool,
-}
-
-fn task_state_name_for_pid_chirho(pid_chirho: u64) -> &'static str {
-    let Some(task_arc_chirho) = crate::task_chirho::find_task_by_pid_chirho(pid_chirho) else {
-        return "Missing";
-    };
-
-    let task_state_chirho = task_arc_chirho.lock().state_chirho;
-    match task_state_chirho {
-        crate::task_chirho::TaskStateChirho::RunningChirho => "Running",
-        crate::task_chirho::TaskStateChirho::ReadyChirho => "Ready",
-        crate::task_chirho::TaskStateChirho::SleepingChirho => "Sleeping",
-        crate::task_chirho::TaskStateChirho::BlockedChirho => "Blocked",
-        crate::task_chirho::TaskStateChirho::StoppedChirho => "Stopped",
-        crate::task_chirho::TaskStateChirho::ZombieChirho => "Zombie",
-        crate::task_chirho::TaskStateChirho::DeadChirho => "Dead",
-    }
 }
 
 /// Mark a task for the X11/render time-slice boost.
@@ -357,61 +328,6 @@ fn time_slice_for_pid_chirho(pid_chirho: u64) -> u64 {
     } else {
         DEFAULT_TIME_SLICE_CHIRHO
     }
-}
-
-fn should_trace_scheduler_event_chirho(
-    old_pid_chirho: Option<u64>,
-    next_pid_chirho: Option<u64>,
-    tasks_chirho: &VecDeque<u64>,
-) -> bool {
-    old_pid_chirho.is_some_and(|pid_chirho| pid_chirho >= SCHED_TRACE_PID_FLOOR_CHIRHO)
-        || next_pid_chirho.is_some_and(|pid_chirho| pid_chirho >= SCHED_TRACE_PID_FLOOR_CHIRHO)
-        || tasks_chirho
-            .iter()
-            .take(4)
-            .any(|&pid_chirho| pid_chirho >= SCHED_TRACE_PID_FLOOR_CHIRHO)
-}
-
-fn trace_scheduler_event_chirho(
-    label_chirho: &str,
-    old_pid_chirho: Option<u64>,
-    next_pid_chirho: Option<u64>,
-    tasks_chirho: &VecDeque<u64>,
-) {
-    if !should_trace_scheduler_event_chirho(old_pid_chirho, next_pid_chirho, tasks_chirho) {
-        return;
-    }
-
-    let trace_idx_chirho = SCHED_TRACE_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
-    if trace_idx_chirho >= SCHED_TRACE_LIMIT_CHIRHO {
-        return;
-    }
-
-    let old_state_chirho = old_pid_chirho
-        .map(task_state_name_for_pid_chirho)
-        .unwrap_or("None");
-    let next_state_chirho = next_pid_chirho
-        .map(task_state_name_for_pid_chirho)
-        .unwrap_or("None");
-    let front0_chirho = tasks_chirho.get(0).copied().unwrap_or(0);
-    let front1_chirho = tasks_chirho.get(1).copied().unwrap_or(0);
-    let front2_chirho = tasks_chirho.get(2).copied().unwrap_or(0);
-    let front3_chirho = tasks_chirho.get(3).copied().unwrap_or(0);
-
-    crate::serial_println_chirho!(
-        "[SCHED-TRACE] #{} {} old={:?}/{} next={:?}/{} qlen={} front=[{},{},{},{}]",
-        trace_idx_chirho,
-        label_chirho,
-        old_pid_chirho,
-        old_state_chirho,
-        next_pid_chirho,
-        next_state_chirho,
-        tasks_chirho.len(),
-        front0_chirho,
-        front1_chirho,
-        front2_chirho,
-        front3_chirho,
-    );
 }
 
 impl RunQueueChirho {
@@ -633,14 +549,6 @@ pub fn schedule_chirho() {
             if is_runnable_chirho {
                 scheduler_chirho.tasks_chirho.push_back(pid_chirho);
             }
-            if !is_runnable_chirho && pid_chirho >= 4 {
-                let old_state_chirho = task_state_name_for_pid_chirho(pid_chirho);
-                crate::serial_println_chirho!(
-                    "[SCHED-DROP] PID {} NOT pushed (state={})",
-                    pid_chirho,
-                    old_state_chirho,
-                );
-            }
         }
 
         // 3. Pop the next RUNNABLE task from the front, skipping dead/zombie.
@@ -667,13 +575,6 @@ pub fn schedule_chirho() {
                     continue;
                 }
                 // Dead/zombie task — discard silently.
-                // Trace discarded PID 4 for debugging
-                if candidate_chirho == 4 {
-                    crate::serial_println_chirho!(
-                        "[SCHED-DROP] PID 4 discarded (not runnable) queue_len={}",
-                        queue_len_chirho,
-                    );
-                }
             }
         }
 
@@ -684,13 +585,6 @@ pub fn schedule_chirho() {
                 queue_len_chirho, old_pid_chirho, next_pid_chirho
             );
         }
-        trace_scheduler_event_chirho(
-            "schedule",
-            old_pid_chirho,
-            next_pid_chirho,
-            &scheduler_chirho.tasks_chirho,
-        );
-
     match next_pid_chirho {
         None => {
             // No runnable tasks. Save the current task's context before
@@ -925,32 +819,13 @@ pub fn schedule_tick_chirho() {
         GLOBAL_TICK_COUNT_CHIRHO.load(Ordering::Relaxed);
 
     // Only meaningful if a task is currently running.
-    if let Some(pid_chirho) = scheduler_chirho.current_pid_chirho {
-        let remaining_before_chirho = scheduler_chirho.remaining_ticks_chirho;
-        let need_resched_before_chirho = scheduler_chirho.need_resched_chirho;
+    if scheduler_chirho.current_pid_chirho.is_some() {
         scheduler_chirho.remaining_ticks_chirho =
             scheduler_chirho.remaining_ticks_chirho.saturating_sub(1);
 
         if scheduler_chirho.remaining_ticks_chirho == 0 {
             scheduler_chirho.need_resched_chirho = true;
             NEED_RESCHED_ATOMIC_CHIRHO.store(true, Ordering::Release);
-        }
-
-        if pid_chirho == 4 {
-            let trace_count_chirho =
-                TICK_TRACE_COUNTER_CHIRHO.fetch_add(1, Ordering::Relaxed);
-            if trace_count_chirho < 64 {
-                crate::serial_debug_chirho!(
-                    "[TICK-TRACE] tick={} pid={} before={} after={} need_before={} need_after={} current={:?}",
-                    tick_count_chirho,
-                    pid_chirho,
-                    remaining_before_chirho,
-                    scheduler_chirho.remaining_ticks_chirho,
-                    need_resched_before_chirho,
-                    scheduler_chirho.need_resched_chirho,
-                    scheduler_chirho.current_pid_chirho,
-                );
-            }
         }
     } else {
         let idle_count_chirho =
@@ -1151,12 +1026,6 @@ pub fn yield_current_chirho() {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut scheduler_guard_chirho = SCHEDULER_CHIRHO.lock();
         if let Some(scheduler_chirho) = scheduler_guard_chirho.as_mut() {
-            trace_scheduler_event_chirho(
-                "yield",
-                scheduler_chirho.current_pid_chirho,
-                None,
-                &scheduler_chirho.tasks_chirho,
-            );
             scheduler_chirho.remaining_ticks_chirho = 0;
             scheduler_chirho.need_resched_chirho = true;
             NEED_RESCHED_ATOMIC_CHIRHO.store(true, Ordering::Release);
@@ -1211,12 +1080,6 @@ pub fn promote_task_chirho(pid_chirho: u64) {
             if let Some(pos_chirho) = sched_chirho.tasks_chirho.iter().position(|&p| p == pid_chirho) {
                 sched_chirho.tasks_chirho.remove(pos_chirho);
                 sched_chirho.tasks_chirho.push_front(pid_chirho);
-                trace_scheduler_event_chirho(
-                    "promote",
-                    sched_chirho.current_pid_chirho,
-                    Some(pid_chirho),
-                    &sched_chirho.tasks_chirho,
-                );
             }
         }
     });

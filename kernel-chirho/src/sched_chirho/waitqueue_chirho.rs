@@ -106,19 +106,6 @@ where
     // Add ourselves to the wait queue before blocking.
     queue_chirho.add_waiter_chirho(pid_chirho);
 
-    // One-shot: trace PID 3's wait_event entry
-    if pid_chirho == 3 {
-        use core::sync::atomic::{AtomicU64, Ordering as WEOrd};
-        static WE3_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-        let cnt_chirho = WE3_CNT_CHIRHO.fetch_add(1, WEOrd::Relaxed);
-        if cnt_chirho < 10 {
-            crate::serial_println_chirho!(
-                "[WE3] #{} PID 3 entering wait_event loop (added to queue)",
-                cnt_chirho,
-            );
-        }
-    }
-
     loop {
         // GPT-directed fix: make the condition check + block ATOMIC
         // with respect to interrupts. Without this, a wake can fire
@@ -137,18 +124,6 @@ where
         });
 
         if !should_block_chirho {
-            // Trace PID 3 wake-up
-            if pid_chirho == 3 {
-                use core::sync::atomic::{AtomicU64, Ordering as WEOrd};
-                static WE3W_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                let cnt_chirho = WE3W_CNT_CHIRHO.fetch_add(1, WEOrd::Relaxed);
-                if cnt_chirho < 10 {
-                    crate::serial_println_chirho!(
-                        "[WE3] #{} PID 3 condition TRUE — returning from wait_event",
-                        cnt_chirho,
-                    );
-                }
-            }
             queue_chirho.remove_waiter_chirho(pid_chirho);
             return;
         }
@@ -173,19 +148,6 @@ pub fn wake_up_chirho(queue_chirho: &WaitQueueChirho) {
         waiters_chirho.clear();
         pids_chirho
     };
-
-    // One-shot: log when wake has PID 2 as a waiter (to debug second SSH accept)
-    if pids_chirho.contains(&2) {
-        use core::sync::atomic::{AtomicU64, Ordering};
-        static WAKE2_CNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-        let cnt_chirho = WAKE2_CNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-        if cnt_chirho < 5 {
-            crate::serial_println_chirho!(
-                "[WAKE] #{} waking PID 2 (waiters={:?})",
-                cnt_chirho, pids_chirho,
-            );
-        }
-    }
 
     for pid_chirho in pids_chirho {
         crate::scheduler_chirho::unblock_task_chirho(pid_chirho);
