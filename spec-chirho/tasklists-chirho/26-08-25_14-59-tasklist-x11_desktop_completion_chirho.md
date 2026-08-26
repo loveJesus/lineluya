@@ -24,7 +24,7 @@ serial marker does not close a phase whose gate requires a cohort.
       successful reconnects.
 - [x] Carry remote `e9e95f1` lock release and `-EAGAIN_CHIRHO` semantics into
       local kernel commit `93a918b`.
-- [ ] Rebase/integrate the five local commits onto `gh_chirho/main_chirho`
+- [x] Rebase/integrate the five local commits onto `gh_chirho/main_chirho`
       without losing either side, then push with a clean owned-path diff.
 - [ ] Record the final result of Claude's in-flight 3x400-second cohort.
 - [ ] Preserve one bounded hit/miss comparison if available and remove the
@@ -44,40 +44,40 @@ serial marker does not close a phase whose gate requires a cohort.
 
 ## Authentic AF_UNIX and X11 transport Chirho
 
-- [ ] Inventory every X11 parser, reply builder, synthetic event, atom table,
+- [x] Inventory every X11 parser, reply builder, synthetic event, atom table,
       and injection call site in `net_core_chirho.rs`.
 - [ ] Add or run generic AF_UNIX regressions for split/coalesced streams,
       backpressure, EOF, accept/connect, and edge-triggered epoll readiness.
-- [ ] Delete kernel-generated X11 setup, extension, atom, property, font,
+- [x] Delete kernel-generated X11 setup, extension, atom, property, font,
       color, MapNotify, Expose, and generic replies.
-- [ ] Prove all server-to-client X11 bytes originate from Xorg's accepted
+- [x] Prove all server-to-client X11 bytes originate from Xorg's accepted
       endpoint, not a kernel response helper.
-- [ ] Remove X11 protocol parsing from the production socket transport after
+- [x] Remove X11 protocol parsing from the production socket transport after
       the proof trace has served its purpose.
 
 ## Rootfs-owned launch and xgears Chirho
 
-- [ ] Move the maintained `xgears_chirho.c` source into a userspace-owned
+- [x] Move the maintained `xgears_chirho.c` source into a userspace-owned
       directory and define its pinned, reproducible build command.
-- [ ] Install the resulting executable as `/usr/bin/xgears-chirho` through
+- [x] Install the resulting executable as `/usr/bin/xgears-chirho` through
       `make-alpine-disk-chirho.sh` and validate ELF class, mode, and deps.
-- [ ] Materialize Xorg configuration and one desktop launcher in the rootfs.
-- [ ] Remove kernel-synthetic `/etc/profile` desktop content and duplicate
+- [x] Materialize Xorg configuration and one desktop launcher in the rootfs.
+- [x] Remove kernel-synthetic `/etc/profile` desktop content and duplicate
       launch/injection paths.
-- [ ] Replace the generic exec-time duplicate-Xorg special case with rootfs
+- [x] Replace the generic exec-time duplicate-Xorg special case with rootfs
       launch ownership and generic process semantics.
-- [ ] Make launch readiness bounded and explicit rather than timing-based.
+- [x] Make launch readiness bounded and explicit rather than timing-based.
 
 ## Real desktop proof Chirho
 
-- [ ] Prove twm connects to Xorg and becomes the active window manager.
-- [ ] Prove xterm sends a real attributable `CreateWindow` request.
-- [ ] Prove xterm allocates `/dev/pts/N`, execs `/bin/sh -l`, and returns a
+- [x] Prove twm connects to Xorg and becomes the active window manager.
+- [x] Prove xterm sends a real attributable `CreateWindow` request.
+- [x] Prove xterm allocates `/dev/pts/N`, execs `/bin/sh -l`, and returns a
       shell marker through the PTY.
-- [ ] Prove `xgears-chirho` execs from the generated disk, creates/maps a
+- [x] Prove `xgears-chirho` execs from the generated disk, creates/maps a
       window, renders nonzero frames, and prints measured FPS.
 - [ ] Capture framebuffer before/after evidence showing mapped client output.
-- [ ] Verify no success evidence came from preload logs, synthetic protocol
+- [x] Verify no success evidence came from preload logs, synthetic protocol
       bytes, a manual rootfs edit, or a stale prior image.
 
 ## Cleanup and quality gates Chirho

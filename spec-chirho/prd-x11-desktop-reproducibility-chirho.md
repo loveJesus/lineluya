@@ -112,6 +112,12 @@ proved that this is not yet reproducible from the repository pipeline:
     portability diagnostic but cannot supply acceptance evidence.
 13. Default, trace-free behavior must pass. A temporary bounded trace may split
     one hypothesis, then it is removed before the final cohort.
+14. Scheduler, interrupt, exception, and fault paths must not acquire a lock
+    that the suspended or interrupted context may already hold. The four
+    observed forms—scheduler-to-VFS traversal, timer-to-scheduler lookup,
+    descriptor teardown under `TASK_LIST_CHIRHO`, and demand-fault page-table
+    allocation under the frame allocator—are one lock-recursion defect class,
+    not isolated special cases.
 
 ## Functional requirements Chirho
 
