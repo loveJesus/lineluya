@@ -241,6 +241,19 @@ pub trait FileOpsChirho: Send + Sync {
         file_chirho: &mut FileChirho,
         callback_chirho: &mut dyn FnMut(&str, u64, u8) -> bool,
     ) -> Result<usize, i64>;
+
+    /// True when this file is the system console.
+    ///
+    /// Identity lives on the OPS object because the console has two distinct
+    /// representations: the devtmpfs node for /dev/console (major 5, minor 0
+    /// or 1, carrying DevNodeDataChirho) and the boot stdio objects installed
+    /// by init, which reuse a dummy inode with `fs_data_chirho: None`. Both
+    /// carry `DEV_CONSOLE_OPS_CHIRHO`, so only the ops object identifies both.
+    /// Discriminating on inode payload alone silently misses the boot fd 0 —
+    /// the one every shell actually polls.
+    fn is_console_chirho(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------

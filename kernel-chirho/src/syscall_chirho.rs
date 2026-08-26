@@ -4307,16 +4307,197 @@ fn sys_ioctl_real_chirho(
 // poll / select / epoll implementations (P3-031)
 // ============================================================================
 
-/// `poll(2)` simplified implementation.
+/// True once a finite poll deadline has passed. `None` means the caller asked
+/// for an indefinite wait, which never expires — so this returns false forever
+/// and `poll(2)` cannot answer 0 to a negative timeout.
+#[inline]
+fn poll_deadline_expired_chirho(deadline_chirho: Option<u64>) -> bool {
+    match deadline_chirho {
+        None => false,
+        Some(deadline_ticks_chirho) => {
+            crate::scheduler_chirho::tick_count_chirho() >= deadline_ticks_chirho
+        }
+    }
+}
+
+/// Readiness for ONE descriptor, derived from the OBJECT installed at it.
 ///
-/// Marks all valid fds as ready immediately (non-blocking stub).
+/// Readiness is never a property of the descriptor NUMBER and never of the
+/// process asking. fd 0 used to be special-cased by number and answered with
+/// console state, so a pipe or socket dup2'd onto fd 0 was told about the
+/// console. It also consulted is_interactive_shell_chirho(), which reads
+/// Task.comm and ends `.unwrap_or(true)`; exec_init establishes no exec
+/// identity, so a re-exec'd shell carried its predecessor's comm.
+fn poll_revents_for_fd_chirho(pfd_chirho: &PollfdChirho) -> i16 {
+    if pfd_chirho.fd_chirho < 0 {
+        return 0;
+    }
+    let fd_val_chirho = pfd_chirho.fd_chirho as u64;
+    let events_chirho = pfd_chirho.events_chirho;
+    let mut revents_chirho: i16 = 0;
+
+    if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
+        if events_chirho & POLLIN_CHIRHO != 0
+            && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
+        {
+            revents_chirho |= POLLIN_CHIRHO;
+        }
+        // AF_UNIX reports writable whenever the caller asked for it. TCP
+        // reports writable only when POLLOUT was asked for EXCLUSIVELY —
+        // reporting it alongside POLLIN spins dropbear.
+        let is_unix_chirho = {
+            let idx_result_chirho =
+                crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho);
+            let table_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
+            idx_result_chirho
+                .ok()
+                .and_then(|idx_chirho| {
+                    table_chirho.get(idx_chirho).and_then(|s_chirho| s_chirho.as_ref())
+                })
+                .map(|s_chirho| {
+                    s_chirho.family_chirho as u64 == crate::net_chirho::AF_UNIX_CHIRHO
+                })
+                .unwrap_or(false)
+        };
+        if (events_chirho & POLLOUT_CHIRHO) != 0 && is_unix_chirho {
+            revents_chirho |= POLLOUT_CHIRHO;
+        } else if events_chirho == POLLOUT_CHIRHO {
+            revents_chirho |= POLLOUT_CHIRHO;
+        }
+        return revents_chirho;
+    }
+
+    if events_chirho & POLLOUT_CHIRHO != 0 {
+        revents_chirho |= POLLOUT_CHIRHO;
+    }
+    if events_chirho & POLLIN_CHIRHO == 0 {
+        return revents_chirho;
+    }
+
+    let file_arc_chirho = match crate::fs_chirho::lookup_fd_chirho(fd_val_chirho) {
+        Some(file_arc_chirho) => file_arc_chirho,
+        // Unknown descriptor: report readable rather than block forever. This
+        // is the deliberate permissive fallback — a descriptor type this
+        // predicate cannot classify must not become an indefinite hang.
+        None => {
+            revents_chirho |= POLLIN_CHIRHO;
+            return revents_chirho;
+        }
+    };
+    let file_chirho = file_arc_chirho.lock();
+    let mode_chirho = file_chirho.inode_chirho.lock().mode_chirho;
+    let readable_chirho = match mode_chirho & 0o170000 {
+        // FIFO: buffered data, or a closed write end. The closed writer is the
+        // hangup case that actually exists here. It is surfaced as POLLIN, as
+        // before — no POLLHUP is synthesised, and the console has no hangup
+        // concept at all, so none is claimed for it either.
+        0o010000 => {
+            let inode_chirho = file_chirho.inode_chirho.lock();
+            let pipe_ready_chirho = inode_chirho
+                .fs_data_chirho
+                .as_ref()
+                .and_then(|fs_data_chirho| {
+                    fs_data_chirho.downcast_ref::<
+                        alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>,
+                    >()
+                })
+                .map(|pipe_arc_chirho| {
+                    let pipe_chirho = pipe_arc_chirho.lock();
+                    !pipe_chirho.buffer_chirho.is_empty() || pipe_chirho.closed_write_chirho
+                })
+                .unwrap_or(true);
+            // Dropbear's stdin is a pipe that TCP 2222 bytes are relayed INTO
+            // during read(). Poll must agree with that relay or dropbear never
+            // reads and the relay never runs. The relay
+            // (maybe_relay_tcp_2222_into_fd0_pipe_chirho) is itself scoped to
+            // fd 0, so this mirrors its scope exactly rather than deriving
+            // from the object — stated plainly instead of dressed up.
+            pipe_ready_chirho
+                || (fd_val_chirho == 0
+                    && crate::net_chirho::has_tcp_data_for_port_chirho(2222))
+        }
+        // Character device. Only the console consults the line discipline,
+        // which is the same buffer read() drains — that is what makes poll and
+        // read agree. The raw UART LSR probe this replaced went obsolete when
+        // the serial IRQ began draining the port into the ldisc.
+        0o020000 => {
+            // Ask the OPS object, not the inode payload. init's boot stdio
+            // reuses a dummy inode with fs_data_chirho: None, so downcasting
+            // the payload identifies the mounted /dev/console node but MISSES
+            // the inherited fd 0 that every shell actually polls — which would
+            // leave it falling through to "always readable" and make this whole
+            // predicate decorative on the one path that matters.
+            if file_chirho.ops_chirho.is_console_chirho() {
+                crate::tty_chirho::tty0_chirho()
+                    .ldisc_chirho
+                    .lock()
+                    .has_data_chirho()
+            } else {
+                true
+            }
+        }
+        // Regular file: always readable.
+        _ => true,
+    };
+    if readable_chirho {
+        revents_chirho |= POLLIN_CHIRHO;
+    }
+    revents_chirho
+}
+
+/// Scan every pollfd once, writing `revents` and returning the ready count.
+#[inline]
+fn poll_scan_pollfds_chirho(pollfds_chirho: &mut [PollfdChirho]) -> i64 {
+    crate::net_chirho::poll_network_chirho();
+    let mut ready_chirho: i64 = 0;
+    for pfd_chirho in pollfds_chirho.iter_mut() {
+        let revents_chirho = poll_revents_for_fd_chirho(pfd_chirho);
+        pfd_chirho.revents_chirho = revents_chirho;
+        if revents_chirho != 0 {
+            ready_chirho += 1;
+        }
+    }
+    ready_chirho
+}
+
+/// `poll(2)`.
+///
+/// Blocks until a descriptor is ready or the timeout expires. A negative
+/// timeout blocks indefinitely and never returns 0.
 fn sys_poll_chirho(
     fds_ptr_chirho: u64,
     nfds_chirho: u32,
-    _timeout_chirho: i32,
+    timeout_chirho: i32,
 ) -> i64 {
-    if fds_ptr_chirho == 0 || nfds_chirho == 0 {
+    // POSIX poll(2) timeout contract. It was previously ignored outright — the
+    // parameter was named `_timeout_chirho` and every non-ready path returned 0
+    // after a fixed iteration count. A negative timeout means "block
+    // indefinitely" and MUST NEVER yield 0, so that fabricated 0 told BusyBox
+    // its line-edit wait had expired and it exited cleanly: the root cause of
+    // the boot shell's exit/re-exec churn. Ticks are ~1 ms
+    // (TICK_PERIOD_NS_CHIRHO), so a millisecond timeout maps straight onto the
+    // timer-ISR tick counter.
+    let poll_deadline_chirho: Option<u64> = if timeout_chirho < 0 {
+        None
+    } else {
+        Some(
+            crate::scheduler_chirho::tick_count_chirho()
+                .saturating_add(timeout_chirho as u64),
+        )
+    };
+
+    // nfds == 0 is poll(2)'s sleep primitive: the fds pointer is ignored
+    // entirely and the call waits out the timeout. Returning 0 unconditionally
+    // here would contradict the contract established immediately above.
+    if nfds_chirho == 0 {
+        while !poll_deadline_expired_chirho(poll_deadline_chirho) {
+            x86_64::instructions::interrupts::enable_and_hlt();
+            crate::scheduler_chirho::yield_current_chirho();
+        }
         return 0;
+    }
+    if fds_ptr_chirho == 0 {
+        return -EFAULT_CHIRHO;
     }
 
     let entry_size_chirho = core::mem::size_of::<PollfdChirho>();
@@ -4337,7 +4518,6 @@ fn sys_poll_chirho(
         return -EFAULT_CHIRHO;
     }
 
-    let mut ready_count_chirho: i64 = 0;
     let pollfds_chirho = unsafe {
         core::slice::from_raw_parts_mut(
             buf_chirho.0.as_mut_ptr() as *mut PollfdChirho,
@@ -4345,306 +4525,39 @@ fn sys_poll_chirho(
         )
     };
 
-    // Poll network for incoming packets before checking fds.
-    crate::net_chirho::poll_network_chirho();
+    // ONE scan predicate, used for the first pass and every retry pass. The
+    // previous implementation had three divergent copies: an initial scan that
+    // knew about the console, a socket-only retry loop, and a general retry
+    // loop that rechecked sockets and pipes but NOT the console. Console input
+    // could therefore arrive while a blocking poll was structurally incapable
+    // of noticing it. Divergent readiness copies are the defect; a single
+    // predicate is the fix.
+    let mut ready_count_chirho = poll_scan_pollfds_chirho(pollfds_chirho);
 
-    for pfd_chirho in pollfds_chirho.iter_mut() {
-        if pfd_chirho.fd_chirho < 0 {
-            pfd_chirho.revents_chirho = 0;
-            continue;
-        }
-
-        let fd_val_chirho = pfd_chirho.fd_chirho as u64;
-        let mut revents_chirho: i16 = 0;
-
-        // One-shot poll diagnostic for PID 13
-        {
-            let poll_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-            if poll_pid_chirho == 13 {
-                use core::sync::atomic::{AtomicU64, Ordering};
-                static POLL13_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                let pc_chirho = POLL13_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                if pc_chirho < 5 || pc_chirho % 10000 == 0 {
-                    let is_sock_chirho = crate::net_chirho::is_socket_fd_chirho(fd_val_chirho);
-                    let has_data_chirho = crate::net_chirho::socket_has_data_chirho(fd_val_chirho);
-                    crate::serial_println_chirho!(
-                        "[POLL13] #{} fd={} events={:#x} is_sock={} has_data={}",
-                        pc_chirho, pfd_chirho.fd_chirho, pfd_chirho.events_chirho, is_sock_chirho, has_data_chirho,
-                    );
-                }
+    // timeout == 0 is a pure non-blocking probe: one scan, no halt, no yield.
+    // The old code yielded before returning whenever the caller's PID was >= 6,
+    // so a zero timeout scheduled away despite promising an immediate answer.
+    if ready_count_chirho == 0 && timeout_chirho != 0 {
+        let mut attempt_chirho: u32 = 0;
+        loop {
+            // Deadline is the ONLY way a finite wait ends empty, and an
+            // infinite wait has no deadline, so it cannot end empty at all.
+            if poll_deadline_expired_chirho(poll_deadline_chirho) {
+                break;
             }
-        }
-        if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho) {
-            // Trace poll for twm/xterm PIDs
-            {
-                let poll_trace_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                if poll_trace_pid_chirho == 4 || poll_trace_pid_chirho == 5 {
-                    use core::sync::atomic::{AtomicU64, Ordering};
-                    static TWM_POLL_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                    let c_chirho = TWM_POLL_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                    if c_chirho < 20 {
-                        crate::serial_println_chirho!(
-                            "[TWM-POLL] pid={} fd={} events={:#x} has_data={} is_unix={}",
-                            poll_trace_pid_chirho, pfd_chirho.fd_chirho, pfd_chirho.events_chirho,
-                            crate::net_chirho::socket_has_data_chirho(fd_val_chirho),
-                            crate::net_chirho::is_unix_socket_idx_pub_chirho(
-                                crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho).unwrap_or(0)
-                            ),
-                        );
-                    }
-                }
-            }
-            // Socket fd: only report POLLIN if data/connection pending.
-            if pfd_chirho.events_chirho & POLLIN_CHIRHO != 0
-                && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
-            {
-                revents_chirho |= POLLIN_CHIRHO;
-            }
-            // POLLOUT: report for connected sockets. For AF_UNIX,
-            // always report writable. For TCP, only when caller asks
-            // exclusively for POLLOUT (prevents dropbear spin).
-            let is_unix_poll_chirho = {
-                let si_result_chirho = crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho);
-                let st_chirho = crate::net_chirho::SOCKET_TABLE_CHIRHO.lock();
-                let result_chirho = si_result_chirho
-                    .ok()
-                    .and_then(|idx| st_chirho.get(idx).and_then(|s| s.as_ref()))
-                    .map(|s| s.family_chirho as u64 == crate::net_chirho::AF_UNIX_CHIRHO)
-                    .unwrap_or(false);
-                // One-shot debug for PID 13
-                {
-                    let poll_pid2_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                    if poll_pid2_chirho == 13 {
-                        use core::sync::atomic::{AtomicU64, Ordering};
-                        static POLLUX_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                        let c_chirho = POLLUX_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                        if c_chirho < 3 {
-                            crate::serial_println_chirho!(
-                                "[POLL-UNIX] fd={} sock_idx={:?} is_unix={}",
-                                fd_val_chirho, si_result_chirho, result_chirho,
-                            );
-                        }
-                    }
-                }
-                result_chirho
-            };
-            // AF_UNIX: report POLLOUT only when caller requested it.
-            // This prevents spin when xcb polls POLLIN-only.
-            if (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0 && is_unix_poll_chirho {
-                revents_chirho |= POLLOUT_CHIRHO;
-            } else if pfd_chirho.events_chirho == POLLOUT_CHIRHO {
-                revents_chirho |= POLLOUT_CHIRHO;
-            }
-            if let Ok(socket_idx_trace_chirho) =
-                crate::net_chirho::socket_idx_from_fd_pub_chirho(fd_val_chirho)
-            {
-                if crate::net_chirho::is_unix_socket_idx_pub_chirho(socket_idx_trace_chirho)
-                    && !crate::net_chirho::is_unix_listen_fd_chirho(fd_val_chirho)
-                {
-                    use core::sync::atomic::{AtomicU64, Ordering};
-                    static UNIX_POLL_TRACE_COUNT_CHIRHO: AtomicU64 = AtomicU64::new(0);
-                    let trace_index_chirho =
-                        UNIX_POLL_TRACE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                    if trace_index_chirho < 256 {
-                        let unix_idx_trace_chirho =
-                            crate::net_chirho::lookup_unix_idx_pub_chirho(socket_idx_trace_chirho);
-                        let has_data_trace_chirho =
-                            (revents_chirho & POLLIN_CHIRHO) != 0
-                                || crate::net_chirho::socket_has_data_chirho(fd_val_chirho);
-                        let poll_pid_trace_chirho =
-                            crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-                        crate::serial_println_chirho!(
-                            "[UNIX-POLL-TRACE] #{} pid={} fd={} events={:#x} revents={:#x} sock_idx={} unix_idx={:?} has_data={}",
-                            trace_index_chirho,
-                            poll_pid_trace_chirho,
-                            fd_val_chirho,
-                            pfd_chirho.events_chirho,
-                            revents_chirho,
-                            socket_idx_trace_chirho,
-                            unix_idx_trace_chirho,
-                            has_data_trace_chirho,
-                        );
-                    }
-                }
-            }
-        } else {
-            // Regular file/pipe
-            if pfd_chirho.events_chirho & POLLOUT_CHIRHO != 0 {
-                revents_chirho |= POLLOUT_CHIRHO;
-            }
-            if pfd_chirho.events_chirho & POLLIN_CHIRHO != 0 {
-                if fd_val_chirho == 0 {
-                    // stdin: for non-shell PIDs (daemons like dropbear),
-                    // only report POLLIN if serial actually has data.
-                    // The shell (PID 0/re-exec'd) needs unconditional
-                    // POLLIN so its blocking read loop works.
-                    
-                    if is_interactive_shell_chirho() {
-                        revents_chirho |= POLLIN_CHIRHO; // shell: always
-                    } else {
-                        // Daemon (dropbear): check serial AND TCP port 2222.
-                        // Dropbear reads SSH data from fd=0 (pipe). TCP data
-                        // on port 2222 is relayed to the pipe during read().
-                        // Report POLLIN if either serial or TCP has data.
-                        let lsr_chirho: u8 = unsafe {
-                            x86_64::instructions::port::Port::<u8>::new(0x3FD).read()
-                        };
-                        if lsr_chirho & 1 != 0 {
-                            revents_chirho |= POLLIN_CHIRHO;
-                        }
-                        // Also check TCP port 2222 for SSH data
-                        if crate::net_chirho::has_tcp_data_for_port_chirho(2222) {
-                            revents_chirho |= POLLIN_CHIRHO;
-                        }
-                    }
-                } else {
-                    // Non-stdin fd: check if it's a pipe with data or closed write end.
-                    let mut pipe_ready_chirho = false;
-                    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_val_chirho) {
-                        let fg_chirho = file_arc_chirho.lock();
-                        let is_fifo_chirho = (fg_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
-                        if is_fifo_chirho {
-                            if let Some(ref fs_data_chirho) = fg_chirho.inode_chirho.lock().fs_data_chirho {
-                                if let Some(pipe_arc_chirho) = fs_data_chirho.downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>() {
-                                    let pg_chirho = pipe_arc_chirho.lock();
-                                    pipe_ready_chirho = !pg_chirho.buffer_chirho.is_empty() || pg_chirho.closed_write_chirho;
-                                }
-                            }
-                        } else {
-                            // Regular file: always ready
-                            pipe_ready_chirho = true;
-                        }
-                    } else {
-                        // FD not found — report ready to avoid blocking forever
-                        pipe_ready_chirho = true;
-                    }
-                    if pipe_ready_chirho {
-                        revents_chirho |= POLLIN_CHIRHO;
-                    }
-                }
-            }
-        }
-
-        pfd_chirho.revents_chirho = revents_chirho;
-        if revents_chirho != 0 {
-            ready_count_chirho += 1;
-        }
-    }
-
-    // Yield only when no fds are ready — prevents busy-loop but doesn't
-    // penalize GUI clients that poll with events available.
-    {
-        let poll_ret_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if poll_ret_pid_chirho >= 6 && ready_count_chirho == 0 {
-            crate::scheduler_chirho::yield_current_chirho();
-        }
-    }
-    if ready_count_chirho > 0 {
-        let poll_ret_pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if poll_ret_pid_chirho >= 6 {
-            // Already yielded above
-        }
-        // Copy revents back to user space
-        if crate::uaccess_chirho::copy_to_user_chirho(
-            fds_ptr_chirho, &buf_chirho.0[..total_size_chirho], total_size_chirho,
-        ).is_err() { return -EFAULT_CHIRHO; }
-        return ready_count_chirho;
-    }
-
-    // AF_UNIX: block on socket data waitqueue instead of busy-yielding.
-    if ready_count_chirho == 0 {
-        let has_unix_fd_chirho = pollfds_chirho.iter().any(|p| {
-            p.fd_chirho >= 0 && crate::net_chirho::is_socket_fd_chirho(p.fd_chirho as u64)
-        });
-        if has_unix_fd_chirho && _timeout_chirho != 0 {
-            // Yield+HLT loop for AF_UNIX POLLIN. The HLT after yield is
-            // CRITICAL — without it, yield returns instantly and the loop
-            // spins without giving other tasks real CPU time. The HLT
-            // halts for 1ms (timer tick), ensuring interleaved execution.
-            // For timeout=-1, do not sit in-kernel for thousands of
-            // yield+HLT cycles. A shorter retry window keeps X11 clients
-            // responsive while still giving the peer several scheduler turns
-            // to produce data before userspace re-polls.
-            let max_retries_chirho: u32 = if _timeout_chirho < 0 { 128 } else {
-                (_timeout_chirho as u32).min(30000)
-            };
-            for _retry_chirho in 0..max_retries_chirho {
-                crate::scheduler_chirho::yield_current_chirho();
-                x86_64::instructions::interrupts::enable_and_hlt();
-                for pfd_chirho in pollfds_chirho.iter_mut() {
-                    if pfd_chirho.fd_chirho >= 0 {
-                        let fv_chirho = pfd_chirho.fd_chirho as u64;
-                        if crate::net_chirho::is_socket_fd_chirho(fv_chirho)
-                            && crate::net_chirho::socket_has_data_chirho(fv_chirho)
-                            && (pfd_chirho.events_chirho & POLLIN_CHIRHO) != 0
-                        {
-                            pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
-                            ready_count_chirho += 1;
-                        }
-                        if (pfd_chirho.events_chirho & POLLOUT_CHIRHO) != 0 {
-                            pfd_chirho.revents_chirho |= POLLOUT_CHIRHO;
-                            if ready_count_chirho == 0 { ready_count_chirho = 1; }
-                        }
-                    }
-                }
-                if ready_count_chirho > 0 { break; }
-            }
-            if crate::uaccess_chirho::copy_to_user_chirho(
-                fds_ptr_chirho, &buf_chirho.0[..total_size_chirho], total_size_chirho,
-            ).is_err() { return -EFAULT_CHIRHO; }
-            return ready_count_chirho;
-        }
-        let max_block_chirho: u32 = 1000;
-        for _attempt_chirho in 0..max_block_chirho {
             x86_64::instructions::interrupts::enable_and_hlt();
-            crate::net_chirho::poll_network_chirho();
-            // CRITICAL: Yield for ALL PIDs every 5 iterations.
-            // PID 2 (dropbear) monopolizes CPU without this.
-            // DO NOT restrict to >= 5 — breaks X11 scheduling.
-            if _attempt_chirho > 0 && _attempt_chirho % 5 == 0 {
+            // Yield for ALL PIDs every 5 iterations. PID 2 (dropbear)
+            // monopolizes CPU without this. DO NOT restrict to >= 5 — that
+            // breaks X11 scheduling. This is an INTERNAL scheduler handoff; it
+            // used to be followed by `return 0`, which leaked the handoff out
+            // as a userspace timeout result. That one line is what made
+            // poll(-1) answer 0 and the boot shell exit into re-exec.
+            if attempt_chirho % 5 == 4 {
                 crate::scheduler_chirho::yield_current_chirho();
-                return 0;
             }
-            // Re-check pollfds (sockets AND pipes)
-            for pfd_chirho in pollfds_chirho.iter() {
-                if pfd_chirho.fd_chirho >= 0 {
-                    let fd_val_chirho = pfd_chirho.fd_chirho as u64;
-                    if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho)
-                        && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
-                    {
-                        ready_count_chirho = 1;
-                        break;
-                    }
-                    // Also check pipe fds for data/EOF
-                    if let Some(file_arc_chirho) = crate::fs_chirho::lookup_fd_chirho(fd_val_chirho) {
-                        let fg_chirho = file_arc_chirho.lock();
-                        let is_fifo_chirho = (fg_chirho.inode_chirho.lock().mode_chirho & 0o170000) == 0o010000;
-                        if is_fifo_chirho {
-                            if let Some(ref fs_data_chirho) = fg_chirho.inode_chirho.lock().fs_data_chirho {
-                                if let Some(pipe_arc_chirho) = fs_data_chirho.downcast_ref::<alloc::sync::Arc<spin::Mutex<crate::pipe_chirho::PipeChirho>>>() {
-                                    let pg_chirho = pipe_arc_chirho.lock();
-                                    if !pg_chirho.buffer_chirho.is_empty() || pg_chirho.closed_write_chirho {
-                                        ready_count_chirho = 1;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            attempt_chirho = attempt_chirho.wrapping_add(1);
+            ready_count_chirho = poll_scan_pollfds_chirho(pollfds_chirho);
             if ready_count_chirho > 0 {
-                // Update revents for the fds that became ready
-                for pfd_chirho in pollfds_chirho.iter_mut() {
-                    if pfd_chirho.fd_chirho >= 0 {
-                        let fd_val_chirho = pfd_chirho.fd_chirho as u64;
-                        if crate::net_chirho::is_socket_fd_chirho(fd_val_chirho)
-                            && crate::net_chirho::socket_has_data_chirho(fd_val_chirho)
-                        {
-                            pfd_chirho.revents_chirho |= POLLIN_CHIRHO;
-                        }
-                    }
-                }
                 break;
             }
         }
@@ -4657,27 +4570,6 @@ fn sys_poll_chirho(
         total_size_chirho,
     ).is_err() {
         return -EFAULT_CHIRHO;
-    }
-
-    // One-shot debug: log poll result for PID >= 3
-    {
-        let pid_chirho = crate::scheduler_chirho::current_pid_chirho().unwrap_or(0);
-        if pid_chirho >= 3 {
-            static POLL_LOG_CHIRHO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-            let cnt_chirho = POLL_LOG_CHIRHO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if cnt_chirho < 5 {
-                let mut fds_str_chirho = alloc::string::String::new();
-                for pfd_chirho in pollfds_chirho.iter() {
-                    use core::fmt::Write;
-                    let _ = write!(fds_str_chirho, " fd={}(ev={:#x},rev={:#x})",
-                        pfd_chirho.fd_chirho, pfd_chirho.events_chirho, pfd_chirho.revents_chirho);
-                }
-                crate::serial_println_chirho!(
-                    "[POLL-DBG] pid={} nfds={} timeout={} ready={} fds:{}",
-                    pid_chirho, nfds_chirho, _timeout_chirho, ready_count_chirho, fds_str_chirho
-                );
-            }
-        }
     }
 
     ready_count_chirho

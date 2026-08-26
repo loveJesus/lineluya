@@ -252,6 +252,10 @@ pub static DEV_URANDOM_OPS_CHIRHO: DevUrandomOpsChirho = DevUrandomOpsChirho;
 pub struct DevConsoleOpsChirho;
 
 impl FileOpsChirho for DevConsoleOpsChirho {
+    fn is_console_chirho(&self) -> bool {
+        true
+    }
+
     fn read_chirho(
         &self,
         file_chirho: &mut FileChirho,
