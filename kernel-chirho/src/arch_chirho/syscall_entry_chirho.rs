@@ -63,62 +63,6 @@ pub fn kernel_stack_top_chirho() -> u64 {
     unsafe { KERNEL_STACK_TOP_CHIRHO }
 }
 
-/// GPT-directed watchpoint: monitor PID 2's stack slot at 0x7ffffeffe930
-/// for the first mutation from a valid return address to corruption.
-const WATCH_SLOT_CHIRHO: u64 = 0x7ffffeffe930;
-const WATCH_PIE_RET1_CHIRHO: u64 = 0x5555555583d0; // PIE + 0x33d0
-const WATCH_PIE_RET2_CHIRHO: u64 = 0x55555555847a; // PIE + 0x347a
-
-pub fn check_stack_watch_chirho(site_chirho: &str) {
-    use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-    static LAST_VAL_CHIRHO: AtomicU64 = AtomicU64::new(0);
-    static CAUGHT_CHIRHO: AtomicBool = AtomicBool::new(false);
-
-    if CAUGHT_CHIRHO.load(Ordering::Relaxed) { return; }
-
-    let pid_chirho = crate::task_chirho::current_task_chirho()
-        .map(|t| t.lock().pid_chirho).unwrap_or(0);
-    // Only watch when PID 2 is active and has exec'd
-    if pid_chirho != 2 { return; }
-
-    // Defer until PID 2 has made enough syscalls (exec + setup)
-    use core::sync::atomic::Ordering as WatchOrd;
-    static WATCH_READY_CHIRHO: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-    static WATCH_SC_CHIRHO: core::sync::atomic::AtomicU64 =
-        core::sync::atomic::AtomicU64::new(0);
-    let sc_cnt_chirho = WATCH_SC_CHIRHO.fetch_add(1, WatchOrd::Relaxed);
-    return; // DISABLED — 11K lines of WATCH spam per boot. Re-enable if needed.
-    if !WATCH_READY_CHIRHO.load(WatchOrd::Relaxed) {
-        WATCH_READY_CHIRHO.store(true, WatchOrd::Relaxed);
-    }
-
-    // Read the watched slot
-    let val_chirho = unsafe {
-        core::ptr::read_volatile(WATCH_SLOT_CHIRHO as *const u64)
-    };
-    let prev_chirho = LAST_VAL_CHIRHO.swap(val_chirho, Ordering::Relaxed);
-
-    if val_chirho != prev_chirho && prev_chirho != 0 {
-        let (cr3_chirho, _) = x86_64::registers::control::Cr3::read();
-        crate::serial_println_chirho!(
-            "[WATCH] {}: pid={} [0x930] changed {:#x} -> {:#x} CR3={:#x}",
-            site_chirho, pid_chirho, prev_chirho, val_chirho,
-            cr3_chirho.start_address().as_u64(),
-        );
-        // If it changed FROM a valid return addr TO something else, catch it
-        if (prev_chirho == WATCH_PIE_RET1_CHIRHO || prev_chirho == WATCH_PIE_RET2_CHIRHO)
-            && val_chirho != WATCH_PIE_RET1_CHIRHO && val_chirho != WATCH_PIE_RET2_CHIRHO
-        {
-            CAUGHT_CHIRHO.store(true, Ordering::Relaxed);
-            crate::serial_println_chirho!(
-                "[WATCH] CORRUPTION CAUGHT at {}! Valid ret {:#x} -> corrupt {:#x}",
-                site_chirho, prev_chirho, val_chirho,
-            );
-        }
-    }
-}
-
 /// Safe write of the kernel stack top (called during context switch).
 ///
 /// # Safety contract
@@ -381,9 +325,6 @@ pub unsafe extern "C" fn syscall_dispatch_wrapper_chirho(
     if allow_sysret_schedule_chirho && crate::scheduler_chirho::need_resched_chirho() {
         crate::scheduler_chirho::schedule_chirho();
     }
-
-    // GPT-directed watchpoint: check for stack corruption before IRETQ
-    check_stack_watch_chirho("syscall-ret");
 
     // GPT-directed fix: restore user FS/GS base at the SYSCALL RETURN
     // boundary, immediately before the assembly IRETQ path. This is the
