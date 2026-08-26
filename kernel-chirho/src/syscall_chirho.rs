@@ -5012,16 +5012,25 @@ fn sys_select_chirho(
         // scheduler handoffs: none of them may leak out as a return value, which
         // is precisely how this call came to answer a timeout it never measured.
         loop {
-            // An EMPTY result must never outrank a pending signal. Linux checks
-            // signal_pending in `core_sys_select` BEFORE accepting a zero from
-            // `do_select`, so a signal already pending on entry beats an all-zero
-            // timeout, and a signal arriving alongside a finite expiry beats the
-            // expiry. Checking the deadline first — which is what the new return
-            // boundary did — silently converted both of those into a plain 0.
+            // PRECEDENCE, every pass: READY, then SIGNAL, then earned TIMEOUT.
             //
-            // A READY result still outranks a signal: descriptors that are
-            // actually ready are reported, exactly as Linux returns retval > 0
-            // without consulting signal_pending. That path returned above.
+            // Ready comes first because Linux returns retval > 0 without ever
+            // consulting signal_pending. Signal comes before the timeout because
+            // `core_sys_select` tests signal_pending BEFORE accepting a zero from
+            // `do_select`, so a signal pending on entry beats an all-zero timeout
+            // and a signal concurrent with a finite expiry beats the expiry.
+            //
+            // The ordering is expressed by WHERE the scan sits, not by stacking
+            // three tests here. The single scan of this pass is at the BOTTOM of
+            // the loop, after the sleep: it returns immediately if anything is
+            // ready, so control only reaches these two tests having just
+            // established that nothing is. Readiness is therefore always decided
+            // on fresher information than the signal or the deadline.
+            //
+            // A second signal test used to sit after the sleep and BEFORE that
+            // scan. It inverted the first rule: a descriptor and a signal
+            // arriving together during one sleep returned EINTR and dropped the
+            // ready descriptor on the floor.
             if crate::signal_chirho::current_has_deliverable_signal_chirho() {
                 return -EINTR_CHIRHO;
             }
@@ -5041,10 +5050,6 @@ fn sys_select_chirho(
             // A select-heavy daemon would otherwise monopolise the CPU and keep
             // runnable siblings from ever being popped, so yield every iteration.
             crate::scheduler_chirho::yield_current_chirho();
-
-            if crate::signal_chirho::current_has_deliverable_signal_chirho() {
-                return -EINTR_CHIRHO;
-            }
 
             // Force-exit daemon session handlers when their TCP connection
             // is in CloseWait (client disconnected). But ONLY if no pipe

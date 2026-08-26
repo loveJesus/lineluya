@@ -26,13 +26,31 @@ deadline has genuinely passed, measured against the timer-ISR tick counter.
 deadline implementation would be a second place to get this wrong, and both calls
 were wrong here in different ways before they shared it.
 
-**An empty result never outranks a pending signal.** Linux checks
-`signal_pending` in `core_sys_select` BEFORE accepting a zero from `do_select`,
-so a signal already pending on entry beats an all-zero timeout, and a signal
-arriving alongside a finite expiry beats the expiry. A READY result does outrank
-a signal — descriptors that are actually ready are reported, as Linux returns
-`retval > 0` without consulting `signal_pending`. Introducing a deadline without
-this precedence converts both interrupt cases into a plain `0`.
+**Precedence, on every pass: READY, then SIGNAL, then earned TIMEOUT.**
+
+Ready first, because Linux returns `retval > 0` without ever consulting
+`signal_pending`. Signal before timeout, because `core_sys_select` tests
+`signal_pending` BEFORE accepting a zero from `do_select` — so a signal pending
+on entry beats an all-zero timeout, and a signal concurrent with a finite expiry
+beats the expiry.
+
+The ordering lives in WHERE the scan sits, not in a stack of three tests. The
+single scan of a pass is at the BOTTOM of the wait loop, after the sleep, and
+returns immediately if anything is ready; control reaches the signal and deadline
+tests only having just established that nothing is. Readiness is therefore always
+decided on fresher information than either.
+
+Both halves of this were got wrong in sequence, each by the fix for the other:
+
+- adding a deadline put the timeout test ABOVE the signal test, so an all-zero
+  timeout with a signal pending returned `0`;
+- fixing that left a SECOND signal test after the sleep and before the scan, so a
+  descriptor and a signal arriving during one sleep returned `EINTR` and dropped
+  the ready descriptor.
+
+A new early return in a wait loop re-ranks every condition that could already end
+that wait. Preserving those conditions somewhere below it is not preserving their
+precedence.
 
 This mattered far beyond `poll`. When it returned `0` to an indefinite wait,
 BusyBox read that impossible result as the end of its line-edit wait and exited
@@ -187,7 +205,8 @@ rather than by the original change:
 | `tv_usec` bounds unchecked above | POSIX requires `0 <= tv_usec < 1_000_000`; only negatives were rejected |
 | writefds derived once and copied back immediately | A write fd that became ready after entry was invisible for the rest of the call — permanently so once the loop became deadline-bounded rather than capped at 500,000 iterations — and the caller's set was overwritten before the call had decided to return. Both sets are now derived at the same moment on entry and on every retry, and copied only at an actual return |
 | timeout returned 0 without emptying the output sets | The caller saw count 0 with its own requested bits still standing. Both sets are now emptied on the timeout path |
-| the new deadline check preceded the signal check | A signal pending on entry with an all-zero timeout returned 0, and a signal concurrent with a finite expiry lost to the expiry. The deadline was a return boundary the existing EINTR path could not see past. Signal is tested first now |
+| the new deadline check preceded the signal check | A signal pending on entry with an all-zero timeout returned 0, and a signal concurrent with a finite expiry lost to the expiry. The deadline was a return boundary the existing EINTR path could not see past |
+| a second signal check then preceded the readiness scan | A descriptor and a signal arriving during the same sleep returned EINTR and dropped the ready descriptor — inverting the rule the previous row's fix had just asserted. The duplicate check is gone; the loop's single scan sits below the sleep, so ready is decided first on every pass |
 
 The `pselect6` ABI split came from the same review. `SYS_PSELECT6_CHIRHO`
 dispatches into this function, but its timeout is a `timespec` in NANOseconds,
