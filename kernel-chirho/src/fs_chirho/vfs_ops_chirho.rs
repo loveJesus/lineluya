@@ -1225,99 +1225,20 @@ pub fn sys_openat_chirho(
         }
     }
 
-    // Synthetic auth files: /etc/group, /etc/passwd, /etc/shadow.
-    // musl's initgroups() reads /etc/group via openat+read. Our ext4 driver
-    // may not properly read files created after the rootfs was built.
-    // Provide known-good content from kernel memory to bypass ext4 I/O issues.
+    // Legacy in-memory compatibility for auth and dynamic-loader lookup.
+    // Desktop launch policy and Xorg configuration deliberately fall through
+    // to the material rootfs instead of entering this compatibility table.
     {
-        let auth_content_chirho: Option<&[u8]> = match pathname_chirho.as_str() {
+        let compatibility_content_chirho: Option<&[u8]> = match pathname_chirho.as_str() {
             "/etc/group" => Some(b"root:x:0:root\nnobody:x:65534:\n"),
             "/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n"),
             "/etc/shadow" => Some(b"root::0:0:99999:7:::\n"),
             "/etc/ld-musl-x86_64.path" => Some(b"/tmp/lib-chirho\n/lib\n/usr/lib\n"),
-            // Full /etc/profile — one-shot guard prevents re-execution.
-            "/etc/profile" => {
-                use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-                static PROFILE_DONE_CHIRHO: AtomicBool = AtomicBool::new(false);
-                static PROFILE_COUNT_CHIRHO: AtomicU32 = AtomicU32::new(0);
-                let count_chirho = PROFILE_COUNT_CHIRHO.fetch_add(1, Ordering::Relaxed);
-                if PROFILE_DONE_CHIRHO.swap(true, Ordering::Relaxed) {
-                    Some(b"export PATH=/bin:/sbin:/usr/bin:/usr/sbin\nexport PS1='lineluya# '\nexport DISPLAY=:0\nexport LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n")
-                } else {
-                    Some(concat!(
-                        "export PATH=/bin:/sbin:/usr/bin:/usr/sbin\n",
-                        "export PS1='lineluya# '\n",
-                        "export HOME=/root\n",
-                        "export SHELL=/bin/sh\n",
-                        "export DISPLAY=:0\n",
-                        "export LD_LIBRARY_PATH=/tmp/lib-chirho:/lib:/usr/lib\n",
-                        "/tmp/lib-chirho/Xorg :0 -ac -noreset -novtswitch -keeptty -sharevts &\n",
-                        "/usr/bin/xgears-chirho &\n",
-                        "insmod /lib/modules/loop.ko &\n",
-                        "losetup /dev/loop0 /root/test-tone-chirho.mp3 && echo LOOP_TEST_OK &\n",
-                        "printf '\\377\\177\\377\\177' > /dev/dsp &\n",
-                        "/usr/sbin/dropbear -R -E -B -p 2222 &\n",
-                        "DISPLAY=:0 /usr/bin/twm &\n",
-                        "/tmp/lib-chirho/mpg123 -q -a /dev/dsp /root/test-tone-chirho.mp3 &\n",
-                        "DISPLAY=:0 /usr/bin/xterm -e /bin/sh -l &\n",
-                    ).as_bytes())
-                }
-            },
-            // Xorg config: fbdev driver, no BusID (matches old probe BUS_NONE entity)
-            "/etc/X11/xorg.conf" => Some(b"\
-Section \"Files\"\n\
-    ModulePath \"/tmp/xorg-modules-chirho\"\n\
-    FontPath \"/tmp/fonts-chirho\"\n\
-EndSection\n\
-\n\
-Section \"Module\"\n\
-    Disable \"glamoregl\"\n\
-    Disable \"dri\"\n\
-    Disable \"dri2\"\n\
-    Disable \"glx\"\n\
-EndSection\n\
-\n\
-Section \"Device\"\n\
-    Identifier \"fb0-chirho\"\n\
-    Driver \"fbdev\"\n\
-    Option \"fbdev\" \"/dev/fb0\"\n\
-    Option \"ShadowFB\" \"true\"\n\
-EndSection\n\
-\n\
-Section \"Screen\"\n\
-    Identifier \"screen-chirho\"\n\
-    Device \"fb0-chirho\"\n\
-EndSection\n\
-\n\
-Section \"InputDevice\"\n\
-    Identifier \"kbd-chirho\"\n\
-    Driver \"kbd\"\n\
-    Option \"XkbDisable\" \"true\"\n\
-EndSection\n\
-\n\
-Section \"ServerLayout\"\n\
-    Identifier \"layout-chirho\"\n\
-    Screen \"screen-chirho\"\n\
-    InputDevice \"kbd-chirho\" \"CoreKeyboard\"\n\
-EndSection\n\
-"),
             _ => None,
         };
-        if let Some(content_chirho) = auth_content_chirho {
+        if let Some(content_chirho) = compatibility_content_chirho {
             return create_memory_backed_fd_chirho(&pathname_chirho, content_chirho, flags_chirho);
         }
-    }
-
-    // Dynamic synthetic file: /tmp/.X0-lock — appears after Xorg creates the X11 socket.
-    if pathname_chirho == "/tmp/.X0-lock"
-        && crate::net_chirho::X11_READY_CHIRHO.load(core::sync::atomic::Ordering::Acquire)
-    {
-        return create_memory_backed_fd_chirho(&pathname_chirho, b"         5\n", flags_chirho);
-    }
-
-    // Block protocol.txt to test if its parsing causes heap corruption
-    if pathname_chirho == "/usr/lib/xorg/protocol.txt" {
-        return -ENOENT_CHIRHO;
     }
 
     // Special case: /dev/pts/N -- PTY slave devices are created dynamically
